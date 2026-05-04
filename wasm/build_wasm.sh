@@ -25,6 +25,23 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
 APP_DIR="$SCRIPT_DIR/app"
 BUILD_DIR="$SCRIPT_DIR/build"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# Regenerate version.h before any compilation. Standalone mode of the same
+# script PlatformIO uses, branded with FW_BUILD_TYPE="wasm".
+echo "=== Generating wasm/generated/version.h ==="
+# Prefer python3 (Linux/macOS); fall back to python (Windows installers often
+# only register the unversioned name). Adjust if neither is on PATH.
+PYTHON=$(command -v python3 || command -v python)
+if [ -z "$PYTHON" ]; then
+    echo "Error: neither python3 nor python found on PATH." >&2
+    exit 1
+fi
+CYBERFIDGET_BUILD_TYPE_OVERRIDE=wasm \
+    "$PYTHON" "$REPO_ROOT/scripts/generate_version.py" \
+        --standalone \
+        --out "$SCRIPT_DIR/generated/version.h" \
+        --repo-root "$REPO_ROOT"
 
 # Check for Emscripten
 if ! command -v emcc &>/dev/null; then

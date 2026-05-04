@@ -6,9 +6,13 @@
 #include "DisplayProxy.h"
 #include "ButtonManager.h"
 #include "RGBController.h"
+#include "version.h"  // FW_* macros, exposed to JS via ccall (see exports below)
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#define KEEPALIVE EMSCRIPTEN_KEEPALIVE
+#else
+#define KEEPALIVE
 #endif
 
 // ---- App selection (set via CMake -DWASM_APP=xxx) ----
@@ -103,6 +107,12 @@ void wasm_stop() {
     emscripten_cancel_main_loop();
 #endif
 }
+
+// Firmware version surface for JS callers (App Builder mismatch warning,
+// The Archives compatibility checks). Same values as the firmware HAL exposes.
+KEEPALIVE const char* cyberfidget_version_string()  { return FW_VERSION_FULL_STRING; }
+KEEPALIVE uint32_t    cyberfidget_version_encoded() { return FW_VERSION; }
+KEEPALIVE const char* cyberfidget_build_type()      { return FW_BUILD_TYPE; }
 
 } // extern "C"
 

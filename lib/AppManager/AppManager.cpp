@@ -7,6 +7,7 @@
 #include "globals.h"
 #include "PowerManager.h"
 #include "AppDefs.h"
+#include "SerialCli.h"
 
 void (*keep_functions[])() = {menuBegin, menuEnd, menuRun};
 
@@ -60,6 +61,7 @@ void AppManager::loop() {
     HAL::loopHardware();
 
     processButtonEvents();
+    SerialCli::instance().poll();
 
     if ((millis_NOW - millis_APP_TASK_20MS) >= TASK_20MS) {
         millis_APP_TASK_20MS = millis_NOW;
