@@ -75,11 +75,42 @@ else
 fi
 
 for macro in FW_VERSION_MAJOR FW_VERSION_MINOR FW_VERSION_PATCH \
+             FW_VERSION_PRERELEASE \
              VERSION_ENCODE FW_VERSION FW_VERSION_STRING \
              FW_GIT_HASH FW_GIT_DIRTY FW_BUILD_TIMESTAMP \
              FW_BUILD_TYPE FW_VERSION_FULL_STRING; do
     assert_grep "#define $macro" "$H" "header defines $macro"
 done
+
+# 1g. Pre-release suffix propagation: simulate a CI tag push of v<X.Y.Z>-rc1
+# and confirm FW_VERSION_PRERELEASE / FW_VERSION_STRING / FW_VERSION_FULL_STRING
+# all carry the suffix (semver item 9).
+H_pre="$TMP/v_prerelease.h"
+GITHUB_ACTIONS=true GITHUB_REF_NAME="v9.9.9-rc1" \
+    python "$REPO_ROOT/scripts/generate_version.py" \
+        --out "$H_pre" --repo-root "$REPO_ROOT" >/dev/null 2>&1
+if grep -q '#define FW_VERSION_PRERELEASE "rc1"' "$H_pre" && \
+   grep -qF 'FW_VERSION_STRING "1.1.0-rc1"' "$H_pre"; then
+    pass "CI tag with -rc1 suffix populates FW_VERSION_PRERELEASE and FW_VERSION_STRING"
+else
+    fail "prerelease suffix not propagated correctly (expected rc1 in macros)"
+fi
+if grep -qF 'FW_VERSION_FULL_STRING "1.1.0-rc1+' "$H_pre"; then
+    pass "FW_VERSION_FULL_STRING includes prerelease suffix"
+else
+    fail "FW_VERSION_FULL_STRING missing prerelease suffix"
+fi
+
+# 1h. No-suffix tag leaves FW_VERSION_PRERELEASE empty.
+H_rel="$TMP/v_release.h"
+GITHUB_ACTIONS=true GITHUB_REF_NAME="v9.9.9" \
+    python "$REPO_ROOT/scripts/generate_version.py" \
+        --out "$H_rel" --repo-root "$REPO_ROOT" >/dev/null 2>&1
+if grep -q '#define FW_VERSION_PRERELEASE ""' "$H_rel"; then
+    pass "release tag (no suffix) leaves FW_VERSION_PRERELEASE empty"
+else
+    fail "release tag did not leave FW_VERSION_PRERELEASE empty"
+fi
 
 # 1b. Override env var → FW_BUILD_TYPE matches override
 H2="$TMP/v_override.h"
