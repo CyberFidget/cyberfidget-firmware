@@ -1,5 +1,6 @@
 # PlatformIO build artifacts
 .pio/
+bin/
 
 # IDE / AI tool configs
 .vscode/

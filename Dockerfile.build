@@ -1,0 +1,21 @@
+# Use a smaller, pre-configured Python base
+FROM python:3.11-slim-bookworm
+
+# 1. Environment variables to keep Python snappy and clean
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+# 2. Install only essential build tools in one layer
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# 3. Use a virtual env and install tools
+# No need to install python3/pip/venv separately on a Python base image
+RUN python -m venv /opt/venv && \
+    pip install --no-cache-dir --upgrade pip setuptools wheel && \
+    pip install --no-cache-dir platformio esptool
+
+WORKDIR /workspace

@@ -1,0 +1,77 @@
+services:
+  # Shared configuration
+  base: &base
+    build: 
+      context: .
+      dockerfile: Dockerfile.build
+    volumes:
+      # Use an environment variable that defaults to current directory
+      - ${HOST_WORKSPACE:-.}:/workspace:rw
+      - ${HOST_WORKSPACE:-.}/bin:/workspace/bin:rw
+      - pio_cache:/root/.platformio
+      - pio_build_data:/workspace/.pio
+    working_dir: /workspace
+
+  build:
+    <<: *base
+    command: >
+      python3 -m platformio run -e local
+
+
+  merge:
+    <<: *base
+    depends_on:
+      build:
+        condition: service_completed_successfully
+    command: >
+      python3 -m esptool --chip esp32 merge-bin 
+      -o bin/merged_firmware.bin 
+      --flash-mode dio --flash-freq 80m --flash-size 8MB 
+      0x1000 .pio/build/local/bootloader.bin 
+      0x8000 .pio/build/local/partitions.bin 
+      0x10000 .pio/build/local/firmware.bin
+
+
+  release:
+    image: curlimages/curl:latest
+    volumes:
+      - ${HOST_WORKSPACE:-.}/bin:/workspace/bin:ro
+    environment:
+      - GITHUB_TOKEN=${GITHUB_TOKEN}
+      - TAG_NAME=${TAG_NAME}
+      - REPO_FORK=${GITHUB_REPO_FORK}
+      - REPO_NAME=${GITHUB_REPO_NAME}
+    working_dir: /workspace
+    command: >
+      sh -c "
+      API_URL=\"https://api.github.com/repos/$$REPO_FORK/$$REPO_NAME/releases\" &&
+      AUTH_HDR=\"Authorization: token $$GITHUB_TOKEN\" &&
+
+      echo 'Checking for existing release: $$TAG_NAME...' &&
+      RESPONSE=$$(curl -s -H \"$$AUTH_HDR\" \"$$API_URL/tags/$$TAG_NAME\") &&
+      UPLOAD_URL=$$(echo \"$$RESPONSE\" | grep 'upload_url' | sed -E 's/.*\"([^{]+)\{.*/\1/') &&
+
+      if [ -z \"$$UPLOAD_URL\" ]; then
+        echo 'Release not found. Creating new release...' &&
+        CREATE_DATA=\"{\\\"tag_name\\\":\\\"$$TAG_NAME\\\",\\\"name\\\":\\\"$$TAG_NAME\\\",\\\"generate_release_notes\\\":true}\" &&
+        RESPONSE=$$(curl -s -X POST -H \"$$AUTH_HDR\" -H \"Content-Type: application/json\" -d \"$$CREATE_DATA\" \"$$API_URL\") &&
+        UPLOAD_URL=$$(echo \"$$RESPONSE\" | grep 'upload_url' | sed -E 's/.*\"([^{]+)\{.*/\1/') &&
+        echo 'Successfully created release.'
+      fi;
+
+      if [ -z \"$$UPLOAD_URL\" ]; then
+        echo 'ERROR: Failed to obtain Upload URL. Check your GITHUB_TOKEN permissions.';
+        exit 1;
+      fi;
+
+      echo 'Uploading binary to: $$UPLOAD_URL' &&
+      curl -X POST -H \"$$AUTH_HDR\" \
+        -H 'Content-Type: application/octet-stream' \
+        --data-binary @./bin/merged_firmware.bin \
+        \"$${UPLOAD_URL}?name=merged_firmware.bin\"
+      "
+
+
+volumes:
+  pio_cache:
+  pio_build_data:
