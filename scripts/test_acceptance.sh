@@ -233,11 +233,15 @@ assert_grep 'printFirmwareBanner();' lib/HAL/HAL.cpp \
     "HAL.cpp calls printFirmwareBanner() in initHardware"
 assert_grep '#include "version.h"' lib/HAL/HAL.cpp \
     "HAL.cpp includes generated version.h"
+assert_grep 'printFirmwareBanner' lib/HAL/HAL.h \
+    "HAL.h declares printFirmwareBanner"
+assert_grep 'void printFirmwareBanner' lib/HAL/HAL.cpp \
+    "HAL.cpp implements printFirmwareBanner"
 
 for sig in 'getFirmwareVersionString' 'getFirmwareVersion' 'getFirmwareGitHash' \
-           'getFirmwareBuildType' 'getFirmwareBuildTimestamp' 'printFirmwareBanner'; do
-    assert_grep "$sig" lib/HAL/HAL.h "HAL.h declares $sig"
-    assert_grep "$sig" lib/HAL/HAL.cpp "HAL.cpp implements $sig"
+           'getFirmwareBuildType' 'getFirmwareBuildTimestamp'; do
+    assert_grep "$sig" lib/Globals/globals.h "globals.h declares $sig"
+    assert_grep "$sig" lib/Globals/globals.cpp "globals.cpp implements $sig"
 done
 
 assert_grep 'SerialCli::instance().poll()' lib/AppManager/AppManager.cpp \

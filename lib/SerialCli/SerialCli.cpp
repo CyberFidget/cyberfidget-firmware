@@ -6,7 +6,7 @@
 #include <Arduino.h>
 #include <esp_system.h>
 
-#include "HAL.h"
+#include "globals.h"  // getFirmwareVersionString() and friends
 #include "version.h"  // FW_GIT_DIRTY for the `info` command
 
 namespace {
@@ -64,15 +64,15 @@ void SerialCli::dispatch(const char* line) {
 }
 
 void SerialCli::cmdVersion() {
-    Serial.printf("[cmd] version=%s\n", HAL::getFirmwareVersionString());
+    Serial.printf("[cmd] version=%s\n", getFirmwareVersionString());
 }
 
 void SerialCli::cmdInfo() {
     uint64_t mac = ESP.getEfuseMac();
-    Serial.printf("[cmd] info.fw=%s\n",      HAL::getFirmwareVersionString());
-    Serial.printf("[cmd] info.type=%s\n",    HAL::getFirmwareBuildType());
-    Serial.printf("[cmd] info.built=%s\n",   HAL::getFirmwareBuildTimestamp());
-    Serial.printf("[cmd] info.git=%s\n",     HAL::getFirmwareGitHash());
+    Serial.printf("[cmd] info.fw=%s\n",      getFirmwareVersionString());
+    Serial.printf("[cmd] info.type=%s\n",    getFirmwareBuildType());
+    Serial.printf("[cmd] info.built=%s\n",   getFirmwareBuildTimestamp());
+    Serial.printf("[cmd] info.git=%s\n",     getFirmwareGitHash());
     Serial.printf("[cmd] info.dirty=%d\n",   FW_GIT_DIRTY);
     Serial.printf("[cmd] info.chip=%s rev %d\n",
                   ESP.getChipModel(), ESP.getChipRevision());
