@@ -114,6 +114,11 @@ namespace HAL
     void updateDisplay();
     void drawString(int16_t x, int16_t y, const String &text);
 
+    // Boot banner — emits the firmware identification line to Serial. Lives in
+    // HAL because it touches the UART; the underlying values are exposed
+    // directly via getFirmwareVersionString() etc. in lib/Globals/.
+    void        printFirmwareBanner();        // [boot] fw=... line, called from initHardware
+
     // ... add more hardware-related getters/setters as you see fit
 };
 

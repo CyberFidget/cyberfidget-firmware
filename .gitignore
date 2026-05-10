@@ -2,6 +2,11 @@
 .pio/
 bin/
 
+# Generated version header (rebuilt every build by scripts/generate_version.py).
+# Root-anchored so a future `lib/foo/generated/` folder isn't accidentally hidden.
+/generated/
+/wasm/generated/
+
 # IDE / AI tool configs
 .vscode/
 .claude/
