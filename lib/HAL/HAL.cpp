@@ -11,6 +11,7 @@
 #include <esp_sleep.h>
 #include <esp_task_wdt.h>
 #include <esp_system.h>
+#include <driver/gpio.h>
 #include <SSD1306Wire.h>
 #include <Adafruit_NeoPixel.h>
 
@@ -217,6 +218,19 @@ namespace HAL
 
     void enterDeepSleep()
     {
+        // The SSD1306's ESD diodes forward-bias the I2C pull-ups once
+        // 3.3V_OLED collapses, draining ~2.2 mA. Put the display in low-power
+        // mode and keep its rail on so VDD stays equal to the pull-up rail.
+        s_realDisplay.displayOff();
+
+        Wire.end();
+        pinMode(SDA, INPUT);
+        pinMode(SCL, INPUT);
+
+        digitalWrite(POWER_PIN_OLED, HIGH);
+        gpio_hold_en((gpio_num_t)POWER_PIN_OLED);
+        gpio_deep_sleep_hold_en();
+
         esp_deep_sleep_start();
     }
 
