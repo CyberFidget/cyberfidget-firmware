@@ -77,6 +77,14 @@ void BatteryManager::update() {
     }
 }
 
+void BatteryManager::prepareForDeepSleep() {
+    // Force the MAX17048 into hibernate (writes 0xFFFF to HIBRT).
+    // Drops gauge supply current from ~23 µA to ~4 µA across sleep.
+    // Hibernate clears automatically on the next sufficiently-large
+    // VCELL change, so no explicit disableHibernate() is needed at wake.
+    lipo.enableHibernate();
+}
+
 void BatteryManager::debug() {
     ESP_LOGD(TAG_MAIN, "Battery: %.2fV  SOC: %.2f%%  Rate: %.2f%%/hr  Alert: %d  VHigh: %d  VLow: %d  Empty: %d  SOC1%%: %d  Hibernating: %d",
         batteryVoltage,
