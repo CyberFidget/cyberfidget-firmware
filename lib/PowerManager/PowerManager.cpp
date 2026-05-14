@@ -70,7 +70,8 @@ void PowerManager::onButtonPressCallback(const ButtonEvent &event) {
 
                 delay(500);
                 ESP_LOGV(TAG_MAIN, "Entering deep sleep...");
-                esp_deep_sleep_start();
+
+                HAL::enterDeepSleep();
             } else {
                 // Update last tap time
                 instance->lastTapTime = currentTime;
@@ -102,7 +103,7 @@ void PowerManager::deepSleep() {
             display.display();
 
             delay(3000);
-            esp_deep_sleep_start();
+            HAL::enterDeepSleep();
         }
         } else {
             ESP_LOGI(TAG_MAIN, "Going to sleep now...");
@@ -113,7 +114,7 @@ void PowerManager::deepSleep() {
             display.display();
 
             delay(3000);
-            esp_deep_sleep_start();
+            HAL::enterDeepSleep();
         }
 }
 

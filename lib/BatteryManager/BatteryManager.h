@@ -13,6 +13,7 @@ public:
     void init();
     void update();
     void debug();
+    void prepareForDeepSleep();
 private:
     SFE_MAX1704X lipo;
 };
