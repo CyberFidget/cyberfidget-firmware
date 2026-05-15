@@ -25,6 +25,26 @@ public:
     // Static instance pointer for callbacks
     static BreakoutGame* instance;
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Internal test API — NOT for user code. Public so the native test
+    // target in lib/BreakoutGame/test/ can call directly. Will move behind
+    // HAL::commandRegistry when N-011 is implemented; see N-011 for the
+    // graduation path.
+    // ─────────────────────────────────────────────────────────────────────
+    struct StateSnapshot {
+        uint8_t state;     // GameState as uint8_t (avoid exposing the enum)
+        int     level;     // 1-indexed for humans
+        int     lives;
+        int     deaths;
+        uint8_t mode;      // InputMode as uint8_t
+        float   paddleX;
+    };
+    void          test_setLevel(int n);       // 1-indexed; clamps + loadLevel
+    void          test_setLives(int n);
+    void          test_killBall();            // forces ball below screen this update
+    void          test_winLevel();            // empties all BRICK / CRUMBLE cells
+    StateSnapshot test_snapshot() const;
+
 private:
     // AppManager Integration
     void registerButtonCallbacks();
@@ -65,17 +85,26 @@ private:
     static constexpr int BRICK_HEIGHT = 4;
 
     enum CellType : uint8_t {
-        CELL_EMPTY        = 0,
-        CELL_BRICK        = 1,
-        CELL_UNBREAKABLE  = 2,
+        CELL_EMPTY         = 0,
+        CELL_BRICK         = 1,
+        CELL_UNBREAKABLE   = 2,
+        CELL_CRUMBLE_3     = 3, // fresh, 3 hits remaining
+        CELL_CRUMBLE_2     = 4, // cracked
+        CELL_CRUMBLE_1     = 5, // very cracked
+        CELL_SPIKE_ONESHOT = 6, // destroyed on hit, ~1.5x speed kick (L7+)
+        CELL_SPIKE_PERSIST = 7, // persists, ~1.3x speed each hit (L9+)
     };
     CellType cells[BRICK_ROWS][BRICK_COLS];
 
-    // Level progression
-    static constexpr int   NUM_LEVELS = 5;
-    static constexpr float LEVEL_SPEEDS[NUM_LEVELS] = { 1.0f, 1.2f, 1.4f, 1.6f, 1.8f };
+    // Level progression — 9 levels. L6+ textured paddle, L8+ gravity. See BreakoutMath.h.
+    static constexpr int   NUM_LEVELS = 9;
+    static constexpr float LEVEL_SPEEDS[NUM_LEVELS] =
+        { 1.0f, 1.2f, 1.4f, 1.6f, 1.8f, 1.8f, 2.0f, 1.6f, 1.6f };
+    // Gravity slows the start; L8 (idx 7) and L9 (idx 8) trade horizontal speed
+    // for vertical acceleration.
     static const char* const LEVEL_LAYOUTS[NUM_LEVELS][BRICK_ROWS]; // defined in .cpp
-    int currentLevel; // 0-indexed
+    int currentLevel;                       // 0-indexed
+    unsigned long levelTimes[NUM_LEVELS];   // ms per level; 0 if not yet completed
 
     // Lives
     static constexpr int STARTING_LIVES = 3;
@@ -121,10 +150,12 @@ private:
     void checkCollisions();
     void checkVictory();
     void drawGame();
+    void drawTexturedPaddle();    // L6+ — serrated top edge
     void drawInputMenu();
     void drawEndScreen();         // GAME OVER or YOU WIN
     void playBounceSound();
     void playThudSound();         // For unbreakable hits
+    void playSpikeSound();        // For spike-brick hits (one-shot + persistent)
 };
 
 extern BreakoutGame breakoutGame;

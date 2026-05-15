@@ -110,6 +110,19 @@ void AudioManager::stopTone() {
     js_audio_stop_tone();
 }
 
+// Sequence stubs. The WASM emulator is currently silent for sequenced tones
+// (per T-002 notes, audio PCM is on the "needs adding" list). Production-
+// firmware semantics are in lib/AudioManager/AudioManager.cpp.
+void AudioManager::playSequence(const ToneStep* /*steps*/, int /*count*/) {
+    // No-op for now. To wire this through to the JS audio path, queue the
+    // sequence here and have AudioManager::loop() advance it via playTone()
+    // calls — same advance algorithm as the production AudioManager.
+}
+
+void AudioManager::stopSequence() {
+    // No-op for the same reason; production stops in-flight tone + clears state.
+}
+
 void AudioManager::enableMic(bool) {}
 
 float AudioManager::getMicVolumeDb() const {
