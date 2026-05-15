@@ -11,6 +11,7 @@
 #include "AudioManager.h"
 #include "globals.h" // For button indices
 #include <functional> // For std::function
+#include <stdint.h>
 
 class BreakoutGame {
 public:
@@ -28,8 +29,12 @@ private:
     // AppManager Integration
     void registerButtonCallbacks();
     void unregisterButtonCallbacks();
-    static void buttonPressedCallback(const ButtonEvent& event);
     static void onButtonBackPressed(const ButtonEvent& event);
+    static void onMenuUp(const ButtonEvent& event);
+    static void onMenuDown(const ButtonEvent& event);
+    static void onPaddleLeft(const ButtonEvent& event);
+    static void onPaddleRight(const ButtonEvent& event);
+    static void onBottomRight(const ButtonEvent& event); // Confirm in menu, reset elsewhere
 
     // References to hardware components
     DisplayProxy& display;
@@ -46,45 +51,80 @@ private:
     static constexpr int PADDLE_Y      = SCREEN_HEIGHT - 8; // Near bottom
     static constexpr int PADDLE_WIDTH  = 20;
     static constexpr int PADDLE_HEIGHT = 3;
-    float paddleSpeed; // Multiplier for paddle movement speed
+    float paddleSpeed; // Multiplier for accelerometer-driven paddle motion
 
     // Ball properties
     float ballX, ballY;    // Ball position
     float ballVX, ballVY;  // Ball velocity
     static constexpr int BALL_SIZE = 2; // 2x2 pixel ball
 
-    // Bricks
+    // Bricks / cells
     static constexpr int BRICK_ROWS   = 3;
     static constexpr int BRICK_COLS   = 8;
-    static constexpr int BRICK_WIDTH  = 16; 
+    static constexpr int BRICK_WIDTH  = 16;
     static constexpr int BRICK_HEIGHT = 4;
-    bool bricks[BRICK_ROWS][BRICK_COLS]; // true if brick is active
 
-    // Game state
-    int  deathCount;   // Number of times the ball hits the bottom
-    bool gameWon;      // True if all bricks are destroyed
+    enum CellType : uint8_t {
+        CELL_EMPTY        = 0,
+        CELL_BRICK        = 1,
+        CELL_UNBREAKABLE  = 2,
+    };
+    CellType cells[BRICK_ROWS][BRICK_COLS];
 
-    // Timer for how long it takes to destroy all bricks
-    unsigned long startTime; // When the game started/restarted
-    unsigned long totalTime; // Final time it took (in ms) once game is won
+    // Level progression
+    static constexpr int   NUM_LEVELS = 5;
+    static constexpr float LEVEL_SPEEDS[NUM_LEVELS] = { 1.0f, 1.2f, 1.4f, 1.6f, 1.8f };
+    static const char* const LEVEL_LAYOUTS[NUM_LEVELS][BRICK_ROWS]; // defined in .cpp
+    int currentLevel; // 0-indexed
 
-    // Reset button information
-    int resetButtonIndex;
+    // Lives
+    static constexpr int STARTING_LIVES = 3;
+    int livesRemaining;
+
+    // Game state machine
+    enum GameState : uint8_t {
+        STATE_INPUT_MENU = 0,
+        STATE_PLAYING    = 1,
+        STATE_GAME_OVER  = 2,
+        STATE_VICTORY    = 3,
+    };
+    GameState gameState;
+
+    // Input selection
+    enum InputMode : uint8_t {
+        INPUT_ACCEL   = 0,
+        INPUT_BUTTONS = 1,
+        INPUT_SLIDER  = 2,
+        INPUT_COUNT   = 3,
+    };
+    InputMode inputMode;
+    int  menuCursor;       // 0..INPUT_COUNT-1
+    bool leftHeld;         // for INPUT_BUTTONS
+    bool rightHeld;        // for INPUT_BUTTONS
+
+    // Tally / timing
+    int  deathCount;
+    unsigned long startTime; // when current run started
+    unsigned long totalTime; // final time once won
 
     // Option to enable/disable brick hit sounds
     bool brickSoundsEnabled;
 
     // Private methods
-    void resetGame();           // Reset the game to initial state
-    void movePaddle(float Ax);  // Move the paddle based on input
-    void moveBall();            // Move the ball
-    void checkCollisions();     // Check for collisions
-    void checkVictory();        // Check if the game is won
-    void drawGame();            // Draw the game elements
-    void playBounceSound();     // Play sound when the ball bounces
-
-    // Static button event handler
-    static void onButtonEvent(const ButtonEvent& event);
+    void resetGame();             // Reset to fresh run (back to input menu)
+    void loadLevel(int idx);      // Load level idx, recenter ball/paddle, set speed
+    void respawnBall();           // After death, re-center ball at current level speed
+    void movePaddle();            // Dispatch on inputMode
+    void movePaddleByAccel();     // Existing accelerometer path
+    void clampPaddle();
+    void moveBall();
+    void checkCollisions();
+    void checkVictory();
+    void drawGame();
+    void drawInputMenu();
+    void drawEndScreen();         // GAME OVER or YOU WIN
+    void playBounceSound();
+    void playThudSound();         // For unbreakable hits
 };
 
 extern BreakoutGame breakoutGame;
