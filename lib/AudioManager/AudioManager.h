@@ -14,6 +14,15 @@ using namespace audio_tools;
 
 class AudioManager {
 public:
+    // A single step in a tone sequence.
+    // freq=0 means rest (silence). gapAfterMs adds inter-step silence.
+    // Pointers passed to playSequence() must outlive playback — use static const arrays.
+    struct ToneStep {
+        float    freq;
+        uint16_t durationMs;
+        uint16_t gapAfterMs;
+    };
+
     AudioManager();
 
     void init();
@@ -23,6 +32,11 @@ public:
     void setVolume(float volume);                       // 0.0..1.0
     void playTone(float frequency, int durationMs = 0); // 0 = indefinite
     void stopTone();
+
+    // Sequence control — play a series of tones with timing.
+    void playSequence(const ToneStep* steps, int count);
+    void stopSequence();
+    bool isSequencePlaying() const { return currentSequence != nullptr; }
     
     // I2S port sharing — music player needs I2S0 for onboard speaker output
     void releaseI2S();   // Stop I2S TX so another stream can use port 0
@@ -41,6 +55,12 @@ private:
     float currentFrequency;
     bool  isPlaying;
     unsigned long stopAtMillis;
+
+    // --- Sequence state ---
+    const ToneStep* currentSequence = nullptr;
+    int             currentSequenceLen = 0;
+    int             currentSequenceIdx = 0;
+    unsigned long   nextStepAtMs = 0;
 
     // --- Tone chain (TX) ---
     I2SStream i2s;                           // TX to MAX98357A

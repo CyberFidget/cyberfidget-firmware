@@ -3,10 +3,17 @@
 # Copyright (c) 2023-2026 Dismo Industries LLC
 # Build CyberFidget WASM for the browser emulator.
 #
-# Prerequisites: Emscripten SDK
-#   git clone https://github.com/emscripten-core/emsdk.git && cd emsdk
-#   ./emsdk install 3.1.51 && ./emsdk activate 3.1.51
-#   source ./emsdk_env.sh
+# Prerequisites: Emscripten SDK installed at one of:
+#   - <cyberfidget-workspace>/emsdk      (preferred — co-located with the repos)
+#   - $HOME/emsdk
+#   - or set EMSDK_ROOT to override
+#
+# Install steps (one-time):
+#   git clone https://github.com/emscripten-core/emsdk.git
+#   cd emsdk && ./emsdk install 3.1.51 && ./emsdk activate 3.1.51
+#
+# You do NOT need to source emsdk_env.sh yourself — this script auto-
+# activates from whichever location it finds.
 #
 # Usage:
 #   ./build_wasm.sh
@@ -43,11 +50,38 @@ CYBERFIDGET_BUILD_TYPE_OVERRIDE=wasm \
         --out "$SCRIPT_DIR/generated/version.h" \
         --repo-root "$REPO_ROOT"
 
-# Check for Emscripten
+# Locate Emscripten. If emcc isn't already on PATH, look in a few known
+# places and source emsdk_env.sh automatically. Override with EMSDK_ROOT.
 if ! command -v emcc &>/dev/null; then
-    echo "Emscripten not found. Install and activate the SDK, then source emsdk_env.sh:"
-    echo "  https://emscripten.org/docs/getting_started/downloads.html"
-    exit 1
+    EMSDK_TRY=""
+    if [ -n "${EMSDK_ROOT:-}" ] && [ -f "$EMSDK_ROOT/emsdk_env.sh" ]; then
+        EMSDK_TRY="$EMSDK_ROOT"
+    fi
+    # Workspace-co-located install: <cyberfidget-workspace>/emsdk
+    if [ -z "$EMSDK_TRY" ] && [ -f "$SCRIPT_DIR/../../emsdk/emsdk_env.sh" ]; then
+        EMSDK_TRY="$SCRIPT_DIR/../../emsdk"
+    fi
+    # User-profile install
+    if [ -z "$EMSDK_TRY" ] && [ -f "$HOME/emsdk/emsdk_env.sh" ]; then
+        EMSDK_TRY="$HOME/emsdk"
+    fi
+
+    if [ -z "$EMSDK_TRY" ]; then
+        echo "Emscripten not found. Either:"
+        echo "  - install at one of: $SCRIPT_DIR/../../emsdk, \$HOME/emsdk"
+        echo "  - or set EMSDK_ROOT to your install path"
+        echo "  - or activate emsdk manually before running this script"
+        echo "Reference: https://emscripten.org/docs/getting_started/downloads.html"
+        exit 1
+    fi
+
+    echo "=== Activating Emscripten at $EMSDK_TRY ==="
+    # shellcheck source=/dev/null
+    source "$EMSDK_TRY/emsdk_env.sh"
+    if ! command -v emcc &>/dev/null; then
+        echo "ERROR: emsdk_env.sh ran but emcc still not on PATH. Check $EMSDK_TRY."
+        exit 1
+    fi
 fi
 
 if [ $# -eq 0 ]; then

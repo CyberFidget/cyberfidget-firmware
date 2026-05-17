@@ -87,6 +87,25 @@ void AudioManager::loop() {
     if (isPlaying && stopAtMillis > 0 && millis() >= stopAtMillis) {
         stopTone();
     }
+
+    // Sequence advance — mirrors the production AudioManager so jingles
+    // play in the browser emulator with the same timing they do on hardware.
+    if (currentSequence != nullptr && millis() >= nextStepAtMs) {
+        if (currentSequenceIdx >= currentSequenceLen) {
+            currentSequence    = nullptr;
+            currentSequenceLen = 0;
+            currentSequenceIdx = 0;
+        } else {
+            const ToneStep& s = currentSequence[currentSequenceIdx];
+            if (s.freq > 0.0f) {
+                playTone(s.freq, s.durationMs);
+            } else {
+                stopTone(); // rest
+            }
+            nextStepAtMs = millis() + s.durationMs + s.gapAfterMs;
+            currentSequenceIdx++;
+        }
+    }
 }
 
 void AudioManager::setVolume(float volume) {
@@ -108,6 +127,27 @@ void AudioManager::stopTone() {
     currentFrequency = 0;
     stopAtMillis = 0;
     js_audio_stop_tone();
+}
+
+// Sequence playback — same semantics as the production AudioManager.
+// Caller-provided ToneStep array must outlive playback (typical pattern is
+// static const). loop() drives the per-step advance.
+void AudioManager::playSequence(const ToneStep* steps, int count) {
+    if (steps == nullptr || count <= 0) {
+        stopSequence();
+        return;
+    }
+    currentSequence    = steps;
+    currentSequenceLen = count;
+    currentSequenceIdx = 0;
+    nextStepAtMs       = millis(); // first step fires on the next loop() tick
+}
+
+void AudioManager::stopSequence() {
+    currentSequence    = nullptr;
+    currentSequenceLen = 0;
+    currentSequenceIdx = 0;
+    stopTone();
 }
 
 void AudioManager::enableMic(bool) {}

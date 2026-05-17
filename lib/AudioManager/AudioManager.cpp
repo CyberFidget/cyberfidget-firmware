@@ -89,6 +89,26 @@ void AudioManager::loop() {
       stopAtMillis = 0;
       }
     }
+
+    // --- Sequence advance ---
+    if (currentSequence != nullptr && millis() >= nextStepAtMs) {
+        if (currentSequenceIdx >= currentSequenceLen) {
+            // Sequence finished.
+            currentSequence    = nullptr;
+            currentSequenceLen = 0;
+            currentSequenceIdx = 0;
+        } else {
+            const ToneStep& s = currentSequence[currentSequenceIdx];
+            if (s.freq > 0.0f) {
+                playTone(s.freq, s.durationMs);
+            } else {
+                // Rest: ensure any in-flight tone is silenced for the rest interval.
+                stopTone();
+            }
+            nextStepAtMs = millis() + s.durationMs + s.gapAfterMs;
+            currentSequenceIdx++;
+        }
+    }
 }
 
 void AudioManager::setVolume(float volumeLevel) {
@@ -114,6 +134,24 @@ void AudioManager::stopTone() {
         isPlaying = false;
         // volume.setVolume(0.0f); // optional instant silence
     }
+}
+
+void AudioManager::playSequence(const ToneStep* steps, int count) {
+    if (steps == nullptr || count <= 0) {
+        stopSequence();
+        return;
+    }
+    currentSequence    = steps;
+    currentSequenceLen = count;
+    currentSequenceIdx = 0;
+    nextStepAtMs       = millis(); // play first step immediately on next loop()
+}
+
+void AudioManager::stopSequence() {
+    currentSequence    = nullptr;
+    currentSequenceLen = 0;
+    currentSequenceIdx = 0;
+    stopTone();
 }
 void AudioManager::releaseI2S() {
     stopTone();

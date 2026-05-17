@@ -3,10 +3,19 @@ REM SPDX-License-Identifier: GPL-3.0-or-later
 REM Copyright (c) 2023-2026 Dismo Industries LLC
 REM Build CyberFidget WASM for the browser emulator (Windows).
 REM
-REM Prerequisites: Emscripten SDK
+REM Prerequisites: Emscripten SDK installed at one of:
+REM   - <cyberfidget-workspace>\emsdk     (preferred — co-located with the repos)
+REM   - %USERPROFILE%\emsdk
+REM   - or set EMSDK_ROOT to override     (legacy)
+REM
+REM Install steps (one-time):
+REM   git clone https://github.com/emscripten-core/emsdk.git
+REM   cd emsdk
 REM   emsdk install 3.1.51
 REM   emsdk activate 3.1.51
-REM   call emsdk_env.bat
+REM
+REM You do NOT need to source emsdk_env.bat yourself — this script auto-
+REM activates from whichever location it finds.
 REM
 REM Usage:
 REM   build_wasm.bat
@@ -23,12 +32,42 @@ cd /d "%~dp0"
 set "APP_DIR=%~dp0app"
 set "BUILD_DIR=%~dp0build"
 
+REM Locate Emscripten. If emcc isn't already on PATH, look in a few known
+REM places and source emsdk_env.bat automatically. Override with EMSDK_ROOT.
 where emcc >nul 2>nul
-if errorlevel 1 (
-    echo Emscripten not found. Install and activate the SDK, then run emsdk_env.bat
-    echo   https://emscripten.org/docs/getting_started/downloads.html
+if not errorlevel 1 goto emcc_ready
+
+set "EMSDK_TRY="
+if defined EMSDK_ROOT (
+    if exist "%EMSDK_ROOT%\emsdk_env.bat" set "EMSDK_TRY=%EMSDK_ROOT%"
+)
+REM Workspace-co-located install: <cyberfidget-workspace>\emsdk (relative to wasm/ here)
+if not defined EMSDK_TRY (
+    if exist "%~dp0..\..\emsdk\emsdk_env.bat" set "EMSDK_TRY=%~dp0..\..\emsdk"
+)
+REM User-profile install
+if not defined EMSDK_TRY (
+    if exist "%USERPROFILE%\emsdk\emsdk_env.bat" set "EMSDK_TRY=%USERPROFILE%\emsdk"
+)
+
+if not defined EMSDK_TRY (
+    echo Emscripten not found. Either:
+    echo   - install at one of: %~dp0..\..\emsdk, %USERPROFILE%\emsdk
+    echo   - or set EMSDK_ROOT to your install path
+    echo   - or activate emsdk manually before calling this script
+    echo Reference: https://emscripten.org/docs/getting_started/downloads.html
     exit /b 1
 )
+
+echo === Activating Emscripten at %EMSDK_TRY% ===
+call "%EMSDK_TRY%\emsdk_env.bat"
+where emcc >nul 2>nul
+if errorlevel 1 (
+    echo ERROR: emsdk_env.bat ran but emcc still not on PATH. Check %EMSDK_TRY%.
+    exit /b 1
+)
+
+:emcc_ready
 
 if "%~1"=="" goto build_demo
 if "%~2"=="" (

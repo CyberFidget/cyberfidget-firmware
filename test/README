@@ -1,11 +1,121 @@
+# Cyber Fidget firmware tests
 
-This directory is intended for PlatformIO Test Runner and project tests.
+## Where tests live
 
-Unit Testing is a software testing method by which individual units of
-source code, sets of one or more MCU program modules together with associated
-control data, usage procedures, and operating procedures, are tested to
-determine whether they are fit for use. Unit testing finds problems early
-in the development cycle.
+PlatformIO 6.x requires test directories under a single top-level
+`test/` path — `test_dir` is a `[platformio]`-section option, not
+per-environment. To keep app-owned tests visually separated from
+core/infra tests while staying inside what pio supports, we use a
+**naming convention** under `test/`:
 
-More information about PlatformIO Unit Testing:
-- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+```
+cyberfidget-firmware/
+└── test/
+    ├── README                          ← this file
+    ├── test_core_<thing>/              ← core / infra owned
+    │   └── test_<thing>.cpp
+    └── test_<appname>_<thing>/         ← app-owned
+        └── test_<thing>.cpp
+```
+
+The `test_<scope>_` prefix unambiguously says who owns a test
+directory. Per-env `test_filter = test_<scope>_*` in `platformio.ini`
+scopes which directories run for each test environment.
+
+> If we ever migrate to a layout where each app physically owns its
+> own `lib/<App>/test/` directory, that's a PR against PlatformIO
+> itself (or a switch to a custom test runner). The naming
+> convention above is the best fit while we live under stock pio
+> behavior. See `N-012` for the long-term scaling plan.
+
+## Test environments
+
+| Env                | Runs                     | Invoke |
+|--------------------|--------------------------|--------|
+| `test_core`        | `test/test_core_*/`       | `pio test -e test_core` |
+| `test_breakout`    | `test/test_breakout_*/`   | `pio test -e test_breakout` |
+
+To add a new app's tests:
+
+1. Create `test/test_<yourapp>_<thing>/test_<thing>.cpp` under `test/`.
+2. Add an `[env:test_<yourapp>]` block to `platformio.ini` with
+   `test_filter = test_<yourapp>_*` and any `build_flags` /
+   `lib_deps` your tests need.
+3. Verify with `pio test -e test_<yourapp>`.
+
+When the env count crosses ~5 or `platformio.ini` crosses 300 lines,
+migrate to per-app `extra_configs` per **N-012** (planning repo).
+
+## Running tests
+
+```
+pio test                       # everything
+pio test -e test_core          # just core tests
+pio test -e test_breakout      # just BreakoutGame tests
+```
+
+All test envs use `platform = native`: tests build with the host
+compiler (GCC / Clang) and run as a regular executable. No device
+flash, no Arduino runtime. Tests that need real hardware behavior
+go through `pio test -e local` (embedded mode) or the WASM SIL
+harness (T-002).
+
+### Host compiler requirement
+
+Native `pio test` needs a C / C++ compiler on PATH. On a fresh
+Windows dev box you typically don't have one. Install one of:
+
+- **MSYS2 / MinGW-w64** — `https://www.msys2.org/`, then
+  `pacman -S mingw-w64-ucrt-x86_64-gcc`, add MinGW's `bin` to PATH.
+- **LLVM/Clang for Windows** — `https://releases.llvm.org/`
+- **Visual Studio Build Tools** with the C++ workload — biggest
+  install, but pio understands `cl.exe` via `platform = native`.
+
+On Linux / macOS or in Docker (`Dockerfile.build` once `build-essential`
+or `g++` is added), the compiler is already present and `pio test`
+just works.
+
+CI runners (GHA `ubuntu-latest`, Jenkins on the Docker image) ship
+with GCC out of the box, so these tests will pass in CI even when
+they can't run on a Windows laptop without one of the installs above.
+
+## What gets tested today
+
+- `test/test_core_version/` — placeholder Unity smoke test verifying
+  the test toolchain works. The bash layer
+  `scripts/test_acceptance.sh` covers most version assertions today;
+  this directory is the migration target as we move things into
+  Unity.
+
+- `test/test_breakout_paddle_math/` — paddle-deflection physics
+  (`BreakoutMath::reflectFromPaddle`), including the deterministic
+  textured perturbation that activates on level 6+.
+- `test/test_breakout_level_table/` — `BreakoutMath::isLayoutRowValid`
+  catches typos in level-layout strings before flashing.
+- `test/test_breakout_input_mapping/` — **app↔HAL contract** tests
+  using `lib/HALMock/` to drive HAL extern globals. Verifies slider
+  range (0..100), accelerometer sign convention, paddle clamping.
+  These catch the regression class "core silently changed slider
+  range; how would we know?" — slider/accel range or sign changes
+  break these tests immediately.
+
+## What's NOT here yet
+
+- Full BreakoutGame-instance integration tests (would need a
+  complete HALMock that stubs DisplayProxy, AudioManager,
+  ButtonManager, RGBController, MenuManager). Punted to **T-002**'s
+  WASM SIL harness — same firmware binary running in a browser
+  with plant models is a better fidelity-for-effort tradeoff than
+  stubbing every Arduino dependency.
+
+- Device-side embedded tests. The `[env:local]` build path
+  supports `pio test -e local` if a test needs real silicon (real
+  I2S, real NeoPixel timing, etc.), but no such tests are written
+  yet.
+
+## See also
+
+- `cyberfidget-planning/tickets/T-002.md` — full SIL/HIL test harness
+- `cyberfidget-planning/notes/N-006-test-strategy-sil-hil-pyramid.md` — strategy
+- `cyberfidget-planning/notes/N-012-platformio-test-env-extra-configs-trigger.md` — when to refactor the env list
+- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html — pio test docs
