@@ -87,6 +87,25 @@ void AudioManager::loop() {
     if (isPlaying && stopAtMillis > 0 && millis() >= stopAtMillis) {
         stopTone();
     }
+
+    // Sequence advance — mirrors the production AudioManager so jingles
+    // play in the browser emulator with the same timing they do on hardware.
+    if (currentSequence != nullptr && millis() >= nextStepAtMs) {
+        if (currentSequenceIdx >= currentSequenceLen) {
+            currentSequence    = nullptr;
+            currentSequenceLen = 0;
+            currentSequenceIdx = 0;
+        } else {
+            const ToneStep& s = currentSequence[currentSequenceIdx];
+            if (s.freq > 0.0f) {
+                playTone(s.freq, s.durationMs);
+            } else {
+                stopTone(); // rest
+            }
+            nextStepAtMs = millis() + s.durationMs + s.gapAfterMs;
+            currentSequenceIdx++;
+        }
+    }
 }
 
 void AudioManager::setVolume(float volume) {
@@ -110,17 +129,25 @@ void AudioManager::stopTone() {
     js_audio_stop_tone();
 }
 
-// Sequence stubs. The WASM emulator is currently silent for sequenced tones
-// (per T-002 notes, audio PCM is on the "needs adding" list). Production-
-// firmware semantics are in lib/AudioManager/AudioManager.cpp.
-void AudioManager::playSequence(const ToneStep* /*steps*/, int /*count*/) {
-    // No-op for now. To wire this through to the JS audio path, queue the
-    // sequence here and have AudioManager::loop() advance it via playTone()
-    // calls — same advance algorithm as the production AudioManager.
+// Sequence playback — same semantics as the production AudioManager.
+// Caller-provided ToneStep array must outlive playback (typical pattern is
+// static const). loop() drives the per-step advance.
+void AudioManager::playSequence(const ToneStep* steps, int count) {
+    if (steps == nullptr || count <= 0) {
+        stopSequence();
+        return;
+    }
+    currentSequence    = steps;
+    currentSequenceLen = count;
+    currentSequenceIdx = 0;
+    nextStepAtMs       = millis(); // first step fires on the next loop() tick
 }
 
 void AudioManager::stopSequence() {
-    // No-op for the same reason; production stops in-flight tone + clears state.
+    currentSequence    = nullptr;
+    currentSequenceLen = 0;
+    currentSequenceIdx = 0;
+    stopTone();
 }
 
 void AudioManager::enableMic(bool) {}
