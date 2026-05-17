@@ -6,8 +6,7 @@ REM
 REM Prerequisites: Emscripten SDK installed at one of:
 REM   - <cyberfidget-workspace>\emsdk     (preferred — co-located with the repos)
 REM   - %USERPROFILE%\emsdk
-REM   - D:\_Steele\emsdk                  (legacy)
-REM   - or set EMSDK_ROOT to override
+REM   - or set EMSDK_ROOT to override     (legacy)
 REM
 REM Install steps (one-time):
 REM   git clone https://github.com/emscripten-core/emsdk.git
@@ -46,10 +45,6 @@ REM Workspace-co-located install: <cyberfidget-workspace>\emsdk (relative to was
 if not defined EMSDK_TRY (
     if exist "%~dp0..\..\emsdk\emsdk_env.bat" set "EMSDK_TRY=%~dp0..\..\emsdk"
 )
-REM Legacy / user-global install at D:\_Steele\emsdk
-if not defined EMSDK_TRY (
-    if exist "D:\_Steele\emsdk\emsdk_env.bat" set "EMSDK_TRY=D:\_Steele\emsdk"
-)
 REM User-profile install
 if not defined EMSDK_TRY (
     if exist "%USERPROFILE%\emsdk\emsdk_env.bat" set "EMSDK_TRY=%USERPROFILE%\emsdk"
@@ -57,7 +52,7 @@ if not defined EMSDK_TRY (
 
 if not defined EMSDK_TRY (
     echo Emscripten not found. Either:
-    echo   - install at one of: %~dp0..\..\emsdk, %USERPROFILE%\emsdk, D:\_Steele\emsdk
+    echo   - install at one of: %~dp0..\..\emsdk, %USERPROFILE%\emsdk
     echo   - or set EMSDK_ROOT to your install path
     echo   - or activate emsdk manually before calling this script
     echo Reference: https://emscripten.org/docs/getting_started/downloads.html
