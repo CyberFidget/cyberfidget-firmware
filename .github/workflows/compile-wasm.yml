@@ -81,6 +81,13 @@ jobs:
           echo "=== Header preview ==="
           head -5 "wasm/app/${APP_NAME}.h"
 
+      - name: Generate version.h
+        env:
+          CYBERFIDGET_BUILD_TYPE_OVERRIDE: wasm
+        run: |
+          mkdir -p wasm/generated
+          python scripts/generate_version.py --standalone --out wasm/generated/version.h --repo-root .
+
       - name: Build WASM
         env:
           APP_NAME: ${{ inputs.app_name }}
