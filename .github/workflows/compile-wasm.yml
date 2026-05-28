@@ -72,14 +72,16 @@ jobs:
           APP_HEADER_B64: ${{ inputs.app_header_b64 }}
           APP_CPP_B64: ${{ inputs.app_cpp_b64 }}
         run: |
+          # Do NOT echo file listings or head the decoded source. Logs
+          # on this workflow are public-readable; APP_NAME and source
+          # code would leak through head/ls into the public log. Compile
+          # errors below still surface user code on failure, which is
+          # unavoidable without a custom log rewriter; build.html
+          # discloses that residual exposure to the user.
           mkdir -p wasm/app
           echo "${APP_HEADER_B64}" | base64 -d > "wasm/app/${APP_NAME}.h"
           echo "${APP_CPP_B64}" | base64 -d > "wasm/app/${APP_NAME}.cpp"
           printf '#include "App.h"\n#include "%s.h"\n' "${APP_NAME}" > wasm/app/app_include.h
-          echo "=== Custom app files ==="
-          ls -la wasm/app/
-          echo "=== Header preview ==="
-          head -5 "wasm/app/${APP_NAME}.h"
 
       - name: Generate version.h
         env:
@@ -111,7 +113,10 @@ jobs:
             fi
           fi
 
-          echo "Running: $CMAKE_CMD"
+          # Do NOT echo the assembled cmake invocation -- it contains
+          # -DCUSTOM_APP_NAME=${APP_NAME} which would leak APP_NAME into
+          # the public log. CMake's own output below is sufficient for
+          # debugging the build.
           $CMAKE_CMD
 
           cmake --build wasm/build
