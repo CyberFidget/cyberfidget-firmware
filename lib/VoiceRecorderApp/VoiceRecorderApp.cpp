@@ -3,7 +3,7 @@
 
 // lib/VoiceRecorderApp/VoiceRecorderApp.cpp
 //
-// "Voice Notes" (T-088) — record-first voice memo capture.
+// "Voice Notes" — record-first voice memo capture.
 //
 // Pipeline: I2S port 1 (16kHz/16-bit/mono, owned by this app for its whole
 // session) -> capture task on core 0 -> PSRAM SPSC ring -> drained in
@@ -254,7 +254,7 @@ void VoiceRecorderApp::end() {
     captureTaskHandle = nullptr;
 
     if (i2sOpened) {
-        i2sIn.end();   // releases I2S port 1 (REQ-APP-001)
+        i2sIn.end();   // release I2S port 1 — leave shared hardware clean on exit
         i2sOpened = false;
     }
 
@@ -636,7 +636,7 @@ void VoiceRecorderApp::captureTaskLoop() {
 }
 
 // =========================================================================
-// LED policy — faint red on front-top while recording (REQ pixel index 1)
+// LED policy — faint red on the front-top pixel (index 1) while recording
 // =========================================================================
 void VoiceRecorderApp::updateLed() {
     uint8_t bright = 0;
@@ -737,7 +737,8 @@ void VoiceRecorderApp::drawHomeOrRecording() {
     display.setTextAlignment(TEXT_ALIGN_LEFT);
     display.drawString(2, 39, timer);
 
-    // VU bar with good-level band ticks (manual tuning pass: T-088 checklist)
+    // VU bar; good-level band tick placement gets a manual tuning pass
+    // against real speech before this is considered final
     uint16_t peakNow = vuPeak.exchange(0, std::memory_order_relaxed);
     uint16_t decayed = (uiVuLevel > 8) ? uiVuLevel - uiVuLevel / 8 : 0;
     uiVuLevel = (peakNow > decayed) ? peakNow : decayed;

@@ -3,7 +3,7 @@
 
 // lib/VoiceRecorderApp/VoiceRecorderApp.h
 //
-// "Voice Notes" — record-first voice memo capture to SD as WAV (T-088).
+// "Voice Notes" — record-first voice memo capture to SD as WAV.
 // Owns I2S port 1 directly (AudioManager's mic task only opens the port
 // when level metering is requested — same ownership precedent as
 // MusicPlayerApp owning port 0). Capture task on core 0 feeds a PSRAM

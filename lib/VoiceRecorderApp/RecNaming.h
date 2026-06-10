@@ -8,9 +8,8 @@
 // (test_voicerecorder). File existence is injected as a predicate so the
 // collision-skip logic is testable without a filesystem.
 //
-// Header-only (vs the .h/.cpp split in T-088's notes) because the native
-// test envs build with lib_ldf_mode = off, which won't compile lib .cpp
-// files into the test binary.
+// Header-only because the native test envs build with lib_ldf_mode = off,
+// which won't compile lib .cpp files into the test binary.
 
 #ifndef REC_NAMING_H
 #define REC_NAMING_H

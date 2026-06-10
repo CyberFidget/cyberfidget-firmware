@@ -5,7 +5,7 @@
 //
 // Pure-logic tests for RecNaming: sequential file naming with collision
 // skip, PCM duration math, and index.csv row formatting (including the
-// blank-timestamp-when-clock-unset rule from T-088).
+// blank-timestamp-when-the-clock-is-unset rule).
 
 #include <unity.h>
 #include <cstdlib>
