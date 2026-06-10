@@ -91,6 +91,8 @@ private:
     time_t recStartEpoch = 0;
     unsigned long recStartMs = 0;
     uint64_t bytesWritten = 0;
+    uint32_t tailTrimBytes = 0;   // header-level tail trim for press-stop clicks
+    uint32_t finalDataBytes = 0;  // declared data-chunk length after finalize
     bool writeErrorSeen = false;
 
     // --- SD / space ---
@@ -120,7 +122,7 @@ private:
     void enterHomeOrNoSd();
     void refreshFreeBytes();
     void startRecording();
-    void requestStop(VoiceRecStopReason reason);
+    void requestStop(VoiceRecStopReason reason, bool trimPressClick = false);
     uint32_t drainToFile(uint32_t maxBytes);
     bool closeRecordingFile();
     void finishSave();

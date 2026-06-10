@@ -62,6 +62,15 @@ static const int REC_GAIN_SHIFT = 3;
 // click of the record press doesn't open the file (100ms at 32KB/s).
 static const uint32_t REC_START_SKIP_BYTES = 3200;
 
+// Audio to drop from the END of a recording when the stop was triggered
+// by a button PRESS (tap-mode second press, or Select) — the press click
+// lands right at the tail. Applied only to the declared data length in
+// the WAV header (the bytes stay in the file past the chunk; players
+// ignore them), so it can't corrupt anything. Hold-mode release stops and
+// auto-stops keep the full tail: a release is quiet, and trimming real
+// speech is worse than a soft click. 150ms at 32KB/s.
+static const uint32_t REC_TAIL_TRIM_BYTES = 4800;
+
 // --- Tape-deck UI layout ---
 //
 // Enclosure window bleed: the case clips roughly 12px 45-degree triangles
@@ -82,11 +91,13 @@ static const int16_t REEL_Y       = 25;  // rim r=10: reel tops at y15
 static const int16_t REEL_RIM_R   = 10;
 static const int16_t STRIP_TEXT_Y = 3;   // Plain_10 ink ~y5-13, above the reels
 static const int16_t TIMER_X = 12, TIMER_Y = 38;
-static const int16_t VU_X = 74, VU_Y = 43, VU_W = 50, VU_H = 8;
-static const uint8_t VU_FILL_MAX   = 46;  // inner fill width (VU_W - 4)
-static const uint8_t VU_GOOD_LO_PX = 23;  // ~ -20 dBFS post-gain
-static const uint8_t VU_GOOD_HI_PX = 41;  // ~ -6 dBFS post-gain
-static const int16_t SUB_CENTER_X = 96, SUB_TEXT_Y = 52;
+// VU right edge (VU_X + VU_W - 1 = 113) aligns with the cassette's right
+// edge, mirroring the timer's alignment to its left edge.
+static const int16_t VU_X = 74, VU_Y = 43, VU_W = 40, VU_H = 8;
+static const uint8_t VU_FILL_MAX   = 36;  // inner fill width (VU_W - 4)
+static const uint8_t VU_GOOD_LO_PX = 18;  // ~ -20 dBFS post-gain
+static const uint8_t VU_GOOD_HI_PX = 32;  // ~ -6 dBFS post-gain
+static const int16_t SUB_CENTER_X = 94, SUB_TEXT_Y = 52;
 
 // sin(3°·k) scaled to 127, k = 0..119. cos(x) = sin(x + 90°) = +30 entries.
 static const int8_t kSin3[120] = {
@@ -317,10 +328,12 @@ void VoiceRecorderApp::handleEnterEvent(const ButtonEvent& event) {
 
         case REC_STATE_RECORDING:
             if (event.eventType == ButtonEvent_Pressed && !armedHoldStop) {
-                requestStop(REC_STOP_USER);          // latched mode: press stops
+                // Latched mode: press stops — trim its click off the tail
+                requestStop(REC_STOP_USER, /*trimPressClick=*/true);
             } else if (event.eventType == ButtonEvent_Released && armedHoldStop) {
                 if (event.duration >= HOLD_STOP_MS) {
-                    requestStop(REC_STOP_USER);      // hold mode: release stops
+                    // Hold mode: release stops — releases are quiet, keep tail
+                    requestStop(REC_STOP_USER, /*trimPressClick=*/false);
                 } else {
                     armedHoldStop = false;           // short press: latched
                 }
@@ -346,7 +359,7 @@ void VoiceRecorderApp::handleBackEvent(const ButtonEvent& event) {
     switch (state) {
         case REC_STATE_RECORDING:
             // Never silently discard: back stops and saves, stays in app.
-            requestStop(REC_STOP_USER);
+            requestStop(REC_STOP_USER, /*trimPressClick=*/true);
             break;
 
         case REC_STATE_SAVING:
@@ -471,6 +484,8 @@ void VoiceRecorderApp::startRecording() {
     recStartMs = millis_NOW;
     bytesWritten = 0;
 
+    tailTrimBytes = 0;
+    finalDataBytes = 0;
     // Must be set before recordingActive: the task only reads it after
     // acquiring the recording flag.
     skipBytesRemaining.store(REC_START_SKIP_BYTES, std::memory_order_relaxed);
@@ -479,9 +494,10 @@ void VoiceRecorderApp::startRecording() {
     ESP_LOGI(TAG_VREC, "recording -> %s", recPath);
 }
 
-void VoiceRecorderApp::requestStop(VoiceRecStopReason reason) {
+void VoiceRecorderApp::requestStop(VoiceRecStopReason reason, bool trimPressClick) {
     recordingActive.store(false, std::memory_order_release);
     stopReason = reason;
+    tailTrimBytes = trimPressClick ? REC_TAIL_TRIM_BYTES : 0;
     armedHoldStop = false;
     state = REC_STATE_SAVING;
 }
@@ -569,6 +585,9 @@ bool VoiceRecorderApp::finalizeWav() {
         return false;
     }
     uint32_t dataLen = (sz - 44) & ~1u;  // even-trim a torn trailing byte
+    uint32_t trim = tailTrimBytes & ~1u; // press-stop click trim (sample-aligned)
+    if (dataLen > trim) dataLen -= trim; // tiny recordings keep what they have
+    finalDataBytes = dataLen;            // what index.csv should report
 
     auto writeLE32At = [&](uint32_t offset, uint32_t value) -> bool {
         uint8_t b[4] = {
@@ -600,10 +619,11 @@ void VoiceRecorderApp::appendIndexRow() {
     }
 
     char row[96];
+    uint64_t dataBytes = (finalDataBytes > 0) ? finalDataBytes : bytesWritten;
     uint32_t durationS =
-        RecNaming::durationSecondsFromPcmBytes(bytesWritten, REC_BYTE_RATE);
+        RecNaming::durationSecondsFromPcmBytes(dataBytes, REC_BYTE_RATE);
     if (RecNaming::formatIndexRow(row, sizeof(row), name, tmPtr, durationS,
-                                  bytesWritten) < 0) {
+                                  dataBytes) < 0) {
         return;
     }
 
@@ -817,8 +837,8 @@ void VoiceRecorderApp::drawHomeOrRecording() {
         if (remainS < LOW_SPACE_WARN_SEC) {
             // Low-space warning: fill bar + blinking countdown, alternating
             if ((millis_NOW / 1000) & 1) {
-                display.drawRect(VU_X, 54, 44, 6);
-                uint16_t fill = (uint16_t)((LOW_SPACE_WARN_SEC - remainS) * 40 / LOW_SPACE_WARN_SEC);
+                display.drawRect(VU_X, 54, VU_W, 6);
+                uint16_t fill = (uint16_t)((LOW_SPACE_WARN_SEC - remainS) * VU_FILL_MAX / LOW_SPACE_WARN_SEC);
                 if (fill > 0) display.fillRect(VU_X + 2, 56, fill, 2);
             } else {
                 snprintf(sub, sizeof(sub), "-0:%02lu", (unsigned long)remainS);
