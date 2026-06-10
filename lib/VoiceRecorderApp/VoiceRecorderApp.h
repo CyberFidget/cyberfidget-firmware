@@ -78,6 +78,7 @@ private:
     std::atomic<bool> recordingActive{false};
     std::atomic<bool> captureTaskExited{true};
     std::atomic<uint16_t> vuPeak{0};
+    std::atomic<uint32_t> skipBytesRemaining{0};
     uint8_t captureBuf[1024];   // capture task only
     uint8_t drainBuf[2048];     // update() only
 

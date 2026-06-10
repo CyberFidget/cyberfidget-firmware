@@ -51,14 +51,42 @@ static const unsigned long HOLD_STOP_MS         = 400;        // latch-vs-hold g
 static const unsigned long NOTE_DURATION_MS     = 2500;
 static const unsigned long MIN_VALID_EPOCH      = 1600000000UL; // clock-is-set heuristic (ClockDisplay pattern)
 
+// Digital gain, applied (saturating) to every sample in the capture task.
+// The ICS-43434 is quiet by design (94dB SPL = -26dBFS), so normal speech
+// lands far down the 16-bit range; x8 (+18dB) brings voice memos up to a
+// comfortable playback level. This is the tuning knob if recordings still
+// play back quiet — each +1 shift adds 6dB but eats 6dB of clip headroom.
+static const int REC_GAIN_SHIFT = 3;
+
+// Samples to discard at the start of every recording so the mechanical
+// click of the record press doesn't open the file (100ms at 32KB/s).
+static const uint32_t REC_START_SKIP_BYTES = 3200;
+
 // --- Tape-deck UI layout ---
-static const int16_t REEL_LEFT_X  = 40;
-static const int16_t REEL_RIGHT_X = 88;
-static const int16_t REEL_Y       = 21;
-static const int16_t VU_X = 66, VU_Y = 44, VU_W = 60, VU_H = 8;
-static const uint8_t VU_MAX_PX = 56;
-static const uint8_t VU_GOOD_LO_PX = 28;  // ~ -20 dBFS
-static const uint8_t VU_GOOD_HI_PX = 49;  // ~ -6 dBFS
+//
+// Enclosure window bleed: the case clips roughly 12px 45-degree triangles
+// off all four display corners (playtest: the old bottom-right "ENTER =
+// REC" hint lost the tail of its C to the corner). Keep ink out of:
+//   top-left      x + y           < 12
+//   top-right     (127 - x) + y   < 12
+//   bottom-left   x + (63 - y)    < 12
+//   bottom-right  (127-x)+(63-y)  < 12
+// Layout principle: the label strip lives INSIDE the cassette above the
+// reels, so text and wheels are separated vertically and can never
+// collide regardless of text width. The bottom-right sub-area under the
+// VU bar only ever shows short numeric text (~44px max at its lowest row).
+static const int16_t CAS_X = 14, CAS_Y = 2, CAS_W = 100, CAS_H = 36;
+static const int16_t REEL_LEFT_X  = 44;
+static const int16_t REEL_RIGHT_X = 84;
+static const int16_t REEL_Y       = 25;  // rim r=10: reel tops at y15
+static const int16_t REEL_RIM_R   = 10;
+static const int16_t STRIP_TEXT_Y = 3;   // Plain_10 ink ~y5-13, above the reels
+static const int16_t TIMER_X = 12, TIMER_Y = 38;
+static const int16_t VU_X = 74, VU_Y = 43, VU_W = 50, VU_H = 8;
+static const uint8_t VU_FILL_MAX   = 46;  // inner fill width (VU_W - 4)
+static const uint8_t VU_GOOD_LO_PX = 23;  // ~ -20 dBFS post-gain
+static const uint8_t VU_GOOD_HI_PX = 41;  // ~ -6 dBFS post-gain
+static const int16_t SUB_CENTER_X = 96, SUB_TEXT_Y = 52;
 
 // sin(3°·k) scaled to 127, k = 0..119. cos(x) = sin(x + 90°) = +30 entries.
 static const int8_t kSin3[120] = {
@@ -76,14 +104,16 @@ static const int8_t kSin3[120] = {
 static inline int8_t sin3(int idx)  { return kSin3[((idx % 120) + 120) % 120]; }
 static inline int8_t cos3(int idx)  { return kSin3[((idx + 30) % 120)]; }
 
-// Log-ish VU mapping: 0..VU_MAX_PX from a 0..32767 peak. Integer-only:
-// 8 px per octave above the -42 dBFS floor + a 3-bit fraction.
+// Log-ish VU mapping: 0..VU_FILL_MAX from a 0..32767 peak. Integer-only:
+// 8 px per octave above the -42 dBFS floor + a 3-bit fraction, scaled to
+// the bar's fill width.
 static uint8_t vuPixels(uint16_t peak) {
     if (peak < 256) return 0;
     uint8_t msb  = 31 - __builtin_clz((uint32_t)peak);  // 8..14
     uint8_t frac = (peak >> (msb - 3)) & 7;
-    uint16_t px  = (uint16_t)(msb - 8) * 8 + frac;
-    return (px > VU_MAX_PX) ? VU_MAX_PX : (uint8_t)px;
+    uint16_t px  = (uint16_t)(msb - 8) * 8 + frac;      // 0..55
+    px = px * VU_FILL_MAX / 55;
+    return (px > VU_FILL_MAX) ? VU_FILL_MAX : (uint8_t)px;
 }
 
 static bool sdExistsAdapter(const char* path, void* /*ctx*/) {
@@ -441,6 +471,9 @@ void VoiceRecorderApp::startRecording() {
     recStartMs = millis_NOW;
     bytesWritten = 0;
 
+    // Must be set before recordingActive: the task only reads it after
+    // acquiring the recording flag.
+    skipBytesRemaining.store(REC_START_SKIP_BYTES, std::memory_order_relaxed);
     recordingActive.store(true, std::memory_order_release);
     state = REC_STATE_RECORDING;
     ESP_LOGI(TAG_VREC, "recording -> %s", recPath);
@@ -614,17 +647,35 @@ void VoiceRecorderApp::captureTaskLoop() {
             if (toRead > sizeof(captureBuf)) toRead = sizeof(captureBuf);
             int n = i2sIn.readBytes(captureBuf, toRead);
             if (n > 0) {
-                const int16_t* samples = (const int16_t*)captureBuf;
+                // Apply digital gain in place (saturating) and track the
+                // post-gain peak so the VU's good-level band reflects what
+                // actually lands in the file.
+                int16_t* samples = (int16_t*)captureBuf;
                 int count = n / 2;
                 uint16_t peak = vuPeak.load(std::memory_order_relaxed);
                 for (int i = 0; i < count; ++i) {
-                    int32_t v = samples[i];
+                    int32_t v = (int32_t)samples[i] << REC_GAIN_SHIFT;
+                    if (v > 32767) v = 32767;
+                    else if (v < -32768) v = -32768;
+                    samples[i] = (int16_t)v;
                     uint16_t mag = (uint16_t)(v < 0 ? -v : v);
                     if (mag > peak) peak = mag;
                 }
                 vuPeak.store(peak, std::memory_order_relaxed);
                 if (recordingActive.load(std::memory_order_acquire)) {
-                    ring.push(captureBuf, (uint32_t)n);  // drop-newest inside
+                    // Discard the first 100ms so the record-press click
+                    // doesn't open the file.
+                    uint32_t skip = skipBytesRemaining.load(std::memory_order_relaxed);
+                    uint32_t offset = 0;
+                    if (skip > 0) {
+                        offset = (skip < (uint32_t)n) ? skip : (uint32_t)n;
+                        skipBytesRemaining.store(skip - offset,
+                                                 std::memory_order_relaxed);
+                    }
+                    if ((uint32_t)n > offset) {
+                        ring.push(captureBuf + offset,
+                                  (uint32_t)n - offset);  // drop-newest inside
+                    }
                 }
             }
         } else {
@@ -636,7 +687,8 @@ void VoiceRecorderApp::captureTaskLoop() {
 }
 
 // =========================================================================
-// LED policy — faint red on the front-top pixel (index 1) while recording
+// LED policy — faint red on the front-bottom pixel (index 3) while
+// recording (playtest moved it down from front-top: 2026-06-10)
 // =========================================================================
 void VoiceRecorderApp::updateLed() {
     uint8_t bright = 0;
@@ -653,7 +705,7 @@ void VoiceRecorderApp::updateLed() {
         if (bright == 0) {
             setColorsOff();
         } else {
-            HAL::setRgbLed(pixel_Front_Top, bright, 0, 0, 0);
+            HAL::setRgbLed(pixel_Front_Bottom, bright, 0, 0, 0);
         }
         lastLedBright = bright;
     }
@@ -684,27 +736,27 @@ void VoiceRecorderApp::render() {
 }
 
 void VoiceRecorderApp::drawCassette(bool spinning, bool xOut) {
-    display.drawRect(10, 2, 108, 38);                 // cassette body
-    display.drawLine(52, 33, 76, 33);                 // tape run between reels
+    display.drawRect(CAS_X, CAS_Y, CAS_W, CAS_H);     // cassette body
+    display.drawLine(54, 31, 74, 31);                 // tape run between reels
 
     if (spinning) reelAngle = (uint8_t)((reelAngle + 1) % 40);  // 3°/frame = 150°/s
 
     const int16_t centers[2] = { REEL_LEFT_X, REEL_RIGHT_X };
     for (int r = 0; r < 2; ++r) {
         int16_t cx = centers[r];
-        display.drawCircle(cx, REEL_Y, 12);           // reel rim
+        display.drawCircle(cx, REEL_Y, REEL_RIM_R);   // reel rim
         display.drawCircle(cx, REEL_Y, 3);            // hub
         for (int s = 0; s < 3; ++s) {
             int a = reelAngle + s * 40;               // 3 spokes, 120° apart
             int8_t sn = sin3(a);
             int8_t cs = cos3(a);
-            int16_t ix = cx + (4 * sn) / 127,  iy = REEL_Y - (4 * cs) / 127;
-            int16_t ox = cx + (10 * sn) / 127, oy = REEL_Y - (10 * cs) / 127;
+            int16_t ix = cx + (4 * sn) / 127, iy = REEL_Y - (4 * cs) / 127;
+            int16_t ox = cx + (8 * sn) / 127, oy = REEL_Y - (8 * cs) / 127;
             display.drawLine(ix, iy, ox, oy);
         }
         if (xOut) {
-            display.drawLine(cx - 9, REEL_Y - 9, cx + 9, REEL_Y + 9);
-            display.drawLine(cx - 9, REEL_Y + 9, cx + 9, REEL_Y - 9);
+            display.drawLine(cx - 8, REEL_Y - 8, cx + 8, REEL_Y + 8);
+            display.drawLine(cx - 8, REEL_Y + 8, cx + 8, REEL_Y - 8);
         }
     }
 }
@@ -713,16 +765,20 @@ void VoiceRecorderApp::drawHomeOrRecording() {
     bool recording = (state == REC_STATE_RECORDING);
     drawCassette(recording, false);
 
-    // Top strip inside the cassette
+    // Label strip inside the cassette, above the reels — vertically clear
+    // of the wheels, so any label width is safe
     display.setFont(ArialMT_Plain_10);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
     if (recording) {
-        if ((millis_NOW / 500) & 1) display.fillCircle(20, 9, 3);  // blinking dot
-        display.drawString(26, 4, "REC");
+        if ((millis_NOW / 500) & 1) display.fillCircle(47, 9, 3);  // blinking dot
+        display.drawString(64, STRIP_TEXT_Y, "REC");
     } else if (state == REC_STATE_SAVING) {
-        display.drawString(26, 4, "STOP");
+        display.drawString(64, STRIP_TEXT_Y, "STOP");
     } else {
-        display.drawString(26, 4, "READY");
+        // The record hint lives here (full strip width) — its old
+        // bottom-right spot is clipped by the enclosure corner
+        display.drawString(64, STRIP_TEXT_Y,
+                           ((millis_NOW / 2000) & 1) ? "ENTER = REC" : "READY");
     }
 
     // Elapsed timer, large type, bottom-left
@@ -735,7 +791,7 @@ void VoiceRecorderApp::drawHomeOrRecording() {
     snprintf(timer, sizeof(timer), "%02lu:%02lu", elapsedS / 60, elapsedS % 60);
     display.setFont(ArialMT_Plain_24);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.drawString(2, 39, timer);
+    display.drawString(TIMER_X, TIMER_Y, timer);
 
     // VU bar; good-level band tick placement gets a manual tuning pass
     // against real speech before this is considered final
@@ -748,47 +804,45 @@ void VoiceRecorderApp::drawHomeOrRecording() {
     display.drawLine(VU_X + 2 + VU_GOOD_LO_PX, VU_Y - 3, VU_X + 2 + VU_GOOD_LO_PX, VU_Y - 1);
     display.drawLine(VU_X + 2 + VU_GOOD_HI_PX, VU_Y - 3, VU_X + 2 + VU_GOOD_HI_PX, VU_Y - 1);
 
-    // Sub-line under the VU bar
+    // Short numeric sub-line under the VU bar. The bottom-right corner
+    // keep-out leaves only ~44px of safe width at this height — keep it
+    // terse; anything verbose belongs in the label strip.
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER);
-    char sub[24];
+    char sub[16];
     if (state == REC_STATE_SAVING) {
-        display.drawString(VU_X + VU_W / 2, 53, "SAVING...");
+        display.drawString(SUB_CENTER_X, SUB_TEXT_Y, "SAVING");
     } else if (recording) {
         uint32_t remainS = remainingSeconds();
         if (remainS < LOW_SPACE_WARN_SEC) {
             // Low-space warning: fill bar + blinking countdown, alternating
             if ((millis_NOW / 1000) & 1) {
-                display.drawRect(VU_X, 54, VU_W, 6);
-                uint16_t fill = (uint16_t)((LOW_SPACE_WARN_SEC - remainS) * (VU_W - 4) / LOW_SPACE_WARN_SEC);
+                display.drawRect(VU_X, 54, 44, 6);
+                uint16_t fill = (uint16_t)((LOW_SPACE_WARN_SEC - remainS) * 40 / LOW_SPACE_WARN_SEC);
                 if (fill > 0) display.fillRect(VU_X + 2, 56, fill, 2);
             } else {
                 snprintf(sub, sizeof(sub), "-0:%02lu", (unsigned long)remainS);
-                display.drawString(VU_X + VU_W / 2, 53, sub);
+                display.drawString(SUB_CENTER_X, SUB_TEXT_Y, sub);
             }
         } else if (remainS < 6000) {
             snprintf(sub, sizeof(sub), "-%lu:%02lu",
                      (unsigned long)(remainS / 60), (unsigned long)(remainS % 60));
-            display.drawString(VU_X + VU_W / 2, 53, sub);
+            display.drawString(SUB_CENTER_X, SUB_TEXT_Y, sub);
         } else {
             snprintf(sub, sizeof(sub), "-%luh", (unsigned long)(remainS / 3600));
-            display.drawString(VU_X + VU_W / 2, 53, sub);
+            display.drawString(SUB_CENTER_X, SUB_TEXT_Y, sub);
         }
     } else {
-        // HOME: alternate free-space estimate and the record hint every 2s
-        if ((millis_NOW / 2000) & 1) {
-            uint64_t freeB = (cachedFreeBytes > REC_RESERVE_BYTES)
-                                 ? cachedFreeBytes - REC_RESERVE_BYTES : 0;
-            unsigned long freeMin = (unsigned long)(freeB / REC_BYTE_RATE / 60);
-            if (freeMin >= 600) {
-                snprintf(sub, sizeof(sub), "FREE %luh", freeMin / 60);
-            } else {
-                snprintf(sub, sizeof(sub), "FREE %lum", freeMin);
-            }
-            display.drawString(VU_X + VU_W / 2, 53, sub);
+        // HOME: remaining tape, short form ("84m" / "27h")
+        uint64_t freeB = (cachedFreeBytes > REC_RESERVE_BYTES)
+                             ? cachedFreeBytes - REC_RESERVE_BYTES : 0;
+        unsigned long freeMin = (unsigned long)(freeB / REC_BYTE_RATE / 60);
+        if (freeMin >= 600) {
+            snprintf(sub, sizeof(sub), "%luh", freeMin / 60);
         } else {
-            display.drawString(VU_X + VU_W / 2, 53, "ENTER = REC");
+            snprintf(sub, sizeof(sub), "%lum", freeMin);
         }
+        display.drawString(SUB_CENTER_X, SUB_TEXT_Y, sub);
     }
 }
 
@@ -823,18 +877,17 @@ void VoiceRecorderApp::drawSavedNote() {
         }
     }
 
-    display.drawString(64, 41, line1);
-    if (line2[0] != '\0') display.drawString(64, 52, line2);
+    display.drawString(64, 39, line1);
+    if (line2[0] != '\0') display.drawString(64, 50, line2);
 }
 
 void VoiceRecorderApp::drawNoSd() {
     drawCassette(false, true);
     display.setFont(ArialMT_Plain_10);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
-    display.drawString(26, 4, "NO TAPE");
     display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(64, 41, "insert memory card");
-    display.drawString(64, 52, "ENTER = retry");
+    display.drawString(64, STRIP_TEXT_Y, "NO TAPE");
+    display.drawString(64, 39, "insert memory card");
+    display.drawString(64, 50, "ENTER = retry");
 }
 
 void VoiceRecorderApp::drawFault() {
@@ -842,6 +895,6 @@ void VoiceRecorderApp::drawFault() {
     display.setTextAlignment(TEXT_ALIGN_CENTER);
     display.drawString(64, 8, "ERROR");
     display.setFont(ArialMT_Plain_10);
-    display.drawString(64, 32, faultMsg != nullptr ? faultMsg : "UNKNOWN");
-    display.drawString(64, 50, "SELECT = exit");
+    display.drawString(64, 30, faultMsg != nullptr ? faultMsg : "UNKNOWN");
+    display.drawString(64, 47, "SELECT = exit");
 }
