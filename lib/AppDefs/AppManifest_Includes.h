@@ -29,3 +29,4 @@
 #include "DancingGnomes.h"
 #include "Cronchybird.h"
 #include "Snake.h"
+#include "VoiceRecorderApp.h"

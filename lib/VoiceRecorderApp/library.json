@@ -1,0 +1,11 @@
+{
+    "name": "VoiceRecorderApp",
+    "version": "1.0.0",
+    "dependencies": [
+        {"name": "HAL"},
+        {"name": "AppDefs"},
+        {"name": "ButtonManager"},
+        {"name": "MenuManager"},
+        {"name": "globals"}
+    ]
+}
