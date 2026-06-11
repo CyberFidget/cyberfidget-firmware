@@ -50,6 +50,10 @@ static const int PIN_SD_CS   = 8;
 
 // --- Recording constants ---
 static const uint64_t      REC_RESERVE_BYTES    = 262144;     // auto-stop floor; sized to swallow a full ring drain
+// SD-less demo clip cap (PSRAM): ~30s at Standard (32KB/s), ~10s at High
+// (96KB/s). Bounded by bytes so PSRAM stays safe regardless of quality; with
+// the 256KB capture ring that is ~1.2MB peak on the 2MB part.
+static const uint32_t      REC_DEMO_BYTES       = 960000;
 static const uint32_t      LOW_SPACE_WARN_SEC   = 60;
 static const unsigned long HOLD_STOP_MS         = 400;        // latch-vs-hold gesture threshold
 static const unsigned long NOTE_DURATION_MS     = 2500;
@@ -245,6 +249,8 @@ void VoiceRecorderApp::begin() {
     volOverlayUntilMs = 0;
     playByteRate = 0;
     playName[0] = '\0';
+    demoMode = false;
+    demoLen = 0;
     exitRequested.store(false, std::memory_order_relaxed);
     recordingActive.store(false, std::memory_order_relaxed);
     reconfigRequested.store(false, std::memory_order_relaxed);
@@ -341,6 +347,7 @@ void VoiceRecorderApp::update() {
 
     // A recording or active playback must never be truncated by auto-sleep.
     if (state == REC_STATE_RECORDING || state == REC_STATE_SAVING ||
+        state == REC_STATE_DEMO_RECORDING ||
         (state == REC_STATE_PLAYBACK && playbackActive)) {
         millis_APP_LASTINTERACTION = millis_NOW;
     }
@@ -360,6 +367,9 @@ void VoiceRecorderApp::update() {
         }
     } else if (state == REC_STATE_SAVED_NOTE) {
         if (millis_NOW >= noteUntilMs) dismissNote();
+    } else if (state == REC_STATE_DEMO_RECORDING) {
+        drainDemo();
+        if (demoLen >= demoCapacity) stopDemoRecording();   // hit the cap
     } else if (state == REC_STATE_PLAYBACK) {
         // Pump the decode pipeline while playing. update() runs once per ~20ms
         // tick and one copy() only moves DEFAULT_BUFFER_SIZE (1024B) — fine at
@@ -376,7 +386,10 @@ void VoiceRecorderApp::update() {
                 moved = pCopier->copy();
                 movedTotal += moved;
             } while (moved > 0 && movedTotal < budget);
-            if (movedTotal == 0 && playFile.available() == 0) {
+            bool srcDrained = demoMode
+                ? (pMemStream == nullptr || pMemStream->available() == 0)
+                : (playFile.available() == 0);
+            if (movedTotal == 0 && srcDrained) {
                 playbackEof = true;
                 playbackActive = false;
             }
@@ -427,6 +440,12 @@ void VoiceRecorderApp::end() {
         free(ringStorage);
         ringStorage = nullptr;
     }
+    if (demoBuf != nullptr) {
+        free(demoBuf);    // volatile by design; nothing to persist
+        demoBuf = nullptr;
+        demoCapacity = 0;
+    }
+    demoMode = false;
 
     setColorsOff();
 }
@@ -486,6 +505,15 @@ void VoiceRecorderApp::handleEnterEvent(const ButtonEvent& event) {
             if (event.eventType == ButtonEvent_Pressed) performDelete(listCursor);
             break;
 
+        case REC_STATE_DEMO_HOME:
+            if (event.eventType == ButtonEvent_Pressed) startDemoRecording();
+            break;
+
+        case REC_STATE_DEMO_RECORDING:
+            // Simple press-to-stop (no latch/hold gestures — demo is bounded).
+            if (event.eventType == ButtonEvent_Pressed) stopDemoRecording();
+            break;
+
         default:
             break;
     }
@@ -519,6 +547,14 @@ void VoiceRecorderApp::handleBackEvent(const ButtonEvent& event) {
             state = REC_STATE_LIST;     // cancel the delete
             break;
 
+        case REC_STATE_DEMO_RECORDING:
+            stopDemoRecording();        // never discard: stop + stay in demo home
+            break;
+
+        case REC_STATE_DEMO_HOME:
+            state = REC_STATE_NO_SD;    // back to the NO TAPE wall (clip kept in RAM)
+            break;
+
         case REC_STATE_HOME:
         case REC_STATE_NO_SD:
         case REC_STATE_FAULT:
@@ -534,22 +570,25 @@ void VoiceRecorderApp::handleBackEvent(const ButtonEvent& event) {
 // a live capture would corrupt the file).
 void VoiceRecorderApp::handleUpEvent(const ButtonEvent& event) {
     if (event.eventType != ButtonEvent_Pressed) return;
-    if (state == REC_STATE_HOME) toggleQuality();
+    if (state == REC_STATE_HOME || state == REC_STATE_DEMO_HOME) toggleQuality();
     else if (state == REC_STATE_LIST) listMoveCursor(-1);
 }
 
 // Down button: HOME opens the recordings list (one step away, recorder stays
-// HOME); LIST moves the cursor down.
+// HOME); LIST moves the cursor down; NO TAPE offers the SD-less demo.
 void VoiceRecorderApp::handleDownEvent(const ButtonEvent& event) {
     if (event.eventType != ButtonEvent_Pressed) return;
     if (state == REC_STATE_HOME) enterList();
     else if (state == REC_STATE_LIST) listMoveCursor(+1);
+    else if (state == REC_STATE_NO_SD) enterDemo();
 }
 
-// Right button: from the list, delete the selected recording (via confirm).
+// Right button: LIST deletes the selected recording (via confirm); DEMO_HOME
+// plays the recorded demo clip.
 void VoiceRecorderApp::handleRightEvent(const ButtonEvent& event) {
     if (event.eventType != ButtonEvent_Pressed) return;
     if (state == REC_STATE_LIST && listCount > 0) state = REC_STATE_CONFIRM_DELETE;
+    else if (state == REC_STATE_DEMO_HOME && demoLen > 0) startDemoPlayback();
 }
 
 // =========================================================================
@@ -602,6 +641,8 @@ void VoiceRecorderApp::enterHomeOrNoSd() {
         state = REC_STATE_NO_SD;
         return;
     }
+    // A card is present — the real experience takes over; drop any demo clip.
+    exitDemo();
     if (!SD.exists(RecNaming::kRecordingsDir)) {
         SD.mkdir(RecNaming::kRecordingsDir);
     }
@@ -979,7 +1020,7 @@ void VoiceRecorderApp::stopPlayback() {
     destroyPlaybackPipeline();
     playbackActive = false;
     playbackEof = false;
-    state = REC_STATE_LIST;
+    state = demoMode ? REC_STATE_DEMO_HOME : REC_STATE_LIST;
 }
 
 // Replay from the top after EOF. Tear the pipeline down and rebuild it from the
@@ -990,10 +1031,12 @@ void VoiceRecorderApp::restartPlaybackStream() {
     char path[40];
     snprintf(path, sizeof(path), "%s/%s", RecNaming::kRecordingsDir, playName);
     destroyPlaybackPipeline();
-    if (!buildPlaybackPipeline(path)) {
-        ESP_LOGW(TAG_VREC, "replay rebuild failed: %s", path);
+    // demoMode is preserved across teardown, so the rebuild picks the right
+    // source (MemoryStream for the demo, the SD file otherwise).
+    if (!buildPlaybackPipeline(demoMode ? nullptr : path)) {
+        ESP_LOGW(TAG_VREC, "replay rebuild failed");
         destroyPlaybackPipeline();
-        state = REC_STATE_LIST;
+        state = demoMode ? REC_STATE_DEMO_HOME : REC_STATE_LIST;
         return;
     }
     playbackEof = false;
@@ -1002,30 +1045,33 @@ void VoiceRecorderApp::restartPlaybackStream() {
 }
 
 bool VoiceRecorderApp::buildPlaybackPipeline(const char* path) {
-    playFile = SD.open(path, FILE_READ);
-    if (!playFile) return false;
-
-    // Read the real sample rate + channels straight from the WAV header so the
-    // DAC is clocked correctly from the first sample. Relying on the decoder's
-    // mid-stream re-notify made High files play slow (the I2S started at the
-    // placeholder rate and the restart didn't always take). Canonical PCM WAV:
-    // num_channels @ offset 22 (u16 LE), sample_rate @ offset 24 (u32 LE).
-    uint32_t fileRate = recSampleRate;   // fallback if the header read fails
-    uint16_t fileChannels = 1;
-    {
+    // Resolve the source rate + channels. SD: read them from the WAV header so
+    // the DAC is clocked right from the first sample (relying on the decoder's
+    // mid-stream re-notify made High files play slow). Demo: raw PCM in PSRAM at
+    // the rate it was captured. Canonical PCM WAV: num_channels @ offset 22
+    // (u16 LE), sample_rate @ offset 24 (u32 LE).
+    uint32_t srcRate     = recSampleRate;
+    uint16_t srcChannels = 1;
+    if (demoMode) {
+        if (demoBuf == nullptr || demoLen == 0) return false;
+        srcRate      = (demoSampleRate > 0) ? demoSampleRate : 16000;
+        playByteRate = (demoByteRate > 0) ? demoByteRate : srcRate * 2;
+    } else {
+        playFile = SD.open(path, FILE_READ);
+        if (!playFile) return false;
         uint8_t b[4];
         if (playFile.seek(22) && playFile.read(b, 2) == 2) {
             uint16_t ch = (uint16_t)(b[0] | (b[1] << 8));
-            if (ch == 1 || ch == 2) fileChannels = ch;
+            if (ch == 1 || ch == 2) srcChannels = ch;
         }
         if (playFile.seek(24) && playFile.read(b, 4) == 4) {
             uint32_t r = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
                          ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
-            if (r >= 8000 && r <= 96000) fileRate = r;   // sanity clamp
+            if (r >= 8000 && r <= 96000) srcRate = r;   // sanity clamp
         }
         playFile.seek(0);   // rewind for the decoder
+        playByteRate = srcRate * srcChannels * 2;   // 16-bit samples
     }
-    playByteRate = fileRate * fileChannels * 2;   // 16-bit samples
 
     // Borrow I2S port 0 from AudioManager's tone chain (MusicPlayerApp pattern).
     HAL::audioManager().releaseI2S();
@@ -1038,8 +1084,8 @@ bool VoiceRecorderApp::buildPlaybackPipeline(const char* path) {
     cfg.pin_ws          = 27;
     cfg.pin_bck         = 26;
     cfg.pin_data        = 14;
-    cfg.sample_rate     = fileRate;       // the file's actual rate, set up front
-    cfg.channels        = fileChannels;   // mono recordings; matches the header
+    cfg.sample_rate     = srcRate;        // the source's actual rate, set up front
+    cfg.channels        = srcChannels;    // mono recordings; matches the header
     cfg.bits_per_sample = 16;
     cfg.buffer_count    = 8;
     cfg.buffer_size     = 1024;   // 8KB DMA = ~85ms cushion at High, absorbs SD-read jitter
@@ -1048,7 +1094,7 @@ bool VoiceRecorderApp::buildPlaybackPipeline(const char* path) {
         return false;   // caller calls destroyPlaybackPipeline() to unwind
     }
 
-    // Volume wrapper between the decoder and the DAC (slider-controlled).
+    // Volume wrapper between the source and the DAC (slider-controlled).
     pVol = new audio_tools::VolumeStream(*pI2sOut);
     auto vcfg = pVol->defaultConfig();
     vcfg.sample_rate     = cfg.sample_rate;
@@ -1061,15 +1107,24 @@ bool VoiceRecorderApp::buildPlaybackPipeline(const char* path) {
     pVol->setVolume(vol);
     lastPlayVol = vol;
 
-    // Decode chain: bytes from the file are written into pDecode, which decodes
-    // WAV -> PCM and pushes it to pVol -> pI2sOut. Decoder is allocated fresh so
-    // its notify list starts empty (see the pWavDecoder comment in the header).
-    pWavDecoder = new audio_tools::WAVDecoder();
-    pWavDecoder->begin();
-    pDecode = new audio_tools::EncodedAudioStream(pVol, pWavDecoder);
-    pDecode->begin();
-
-    pCopier = new audio_tools::StreamCopy(*pDecode, playFile);
+    if (demoMode) {
+        // Demo clip is already raw PCM at the I2S rate — no decode. Wrap the
+        // PSRAM buffer read-only (FLASH_RAM => MemoryStream won't free it; we
+        // own it). begin() exposes all demoLen bytes for reading.
+        pMemStream = new audio_tools::MemoryStream(demoBuf, demoLen, true,
+                                                   audio_tools::FLASH_RAM);
+        pMemStream->begin();
+        pCopier = new audio_tools::StreamCopy(*pVol, *pMemStream);
+    } else {
+        // Decode chain: file bytes -> pDecode (WAV -> PCM) -> pVol -> pI2sOut.
+        // Decoder is allocated fresh so its notify list starts empty (see the
+        // pWavDecoder comment in the header).
+        pWavDecoder = new audio_tools::WAVDecoder();
+        pWavDecoder->begin();
+        pDecode = new audio_tools::EncodedAudioStream(pVol, pWavDecoder);
+        pDecode->begin();
+        pCopier = new audio_tools::StreamCopy(*pDecode, playFile);
+    }
     return true;
 }
 
@@ -1079,6 +1134,9 @@ void VoiceRecorderApp::destroyPlaybackPipeline() {
     // the stream down before freeing the decoder.
     if (pDecode != nullptr)     { pDecode->end(); delete pDecode; pDecode = nullptr; }
     if (pWavDecoder != nullptr) { delete pWavDecoder; pWavDecoder = nullptr; }
+    // MemoryStream was constructed FLASH_RAM (read-only view) so it does NOT
+    // free demoBuf — that buffer outlives playback and is owned by the demo.
+    if (pMemStream != nullptr)  { delete pMemStream; pMemStream = nullptr; }
     if (pVol != nullptr)        { pVol->end();    delete pVol;    pVol = nullptr; }
     if (pI2sOut != nullptr)     { pI2sOut->end(); delete pI2sOut; pI2sOut = nullptr; }
     if (playFile) playFile.close();
@@ -1161,6 +1219,101 @@ bool VoiceRecorderApp::deleteIndexRow(const char* filename) {
 
     SD.remove(indexPath);
     return SD.rename(tmpPath, indexPath);
+}
+
+// =========================================================================
+// SD-less demo (REC_STATE_DEMO_*) — taste record -> replay without a card.
+// Reuses the capture task + ring; the clip is raw PCM in a PSRAM buffer
+// (volatile, lost at sleep/power-off). The SD WAV/index pipeline is untouched.
+// =========================================================================
+void VoiceRecorderApp::enterDemo() {
+    if (demoBuf == nullptr) {
+        demoBuf = (uint8_t*)ps_malloc(REC_DEMO_BYTES);
+        demoCapacity = REC_DEMO_BYTES;
+        if (demoBuf == nullptr) {
+            // No PSRAM: a small internal-RAM clip still gives a taste (~2s).
+            demoCapacity = 65536;
+            demoBuf = (uint8_t*)heap_caps_malloc(demoCapacity, MALLOC_CAP_8BIT);
+        }
+        if (demoBuf == nullptr) {
+            demoCapacity = 0;
+            showNote("NO MEMORY");   // dismiss falls back to NO_SD (sd unmounted)
+            return;
+        }
+    }
+    demoMode = true;
+    demoLen = 0;
+    state = REC_STATE_DEMO_HOME;
+}
+
+void VoiceRecorderApp::exitDemo() {
+    if (!demoMode && demoBuf == nullptr) return;   // no-op on the normal entry path
+    demoMode = false;
+    demoLen = 0;
+    if (demoBuf != nullptr) {
+        free(demoBuf);
+        demoBuf = nullptr;
+        demoCapacity = 0;
+    }
+}
+
+void VoiceRecorderApp::startDemoRecording() {
+    if (demoBuf == nullptr || demoCapacity == 0) return;
+    ring.reset();
+    ring.clearDropped();
+    demoLen = 0;
+    demoSampleRate = recSampleRate;   // capture at the currently-clocked rate
+    demoByteRate = recByteRate;
+    recStartMs = millis_NOW;
+    skipBytesRemaining.store((recByteRate / 1000) * REC_START_SKIP_MS,
+                             std::memory_order_relaxed);
+    recordingActive.store(true, std::memory_order_release);
+    state = REC_STATE_DEMO_RECORDING;
+    ESP_LOGI(TAG_VREC, "demo recording @ %u Hz (cap %u B)",
+             (unsigned)recSampleRate, (unsigned)demoCapacity);
+}
+
+void VoiceRecorderApp::stopDemoRecording() {
+    recordingActive.store(false, std::memory_order_release);
+    drainDemo();                 // sweep the ring tail into the buffer
+    state = REC_STATE_DEMO_HOME;
+}
+
+// Pop captured PCM from the ring into the PSRAM clip, bounded by the byte cap.
+void VoiceRecorderApp::drainDemo() {
+    if (demoBuf == nullptr) return;
+    while (demoLen < demoCapacity) {
+        uint32_t room = demoCapacity - demoLen;
+        uint32_t want = (room < sizeof(drainBuf)) ? room : sizeof(drainBuf);
+        uint32_t got = ring.pop(drainBuf, want);
+        if (got == 0) break;
+        memcpy(demoBuf + demoLen, drainBuf, got);
+        demoLen += got;
+    }
+}
+
+void VoiceRecorderApp::startDemoPlayback() {
+    if (demoBuf == nullptr || demoLen == 0) return;
+    if (!buildPlaybackPipeline(nullptr)) {   // demoMode -> MemoryStream source
+        ESP_LOGW(TAG_VREC, "demo playback build failed");
+        destroyPlaybackPipeline();
+        state = REC_STATE_DEMO_HOME;
+        return;
+    }
+    snprintf(playName, sizeof(playName), "DEMO");
+    playBytes = demoLen;
+    playDurationS = (demoByteRate > 0) ? (demoLen / demoByteRate) : 0;
+    playStartMs = millis_NOW;
+    playbackEof = false;
+    playbackActive = true;
+    state = REC_STATE_PLAYBACK;
+}
+
+// Seconds the demo cap allows at the active rate (prospective at HOME, actual
+// once a clip is recorded).
+uint32_t VoiceRecorderApp::demoLimitSeconds() const {
+    uint32_t br = (demoByteRate > 0) ? demoByteRate : recByteRate;
+    return (br > 0) ? (demoCapacity / br) : 0;
 }
 
 // =========================================================================
@@ -1258,6 +1411,8 @@ void VoiceRecorderApp::updateLed() {
         }
     } else if (state == REC_STATE_SAVING) {
         bright = 8;  // stays on until the file is safe
+    } else if (state == REC_STATE_DEMO_RECORDING) {
+        bright = 8;  // same faint-red record indicator for the demo clip
     }
 
     if (bright != lastLedBright) {
@@ -1298,6 +1453,10 @@ void VoiceRecorderApp::render() {
             break;
         case REC_STATE_CONFIRM_DELETE:
             drawConfirmDelete();
+            break;
+        case REC_STATE_DEMO_HOME:
+        case REC_STATE_DEMO_RECORDING:
+            drawDemo();
             break;
     }
     display.display();
@@ -1472,8 +1631,8 @@ void VoiceRecorderApp::drawNoSd() {
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER);
     display.drawString(64, STRIP_TEXT_Y, "NO TAPE");
-    display.drawString(64, 39, "insert memory card");
-    display.drawString(64, 50, "ENTER = retry");
+    display.drawString(64, 39, "ENTER retry card");
+    display.drawString(64, 50, "DOWN = try demo");
 }
 
 void VoiceRecorderApp::drawFault() {
@@ -1605,4 +1764,47 @@ void VoiceRecorderApp::drawConfirmDelete() {
         display.drawString(64, 28, nm);
     }
     display.drawString(64, 46, "ENTER=yes   SEL=no");
+}
+
+// SD-less demo: tape deck labelled DEMO. While recording, a fill bar shows the
+// bounded clip filling up; at home, the volatility message + record/play hints.
+void VoiceRecorderApp::drawDemo() {
+    bool recording = (state == REC_STATE_DEMO_RECORDING);
+    drawCassette(recording, false);
+
+    display.setFont(ArialMT_Plain_10);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    if (recording && ((millis_NOW / 500) & 1)) display.fillCircle(47, 9, 3);
+    display.drawString(64, STRIP_TEXT_Y, "DEMO");
+
+    if (recQuality) {   // High-quality tag, same spot as HOME
+        display.setTextAlignment(TEXT_ALIGN_RIGHT);
+        display.drawString(111, 26, "HQ");
+        display.setTextAlignment(TEXT_ALIGN_CENTER);
+    }
+
+    if (recording) {
+        unsigned long elapsedS = (millis_NOW - recStartMs) / 1000UL;
+        char timer[8];
+        snprintf(timer, sizeof(timer), "%lu:%02lu", elapsedS / 60, elapsedS % 60);
+        display.setFont(ArialMT_Plain_24);
+        display.setTextAlignment(TEXT_ALIGN_LEFT);
+        display.drawString(TIMER_X, TIMER_Y, timer);
+        // Bounded-clip fill bar (how full the byte cap is) — the "small tape".
+        uint32_t pct = (demoCapacity > 0)
+            ? (uint32_t)((uint64_t)demoLen * 100 / demoCapacity) : 0;
+        display.drawRect(VU_X, VU_Y, VU_W, VU_H);
+        uint8_t fill = (uint8_t)(pct * VU_FILL_MAX / 100);
+        if (fill > 0) display.fillRect(VU_X + 2, VU_Y + 2, fill, VU_H - 4);
+    } else {
+        display.drawString(64, 39, "not saved - add card");
+        if (demoLen > 0) {
+            display.drawString(64, 51, "ENTER rec   > play");
+        } else {
+            char hint[20];
+            snprintf(hint, sizeof(hint), "ENTER rec  ~%lus",
+                     (unsigned long)demoLimitSeconds());
+            display.drawString(64, 51, hint);
+        }
+    }
 }

@@ -27,6 +27,7 @@
 #include "AudioTools/CoreAudio/AudioI2S/I2SStream.h"
 #include "AudioTools/CoreAudio/VolumeStream.h"
 #include "AudioTools/CoreAudio/StreamCopy.h"
+#include "AudioTools/CoreAudio/AudioStreams.h"  // MemoryStream (SD-less demo playback)
 #include "AudioTools/AudioCodecs/CodecWAV.h"
 #include "AudioTools/AudioCodecs/AudioEncoded.h"
 
@@ -42,7 +43,9 @@ enum VoiceRecState {
     REC_STATE_FAULT,        // unrecoverable init failure (RAM / mic)
     REC_STATE_LIST,         // browse recordings (newest first)
     REC_STATE_PLAYBACK,     // tape-deck "now playing": decode WAV -> speaker
-    REC_STATE_CONFIRM_DELETE// "Delete REC_NNNN?" guard before removing a file
+    REC_STATE_CONFIRM_DELETE,// "Delete REC_NNNN?" guard before removing a file
+    REC_STATE_DEMO_HOME,    // no card: ready to record a short PSRAM demo clip
+    REC_STATE_DEMO_RECORDING// capturing the demo clip into PSRAM (bounded)
 };
 
 enum VoiceRecStopReason {
@@ -180,6 +183,22 @@ private:
     float lastPlayVol = -1.0f;
     unsigned long volOverlayUntilMs = 0;  // briefly show the volume bar after a slider move
 
+    // --- SD-less demo (REC_STATE_DEMO_*) ---
+    // When no card is present, let the user taste record -> replay with a short
+    // clip held in PSRAM (raw PCM, no WAV/index — the SD pipeline is untouched).
+    // PSRAM is lost at deep sleep / power-off, so the clip is volatile by design
+    // and the UI says so ("DEMO - not saved"). The buffer is allocated lazily on
+    // demo entry and freed on app exit or when a card is inserted. Playback
+    // reuses REC_STATE_PLAYBACK with demoMode = true (MemoryStream source, no
+    // decoder); demoMode also routes "back" to DEMO_HOME instead of the list.
+    bool demoMode = false;
+    uint8_t* demoBuf = nullptr;
+    uint32_t demoCapacity = 0;        // allocated buffer size (the byte cap)
+    uint32_t demoLen = 0;             // bytes recorded so far
+    uint32_t demoByteRate = 0;        // rate the clip was captured at (for duration + playback clock)
+    uint32_t demoSampleRate = 0;
+    audio_tools::MemoryStream* pMemStream = nullptr;  // demo playback source
+
     // --- Helpers ---
     void handleEnterEvent(const ButtonEvent& event);
     void handleBackEvent(const ButtonEvent& event);
@@ -221,6 +240,15 @@ private:
     void performDelete(int listIdx);  // remove wav + index row + transcript sidecar
     bool deleteIndexRow(const char* filename);
 
+    // --- SD-less demo (REC_STATE_DEMO_*) ---
+    void enterDemo();                 // alloc PSRAM buffer, -> DEMO_HOME
+    void exitDemo();                  // free buffer, clear demoMode (card found / app exit)
+    void startDemoRecording();
+    void stopDemoRecording();
+    void drainDemo();                 // ring -> demoBuf until the cap
+    void startDemoPlayback();
+    uint32_t demoLimitSeconds() const;
+
     // --- Rendering ---
     void render();
     void drawCassette(bool spinning, bool xOut);
@@ -231,6 +259,7 @@ private:
     void drawList();
     void drawPlayback();
     void drawConfirmDelete();
+    void drawDemo();
     void updateLed();
 };
 
