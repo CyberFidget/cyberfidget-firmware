@@ -5,11 +5,13 @@
 #include "portal_page.h"
 #include "MenuManager.h"
 #include "globals.h"
+#include "RecNaming.h"   // shared index.csv row parser (lib/VoiceRecorderApp)
 
 #include <SD.h>
 #include <SPI.h>
 #include <WiFi.h>
 #include <esp_bt.h>
+#include <sys/time.h>    // settimeofday for POST /api/time
 
 // ---------------------------------------------------------------------------
 // Debug logging
@@ -32,9 +34,33 @@ static const int PIN_SD_MISO = 21;
 static const int PIN_SD_MOSI = 19;
 static const int PIN_SD_CS   = 8;
 
-static const char* MEDIA_DIR     = "/media";
-static const char* PLAYLIST_DIR  = "/media/playlists";
-static const char* CACHE_PATH    = "/music.idx";
+static const char* MEDIA_DIR      = "/media";
+static const char* PLAYLIST_DIR   = "/media/playlists";
+static const char* CACHE_PATH     = "/music.idx";
+static const char* RECORDINGS_DIR = "/recordings";
+
+// Max voice-note filename length (including ".wav") a portal rename may produce.
+// Single source of truth shared with the recorder so both sides agree (see
+// RecNaming::kMaxRecNameLen). Bounds the JSON/list buffers and keeps an
+// index.csv row well within the 128-byte line reader.
+static constexpr size_t REC_NAME_MAX = RecNaming::kMaxRecNameLen;
+
+// Read one line (up to and excluding '\n') from an open File into buf. Returns
+// false only at EOF with nothing read. Mirrors VoiceRecorderApp's helper —
+// index.csv is small, so a byte-at-a-time read is fine. Used by the recordings
+// list + the rename/delete index.csv rewrites.
+static bool wpReadLine(File& f, char* buf, size_t bufSize) {
+    size_t i = 0;
+    bool any = false;
+    int c;
+    while ((c = f.read()) >= 0) {
+        any = true;
+        if (c == '\n') break;
+        if (i + 1 < bufSize) buf[i++] = (char)c;
+    }
+    buf[i] = '\0';
+    return any;
+}
 
 static auto& display = HAL::displayProxy();
 
@@ -455,6 +481,9 @@ void WebPortalApp::setupRoutes() {
     // Serve media files for audio playback
     server->serveStatic("/media/", SD, "/media/");
 
+    // Serve voice notes for in-browser playback + download
+    server->serveStatic("/recordings/", SD, "/recordings/");
+
     // API: File list (recursive JSON — for folder tree view)
     server->on("/api/files", HTTP_GET, [this](AsyncWebServerRequest* req) {
         handleFileList(req);
@@ -500,6 +529,16 @@ void WebPortalApp::setupRoutes() {
     // API: Status
     server->on("/api/status", HTTP_GET, [this](AsyncWebServerRequest* req) {
         handleStatus(req);
+    });
+
+    // API: Voice notes list (merges /recordings/ files with index.csv metadata)
+    server->on("/api/recordings", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        handleRecordings(req);
+    });
+
+    // API: Set device clock (browser sends its local-naive epoch on page load)
+    server->on("/api/time", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        handleSetTime(req);
     });
 
     // API: List playlists
@@ -680,14 +719,36 @@ void WebPortalApp::handleDelete(AsyncWebServerRequest* req) {
     }
     String path = req->getParam("path")->value();
 
-    // Security: must be under /media/
-    if (!path.startsWith("/media/")) {
+    // Security: must be under /media/ (music) or /recordings/ (voice notes)
+    bool isRec = path.startsWith("/recordings/");
+    if (!path.startsWith("/media/") && !isRec) {
         req->send(403, "text/plain", "Forbidden");
         return;
     }
 
     if (!SD.exists(path)) {
         req->send(404, "text/plain", "Not found");
+        return;
+    }
+
+    // --- Voice note: drop the .wav, its index.csv row, and any transcript
+    // sidecar together so the metadata never outlives the file. A voice note
+    // is always a single file (no subdirs under /recordings/).
+    if (isRec) {
+        if (!SD.remove(path)) {
+            req->send(500, "text/plain", "Delete failed");
+            return;
+        }
+        String name = path.substring(path.lastIndexOf('/') + 1);
+        deleteRecordingIndexRow(name.c_str());
+        // Transcript sidecar (provisional ".txt"; on-device transcription is
+        // not built yet — same provisional handling as VoiceRecorderApp).
+        int dot = name.lastIndexOf('.');
+        String sidecar = String(RECORDINGS_DIR) + "/" +
+                         (dot > 0 ? name.substring(0, dot) : name) + ".txt";
+        if (SD.exists(sidecar)) SD.remove(sidecar);
+        WP_LOGF("deleted voice note: %s", path.c_str());
+        req->send(200, "text/plain", "OK");
         return;
     }
 
@@ -744,24 +805,60 @@ void WebPortalApp::handleMove(AsyncWebServerRequest* req) {
     String from = req->getParam("from")->value();
     String to = req->getParam("to")->value();
 
-    // Security: both paths must be under /media/
-    if (!from.startsWith("/media/") || !to.startsWith("/media/")) {
+    // Security: a move must stay within one root — both under /media/ (music)
+    // or both under /recordings/ (voice notes). Cross-root moves are refused so
+    // the two stores never bleed into each other.
+    bool mediaMove = from.startsWith("/media/") && to.startsWith("/media/");
+    bool recMove   = from.startsWith("/recordings/") && to.startsWith("/recordings/");
+    if (!mediaMove && !recMove) {
         req->send(403, "text/plain", "Forbidden");
         return;
+    }
+
+    // A voice-note rename stays a flat .wav in /recordings/ (no subfolders, keep
+    // the playable extension) so the file and its index row remain in lockstep.
+    if (recMove) {
+        String toName = to.substring(strlen("/recordings/"));
+        if (toName.indexOf('/') >= 0 || !to.endsWith(".wav")) {
+            req->send(400, "text/plain", "Voice notes stay as flat .wav files");
+            return;
+        }
+        if (toName.length() > REC_NAME_MAX) {
+            req->send(400, "text/plain", "Name too long");
+            return;
+        }
     }
 
     if (!SD.exists(from)) {
         req->send(404, "text/plain", "Source not found");
         return;
     }
-
-    if (SD.rename(from, to)) {
-        WP_LOGF("moved: %s -> %s", from.c_str(), to.c_str());
-        invalidateMusicCache();
-        req->send(200, "text/plain", "OK");
-    } else {
-        req->send(500, "text/plain", "Move failed");
+    if (SD.exists(to)) {
+        req->send(409, "text/plain", "Target already exists");
+        return;
     }
+
+    if (!SD.rename(from, to)) {
+        req->send(500, "text/plain", "Move failed");
+        return;
+    }
+    WP_LOGF("moved: %s -> %s", from.c_str(), to.c_str());
+
+    if (recMove) {
+        String fromName = from.substring(from.lastIndexOf('/') + 1);
+        String toName   = to.substring(to.lastIndexOf('/') + 1);
+        renameRecordingIndexRow(fromName.c_str(), toName.c_str());
+        // Carry a transcript sidecar along, if one exists.
+        int fd = fromName.lastIndexOf('.'), td = toName.lastIndexOf('.');
+        String fromSide = String(RECORDINGS_DIR) + "/" +
+                          (fd > 0 ? fromName.substring(0, fd) : fromName) + ".txt";
+        String toSide = String(RECORDINGS_DIR) + "/" +
+                        (td > 0 ? toName.substring(0, td) : toName) + ".txt";
+        if (SD.exists(fromSide) && !SD.exists(toSide)) SD.rename(fromSide, toSide);
+    } else {
+        invalidateMusicCache();
+    }
+    req->send(200, "text/plain", "OK");
 }
 
 // ---------------------------------------------------------------------------
@@ -778,6 +875,154 @@ void WebPortalApp::handleStatus(AsyncWebServerRequest* req) {
     json += ",\"clients\":" + String(WiFi.softAPgetStationNum());
     json += "}";
     req->send(200, "application/json", json);
+}
+
+// ---------------------------------------------------------------------------
+// Route: Voice notes list
+//
+// Drives off /recordings/index.csv (the recorder's source of truth, written by
+// VoiceRecorderApp::appendIndexRow) and keeps only rows whose .wav still lives
+// on the card. Each row's metadata is parsed by the shared RecNaming helper, so
+// the portal and the on-device list agree byte-for-byte. The response is an
+// object (not a bare array) so the client can tell "no card" apart from "no
+// notes yet": {"sd":false} vs {"sd":true,"items":[...]}.
+// ---------------------------------------------------------------------------
+void WebPortalApp::handleRecordings(AsyncWebServerRequest* req) {
+    if (!sdReady) {
+        req->send(200, "application/json", "{\"sd\":false}");
+        return;
+    }
+
+    char indexPath[40];
+    snprintf(indexPath, sizeof(indexPath), "%s/index.csv", RECORDINGS_DIR);
+
+    String json = "{\"sd\":true,\"items\":[";
+    bool first = true;
+    File f = SD.open(indexPath, FILE_READ);
+    if (f) {
+        char line[128];
+        // name is generous: the recorder writes "REC_NNNN.wav" (12 chars), but a
+        // portal rename can grow it up to REC_NAME_MAX, and parseIndexRow drops
+        // any row whose name overflows nameSize — too small a buffer would make a
+        // renamed note silently vanish from the list.
+        char name[REC_NAME_MAX + 1], ts[24];
+        uint32_t durationS;
+        uint64_t bytes;
+        while (wpReadLine(f, line, sizeof(line))) {
+            if (!RecNaming::parseIndexRow(line, name, sizeof(name),
+                                          ts, sizeof(ts), &durationS, &bytes)) {
+                continue;  // header row, blank line, or a torn partial row
+            }
+            // Skip rows whose file is gone (deleted out-of-band) so the portal
+            // never lists a note you can't play.
+            char wavPath[16 + REC_NAME_MAX + 1];
+            snprintf(wavPath, sizeof(wavPath), "%s/%s", RECORDINGS_DIR, name);
+            if (!SD.exists(wavPath)) continue;
+
+            if (!first) json += ",";
+            first = false;
+            json += "{\"name\":\"" + escJSON(name) + "\"";
+            json += ",\"timestamp\":\"" + escJSON(ts) + "\"";
+            json += ",\"duration\":" + String((unsigned long)durationS);
+            json += ",\"bytes\":" + String((unsigned long)bytes) + "}";
+        }
+        f.close();
+    }
+    json += "]}";
+    req->send(200, "application/json", json);
+}
+
+// ---------------------------------------------------------------------------
+// Route: Set device clock
+//
+// The device has no battery-backed RTC, so recordings carry blank timestamps
+// until something sets the clock. The portal page POSTs the browser's clock on
+// load (?ms=<epoch>); settimeofday makes time(nullptr) report it, and any
+// recording made afterwards lands a real timestamp in index.csv. The browser
+// sends a tz-adjusted (local-naive) epoch so the recorder's localtime_r — which
+// reads as UTC with TZ unset — renders the user's local wall-clock time.
+// ---------------------------------------------------------------------------
+void WebPortalApp::handleSetTime(AsyncWebServerRequest* req) {
+    if (!req->hasParam("ms")) {
+        req->send(400, "text/plain", "Missing 'ms'");
+        return;
+    }
+    uint64_t ms = strtoull(req->getParam("ms")->value().c_str(), nullptr, 10);
+    // Reject an obviously-unset clock (before 2020) so a confused client can't
+    // wind the device back to 1970.
+    if (ms < 1600000000000ULL) {
+        req->send(400, "text/plain", "Bad time");
+        return;
+    }
+    struct timeval tv;
+    tv.tv_sec  = (time_t)(ms / 1000ULL);
+    tv.tv_usec = (suseconds_t)((ms % 1000ULL) * 1000ULL);
+    settimeofday(&tv, nullptr);
+    WP_LOGF("clock set: epoch %lu", (unsigned long)tv.tv_sec);
+    req->send(200, "text/plain", "OK");
+}
+
+// ---------------------------------------------------------------------------
+// Voice-note index.csv maintenance
+//
+// Both rewrite index.csv via an index.tmp swap (crash-safe): the header and
+// every non-matching row pass through verbatim. Matching is exact and
+// prefix-collision safe via RecNaming::indexRowMatchesFilename.
+// ---------------------------------------------------------------------------
+bool WebPortalApp::deleteRecordingIndexRow(const char* filename) {
+    char indexPath[40], tmpPath[44];
+    snprintf(indexPath, sizeof(indexPath), "%s/index.csv", RECORDINGS_DIR);
+    snprintf(tmpPath, sizeof(tmpPath), "%s/index.tmp", RECORDINGS_DIR);
+    if (!SD.exists(indexPath)) return false;
+
+    File in = SD.open(indexPath, FILE_READ);
+    if (!in) return false;
+    if (SD.exists(tmpPath)) SD.remove(tmpPath);
+    File out = SD.open(tmpPath, FILE_WRITE);
+    if (!out) { in.close(); return false; }
+
+    char line[128];
+    while (wpReadLine(in, line, sizeof(line))) {
+        if (RecNaming::indexRowMatchesFilename(line, filename)) continue;  // drop
+        out.print(line);
+        out.write('\n');
+    }
+    in.close();
+    out.close();
+
+    SD.remove(indexPath);
+    return SD.rename(tmpPath, indexPath);
+}
+
+bool WebPortalApp::renameRecordingIndexRow(const char* oldName, const char* newName) {
+    char indexPath[40], tmpPath[44];
+    snprintf(indexPath, sizeof(indexPath), "%s/index.csv", RECORDINGS_DIR);
+    snprintf(tmpPath, sizeof(tmpPath), "%s/index.tmp", RECORDINGS_DIR);
+    if (!SD.exists(indexPath)) return false;
+
+    File in = SD.open(indexPath, FILE_READ);
+    if (!in) return false;
+    if (SD.exists(tmpPath)) SD.remove(tmpPath);
+    File out = SD.open(tmpPath, FILE_WRITE);
+    if (!out) { in.close(); return false; }
+
+    char line[128];
+    while (wpReadLine(in, line, sizeof(line))) {
+        if (RecNaming::indexRowMatchesFilename(line, oldName)) {
+            // Swap the filename field; keep timestamp,duration,bytes verbatim.
+            const char* comma = strchr(line, ',');
+            out.print(newName);
+            out.print(comma ? comma : ",,0,0");
+        } else {
+            out.print(line);
+        }
+        out.write('\n');
+    }
+    in.close();
+    out.close();
+
+    SD.remove(indexPath);
+    return SD.rename(tmpPath, indexPath);
 }
 
 // ---------------------------------------------------------------------------

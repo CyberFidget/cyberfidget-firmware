@@ -187,6 +187,8 @@ input[type="file"]{display:none}
 .modal{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:20px;min-width:300px;max-width:90vw}
 .modal h3{margin-bottom:12px;font-size:1em}
 .modal input[type="text"],.modal select{width:100%;padding:8px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:0.9em;margin-bottom:12px}
+.modal .modal-err{display:none;color:var(--danger);font-size:0.8em;margin:-6px 0 10px}
+.modal .modal-err.show{display:block}
 .modal .modal-actions{display:flex;gap:8px;justify-content:flex-end}
 
 /* Toast */
@@ -223,6 +225,40 @@ input[type="file"]{display:none}
 .conn-bar .dot.on{background:var(--success)}
 .conn-bar .dot.off{background:var(--text-secondary)}
 
+/* Voice notes */
+.vn-list{list-style:none}
+.vn-item{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px}
+.vn-top{display:flex;align-items:center;gap:8px}
+.vn-chk{flex-shrink:0;width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+.vn-name{flex:1;font-weight:500;font-size:0.92em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.vn-acts{display:flex;gap:4px;flex-shrink:0}
+.vn-acts .btn{text-decoration:none}
+.vn-meta{color:var(--text-secondary);font-size:0.78em;margin:4px 0 2px;font-variant-numeric:tabular-nums}
+.vn-item audio{width:100%;margin-top:4px;display:block;height:36px}
+.vn-bulk{display:none;align-items:center;gap:10px;padding:8px 10px;margin-bottom:10px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);font-size:0.85em;flex-wrap:wrap}
+.vn-bulk.show{display:flex}
+.vn-selall{display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-secondary)}
+.vn-selall input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
+.vn-bulk .count{color:var(--text-secondary)}
+.vn-bulk .spacer{flex:1}
+.btn:disabled{opacity:0.4;cursor:default}
+
+/* Download overlay (bulk zip / individual + progress) */
+.dl-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:320;justify-content:center;align-items:center;padding:16px}
+.dl-overlay.show{display:flex}
+.dl-box{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:20px;width:340px;max-width:92vw}
+.dl-box h3{font-size:1em;margin-bottom:6px}
+.dl-size{font-size:0.82em;color:var(--text-secondary);margin-bottom:14px}
+.dl-choice-btns{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.dl-choice-btns .btn{padding:10px}
+.dl-cancel{width:100%;margin-top:4px}
+.dl-bar{height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;margin:12px 0 8px}
+.dl-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--success));border-radius:4px;transition:width 0.15s}
+.dl-stat{font-size:0.85em;font-variant-numeric:tabular-nums}
+.dl-rate{font-size:0.78em;color:var(--accent);margin-top:2px;font-variant-numeric:tabular-nums}
+.dl-file{font-size:0.78em;color:var(--text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dl-warn{font-size:0.78em;color:var(--magenta);margin:12px 0 8px}
+
 /* Mobile */
 @media(max-width:700px){
   .hamburger{display:flex}
@@ -257,6 +293,9 @@ input[type="file"]{display:none}
   <div class="sidebar-nav">
     <div class="nav-item active" data-page="media" onclick="showPage('media')">
       <span class="icon">&#9835;</span> Media
+    </div>
+    <div class="nav-item" data-page="voice" onclick="showPage('voice')">
+      <span class="icon">&#9679;</span> Voice notes
     </div>
     <div class="nav-item" data-page="settings" onclick="showPage('settings')">
       <span class="icon">&#9881;</span> Settings
@@ -335,6 +374,22 @@ input[type="file"]{display:none}
     <div class="playlists" id="playlistList"></div>
   </div>
 
+  <div class="content" id="voicePage" style="display:none">
+    <div class="section-hdr">
+      Voice notes
+      <span class="spacer"></span>
+      <span class="action" onclick="loadVoiceNotes()">Refresh</span>
+    </div>
+    <div class="vn-bulk" id="vnBulk">
+      <label class="vn-selall"><input type="checkbox" id="vnSelAll" onclick="vnToggleAll(this)"> Select all</label>
+      <span class="count" id="vnBulkCount">0 selected</span>
+      <span class="spacer"></span>
+      <button class="btn btn-play btn-sm" id="vnDlBtn" onclick="vnDownloadSelected()" disabled>Download</button>
+      <button class="btn btn-del btn-sm" id="vnDelBtn" onclick="vnDeleteSelected()" disabled>Delete</button>
+    </div>
+    <ul class="vn-list" id="vnList"><li class="empty">Loading...</li></ul>
+  </div>
+
   <div class="content" id="settingsPage" style="display:none">
     <div class="wifi-card" id="wifiStatusCard">
       <h3>WiFi Connection</h3>
@@ -401,10 +456,34 @@ input[type="file"]{display:none}
   <div class="modal" id="modalBox">
     <h3 id="modalTitle">New Folder</h3>
     <input type="text" id="modalInput" placeholder="Name...">
+    <div class="modal-err" id="modalErr"></div>
     <div id="modalExtra"></div>
     <div class="modal-actions">
       <button class="btn" onclick="closeModal()">Cancel</button>
       <button class="btn btn-accent" id="modalOk" onclick="modalConfirm()">Create</button>
+    </div>
+  </div>
+</div>
+
+<div class="dl-overlay" id="dlOverlay">
+  <div class="dl-box">
+    <div id="dlChoice">
+      <h3>Download <span id="dlCount">0</span> voice notes</h3>
+      <div class="dl-size" id="dlSize">Total: 0 B</div>
+      <div class="dl-choice-btns">
+        <button class="btn btn-accent" id="dlZipBtn" onclick="dlStart('zip')">Bundle as one .zip</button>
+        <button class="btn" id="dlIndivBtn" onclick="dlStart('individual')">Individual files</button>
+      </div>
+      <button class="btn dl-cancel" onclick="dlClose()">Cancel</button>
+    </div>
+    <div id="dlProgress" style="display:none">
+      <h3 id="dlProgTitle">Downloading...</h3>
+      <div class="dl-bar"><div class="dl-fill" id="dlFill"></div></div>
+      <div class="dl-stat" id="dlStat">0 B / 0 B</div>
+      <div class="dl-rate" id="dlRate"></div>
+      <div class="dl-file" id="dlFile"></div>
+      <div class="dl-warn">Keep this page open until it finishes.</div>
+      <button class="btn dl-cancel" onclick="dlCancel()">Cancel</button>
     </div>
   </div>
 </div>
@@ -438,9 +517,11 @@ function toggleSidebar(){
 function showPage(p){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===p));
   $('mediaPage').style.display=p==='media'?'':'none';
+  $('voicePage').style.display=p==='voice'?'':'none';
   $('settingsPage').style.display=p==='settings'?'':'none';
   $('livePage').style.display=p==='live'?'':'none';
-  $('pageTitle').textContent=p==='media'?'Media Manager':p==='settings'?'Settings':'Live Playlist';
+  $('pageTitle').textContent=p==='media'?'Media Manager':p==='voice'?'Voice Notes':p==='settings'?'Settings':'Live Playlist';
+  if(p==='voice')loadVoiceNotes();
   if(window.innerWidth<=700)toggleSidebar();
 }
 
@@ -592,6 +673,286 @@ async function loadStatus(){
   }catch(e){}
 }
 
+// ─── Device clock ───
+// The Cyber Fidget has no battery clock, so until something sets it, voice
+// notes are stamped "No date". Send the browser's wall-clock on load, adjusted
+// by the timezone offset so the device records your *local* time (the device
+// keeps time as UTC). A note made after this carries a real timestamp.
+async function setDeviceClock(){
+  try{
+    const localMs=Date.now()-new Date().getTimezoneOffset()*60000;
+    await fetch('/api/time?ms='+localMs,{method:'POST'});
+  }catch(e){}
+}
+
+// ─── Voice Notes ───
+let voiceNotes=[];
+function fmtNoteDate(ts){
+  // "2026-06-09T14:23:11" -> "2026-06-09 14:23"; blank -> "No date"
+  if(!ts)return'No date';
+  return ts.replace('T',' ').slice(0,16);
+}
+function vnResetBulk(){
+  $('vnBulk').classList.remove('show');
+  $('vnSelAll').checked=false;$('vnSelAll').indeterminate=false;
+}
+async function loadVoiceNotes(){
+  const el=$('vnList');
+  vnResetBulk();
+  el.innerHTML='<li class="empty">Loading...</li>';
+  try{
+    const r=await fetch('/api/recordings');
+    const d=await r.json();
+    if(!d.sd){el.innerHTML='<li class="empty">Insert a memory card to see your voice notes.</li>';return}
+    voiceNotes=d.items||[];
+    renderVoiceNotes();
+  }catch(e){el.innerHTML='<li class="empty">Could not load voice notes.</li>'}
+}
+function renderVoiceNotes(){
+  const el=$('vnList');
+  // Newest first: REC_NNNN names are monotonic, so a reverse name sort works
+  // even when the clock was unset and timestamps are blank.
+  const list=voiceNotes.slice().sort((a,b)=>b.name.localeCompare(a.name));
+  if(!list.length){vnResetBulk();el.innerHTML='<li class="empty">No voice notes yet. Record one with the Voice Notes app on your Cyber Fidget, then tap Refresh.</li>';return}
+  el.innerHTML=list.map(n=>{
+    const url='/recordings/'+encodeURIComponent(n.name);
+    const meta=[fmtNoteDate(n.timestamp),fmtTime(n.duration),fmt(n.bytes)].join(' · ');
+    return '<li class="vn-item">'+
+      '<div class="vn-top">'+
+        '<input type="checkbox" class="vn-chk" data-name="'+esc(n.name)+'" onchange="vnSelChange()">'+
+        '<span class="vn-name" title="'+esc(n.name)+'">'+esc(stripExt(n.name))+'</span>'+
+        '<span class="vn-acts">'+
+          '<a class="btn btn-play btn-sm" href="'+url+'" download="'+esc(n.name)+'">Download</a>'+
+          '<button class="btn btn-move btn-sm" onclick="renameNote(\''+esc(n.name)+'\')">Rename</button>'+
+          '<button class="btn btn-del btn-sm" onclick="deleteNote(\''+esc(n.name)+'\')">Delete</button>'+
+        '</span>'+
+      '</div>'+
+      '<div class="vn-meta">'+esc(meta)+'</div>'+
+      '<audio controls preload="none" src="'+url+'"></audio>'+
+    '</li>';
+  }).join('');
+  $('vnBulk').classList.add('show');
+  vnSelChange();
+}
+
+// ─── Voice Notes: multi-select ───
+function vnSelectedNames(){return [...document.querySelectorAll('.vn-chk:checked')].map(c=>c.dataset.name)}
+function vnSelChange(){
+  const chks=[...document.querySelectorAll('.vn-chk')];
+  const sel=chks.filter(c=>c.checked).length;
+  $('vnBulkCount').textContent=sel+' selected';
+  $('vnDlBtn').disabled=sel===0;
+  $('vnDelBtn').disabled=sel===0;
+  const all=$('vnSelAll');
+  all.checked=chks.length>0&&sel===chks.length;
+  all.indeterminate=sel>0&&sel<chks.length;
+}
+function vnToggleAll(cb){
+  document.querySelectorAll('.vn-chk').forEach(c=>c.checked=cb.checked);
+  vnSelChange();
+}
+// ─── Bulk download (client-side zip OR individual WAVs, with progress) ───
+// The device stays a dumb one-file-at-a-time server (serveStatic); all bundling
+// happens here in the browser. iOS Safari can't do multi-file downloads (one per
+// user gesture + mis-named blobs), so on iOS we offer ONLY the single .zip; other
+// platforms can pick zip or individual WAVs. Both fetch sequentially (the server
+// wedges on concurrent streams — see the device notes) with a live byte progress
+// bar, and a beforeunload guard keeps the user on the page until it finishes.
+function dlDeviceClass(){
+  const ua=navigator.userAgent||'';
+  if(/iP(hone|ad|od)/.test(ua)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1))return 'ios';
+  if(/Android/.test(ua))return 'android';
+  return 'desktop';
+}
+// Conservative per-device caps for the in-browser zip (it holds the selected
+// bytes + the assembled blob in memory). iOS is the tightest; tune after testing.
+const DL_CAP={ios:100*1048576,android:200*1048576,desktop:500*1048576};
+
+let _dlNames=[],_dlTotal=0,_dlAbort=null,_dlActive=false,_dlStartMs=0;
+function dlFmtEta(s){return s>=60?(Math.floor(s/60)+'m '+String(s%60).padStart(2,'0')+'s'):(s+'s')}
+
+let _crcTab=null;
+function crc32Update(crc,buf){
+  if(!_crcTab){_crcTab=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);_crcTab[n]=c>>>0;}}
+  for(let i=0;i<buf.length;i++)crc=(_crcTab[(crc^buf[i])&0xFF]^(crc>>>8))>>>0;
+  return crc>>>0;
+}
+function zipLocal(nameBytes,crc,size){
+  const h=new DataView(new ArrayBuffer(30));
+  h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x0800,true);h.setUint16(8,0,true);
+  h.setUint16(10,0,true);h.setUint16(12,0x21,true);h.setUint32(14,crc,true);
+  h.setUint32(18,size,true);h.setUint32(22,size,true);h.setUint16(26,nameBytes.length,true);h.setUint16(28,0,true);
+  return new Uint8Array(h.buffer);
+}
+function zipCentral(nameBytes,crc,size,offset){
+  const h=new DataView(new ArrayBuffer(46));
+  h.setUint32(0,0x02014b50,true);h.setUint16(4,20,true);h.setUint16(6,20,true);h.setUint16(8,0x0800,true);
+  h.setUint16(10,0,true);h.setUint16(12,0,true);h.setUint16(14,0x21,true);h.setUint32(16,crc,true);
+  h.setUint32(20,size,true);h.setUint32(24,size,true);h.setUint16(28,nameBytes.length,true);
+  h.setUint16(30,0,true);h.setUint16(32,0,true);h.setUint16(34,0,true);h.setUint16(36,0,true);
+  h.setUint32(38,0,true);h.setUint32(42,offset,true);
+  return new Uint8Array(h.buffer);
+}
+function zipEOCD(count,cdSize,cdOffset){
+  const h=new DataView(new ArrayBuffer(22));
+  h.setUint32(0,0x06054b50,true);h.setUint16(4,0,true);h.setUint16(6,0,true);
+  h.setUint16(8,count,true);h.setUint16(10,count,true);h.setUint32(12,cdSize,true);
+  h.setUint32(16,cdOffset,true);h.setUint16(20,0,true);
+  return new Uint8Array(h.buffer);
+}
+// Read one file as a Uint8Array, streaming so we can show byte progress + CRC it.
+async function dlFetchBytes(name,baseReceived){
+  const resp=await fetch('/recordings/'+encodeURIComponent(name),{signal:_dlAbort.signal});
+  if(!resp.ok)throw new Error('HTTP '+resp.status);
+  const reader=resp.body.getReader();
+  const chunks=[];let size=0;let crc=0xFFFFFFFF;
+  for(;;){
+    const r=await reader.read();
+    if(r.done)break;
+    chunks.push(r.value);size+=r.value.length;crc=crc32Update(crc,r.value);
+    dlSetProgress(baseReceived+size);
+  }
+  const data=new Uint8Array(size);let p=0;for(const c of chunks){data.set(c,p);p+=c.length;}
+  return {data,crc:(crc^0xFFFFFFFF)>>>0};
+}
+async function dlZip(){
+  const enc=new TextEncoder();
+  const parts=[],central=[];let offset=0,received=0;
+  for(let i=0;i<_dlNames.length;i++){
+    dlSetFile(i,_dlNames[i]);
+    const nameBytes=enc.encode(_dlNames[i]);
+    const {data,crc}=await dlFetchBytes(_dlNames[i],received);
+    received+=data.length;
+    const lh=zipLocal(nameBytes,crc,data.length);
+    parts.push(lh,nameBytes,data);
+    central.push({nameBytes,crc,size:data.length,offset});
+    offset+=lh.length+nameBytes.length+data.length;
+  }
+  let cdSize=0;for(const e of central){const ch=zipCentral(e.nameBytes,e.crc,e.size,e.offset);parts.push(ch,e.nameBytes);cdSize+=ch.length+e.nameBytes.length;}
+  parts.push(zipEOCD(central.length,cdSize,offset));
+  dlSave(new Blob(parts,{type:'application/zip'}),'voice-notes.zip');
+}
+async function dlIndividual(){
+  let received=0;
+  for(let i=0;i<_dlNames.length;i++){
+    dlSetFile(i,_dlNames[i]);
+    const {data}=await dlFetchBytes(_dlNames[i],received);
+    received+=data.length;
+    dlSave(new Blob([data],{type:'audio/wav'}),_dlNames[i]);  // typed so iOS/Safari names it .wav, not .txt
+    await new Promise(r=>setTimeout(r,250));                   // let the server release the socket
+  }
+}
+function dlSave(blob,filename){
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');a.href=url;a.download=filename;
+  document.body.appendChild(a);a.click();a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),4000);
+}
+function dlSetProgress(received){
+  const pct=_dlTotal>0?Math.min(100,Math.round(received/_dlTotal*100)):0;
+  $('dlFill').style.width=pct+'%';
+  $('dlStat').textContent=fmt(received)+' / '+fmt(_dlTotal)+' ('+pct+'%)';
+  const el=(Date.now()-_dlStartMs)/1000;
+  if(el>0.4&&received>0){
+    const rate=received/el;                          // bytes/sec
+    const eta=rate>0?Math.round(Math.max(0,_dlTotal-received)/rate):0;
+    $('dlRate').textContent=fmt(rate)+'/s'+(received<_dlTotal?'  ·  ~'+dlFmtEta(eta)+' left':'');
+  }
+}
+function dlSetFile(i,name){$('dlFile').textContent='File '+(i+1)+' of '+_dlNames.length+': '+stripExt(name)}
+
+function vnDownloadSelected(){
+  const names=vnSelectedNames();
+  if(!names.length)return;
+  _dlNames=names;
+  _dlTotal=names.reduce((s,n)=>{const it=voiceNotes.find(v=>v.name===n);return s+((it?it.bytes:0)+44)},0);
+  const dev=dlDeviceClass(),cap=DL_CAP[dev]||DL_CAP.desktop;
+  const over=_dlTotal>cap;
+  $('dlCount').textContent=names.length;
+  $('dlSize').textContent='Total: '+fmt(_dlTotal)+(over?'  (too large to bundle on this device, ~'+fmt(cap)+' max)':'');
+  $('dlZipBtn').disabled=over;
+  $('dlIndivBtn').style.display=dev==='ios'?'none':'';   // iOS: zip only
+  if(dev==='ios'&&over){
+    $('dlSize').textContent='Total: '+fmt(_dlTotal)+' is too large to bundle here. Download notes one at a time using the Download button on each note.';
+  }
+  $('dlChoice').style.display='';$('dlProgress').style.display='none';
+  $('dlOverlay').classList.add('show');
+}
+async function dlStart(mode){
+  $('dlChoice').style.display='none';$('dlProgress').style.display='';
+  $('dlProgTitle').textContent=mode==='zip'?'Building your .zip...':'Downloading...';
+  $('dlFill').style.width='0%';$('dlRate').textContent='';
+  _dlStartMs=Date.now();dlSetProgress(0);
+  _dlAbort=new AbortController();_dlActive=true;
+  try{
+    if(mode==='zip')await dlZip();else await dlIndividual();
+    toast(mode==='zip'?'Bundle ready':'Downloads done');
+  }catch(e){
+    if(e&&e.name==='AbortError')toast('Download cancelled');
+    else toast('Download failed'+(e&&e.message?': '+e.message:''));
+  }finally{
+    _dlActive=false;dlClose();
+  }
+}
+function dlCancel(){if(_dlAbort)_dlAbort.abort()}
+function dlClose(){
+  $('dlOverlay').classList.remove('show');
+  $('dlChoice').style.display='';$('dlProgress').style.display='none';
+  $('dlFill').style.width='0%';$('dlRate').textContent='';
+}
+// Keep the user on the page while a transfer is in flight (it lives in JS here).
+window.addEventListener('beforeunload',e=>{if(_dlActive){e.preventDefault();e.returnValue=''}});
+async function vnDeleteSelected(){
+  const names=vnSelectedNames();
+  if(!names.length)return;
+  if(!confirm('Delete '+names.length+' voice note'+(names.length>1?'s':'')+'?'))return;
+  let ok=0;
+  for(const n of names){
+    try{
+      const r=await fetch('/api/delete?path='+encodeURIComponent('/recordings/'+n),{method:'POST'});
+      if(r.ok)ok++;
+    }catch(e){}
+  }
+  toast('Deleted '+ok+' of '+names.length);
+  loadVoiceNotes();
+}
+async function deleteNote(name){
+  if(!confirm('Delete voice note "'+stripExt(name)+'"?'))return;
+  try{
+    const r=await fetch('/api/delete?path='+encodeURIComponent('/recordings/'+name),{method:'POST'});
+    if(!r.ok){alert('Delete failed: '+await r.text());return}
+    toast('Deleted '+stripExt(name));
+    loadVoiceNotes();
+  }catch(e){alert('Error: '+e)}
+}
+function renameNote(name){
+  $('modalTitle').textContent='Rename Voice Note';
+  $('modalInput').style.display='';
+  $('modalInput').value=stripExt(name);
+  $('modalInput').placeholder='Name...';
+  $('modalInput').maxLength=48;   // block over-typing rather than rejecting on confirm
+  $('modalExtra').innerHTML='';
+  $('modalOk').textContent='Rename';
+  // Live-validate characters as the user types (length is capped by maxLength).
+  modalValidator=(v)=>(/[\\\/:*?"<>|]/.test(stripExt((v||'').trim())))
+    ? 'Name cannot contain \\ / : * ? " < > |' : '';
+  modalShowErr('');
+  $('modalOverlay').classList.add('active');
+  $('modalInput').focus();
+  $('modalInput').select();
+  modalCallback=async(v)=>{
+    const base=stripExt((v||'').trim());
+    if(!base)return;
+    const to='/recordings/'+base+'.wav';
+    if(to==='/recordings/'+name)return;
+    try{
+      const r=await fetch('/api/move?from='+encodeURIComponent('/recordings/'+name)+'&to='+encodeURIComponent(to),{method:'POST'});
+      if(r.ok){toast('Renamed');loadVoiceNotes()}
+      else alert('Rename failed: '+await r.text());
+    }catch(e){alert('Error: '+e)}
+  };
+}
+
 // ─── Upload ───
 const dropZone=$('dropZone'),fileInput=$('fileInput');
 dropZone.addEventListener('click',()=>fileInput.click());
@@ -661,6 +1022,15 @@ function moveFile(path){
 
 // ─── Create Folder ───
 let modalCallback=null;
+// Optional live validator: (value)=>errorString|''. When set (e.g. for rename),
+// the modal shows the error inline as you type and blocks confirm — no waiting
+// for Enter and losing what you typed.
+let modalValidator=null;
+function modalShowErr(msg){
+  $('modalErr').textContent=msg||'';
+  $('modalErr').classList.toggle('show',!!msg);
+  $('modalOk').disabled=!!msg;
+}
 function createFolder(){
   $('modalTitle').textContent='New Folder';
   $('modalInput').value='';$('modalInput').placeholder='Folder name...';$('modalInput').style.display='';
@@ -676,12 +1046,24 @@ function createFolder(){
     loadFiles();
   };
 }
-function closeModal(){$('modalOverlay').classList.remove('active');$('modalInput').style.display=''}
+function closeModal(){
+  $('modalOverlay').classList.remove('active');
+  $('modalInput').style.display='';
+  $('modalInput').removeAttribute('maxlength');
+  modalValidator=null;
+  modalShowErr('');
+}
 function modalConfirm(){
-  const v=$('modalInput').style.display==='none'?null:$('modalInput').value.trim();
+  const visible=$('modalInput').style.display!=='none';
+  if(visible&&modalValidator){
+    const err=modalValidator($('modalInput').value);
+    if(err){modalShowErr(err);return;}   // blocked: keep the modal + their text
+  }
+  const v=visible?$('modalInput').value.trim():null;
   closeModal();
   if(modalCallback)modalCallback(v);
 }
+$('modalInput').addEventListener('input',()=>{if(modalValidator)modalShowErr(modalValidator($('modalInput').value))});
 $('modalInput').addEventListener('keydown',e=>{if(e.key==='Enter')modalConfirm()});
 
 // ─── Audio Player ───
@@ -781,7 +1163,7 @@ async function togglePl(name){
       h+='<div class="pl-track'+(missing?' missing':'')+'" data-path="'+esc(t)+'" style="'+(missing?'opacity:0.5;':'')+'">'+
         '<span class="num">'+(i+1)+'</span>'+
         '<button class="btn btn-play btn-sm" style="flex-shrink:0;padding:2px 6px" onclick="event.stopPropagation();playTrack(\''+esc(t)+'\',\''+esc(title)+'\',\''+esc(artist)+'\',\'playlist\')">&#9654;</button>'+
-        '<span class="name" title="'+esc(t)+'">'+esc(title)+(artist?' <span style="color:var(--text-secondary);font-size:0.88em">&mdash; '+esc(artist)+'</span>':'')+(missing?' <span style="color:var(--danger);font-size:0.8em">(missing)</span>':'')+'</span>'+
+        '<span class="name" title="'+esc(t)+'">'+esc(title)+(artist?' <span style="color:var(--text-secondary);font-size:0.88em">- '+esc(artist)+'</span>':'')+(missing?' <span style="color:var(--danger);font-size:0.8em">(missing)</span>':'')+'</span>'+
         '<span class="rm" onclick="rmFromPl(\''+esc(name)+'\','+i+')">&#10005;</span>'+
         '</div>';
     });
@@ -1013,6 +1395,7 @@ function detectCaptive(){
 // ─── Init ───
 detectCaptive();
 $('searchRow').classList.add('show'); // table is default view
+setDeviceClock();   // stamp the device clock before the user records anything
 loadFiles();
 loadPlaylists();
 loadWifiStatus();
