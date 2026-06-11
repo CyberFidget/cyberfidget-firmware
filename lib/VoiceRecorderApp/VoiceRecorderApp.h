@@ -25,6 +25,8 @@
 // --- Audio Tools Includes (Diet Mode) ---
 #include "AudioTools/CoreAudio/AudioLogger.h"
 #include "AudioTools/CoreAudio/AudioI2S/I2SStream.h"
+#include "AudioTools/CoreAudio/VolumeStream.h"
+#include "AudioTools/CoreAudio/StreamCopy.h"
 #include "AudioTools/AudioCodecs/CodecWAV.h"
 #include "AudioTools/AudioCodecs/AudioEncoded.h"
 
@@ -32,12 +34,15 @@
 #include "RecNaming.h"
 
 enum VoiceRecState {
-    REC_STATE_HOME,        // tape-deck screen, reels frozen, ready to record
-    REC_STATE_RECORDING,   // reels spinning, ring -> SD
-    REC_STATE_SAVING,      // stop requested: drain ring, patch WAV header
-    REC_STATE_SAVED_NOTE,  // brief "Saved REC_NNNN" note, then HOME
-    REC_STATE_NO_SD,       // "NO TAPE" — card absent or mount failed
-    REC_STATE_FAULT        // unrecoverable init failure (RAM / mic)
+    REC_STATE_HOME,         // tape-deck screen, reels frozen, ready to record
+    REC_STATE_RECORDING,    // reels spinning, ring -> SD
+    REC_STATE_SAVING,       // stop requested: drain ring, patch WAV header
+    REC_STATE_SAVED_NOTE,   // brief "Saved REC_NNNN" note, then HOME
+    REC_STATE_NO_SD,        // "NO TAPE" — card absent or mount failed
+    REC_STATE_FAULT,        // unrecoverable init failure (RAM / mic)
+    REC_STATE_LIST,         // browse recordings (newest first)
+    REC_STATE_PLAYBACK,     // tape-deck "now playing": decode WAV -> speaker
+    REC_STATE_CONFIRM_DELETE// "Delete REC_NNNN?" guard before removing a file
 };
 
 enum VoiceRecStopReason {
@@ -56,9 +61,11 @@ public:
 
     // Static button callbacks (dispatched from AppManager's main loop —
     // same context as update(), so no locking needed against it)
-    static void onButtonEnter(const ButtonEvent& event);
-    static void onButtonBack(const ButtonEvent& event);
-    static void onButtonQuality(const ButtonEvent& event);  // Up: toggle quality
+    static void onButtonEnter(const ButtonEvent& event);  // record / play / pause / confirm
+    static void onButtonBack(const ButtonEvent& event);   // Select: universal "back"
+    static void onButtonUp(const ButtonEvent& event);     // HOME: quality toggle; LIST: cursor up
+    static void onButtonDown(const ButtonEvent& event);   // HOME: open list; LIST: cursor down
+    static void onButtonRight(const ButtonEvent& event);  // LIST: delete (-> confirm)
 
 private:
     static VoiceRecorderApp* instance;
@@ -130,10 +137,55 @@ private:
     uint8_t reelAngle = 0;       // spoke rotation index, advances while recording
     uint8_t lastLedBright = 0xFF;
 
+    // --- Recordings list (parsed from /recordings/index.csv, newest first) ---
+    // Source of truth is index.csv; the list holds the newest REC_LIST_MAX rows
+    // (a card can hold far more memos than fit on screen / in RAM). listTotal is
+    // the full row count so the header can show "cursor/total".
+    struct RecListEntry {
+        char     name[16];       // "REC_0042.wav"
+        char     timestamp[20];  // "2026-06-09T14:23:11" or "" when clock unset
+        uint32_t durationS;
+        uint64_t bytes;
+    };
+    static const int REC_LIST_MAX = 64;
+    RecListEntry listEntries[REC_LIST_MAX];
+    int listCount = 0;           // entries actually loaded (<= REC_LIST_MAX)
+    int listTotal = 0;           // total data rows in index.csv
+    int listCursor = 0;          // selected index into listEntries
+    int listScroll = 0;          // first visible row
+
+    // --- Playback pipeline (REC_STATE_PLAYBACK) ---
+    // File -> EncodedAudioStream(WAVDecoder) -> VolumeStream -> I2SStream port 0,
+    // borrowing port 0 from AudioManager's tone chain via releaseI2S/reclaimI2S
+    // exactly like MusicPlayerApp. The mic capture task keeps port 1 — the two
+    // I2S peripherals are independent, so playback doesn't disturb capture.
+    File playFile;
+    // The decoder is allocated FRESH per playback (not a reused member): it
+    // registers each playback stream into its own notify list and never clears
+    // it, so a persistent decoder would dangle a pointer to the prior (freed)
+    // stream and crash on the next header parse.
+    audio_tools::WAVDecoder*         pWavDecoder = nullptr;
+    audio_tools::EncodedAudioStream* pDecode = nullptr;
+    audio_tools::VolumeStream*       pVol    = nullptr;
+    audio_tools::I2SStream*          pI2sOut = nullptr;
+    audio_tools::StreamCopy*         pCopier = nullptr;
+    bool port0Held = false;          // true while we hold I2S port 0 (release/reclaim balance)
+    bool playbackActive = false;     // true while actively copying (paused = false)
+    bool playbackEof = false;        // reached end of file (reels frozen, progress full)
+    char     playName[16] = "";      // basename of the file playing
+    uint32_t playDurationS = 0;      // total duration (from the list entry) for progress
+    uint64_t playBytes = 0;          // total PCM data bytes (from the list entry)
+    uint32_t playByteRate = 0;       // file's actual byte rate (from WAV header) for the pump budget
+    unsigned long playStartMs = 0;
+    float lastPlayVol = -1.0f;
+    unsigned long volOverlayUntilMs = 0;  // briefly show the volume bar after a slider move
+
     // --- Helpers ---
     void handleEnterEvent(const ButtonEvent& event);
     void handleBackEvent(const ButtonEvent& event);
-    void handleQualityEvent(const ButtonEvent& event);
+    void handleUpEvent(const ButtonEvent& event);    // HOME quality / LIST cursor up
+    void handleDownEvent(const ButtonEvent& event);  // HOME open list / LIST cursor down
+    void handleRightEvent(const ButtonEvent& event); // LIST delete
     void applyQuality(uint8_t q);   // set recQuality + derived rates
     void toggleQuality();           // flip, persist, request I2S re-clock
     bool mountSD();
@@ -152,6 +204,23 @@ private:
     static void captureTaskThunk(void* arg);
     void captureTaskLoop();
 
+    // --- Recordings list (REC_STATE_LIST) ---
+    void enterList();
+    void loadRecordingsList();        // (re)read /recordings/index.csv, newest first
+    void listMoveCursor(int delta);
+
+    // --- Playback (REC_STATE_PLAYBACK) ---
+    void startPlayback(int listIdx);
+    void stopPlayback();              // tear down pipeline, reclaim I2S, back to LIST
+    void restartPlaybackStream();     // replay from the top (after EOF)
+    bool buildPlaybackPipeline(const char* path);
+    void destroyPlaybackPipeline();
+    void updatePlaybackVolume();
+
+    // --- Delete (REC_STATE_CONFIRM_DELETE) ---
+    void performDelete(int listIdx);  // remove wav + index row + transcript sidecar
+    bool deleteIndexRow(const char* filename);
+
     // --- Rendering ---
     void render();
     void drawCassette(bool spinning, bool xOut);
@@ -159,6 +228,9 @@ private:
     void drawSavedNote();
     void drawNoSd();
     void drawFault();
+    void drawList();
+    void drawPlayback();
+    void drawConfirmDelete();
     void updateLed();
 };
 

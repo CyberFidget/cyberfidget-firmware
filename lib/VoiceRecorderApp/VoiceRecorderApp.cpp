@@ -138,6 +138,50 @@ static bool sdExistsAdapter(const char* path, void* /*ctx*/) {
     return SD.exists(path);
 }
 
+// Read one line (up to and excluding '\n') from an open File into buf.
+// Returns false only at EOF with nothing read. index.csv is small, so the
+// byte-at-a-time read is fine; longer-than-buffer lines are truncated (never
+// happens for real rows). Used by the list loader and the delete rewrite.
+static bool readLine(File& f, char* buf, size_t bufSize) {
+    size_t i = 0;
+    bool any = false;
+    int c;
+    while ((c = f.read()) >= 0) {
+        any = true;
+        if (c == '\n') break;
+        if (i + 1 < bufSize) buf[i++] = (char)c;
+    }
+    buf[i] = '\0';
+    return any;
+}
+
+// "M:SS" (minutes are unbounded, so a 90s memo reads "1:30", a long one "83:20").
+static void formatDurationMSS(uint32_t seconds, char* out, size_t n) {
+    snprintf(out, n, "%lu:%02lu", (unsigned long)(seconds / 60),
+             (unsigned long)(seconds % 60));
+}
+
+// "REC_0042.wav" -> "REC_0042": the ".wav" is noise in the tight list/player UI.
+static void nameNoExt(const char* name, char* out, size_t n) {
+    snprintf(out, n, "%s", name);
+    char* dot = strrchr(out, '.');
+    if (dot != nullptr) *dot = '\0';
+}
+
+// "2026-06-09T14:23:11" -> "2026-06-09 14:23" (drop seconds, T becomes a space).
+// Empty input (clock was unset at capture) -> "no date".
+static void formatListTimestamp(const char* iso, char* out, size_t n) {
+    if (iso == nullptr || iso[0] == '\0') {
+        snprintf(out, n, "no date");
+        return;
+    }
+    size_t i = 0;
+    for (; i + 1 < n && i < 16 && iso[i] != '\0'; ++i) {
+        out[i] = (iso[i] == 'T') ? ' ' : iso[i];
+    }
+    out[i] = '\0';
+}
+
 VoiceRecorderApp* VoiceRecorderApp::instance = nullptr;
 VoiceRecorderApp voiceRecorderApp(HAL::buttonManager());
 static auto& display = HAL::displayProxy();
@@ -160,8 +204,16 @@ void VoiceRecorderApp::onButtonBack(const ButtonEvent& event) {
     if (instance) instance->handleBackEvent(event);
 }
 
-void VoiceRecorderApp::onButtonQuality(const ButtonEvent& event) {
-    if (instance) instance->handleQualityEvent(event);
+void VoiceRecorderApp::onButtonUp(const ButtonEvent& event) {
+    if (instance) instance->handleUpEvent(event);
+}
+
+void VoiceRecorderApp::onButtonDown(const ButtonEvent& event) {
+    if (instance) instance->handleDownEvent(event);
+}
+
+void VoiceRecorderApp::onButtonRight(const ButtonEvent& event) {
+    if (instance) instance->handleRightEvent(event);
 }
 
 // =========================================================================
@@ -182,6 +234,17 @@ void VoiceRecorderApp::begin() {
     reelAngle = 0;
     lastLedBright = 0xFF;
     sdMounted = false;
+    listCount = 0;
+    listTotal = 0;
+    listCursor = 0;
+    listScroll = 0;
+    playbackActive = false;
+    playbackEof = false;
+    port0Held = false;
+    lastPlayVol = -1.0f;
+    volOverlayUntilMs = 0;
+    playByteRate = 0;
+    playName[0] = '\0';
     exitRequested.store(false, std::memory_order_relaxed);
     recordingActive.store(false, std::memory_order_relaxed);
     reconfigRequested.store(false, std::memory_order_relaxed);
@@ -204,7 +267,9 @@ void VoiceRecorderApp::begin() {
 
     buttonManager.registerCallback(button_EnterIndex, onButtonEnter);
     buttonManager.registerCallback(button_SelectIndex, onButtonBack);
-    buttonManager.registerCallback(button_UpIndex, onButtonQuality);
+    buttonManager.registerCallback(button_UpIndex, onButtonUp);
+    buttonManager.registerCallback(button_DownIndex, onButtonDown);
+    buttonManager.registerCallback(button_RightIndex, onButtonRight);
 
     // AudioManager's metering task only holds I2S port 1 while its run flag
     // is set; clear it and give the task (<=5ms poll) time to close the port.
@@ -274,8 +339,9 @@ void VoiceRecorderApp::begin() {
 void VoiceRecorderApp::update() {
     frameCounter++;
 
-    // A recording in progress must never be truncated by auto-sleep.
-    if (state == REC_STATE_RECORDING || state == REC_STATE_SAVING) {
+    // A recording or active playback must never be truncated by auto-sleep.
+    if (state == REC_STATE_RECORDING || state == REC_STATE_SAVING ||
+        (state == REC_STATE_PLAYBACK && playbackActive)) {
         millis_APP_LASTINTERACTION = millis_NOW;
     }
 
@@ -294,6 +360,27 @@ void VoiceRecorderApp::update() {
         }
     } else if (state == REC_STATE_SAVED_NOTE) {
         if (millis_NOW >= noteUntilMs) dismissNote();
+    } else if (state == REC_STATE_PLAYBACK) {
+        // Pump the decode pipeline while playing. update() runs once per ~20ms
+        // tick and one copy() only moves DEFAULT_BUFFER_SIZE (1024B) — fine at
+        // Standard (640B/tick) but starves High (1920B/tick), which is the
+        // jitter. Push a full tick's worth + headroom; the blocking I2S write
+        // self-paces, so the loop can't outrun real time. EOF = the source is
+        // drained AND copy() moved nothing; freeze on screen (reels stop) and
+        // let the user replay or back out (the DMA tail still plays out).
+        if (playbackActive && !playbackEof && pCopier != nullptr) {
+            updatePlaybackVolume();
+            uint32_t budget = (playByteRate > 0) ? (playByteRate / 40) : 2048;  // ~25ms
+            size_t movedTotal = 0, moved;
+            do {
+                moved = pCopier->copy();
+                movedTotal += moved;
+            } while (moved > 0 && movedTotal < budget);
+            if (movedTotal == 0 && playFile.available() == 0) {
+                playbackEof = true;
+                playbackActive = false;
+            }
+        }
     }
 
     updateLed();
@@ -312,6 +399,11 @@ void VoiceRecorderApp::end() {
         closeRecordingFile();
     }
 
+    // Exiting mid-playback (Back to menu, or a forced app switch): tear the
+    // playback pipeline down and hand I2S port 0 back to AudioManager so tone
+    // audio works in the next app. No-op if we weren't playing.
+    destroyPlaybackPipeline();
+
     exitRequested.store(true, std::memory_order_release);
     unsigned long t0 = millis();
     while (!captureTaskExited.load(std::memory_order_acquire) &&
@@ -328,6 +420,8 @@ void VoiceRecorderApp::end() {
     buttonManager.unregisterCallback(button_EnterIndex);
     buttonManager.unregisterCallback(button_SelectIndex);
     buttonManager.unregisterCallback(button_UpIndex);
+    buttonManager.unregisterCallback(button_DownIndex);
+    buttonManager.unregisterCallback(button_RightIndex);
 
     if (ringStorage != nullptr) {
         free(ringStorage);
@@ -375,6 +469,23 @@ void VoiceRecorderApp::handleEnterEvent(const ButtonEvent& event) {
             if (event.eventType == ButtonEvent_Pressed) enterHomeOrNoSd();
             break;
 
+        case REC_STATE_LIST:
+            if (event.eventType == ButtonEvent_Pressed && listCount > 0) {
+                startPlayback(listCursor);
+            }
+            break;
+
+        case REC_STATE_PLAYBACK:
+            if (event.eventType == ButtonEvent_Pressed) {
+                if (playbackEof) restartPlaybackStream();   // replay from the top
+                else playbackActive = !playbackActive;      // pause / resume
+            }
+            break;
+
+        case REC_STATE_CONFIRM_DELETE:
+            if (event.eventType == ButtonEvent_Pressed) performDelete(listCursor);
+            break;
+
         default:
             break;
     }
@@ -396,6 +507,18 @@ void VoiceRecorderApp::handleBackEvent(const ButtonEvent& event) {
             dismissNote();
             break;
 
+        case REC_STATE_LIST:
+            state = REC_STATE_HOME;     // list is one step from HOME; go back to it
+            break;
+
+        case REC_STATE_PLAYBACK:
+            stopPlayback();             // tear down audio, reclaim I2S, back to LIST
+            break;
+
+        case REC_STATE_CONFIRM_DELETE:
+            state = REC_STATE_LIST;     // cancel the delete
+            break;
+
         case REC_STATE_HOME:
         case REC_STATE_NO_SD:
         case REC_STATE_FAULT:
@@ -406,11 +529,27 @@ void VoiceRecorderApp::handleBackEvent(const ButtonEvent& event) {
     }
 }
 
-// Up button: flip Standard <-> High, but only from HOME — never mid-recording
-// (re-clocking the port underneath a live capture would corrupt the file).
-void VoiceRecorderApp::handleQualityEvent(const ButtonEvent& event) {
+// Up button: HOME flips quality (Standard <-> High); LIST moves the cursor up.
+// Quality is HOME-only — never mid-recording (re-clocking the port underneath
+// a live capture would corrupt the file).
+void VoiceRecorderApp::handleUpEvent(const ButtonEvent& event) {
     if (event.eventType != ButtonEvent_Pressed) return;
     if (state == REC_STATE_HOME) toggleQuality();
+    else if (state == REC_STATE_LIST) listMoveCursor(-1);
+}
+
+// Down button: HOME opens the recordings list (one step away, recorder stays
+// HOME); LIST moves the cursor down.
+void VoiceRecorderApp::handleDownEvent(const ButtonEvent& event) {
+    if (event.eventType != ButtonEvent_Pressed) return;
+    if (state == REC_STATE_HOME) enterList();
+    else if (state == REC_STATE_LIST) listMoveCursor(+1);
+}
+
+// Right button: from the list, delete the selected recording (via confirm).
+void VoiceRecorderApp::handleRightEvent(const ButtonEvent& event) {
+    if (event.eventType != ButtonEvent_Pressed) return;
+    if (state == REC_STATE_LIST && listCount > 0) state = REC_STATE_CONFIRM_DELETE;
 }
 
 // =========================================================================
@@ -732,6 +871,299 @@ void VoiceRecorderApp::dismissNote() {
 }
 
 // =========================================================================
+// Recordings list (REC_STATE_LIST)
+// =========================================================================
+void VoiceRecorderApp::enterList() {
+    if (!sdMounted && !mountSD()) {
+        state = REC_STATE_NO_SD;
+        return;
+    }
+    loadRecordingsList();
+    listCursor = 0;
+    listScroll = 0;
+    state = REC_STATE_LIST;
+}
+
+// Parse /recordings/index.csv into listEntries[], newest first. index.csv is
+// append-only in capture order (oldest first), so the newest rows are at the
+// tail: pass 1 counts data rows, pass 2 keeps the last REC_LIST_MAX and reverses
+// them in place. Rows that fail to parse (the header, a torn partial write) are
+// skipped, so a half-written final row never corrupts the list.
+void VoiceRecorderApp::loadRecordingsList() {
+    listCount = 0;
+    listTotal = 0;
+
+    char indexPath[40];
+    snprintf(indexPath, sizeof(indexPath), "%s/index.csv",
+             RecNaming::kRecordingsDir);
+    if (!SD.exists(indexPath)) return;
+
+    char line[128];
+    RecListEntry e;
+
+    // Pass 1: count valid data rows.
+    int total = 0;
+    {
+        File f = SD.open(indexPath, FILE_READ);
+        if (!f) return;
+        while (readLine(f, line, sizeof(line))) {
+            if (RecNaming::parseIndexRow(line, e.name, sizeof(e.name),
+                                         e.timestamp, sizeof(e.timestamp),
+                                         &e.durationS, &e.bytes)) {
+                total++;
+            }
+        }
+        f.close();
+    }
+    listTotal = total;
+    int skip = (total > REC_LIST_MAX) ? (total - REC_LIST_MAX) : 0;
+
+    // Pass 2: load the kept (newest) rows in file order, then reverse.
+    {
+        File f = SD.open(indexPath, FILE_READ);
+        if (!f) return;
+        int seen = 0, k = 0;
+        while (k < REC_LIST_MAX && readLine(f, line, sizeof(line))) {
+            if (!RecNaming::parseIndexRow(line, e.name, sizeof(e.name),
+                                          e.timestamp, sizeof(e.timestamp),
+                                          &e.durationS, &e.bytes)) {
+                continue;
+            }
+            if (seen++ < skip) continue;
+            listEntries[k++] = e;   // oldest-first for now
+        }
+        f.close();
+        for (int i = 0; i < k / 2; ++i) {   // reverse -> newest-first
+            RecListEntry t = listEntries[i];
+            listEntries[i] = listEntries[k - 1 - i];
+            listEntries[k - 1 - i] = t;
+        }
+        listCount = k;
+    }
+}
+
+void VoiceRecorderApp::listMoveCursor(int delta) {
+    if (listCount == 0) return;
+    listCursor += delta;
+    if (listCursor < 0) listCursor = 0;
+    if (listCursor >= listCount) listCursor = listCount - 1;
+}
+
+// =========================================================================
+// Playback (REC_STATE_PLAYBACK) — File -> WAV decode -> volume -> I2S port 0
+// =========================================================================
+void VoiceRecorderApp::startPlayback(int idx) {
+    if (idx < 0 || idx >= listCount) return;
+    const RecListEntry& e = listEntries[idx];
+
+    char path[40];
+    snprintf(path, sizeof(path), "%s/%s", RecNaming::kRecordingsDir, e.name);
+    if (!buildPlaybackPipeline(path)) {
+        ESP_LOGW(TAG_VREC, "playback open failed: %s", path);
+        destroyPlaybackPipeline();      // unwind any half-built pipeline + I2S
+        state = REC_STATE_LIST;
+        return;
+    }
+
+    snprintf(playName, sizeof(playName), "%s", e.name);
+    playDurationS = e.durationS;
+    playBytes = e.bytes;
+    playStartMs = millis_NOW;
+    playbackEof = false;
+    playbackActive = true;
+    state = REC_STATE_PLAYBACK;
+    ESP_LOGI(TAG_VREC, "playback -> %s", path);
+}
+
+void VoiceRecorderApp::stopPlayback() {
+    destroyPlaybackPipeline();
+    playbackActive = false;
+    playbackEof = false;
+    state = REC_STATE_LIST;
+}
+
+// Replay from the top after EOF. Tear the pipeline down and rebuild it from the
+// same file — the same proven path as a fresh play, so the decoder/notify state
+// is clean (a lightweight seek+re-begin can't reset EncodedAudioStream once its
+// internal 'active' flag is set).
+void VoiceRecorderApp::restartPlaybackStream() {
+    char path[40];
+    snprintf(path, sizeof(path), "%s/%s", RecNaming::kRecordingsDir, playName);
+    destroyPlaybackPipeline();
+    if (!buildPlaybackPipeline(path)) {
+        ESP_LOGW(TAG_VREC, "replay rebuild failed: %s", path);
+        destroyPlaybackPipeline();
+        state = REC_STATE_LIST;
+        return;
+    }
+    playbackEof = false;
+    playbackActive = true;
+    playStartMs = millis_NOW;
+}
+
+bool VoiceRecorderApp::buildPlaybackPipeline(const char* path) {
+    playFile = SD.open(path, FILE_READ);
+    if (!playFile) return false;
+
+    // Read the real sample rate + channels straight from the WAV header so the
+    // DAC is clocked correctly from the first sample. Relying on the decoder's
+    // mid-stream re-notify made High files play slow (the I2S started at the
+    // placeholder rate and the restart didn't always take). Canonical PCM WAV:
+    // num_channels @ offset 22 (u16 LE), sample_rate @ offset 24 (u32 LE).
+    uint32_t fileRate = recSampleRate;   // fallback if the header read fails
+    uint16_t fileChannels = 1;
+    {
+        uint8_t b[4];
+        if (playFile.seek(22) && playFile.read(b, 2) == 2) {
+            uint16_t ch = (uint16_t)(b[0] | (b[1] << 8));
+            if (ch == 1 || ch == 2) fileChannels = ch;
+        }
+        if (playFile.seek(24) && playFile.read(b, 4) == 4) {
+            uint32_t r = (uint32_t)b[0] | ((uint32_t)b[1] << 8) |
+                         ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+            if (r >= 8000 && r <= 96000) fileRate = r;   // sanity clamp
+        }
+        playFile.seek(0);   // rewind for the decoder
+    }
+    playByteRate = fileRate * fileChannels * 2;   // 16-bit samples
+
+    // Borrow I2S port 0 from AudioManager's tone chain (MusicPlayerApp pattern).
+    HAL::audioManager().releaseI2S();
+    port0Held = true;
+
+    pI2sOut = new audio_tools::I2SStream();
+    auto cfg = pI2sOut->defaultConfig(audio_tools::TX_MODE);
+    cfg.port_no         = 0;
+    cfg.i2s_format      = audio_tools::I2S_LSB_FORMAT;  // MAX98357A DAC, MusicPlayer map
+    cfg.pin_ws          = 27;
+    cfg.pin_bck         = 26;
+    cfg.pin_data        = 14;
+    cfg.sample_rate     = fileRate;       // the file's actual rate, set up front
+    cfg.channels        = fileChannels;   // mono recordings; matches the header
+    cfg.bits_per_sample = 16;
+    cfg.buffer_count    = 8;
+    cfg.buffer_size     = 1024;   // 8KB DMA = ~85ms cushion at High, absorbs SD-read jitter
+    if (!pI2sOut->begin(cfg)) {
+        ESP_LOGE(TAG_VREC, "I2S port 0 open failed");
+        return false;   // caller calls destroyPlaybackPipeline() to unwind
+    }
+
+    // Volume wrapper between the decoder and the DAC (slider-controlled).
+    pVol = new audio_tools::VolumeStream(*pI2sOut);
+    auto vcfg = pVol->defaultConfig();
+    vcfg.sample_rate     = cfg.sample_rate;
+    vcfg.channels        = cfg.channels;
+    vcfg.bits_per_sample = 16;
+    pVol->begin(vcfg);
+    float vol = (100.0f - sliderPosition_Percentage_Filtered) / 100.0f;
+    if (vol < 0.0f) vol = 0.0f;
+    if (vol > 1.0f) vol = 1.0f;
+    pVol->setVolume(vol);
+    lastPlayVol = vol;
+
+    // Decode chain: bytes from the file are written into pDecode, which decodes
+    // WAV -> PCM and pushes it to pVol -> pI2sOut. Decoder is allocated fresh so
+    // its notify list starts empty (see the pWavDecoder comment in the header).
+    pWavDecoder = new audio_tools::WAVDecoder();
+    pWavDecoder->begin();
+    pDecode = new audio_tools::EncodedAudioStream(pVol, pWavDecoder);
+    pDecode->begin();
+
+    pCopier = new audio_tools::StreamCopy(*pDecode, playFile);
+    return true;
+}
+
+void VoiceRecorderApp::destroyPlaybackPipeline() {
+    if (pCopier != nullptr)     { delete pCopier; pCopier = nullptr; }
+    // pDecode references the decoder (its end() calls decoder->end()), so tear
+    // the stream down before freeing the decoder.
+    if (pDecode != nullptr)     { pDecode->end(); delete pDecode; pDecode = nullptr; }
+    if (pWavDecoder != nullptr) { delete pWavDecoder; pWavDecoder = nullptr; }
+    if (pVol != nullptr)        { pVol->end();    delete pVol;    pVol = nullptr; }
+    if (pI2sOut != nullptr)     { pI2sOut->end(); delete pI2sOut; pI2sOut = nullptr; }
+    if (playFile) playFile.close();
+    playByteRate = 0;
+    if (port0Held) {
+        HAL::audioManager().reclaimI2S();   // give the tone chain its port back
+        port0Held = false;
+    }
+}
+
+void VoiceRecorderApp::updatePlaybackVolume() {
+    if (pVol == nullptr) return;
+    float vol = (100.0f - sliderPosition_Percentage_Filtered) / 100.0f;
+    if (vol < 0.0f) vol = 0.0f;
+    if (vol > 1.0f) vol = 1.0f;
+    float d = vol - lastPlayVol;
+    if (d < 0.0f) d = -d;
+    if (d > 0.03f) {
+        pVol->setVolume(vol);
+        lastPlayVol = vol;
+        volOverlayUntilMs = millis_NOW + 1500;   // flash the volume bar in the UI
+    }
+}
+
+// =========================================================================
+// Delete (REC_STATE_CONFIRM_DELETE) — wav + index.csv row + transcript sidecar
+// =========================================================================
+void VoiceRecorderApp::performDelete(int idx) {
+    if (idx < 0 || idx >= listCount) { state = REC_STATE_LIST; return; }
+    RecListEntry e = listEntries[idx];   // copy before loadRecordingsList() reshuffles
+
+    char path[40];
+    snprintf(path, sizeof(path), "%s/%s", RecNaming::kRecordingsDir, e.name);
+    SD.remove(path);
+
+    // Transcript sidecar, if one exists. NOTE: on-device transcription is not
+    // built yet, so the sidecar extension is not fixed — ".txt" is a provisional
+    // guess. Revisit this delete when the transcription feature lands its format.
+    char base[20];
+    nameNoExt(e.name, base, sizeof(base));
+    char sidecar[44];
+    snprintf(sidecar, sizeof(sidecar), "%s/%s.txt", RecNaming::kRecordingsDir, base);
+    if (SD.exists(sidecar)) SD.remove(sidecar);
+
+    deleteIndexRow(e.name);
+
+    loadRecordingsList();
+    if (listCursor >= listCount) listCursor = (listCount > 0) ? listCount - 1 : 0;
+    if (listScroll > listCursor) listScroll = listCursor;
+    refreshFreeBytes();   // the freed space changes the HOME "free tape" readout
+    state = REC_STATE_LIST;
+}
+
+// Rewrite index.csv without the row whose filename field matches `filename`.
+// Crash-safe: build index.tmp, then swap it in. The header and every other row
+// pass through verbatim; matching is exact (prefix-collision safe) via the pure
+// RecNaming::indexRowMatchesFilename helper.
+bool VoiceRecorderApp::deleteIndexRow(const char* filename) {
+    char indexPath[40], tmpPath[44];
+    snprintf(indexPath, sizeof(indexPath), "%s/index.csv",
+             RecNaming::kRecordingsDir);
+    snprintf(tmpPath, sizeof(tmpPath), "%s/index.tmp",
+             RecNaming::kRecordingsDir);
+    if (!SD.exists(indexPath)) return false;
+
+    File in = SD.open(indexPath, FILE_READ);
+    if (!in) return false;
+    if (SD.exists(tmpPath)) SD.remove(tmpPath);
+    File out = SD.open(tmpPath, FILE_WRITE);
+    if (!out) { in.close(); return false; }
+
+    char line[128];
+    while (readLine(in, line, sizeof(line))) {
+        if (RecNaming::indexRowMatchesFilename(line, filename)) continue;  // drop it
+        out.print(line);
+        out.write('\n');
+    }
+    in.close();
+    out.close();
+
+    SD.remove(indexPath);
+    return SD.rename(tmpPath, indexPath);
+}
+
+// =========================================================================
 // Capture task (core 0) — reads I2S, publishes VU peak, feeds the ring
 // =========================================================================
 void VoiceRecorderApp::captureTaskThunk(void* arg) {
@@ -858,6 +1290,15 @@ void VoiceRecorderApp::render() {
         case REC_STATE_FAULT:
             drawFault();
             break;
+        case REC_STATE_LIST:
+            drawList();
+            break;
+        case REC_STATE_PLAYBACK:
+            drawPlayback();
+            break;
+        case REC_STATE_CONFIRM_DELETE:
+            drawConfirmDelete();
+            break;
     }
     display.display();
 }
@@ -906,10 +1347,16 @@ void VoiceRecorderApp::drawHomeOrRecording() {
     } else if (state == REC_STATE_SAVING) {
         display.drawString(64, STRIP_TEXT_Y, "STOP");
     } else {
-        // The record hint lives here (full strip width) — its old
-        // bottom-right spot is clipped by the enclosure corner
-        display.drawString(64, STRIP_TEXT_Y,
-                           ((millis_NOW / 2000) & 1) ? "ENTER = REC" : "READY");
+        // The hint lives here (full strip width) — its old bottom-right spot
+        // is clipped by the enclosure corner. Cycle in the list affordance so
+        // "DOWN = NOTES" is discoverable from HOME.
+        const char* hint;
+        switch ((millis_NOW / 2000) % 3) {
+            case 0:  hint = "ENTER = REC";  break;
+            case 1:  hint = "DOWN = NOTES"; break;
+            default: hint = "READY";        break;
+        }
+        display.drawString(64, STRIP_TEXT_Y, hint);
     }
 
     // High-quality tag tucked into the cassette's lower-right corner (right
@@ -1036,4 +1483,126 @@ void VoiceRecorderApp::drawFault() {
     display.setFont(ArialMT_Plain_10);
     display.drawString(64, 30, faultMsg != nullptr ? faultMsg : "UNKNOWN");
     display.drawString(64, 47, "SELECT = exit");
+}
+
+// Recordings list: header (title + cursor/total), 3-row scrolling window with
+// the selected row inverted, and a footer with the selected memo's timestamp
+// and the delete affordance. Header/footer text is inset from the corners the
+// enclosure window clips (~12px triangles); the row band uses the full width.
+void VoiceRecorderApp::drawList() {
+    display.setFont(ArialMT_Plain_10);
+
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.drawString(3, 1, "RECORDINGS");
+    if (listTotal > 0) {
+        char hdr[16];
+        snprintf(hdr, sizeof(hdr), "%d/%d", listCursor + 1, listTotal);
+        display.setTextAlignment(TEXT_ALIGN_RIGHT);
+        display.drawString(114, 1, hdr);
+    }
+    display.drawLine(0, 12, 127, 12);
+
+    if (listCount == 0) {
+        display.setTextAlignment(TEXT_ALIGN_CENTER);
+        display.drawString(64, 26, "No recordings yet");
+        display.drawString(64, 42, "SELECT = back");
+        return;
+    }
+
+    const int visible = 3;
+    const int rowH = 13;
+    if (listCursor < listScroll) listScroll = listCursor;
+    if (listCursor >= listScroll + visible) listScroll = listCursor - visible + 1;
+
+    for (int i = 0; i < visible; ++i) {
+        int idx = listScroll + i;
+        if (idx >= listCount) break;
+        int y = 14 + i * rowH;
+        bool sel = (idx == listCursor);
+        if (sel) {
+            display.fillRect(0, y - 1, 128, rowH);
+            display.setColor(BLACK);
+        }
+        char nm[16];
+        nameNoExt(listEntries[idx].name, nm, sizeof(nm));
+        display.setTextAlignment(TEXT_ALIGN_LEFT);
+        display.drawString(2, y, nm);
+        char dur[12];
+        formatDurationMSS(listEntries[idx].durationS, dur, sizeof(dur));
+        display.setTextAlignment(TEXT_ALIGN_RIGHT);
+        display.drawString(126, y, dur);
+        if (sel) display.setColor(WHITE);
+    }
+
+    display.drawLine(0, 52, 127, 52);
+    char ts[20];
+    formatListTimestamp(listEntries[listCursor].timestamp, ts, sizeof(ts));
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.drawString(3, 53, ts);
+    display.setTextAlignment(TEXT_ALIGN_RIGHT);
+    display.drawString(114, 53, "[>]del");
+}
+
+// Now-playing: the tape deck with reels spinning while audio flows (frozen on
+// pause / at END), the file name in the label strip, and elapsed/total + a
+// progress bar below — replaced for ~1.5s by a volume bar after a slider move.
+void VoiceRecorderApp::drawPlayback() {
+    drawCassette(playbackActive, false);
+
+    display.setFont(ArialMT_Plain_10);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    char nm[16];
+    nameNoExt(playName, nm, sizeof(nm));
+    if (playbackEof)            display.drawString(64, STRIP_TEXT_Y, "END");
+    else if (!playbackActive)   display.drawString(64, STRIP_TEXT_Y, "PAUSED");
+    else                        display.drawString(64, STRIP_TEXT_Y, nm);
+
+    // Byte-based progress (the decoder/I2S buffer lag is negligible for a bar).
+    uint64_t pos = playFile ? (uint64_t)playFile.position() : 0;
+    uint64_t dataPos = (pos > 44) ? (pos - 44) : 0;
+    if (playbackEof && playBytes > 0) dataPos = playBytes;
+    if (playBytes > 0 && dataPos > playBytes) dataPos = playBytes;
+    uint32_t pct      = (playBytes > 0) ? (uint32_t)(dataPos * 100 / playBytes) : 0;
+    uint32_t elapsedS = (playBytes > 0)
+        ? (uint32_t)((uint64_t)playDurationS * dataPos / playBytes) : 0;
+
+    if (millis_NOW < volOverlayUntilMs) {
+        int volPct = (int)(100.0f - sliderPosition_Percentage_Filtered);
+        if (volPct < 0)   volPct = 0;
+        if (volPct > 100) volPct = 100;
+        display.setTextAlignment(TEXT_ALIGN_LEFT);
+        display.drawString(2, 40, "VOL");
+        char v[6];
+        snprintf(v, sizeof(v), "%d", volPct);
+        display.setTextAlignment(TEXT_ALIGN_RIGHT);
+        display.drawString(126, 40, v);
+        display.drawRect(14, 53, 100, 6);
+        uint16_t fill = (uint16_t)(volPct * 96 / 100);
+        if (fill > 0) display.fillRect(16, 55, fill, 2);
+    } else {
+        char el[12], tot[12];
+        formatDurationMSS(elapsedS, el, sizeof(el));
+        formatDurationMSS(playDurationS, tot, sizeof(tot));
+        display.setTextAlignment(TEXT_ALIGN_LEFT);
+        display.drawString(2, 40, el);
+        display.setTextAlignment(TEXT_ALIGN_RIGHT);
+        display.drawString(126, 40, tot);
+        display.drawRect(14, 53, 100, 6);
+        uint16_t fill = (uint16_t)(pct * 96 / 100);
+        if (fill > 0) display.fillRect(16, 55, fill, 2);
+    }
+}
+
+void VoiceRecorderApp::drawConfirmDelete() {
+    display.setFont(ArialMT_Plain_16);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(64, 6, "Delete?");
+
+    display.setFont(ArialMT_Plain_10);
+    if (listCursor >= 0 && listCursor < listCount) {
+        char nm[16];
+        nameNoExt(listEntries[listCursor].name, nm, sizeof(nm));
+        display.drawString(64, 28, nm);
+    }
+    display.drawString(64, 46, "ENTER=yes   SEL=no");
 }

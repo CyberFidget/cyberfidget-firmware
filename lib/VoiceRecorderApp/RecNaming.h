@@ -17,6 +17,7 @@
 #include <cinttypes>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <ctime>
 
 namespace RecNaming {
@@ -83,6 +84,80 @@ inline int formatIndexRow(char* out, size_t outSize, const char* filename,
                           filename, stamp, durationSeconds, bytes);
     if (n < 0 || (size_t)n >= outSize) return -1;
     return n;
+}
+
+// True if the first CSV field of `line` (up to the first comma or end of the
+// line) equals `filename` exactly. Used to drop a single row from index.csv on
+// delete. Prefix-collision safe: the row for "REC_0010.wav" never matches a
+// delete of "REC_0001.wav", because the whole field must equal the whole name.
+inline bool indexRowMatchesFilename(const char* line, const char* filename) {
+    if (line == nullptr || filename == nullptr) return false;
+    size_t fieldLen = 0;
+    while (line[fieldLen] != '\0' && line[fieldLen] != ',' &&
+           line[fieldLen] != '\r' && line[fieldLen] != '\n') {
+        ++fieldLen;
+    }
+    size_t nameLen = std::strlen(filename);
+    return fieldLen == nameLen && std::strncmp(line, filename, nameLen) == 0;
+}
+
+// Parse [begin, end) as an unsigned decimal. Returns false if the range is
+// empty or contains any non-digit. (Internal helper for parseIndexRow.)
+inline bool parseDigits(const char* begin, const char* end, uint64_t* out) {
+    if (begin >= end) return false;
+    uint64_t v = 0;
+    for (const char* p = begin; p < end; ++p) {
+        if (*p < '0' || *p > '9') return false;
+        v = v * 10 + (uint64_t)(*p - '0');
+    }
+    *out = v;
+    return true;
+}
+
+// Parse one index.csv DATA row ("name,timestamp,duration_s,bytes"). Copies the
+// filename and timestamp out (timestamp may be empty when the clock was unset)
+// and returns the numeric duration + byte count. Returns false for the header
+// line, a blank line, or any malformed row (wrong field count, a name or
+// timestamp that overflows its buffer, or a non-numeric number) — callers use
+// the false return to skip the header and to tolerate a partially written row.
+inline bool parseIndexRow(const char* line,
+                          char* nameOut, size_t nameSize,
+                          char* tsOut, size_t tsSize,
+                          uint32_t* durationOut, uint64_t* bytesOut) {
+    if (line == nullptr) return false;
+    const char* c1 = std::strchr(line, ',');
+    if (c1 == nullptr) return false;
+    const char* c2 = std::strchr(c1 + 1, ',');
+    if (c2 == nullptr) return false;
+    const char* c3 = std::strchr(c2 + 1, ',');
+    if (c3 == nullptr) return false;
+
+    // duration field [c2+1, c3) — all digits, non-empty (rejects the header's
+    // literal "duration_s").
+    uint64_t duration = 0;
+    if (!parseDigits(c2 + 1, c3, &duration)) return false;
+
+    // bytes field [c3+1, end-of-line) — all digits, non-empty.
+    const char* bstart = c3 + 1;
+    const char* bend = bstart;
+    while (*bend != '\0' && *bend != '\r' && *bend != '\n') ++bend;
+    uint64_t bytes = 0;
+    if (!parseDigits(bstart, bend, &bytes)) return false;
+
+    // name [line, c1) — non-empty, fits.
+    size_t nameLen = (size_t)(c1 - line);
+    if (nameLen == 0 || nameLen >= nameSize) return false;
+    // timestamp [c1+1, c2) — may be empty, must fit.
+    size_t tsLen = (size_t)(c2 - (c1 + 1));
+    if (tsLen >= tsSize) return false;
+
+    std::memcpy(nameOut, line, nameLen);
+    nameOut[nameLen] = '\0';
+    std::memcpy(tsOut, c1 + 1, tsLen);
+    tsOut[tsLen] = '\0';
+    *durationOut = (uint32_t)duration;
+    *bytesOut = bytes;
+    return true;
 }
 
 } // namespace RecNaming

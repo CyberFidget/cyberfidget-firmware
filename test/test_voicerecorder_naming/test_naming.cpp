@@ -148,6 +148,155 @@ void test_index_row_small_buffer_fails_cleanly(void) {
                                   7, 224000ull));
 }
 
+// --- parseIndexRow (read-back for the on-device recordings list) --------
+
+void test_parse_index_row_valid(void) {
+    char name[16], ts[20];
+    uint32_t dur;
+    uint64_t bytes;
+    TEST_ASSERT_TRUE(RecNaming::parseIndexRow(
+        "REC_0042.wav,2026-06-09T14:23:11,123,3936044\n",
+        name, sizeof(name), ts, sizeof(ts), &dur, &bytes));
+    TEST_ASSERT_EQUAL_STRING("REC_0042.wav", name);
+    TEST_ASSERT_EQUAL_STRING("2026-06-09T14:23:11", ts);
+    TEST_ASSERT_EQUAL_UINT32(123, dur);
+    TEST_ASSERT_EQUAL_UINT64(3936044ull, bytes);
+}
+
+void test_parse_index_row_blank_timestamp(void) {
+    char name[16], ts[20];
+    uint32_t dur;
+    uint64_t bytes;
+    TEST_ASSERT_TRUE(RecNaming::parseIndexRow(
+        "REC_0001.wav,,7,224000\n",
+        name, sizeof(name), ts, sizeof(ts), &dur, &bytes));
+    TEST_ASSERT_EQUAL_STRING("REC_0001.wav", name);
+    TEST_ASSERT_EQUAL_STRING("", ts);
+    TEST_ASSERT_EQUAL_UINT32(7, dur);
+    TEST_ASSERT_EQUAL_UINT64(224000ull, bytes);
+}
+
+// The final row of a file that didn't end in '\n' must still parse.
+void test_parse_index_row_no_trailing_newline(void) {
+    char name[16], ts[20];
+    uint32_t dur;
+    uint64_t bytes;
+    TEST_ASSERT_TRUE(RecNaming::parseIndexRow(
+        "REC_0009.wav,,1,32000",
+        name, sizeof(name), ts, sizeof(ts), &dur, &bytes));
+    TEST_ASSERT_EQUAL_STRING("REC_0009.wav", name);
+    TEST_ASSERT_EQUAL_UINT64(32000ull, bytes);
+}
+
+void test_parse_index_row_rejects_header(void) {
+    char name[16], ts[20];
+    uint32_t dur;
+    uint64_t bytes;
+    TEST_ASSERT_FALSE(RecNaming::parseIndexRow(
+        RecNaming::indexHeader(),
+        name, sizeof(name), ts, sizeof(ts), &dur, &bytes));
+}
+
+void test_parse_index_row_rejects_short_row(void) {
+    char name[16], ts[20];
+    uint32_t dur;
+    uint64_t bytes;
+    TEST_ASSERT_FALSE(RecNaming::parseIndexRow(
+        "REC_0001.wav,,7\n",   // only three fields
+        name, sizeof(name), ts, sizeof(ts), &dur, &bytes));
+}
+
+void test_parse_index_row_rejects_nonnumeric(void) {
+    char name[16], ts[20];
+    uint32_t dur;
+    uint64_t bytes;
+    TEST_ASSERT_FALSE(RecNaming::parseIndexRow(
+        "REC_0001.wav,,x,224000\n",   // non-numeric duration
+        name, sizeof(name), ts, sizeof(ts), &dur, &bytes));
+}
+
+// A name that overflows the caller's buffer is rejected, not truncated.
+void test_parse_index_row_rejects_overflow_name(void) {
+    char name[8], ts[20];   // too small for "REC_0042.wav"
+    uint32_t dur;
+    uint64_t bytes;
+    TEST_ASSERT_FALSE(RecNaming::parseIndexRow(
+        "REC_0042.wav,,1,32000\n",
+        name, sizeof(name), ts, sizeof(ts), &dur, &bytes));
+}
+
+// --- indexRowMatchesFilename / delete-row behavior ----------------------
+
+void test_index_row_matches_exact(void) {
+    TEST_ASSERT_TRUE(RecNaming::indexRowMatchesFilename(
+        "REC_0042.wav,2026-06-09T14:23:11,123,3936044\n", "REC_0042.wav"));
+}
+
+void test_index_row_matches_prefix_collision_safe(void) {
+    // Deleting REC_0001.wav must NOT match the row for REC_0010.wav, in either
+    // direction, and a target that is a prefix of the field must not match.
+    TEST_ASSERT_FALSE(RecNaming::indexRowMatchesFilename(
+        "REC_0010.wav,,1,32000\n", "REC_0001.wav"));
+    TEST_ASSERT_FALSE(RecNaming::indexRowMatchesFilename(
+        "REC_0001.wav,,1,32000\n", "REC_0010.wav"));
+    TEST_ASSERT_FALSE(RecNaming::indexRowMatchesFilename(
+        "REC_0001.wav,,1,32000\n", "REC_0001"));
+}
+
+void test_index_row_matches_rejects_header(void) {
+    TEST_ASSERT_FALSE(RecNaming::indexRowMatchesFilename(
+        RecNaming::indexHeader(), "REC_0001.wav"));
+}
+
+// A stray line with no comma still compares the whole token (up to newline).
+void test_index_row_matches_no_comma_line(void) {
+    TEST_ASSERT_TRUE(RecNaming::indexRowMatchesFilename(
+        "REC_0007.wav\n", "REC_0007.wav"));
+}
+
+// Mirrors the app's index.csv rewrite-on-delete: keep the header and every row
+// whose filename != the deleted one; drop exactly the matching row.
+void test_delete_row_filters_only_matching(void) {
+    const char* lines[] = {
+        "filename,timestamp,duration_s,bytes",
+        "REC_0001.wav,,1,32000",
+        "REC_0002.wav,2026-06-09T14:23:11,123,3936044",
+        "REC_0010.wav,,5,160000",
+    };
+    const int n = sizeof(lines) / sizeof(lines[0]);
+    const char* target = "REC_0002.wav";
+
+    int kept = 0;
+    bool keptHeader = false, kept1 = false, kept10 = false, keptTarget = false;
+    for (int i = 0; i < n; ++i) {
+        if (RecNaming::indexRowMatchesFilename(lines[i], target)) continue;
+        kept++;
+        if (i == 0) keptHeader = true;
+        if (RecNaming::indexRowMatchesFilename(lines[i], "REC_0001.wav")) kept1 = true;
+        if (RecNaming::indexRowMatchesFilename(lines[i], "REC_0010.wav")) kept10 = true;
+        if (RecNaming::indexRowMatchesFilename(lines[i], target)) keptTarget = true;
+    }
+    TEST_ASSERT_EQUAL_INT(3, kept);   // header + the two non-deleted rows
+    TEST_ASSERT_TRUE(keptHeader);
+    TEST_ASSERT_TRUE(kept1);
+    TEST_ASSERT_TRUE(kept10);
+    TEST_ASSERT_FALSE(keptTarget);
+}
+
+void test_delete_row_absent_is_noop(void) {
+    const char* lines[] = {
+        "filename,timestamp,duration_s,bytes",
+        "REC_0001.wav,,1,32000",
+    };
+    const int n = sizeof(lines) / sizeof(lines[0]);
+    int kept = 0;
+    for (int i = 0; i < n; ++i) {
+        if (RecNaming::indexRowMatchesFilename(lines[i], "REC_9999.wav")) continue;
+        kept++;
+    }
+    TEST_ASSERT_EQUAL_INT(2, kept);   // nothing matched, nothing removed
+}
+
 int main(int /*argc*/, char** /*argv*/) {
     UNITY_BEGIN();
     RUN_TEST(test_format_rec_path_basic);
@@ -164,5 +313,18 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_index_row_with_valid_local_time);
     RUN_TEST(test_index_row_blank_timestamp_when_clock_unset);
     RUN_TEST(test_index_row_small_buffer_fails_cleanly);
+    RUN_TEST(test_parse_index_row_valid);
+    RUN_TEST(test_parse_index_row_blank_timestamp);
+    RUN_TEST(test_parse_index_row_no_trailing_newline);
+    RUN_TEST(test_parse_index_row_rejects_header);
+    RUN_TEST(test_parse_index_row_rejects_short_row);
+    RUN_TEST(test_parse_index_row_rejects_nonnumeric);
+    RUN_TEST(test_parse_index_row_rejects_overflow_name);
+    RUN_TEST(test_index_row_matches_exact);
+    RUN_TEST(test_index_row_matches_prefix_collision_safe);
+    RUN_TEST(test_index_row_matches_rejects_header);
+    RUN_TEST(test_index_row_matches_no_comma_line);
+    RUN_TEST(test_delete_row_filters_only_matching);
+    RUN_TEST(test_delete_row_absent_is_noop);
     return UNITY_END();
 }
