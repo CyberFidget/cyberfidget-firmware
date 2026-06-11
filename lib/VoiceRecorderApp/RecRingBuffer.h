@@ -22,7 +22,7 @@
 #include <cstring>
 
 #ifndef REC_RING_SIZE_BYTES
-#define REC_RING_SIZE_BYTES 262144u  // 256KB = 8s headroom at 32KB/s
+#define REC_RING_SIZE_BYTES 262144u  // 256KB = 8s headroom at Standard, ~2.7s at High
 #endif
 
 class RecRingBuffer {

@@ -96,6 +96,20 @@ void test_duration_from_bytes_floor_semantics(void) {
     TEST_ASSERT_EQUAL_UINT32(0, RecNaming::durationSecondsFromPcmBytes(1000, 0));
 }
 
+// High quality = 48kHz/16-bit/mono = 96000 B/s. index.csv duration must read
+// from the active byte rate, so the same math has to hold at the High rate.
+void test_duration_from_bytes_high_quality(void) {
+    TEST_ASSERT_EQUAL_UINT32(1, RecNaming::durationSecondsFromPcmBytes(96000, 96000));
+    TEST_ASSERT_EQUAL_UINT32(0, RecNaming::durationSecondsFromPcmBytes(95999, 96000));
+    // 5 minutes at High (96000 * 300).
+    TEST_ASSERT_EQUAL_UINT32(300,
+        RecNaming::durationSecondsFromPcmBytes(28800000ull, 96000));
+    // The same byte count is a 3x shorter clip when recorded at High: a
+    // fixed file size must not be reported with a hardcoded Standard rate.
+    TEST_ASSERT_EQUAL_UINT32(30, RecNaming::durationSecondsFromPcmBytes(960000ull, 32000));
+    TEST_ASSERT_EQUAL_UINT32(10, RecNaming::durationSecondsFromPcmBytes(960000ull, 96000));
+}
+
 // --- index.csv ----------------------------------------------------------
 
 void test_index_header_format(void) {
@@ -145,6 +159,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_next_free_counter_skips_existing_files);
     RUN_TEST(test_next_free_counter_exhausts_to_sentinel);
     RUN_TEST(test_duration_from_bytes_floor_semantics);
+    RUN_TEST(test_duration_from_bytes_high_quality);
     RUN_TEST(test_index_header_format);
     RUN_TEST(test_index_row_with_valid_local_time);
     RUN_TEST(test_index_row_blank_timestamp_when_clock_unset);

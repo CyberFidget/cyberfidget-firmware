@@ -5,9 +5,14 @@
 //
 // "Voice Notes" — record-first voice memo capture.
 //
-// Pipeline: I2S port 1 (16kHz/16-bit/mono, owned by this app for its whole
+// Pipeline: I2S port 1 (16-bit/mono, owned by this app for its whole
 // session) -> capture task on core 0 -> PSRAM SPSC ring -> drained in
 // update() through a WAV encoder to /recordings/REC_NNNN.wav.
+//
+// Two recording qualities, toggled from HOME and persisted in NVS:
+// Standard (16kHz, 32KB/s) for memos/transcription, High (48kHz, 96KB/s)
+// for production-usable voice. The sample/byte rate flows from recQuality
+// into the I2S clock, the WAV AudioInfo, and every UX time estimate.
 //
 // audio-tools v1.2.0's WAVEncoder streams its header once with placeholder
 // sizes and never patches them, so finalizeWav() seek-patches the RIFF and
@@ -44,12 +49,12 @@ static const int PIN_SD_MOSI = 19;
 static const int PIN_SD_CS   = 8;
 
 // --- Recording constants ---
-static const uint32_t      REC_BYTE_RATE        = 32000;      // 16kHz * 16-bit * mono
 static const uint64_t      REC_RESERVE_BYTES    = 262144;     // auto-stop floor; sized to swallow a full ring drain
 static const uint32_t      LOW_SPACE_WARN_SEC   = 60;
 static const unsigned long HOLD_STOP_MS         = 400;        // latch-vs-hold gesture threshold
 static const unsigned long NOTE_DURATION_MS     = 2500;
 static const unsigned long MIN_VALID_EPOCH      = 1600000000UL; // clock-is-set heuristic (ClockDisplay pattern)
+static const unsigned long RECONFIG_WAIT_MS     = 250;       // startRecording waits this long for a pending re-clock
 
 // Digital gain, applied (saturating) to every sample in the capture task.
 // The ICS-43434 is quiet by design (94dB SPL = -26dBFS), so normal speech
@@ -58,9 +63,11 @@ static const unsigned long MIN_VALID_EPOCH      = 1600000000UL; // clock-is-set 
 // play back quiet — each +1 shift adds 6dB but eats 6dB of clip headroom.
 static const int REC_GAIN_SHIFT = 3;
 
-// Samples to discard at the start of every recording so the mechanical
-// click of the record press doesn't open the file (100ms at 32KB/s).
-static const uint32_t REC_START_SKIP_BYTES = 3200;
+// Audio to discard at the start of every recording so the mechanical click
+// of the record press doesn't open the file. Time-based so it holds at
+// either byte rate (bytes = recByteRate/1000 * ms; both rates are exact
+// multiples of 1000, so the division never truncates).
+static const uint32_t REC_START_SKIP_MS = 100;
 
 // Audio to drop from the END of a recording when the stop was triggered
 // by a button PRESS (tap-mode second press, or Select) — the press click
@@ -68,8 +75,8 @@ static const uint32_t REC_START_SKIP_BYTES = 3200;
 // the WAV header (the bytes stay in the file past the chunk; players
 // ignore them), so it can't corrupt anything. Hold-mode release stops and
 // auto-stops keep the full tail: a release is quiet, and trimming real
-// speech is worse than a soft click. 150ms at 32KB/s.
-static const uint32_t REC_TAIL_TRIM_BYTES = 4800;
+// speech is worse than a soft click. Time-based (see REC_START_SKIP_MS).
+static const uint32_t REC_TAIL_TRIM_MS = 150;
 
 // --- Tape-deck UI layout ---
 //
@@ -153,6 +160,10 @@ void VoiceRecorderApp::onButtonBack(const ButtonEvent& event) {
     if (instance) instance->handleBackEvent(event);
 }
 
+void VoiceRecorderApp::onButtonQuality(const ButtonEvent& event) {
+    if (instance) instance->handleQualityEvent(event);
+}
+
 // =========================================================================
 // Lifecycle
 // =========================================================================
@@ -173,12 +184,27 @@ void VoiceRecorderApp::begin() {
     sdMounted = false;
     exitRequested.store(false, std::memory_order_relaxed);
     recordingActive.store(false, std::memory_order_relaxed);
+    reconfigRequested.store(false, std::memory_order_relaxed);
     vuPeak.store(0, std::memory_order_relaxed);
+
+    // Restore the persisted quality before the port is clocked, so the mic
+    // opens at the saved rate (no reconfigure needed on a clean entry).
+    {
+        Preferences prefs;
+        uint8_t q = 0;
+        if (prefs.begin("voicerec", true)) {
+            q = prefs.getUChar("quality", 0);
+            prefs.end();
+        }
+        applyQuality(q);
+    }
+    pendingSampleRate.store(recSampleRate, std::memory_order_relaxed);
 
     setColorsOff();
 
     buttonManager.registerCallback(button_EnterIndex, onButtonEnter);
     buttonManager.registerCallback(button_SelectIndex, onButtonBack);
+    buttonManager.registerCallback(button_UpIndex, onButtonQuality);
 
     // AudioManager's metering task only holds I2S port 1 while its run flag
     // is set; clear it and give the task (<=5ms poll) time to close the port.
@@ -205,7 +231,7 @@ void VoiceRecorderApp::begin() {
     micCfg = i2sIn.defaultConfig(audio_tools::RX_MODE);
     micCfg.port_no         = 1;
     micCfg.i2s_format      = audio_tools::I2S_STD_FORMAT;
-    micCfg.sample_rate     = 16000;
+    micCfg.sample_rate     = recSampleRate;
     micCfg.bits_per_sample = 16;
     micCfg.channels        = 1;
     micCfg.pin_ws          = 25;
@@ -213,8 +239,8 @@ void VoiceRecorderApp::begin() {
     micCfg.pin_data_rx     = 33;
     micCfg.pin_data        = -1;
     micCfg.is_master       = true;
-    micCfg.buffer_count    = 8;    // 8 x 512B DMA = 128ms cushion for the task
-    micCfg.buffer_size     = 512;
+    micCfg.buffer_count    = 8;    // 8 x 512B DMA: ~128ms cushion at Standard,
+    micCfg.buffer_size     = 512;  // ~43ms at High — both comfortably > the 5ms poll
     i2sOpened = i2sIn.begin(micCfg);
     if (!i2sOpened) {
         ESP_LOGE(TAG_VREC, "I2S port 1 open failed");
@@ -301,6 +327,7 @@ void VoiceRecorderApp::end() {
 
     buttonManager.unregisterCallback(button_EnterIndex);
     buttonManager.unregisterCallback(button_SelectIndex);
+    buttonManager.unregisterCallback(button_UpIndex);
 
     if (ringStorage != nullptr) {
         free(ringStorage);
@@ -379,6 +406,38 @@ void VoiceRecorderApp::handleBackEvent(const ButtonEvent& event) {
     }
 }
 
+// Up button: flip Standard <-> High, but only from HOME — never mid-recording
+// (re-clocking the port underneath a live capture would corrupt the file).
+void VoiceRecorderApp::handleQualityEvent(const ButtonEvent& event) {
+    if (event.eventType != ButtonEvent_Pressed) return;
+    if (state == REC_STATE_HOME) toggleQuality();
+}
+
+// =========================================================================
+// Recording quality
+// =========================================================================
+void VoiceRecorderApp::applyQuality(uint8_t q) {
+    recQuality    = (q == 1) ? 1 : 0;        // tolerate stale/garbage NVS values
+    recSampleRate = recQuality ? 48000 : 16000;
+    recByteRate   = recSampleRate * 2;       // 16-bit mono = 2 bytes/sample
+}
+
+void VoiceRecorderApp::toggleQuality() {
+    applyQuality(recQuality ^ 1);
+
+    Preferences prefs;
+    if (prefs.begin("voicerec", false)) {
+        prefs.putUChar("quality", recQuality);  // alongside "counter"
+        prefs.end();
+    }
+
+    // Hand the new rate to the capture task. It owns I2S port 1 and applies
+    // the re-clock between reads (see captureTaskLoop), so the main loop
+    // never calls i2sIn.end()/begin() concurrently with a read.
+    pendingSampleRate.store(recSampleRate, std::memory_order_relaxed);
+    reconfigRequested.store(true, std::memory_order_release);
+}
+
 // =========================================================================
 // SD lifecycle
 // =========================================================================
@@ -426,7 +485,7 @@ void VoiceRecorderApp::refreshFreeBytes() {
 uint32_t VoiceRecorderApp::remainingSeconds() const {
     uint64_t committed = bytesWritten + REC_RESERVE_BYTES;
     if (cachedFreeBytes <= committed) return 0;
-    return (uint32_t)((cachedFreeBytes - committed) / REC_BYTE_RATE);
+    return (uint32_t)((cachedFreeBytes - committed) / recByteRate);
 }
 
 // =========================================================================
@@ -436,6 +495,16 @@ void VoiceRecorderApp::startRecording() {
     if (!sdMounted) {
         state = REC_STATE_NO_SD;
         return;
+    }
+
+    // If the user toggled quality and immediately pressed record, the capture
+    // task may not have re-clocked the port yet. Wait it out so the I2S rate
+    // matches the AudioInfo we're about to write into the header — otherwise
+    // the file would declare the new rate but carry samples at the old one.
+    unsigned long reconfigT0 = millis();
+    while (reconfigRequested.load(std::memory_order_acquire) &&
+           (millis() - reconfigT0) < RECONFIG_WAIT_MS) {
+        delay(2);
     }
 
     ring.reset();
@@ -470,7 +539,7 @@ void VoiceRecorderApp::startRecording() {
     }
 
     pEncOut = new audio_tools::EncodedAudioOutput(&recFile, &wavEncoder);
-    audio_tools::AudioInfo info(16000, 1, 16);
+    audio_tools::AudioInfo info(recSampleRate, 1, 16);
     if (!pEncOut->begin(info)) {
         delete pEncOut;
         pEncOut = nullptr;
@@ -487,17 +556,19 @@ void VoiceRecorderApp::startRecording() {
     tailTrimBytes = 0;
     finalDataBytes = 0;
     // Must be set before recordingActive: the task only reads it after
-    // acquiring the recording flag.
-    skipBytesRemaining.store(REC_START_SKIP_BYTES, std::memory_order_relaxed);
+    // acquiring the recording flag. recByteRate is an exact multiple of 1000.
+    skipBytesRemaining.store((recByteRate / 1000) * REC_START_SKIP_MS,
+                             std::memory_order_relaxed);
     recordingActive.store(true, std::memory_order_release);
     state = REC_STATE_RECORDING;
-    ESP_LOGI(TAG_VREC, "recording -> %s", recPath);
+    ESP_LOGI(TAG_VREC, "recording -> %s @ %u Hz (q=%u)", recPath,
+             (unsigned)recSampleRate, (unsigned)recQuality);
 }
 
 void VoiceRecorderApp::requestStop(VoiceRecStopReason reason, bool trimPressClick) {
     recordingActive.store(false, std::memory_order_release);
     stopReason = reason;
-    tailTrimBytes = trimPressClick ? REC_TAIL_TRIM_BYTES : 0;
+    tailTrimBytes = trimPressClick ? (recByteRate / 1000) * REC_TAIL_TRIM_MS : 0;
     armedHoldStop = false;
     state = REC_STATE_SAVING;
 }
@@ -599,7 +670,16 @@ bool VoiceRecorderApp::finalizeWav() {
         return recFile.seek(offset) && recFile.write(b, 4) == 4;
     };
 
-    bool ok = writeLE32At(4, 36 + dataLen) && writeLE32At(40, dataLen);
+    // Also stamp the sample/byte rate (offsets 24/28) from the selected
+    // quality. The streaming encoder writes these from its AudioInfo, but we
+    // own the authoritative rate here — patching them guarantees the header
+    // can never disagree with the I2S clock (a High file must declare 48kHz,
+    // or it plays back slow on a PC). block_align (32) and bits (34) are
+    // rate-independent (mono/16-bit), so they're left as the encoder wrote.
+    bool ok = writeLE32At(4, 36 + dataLen) &&
+              writeLE32At(24, recSampleRate) &&
+              writeLE32At(28, recByteRate) &&
+              writeLE32At(40, dataLen);
     recFile.flush();
     recFile.close();
     if (!ok) {
@@ -621,7 +701,7 @@ void VoiceRecorderApp::appendIndexRow() {
     char row[96];
     uint64_t dataBytes = (finalDataBytes > 0) ? finalDataBytes : bytesWritten;
     uint32_t durationS =
-        RecNaming::durationSecondsFromPcmBytes(dataBytes, REC_BYTE_RATE);
+        RecNaming::durationSecondsFromPcmBytes(dataBytes, recByteRate);
     if (RecNaming::formatIndexRow(row, sizeof(row), name, tmPtr, durationS,
                                   dataBytes) < 0) {
         return;
@@ -661,6 +741,33 @@ void VoiceRecorderApp::captureTaskThunk(void* arg) {
 void VoiceRecorderApp::captureTaskLoop() {
     const TickType_t idleDelay = pdMS_TO_TICKS(5);
     while (!exitRequested.load(std::memory_order_acquire)) {
+        // Quality re-clock — only this task ever calls i2sIn.end()/begin()
+        // during a session, so re-opening the port here can't race a read.
+        // Guarded on !recordingActive: a toggle is HOME-only, but check
+        // anyway so a live capture is never re-clocked underneath itself.
+        if (reconfigRequested.load(std::memory_order_acquire) &&
+            !recordingActive.load(std::memory_order_acquire)) {
+            uint32_t newRate = pendingSampleRate.load(std::memory_order_relaxed);
+            if (newRate != micCfg.sample_rate || !i2sOpened) {
+                i2sIn.end();
+                micCfg.sample_rate = newRate;
+                i2sOpened = i2sIn.begin(micCfg);
+                if (i2sOpened) {
+                    i2sIn.setTimeout(0);
+                } else {
+                    ESP_LOGE(TAG_VREC, "I2S re-clock to %u Hz failed",
+                             (unsigned)newRate);
+                }
+            }
+            reconfigRequested.store(false, std::memory_order_release);
+            vuPeak.store(0, std::memory_order_relaxed);  // drop the stale peak
+            continue;
+        }
+        if (!i2sOpened) {                 // re-clock failed; idle until retried
+            vTaskDelay(idleDelay);
+            continue;
+        }
+
         int avail = i2sIn.available();
         if (avail > 0) {
             size_t toRead = (size_t)avail;
@@ -759,7 +866,11 @@ void VoiceRecorderApp::drawCassette(bool spinning, bool xOut) {
     display.drawRect(CAS_X, CAS_Y, CAS_W, CAS_H);     // cassette body
     display.drawLine(54, 31, 74, 31);                 // tape run between reels
 
-    if (spinning) reelAngle = (uint8_t)((reelAngle + 1) % 40);  // 3°/frame = 150°/s
+    // Time-based spin (one 3° step per 20ms = 150°/s). Driving it off the
+    // clock instead of frame count keeps the reels smooth even when update()
+    // hitches under the heavier SD write load at High quality — the old
+    // per-frame advance ebbed and flowed with the frame rate.
+    if (spinning) reelAngle = (uint8_t)((millis_NOW / 20) % 40);
 
     const int16_t centers[2] = { REEL_LEFT_X, REEL_RIGHT_X };
     for (int r = 0; r < 2; ++r) {
@@ -799,6 +910,14 @@ void VoiceRecorderApp::drawHomeOrRecording() {
         // bottom-right spot is clipped by the enclosure corner
         display.drawString(64, STRIP_TEXT_Y,
                            ((millis_NOW / 2000) & 1) ? "ENTER = REC" : "READY");
+    }
+
+    // High-quality tag tucked into the cassette's lower-right corner (right
+    // of the right reel, clear of the label strip above); Standard shows
+    // nothing (it's the default).
+    if (recQuality) {
+        display.setTextAlignment(TEXT_ALIGN_RIGHT);
+        display.drawString(111, 26, "HQ");
     }
 
     // Elapsed timer, large type, bottom-left
@@ -856,7 +975,7 @@ void VoiceRecorderApp::drawHomeOrRecording() {
         // HOME: remaining tape, short form ("84m" / "27h")
         uint64_t freeB = (cachedFreeBytes > REC_RESERVE_BYTES)
                              ? cachedFreeBytes - REC_RESERVE_BYTES : 0;
-        unsigned long freeMin = (unsigned long)(freeB / REC_BYTE_RATE / 60);
+        unsigned long freeMin = (unsigned long)(freeB / recByteRate / 60);
         if (freeMin >= 600) {
             snprintf(sub, sizeof(sub), "%luh", freeMin / 60);
         } else {
@@ -886,7 +1005,7 @@ void VoiceRecorderApp::drawSavedNote() {
         }
         if (savedDroppedBytes > 0) {
             // Rarer and more important than the filename: surface the gap.
-            unsigned long tenths = savedDroppedBytes / (REC_BYTE_RATE / 10);
+            unsigned long tenths = savedDroppedBytes / (recByteRate / 10);
             snprintf(line2, sizeof(line2), "gap: %lu.%lus lost",
                      tenths / 10, tenths % 10);
         } else if (savedCounter > 0) {

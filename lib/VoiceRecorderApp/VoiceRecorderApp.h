@@ -58,6 +58,7 @@ public:
     // same context as update(), so no locking needed against it)
     static void onButtonEnter(const ButtonEvent& event);
     static void onButtonBack(const ButtonEvent& event);
+    static void onButtonQuality(const ButtonEvent& event);  // Up: toggle quality
 
 private:
     static VoiceRecorderApp* instance;
@@ -65,6 +66,20 @@ private:
 
     VoiceRecState state = REC_STATE_HOME;
     VoiceRecStopReason stopReason = REC_STOP_USER;
+
+    // --- Recording quality (persisted in NVS namespace "voicerec") ---
+    // 0 = Standard (16kHz / 32KB/s), 1 = High (48kHz / 96KB/s); both 16-bit
+    // mono. recSampleRate / recByteRate are derived by applyQuality() and are
+    // the single source of truth for the I2S rate, WAV AudioInfo, and every
+    // byte-rate-dependent UX calculation (no hardcoded 32000 in the math).
+    uint8_t  recQuality    = 0;
+    uint32_t recSampleRate = 16000;
+    uint32_t recByteRate   = 32000;
+    // Toggle hands the new rate to the capture task, which owns I2S port 1
+    // and re-opens it between reads — the main loop never touches the port
+    // mid-session, so this is the only safe way to re-clock it.
+    std::atomic<bool>     reconfigRequested{false};
+    std::atomic<uint32_t> pendingSampleRate{16000};
 
     // --- Capture pipeline ---
     RecRingBuffer ring;
@@ -118,6 +133,9 @@ private:
     // --- Helpers ---
     void handleEnterEvent(const ButtonEvent& event);
     void handleBackEvent(const ButtonEvent& event);
+    void handleQualityEvent(const ButtonEvent& event);
+    void applyQuality(uint8_t q);   // set recQuality + derived rates
+    void toggleQuality();           // flip, persist, request I2S re-clock
     bool mountSD();
     void enterHomeOrNoSd();
     void refreshFreeBytes();
