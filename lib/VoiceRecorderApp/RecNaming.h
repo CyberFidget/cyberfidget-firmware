@@ -25,6 +25,14 @@ namespace RecNaming {
 constexpr const char* kRecordingsDir = "/recordings";
 constexpr uint32_t kCounterExhausted = 0xFFFFFFFFu;
 
+// Max voice-note filename length INCLUDING the ".wav" extension. The recorder
+// only ever writes "REC_NNNN.wav" (12 chars), but the web portal lets a user
+// rename a note, so any buffer that holds a note's filename — the on-device
+// list/playback rows AND the portal — sizes to this + 1. Kept here so
+// both sides agree on the bound (a renamed name longer than this is refused by
+// the portal, never silently truncated or dropped). 48-char base + ".wav".
+constexpr size_t kMaxRecNameLen = 52;
+
 typedef bool (*ExistsFn)(const char* path, void* ctx);
 
 // "/recordings/REC_0042.wav" — zero-padded to 4 digits, grows naturally past

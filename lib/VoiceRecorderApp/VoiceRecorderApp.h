@@ -145,7 +145,10 @@ private:
     // (a card can hold far more memos than fit on screen / in RAM). listTotal is
     // the full row count so the header can show "cursor/total".
     struct RecListEntry {
-        char     name[16];       // "REC_0042.wav"
+        // Sized to RecNaming::kMaxRecNameLen: the recorder writes "REC_0042.wav"
+        // (12), but a web-portal rename can grow it — too small a buffer would
+        // make parseIndexRow drop the row and the note would vanish here.
+        char     name[RecNaming::kMaxRecNameLen + 1];
         char     timestamp[20];  // "2026-06-09T14:23:11" or "" when clock unset
         uint32_t durationS;
         uint64_t bytes;
@@ -156,6 +159,10 @@ private:
     int listTotal = 0;           // total data rows in index.csv
     int listCursor = 0;          // selected index into listEntries
     int listScroll = 0;          // first visible row
+    // Horizontal marquee for the selected row's name when it's wider than the
+    // row (portal-renamed long names). Reset to the head on every cursor move.
+    int listMarqueeOffset = 0;
+    unsigned long lastMarqueeMs = 0;
 
     // --- Playback pipeline (REC_STATE_PLAYBACK) ---
     // File -> EncodedAudioStream(WAVDecoder) -> VolumeStream -> I2SStream port 0,
@@ -175,7 +182,7 @@ private:
     bool port0Held = false;          // true while we hold I2S port 0 (release/reclaim balance)
     bool playbackActive = false;     // true while actively copying (paused = false)
     bool playbackEof = false;        // reached end of file (reels frozen, progress full)
-    char     playName[16] = "";      // basename of the file playing
+    char     playName[RecNaming::kMaxRecNameLen + 1] = "";  // file currently playing
     uint32_t playDurationS = 0;      // total duration (from the list entry) for progress
     uint64_t playBytes = 0;          // total PCM data bytes (from the list entry)
     uint32_t playByteRate = 0;       // file's actual byte rate (from WAV header) for the pump budget

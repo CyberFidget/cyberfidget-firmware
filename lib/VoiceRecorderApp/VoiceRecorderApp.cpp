@@ -190,6 +190,33 @@ VoiceRecorderApp* VoiceRecorderApp::instance = nullptr;
 VoiceRecorderApp voiceRecorderApp(HAL::buttonManager());
 static auto& display = HAL::displayProxy();
 
+// Copy `src` into `out`, clipping with a trailing "..." if it's wider than maxW
+// pixels in the current font. A name that already fits passes through unchanged
+// (the common "REC_NNNN" case early-returns after one width call). Used for the
+// non-selected list rows + the playback / confirm screens, where there's no room
+// to scroll. The selected list row scrolls instead (see drawList()).
+static void fitName(const char* src, int maxW, char* out, size_t outSize) {
+    snprintf(out, outSize, "%s", src);
+    if (display.getStringWidth(out) <= maxW) return;
+    size_t len = strlen(out);
+    while (len > 0) {
+        --len;
+        if (len + 3 < outSize) {
+            out[len] = '.'; out[len + 1] = '.'; out[len + 2] = '.'; out[len + 3] = '\0';
+            if (display.getStringWidth(out) <= maxW) return;
+            out[len] = '\0';   // drop the ellipsis and shrink one more char
+        }
+    }
+}
+
+// Selected-row marquee timing: pause at the head, step left, pause at the tail,
+// repeat. The selected row's full name scrolls so a portal-renamed long name is
+// readable on-device (the row is only ~10 chars wide).
+static const unsigned long MARQUEE_STEP_MS = 220;
+static const int           MARQUEE_STEP_PX = 4;
+static const int           MARQUEE_HEAD    = 16;   // head pause, in offset units
+static const int           MARQUEE_TAIL    = 16;   // tail pause, in offset units
+
 // =========================================================================
 // Constructor / static callbacks
 // =========================================================================
@@ -922,6 +949,7 @@ void VoiceRecorderApp::enterList() {
     loadRecordingsList();
     listCursor = 0;
     listScroll = 0;
+    listMarqueeOffset = -MARQUEE_HEAD;
     state = REC_STATE_LIST;
 }
 
@@ -988,6 +1016,7 @@ void VoiceRecorderApp::listMoveCursor(int delta) {
     listCursor += delta;
     if (listCursor < 0) listCursor = 0;
     if (listCursor >= listCount) listCursor = listCount - 1;
+    listMarqueeOffset = -MARQUEE_HEAD;   // restart scroll from the new row's head
 }
 
 // =========================================================================
@@ -997,7 +1026,7 @@ void VoiceRecorderApp::startPlayback(int idx) {
     if (idx < 0 || idx >= listCount) return;
     const RecListEntry& e = listEntries[idx];
 
-    char path[40];
+    char path[16 + RecNaming::kMaxRecNameLen + 1];
     snprintf(path, sizeof(path), "%s/%s", RecNaming::kRecordingsDir, e.name);
     if (!buildPlaybackPipeline(path)) {
         ESP_LOGW(TAG_VREC, "playback open failed: %s", path);
@@ -1028,7 +1057,7 @@ void VoiceRecorderApp::stopPlayback() {
 // is clean (a lightweight seek+re-begin can't reset EncodedAudioStream once its
 // internal 'active' flag is set).
 void VoiceRecorderApp::restartPlaybackStream() {
-    char path[40];
+    char path[16 + RecNaming::kMaxRecNameLen + 1];
     snprintf(path, sizeof(path), "%s/%s", RecNaming::kRecordingsDir, playName);
     destroyPlaybackPipeline();
     // demoMode is preserved across teardown, so the rebuild picks the right
@@ -1168,16 +1197,16 @@ void VoiceRecorderApp::performDelete(int idx) {
     if (idx < 0 || idx >= listCount) { state = REC_STATE_LIST; return; }
     RecListEntry e = listEntries[idx];   // copy before loadRecordingsList() reshuffles
 
-    char path[40];
+    char path[16 + RecNaming::kMaxRecNameLen + 1];
     snprintf(path, sizeof(path), "%s/%s", RecNaming::kRecordingsDir, e.name);
     SD.remove(path);
 
     // Transcript sidecar, if one exists. NOTE: on-device transcription is not
     // built yet, so the sidecar extension is not fixed — ".txt" is a provisional
     // guess. Revisit this delete when the transcription feature lands its format.
-    char base[20];
+    char base[RecNaming::kMaxRecNameLen + 1];
     nameNoExt(e.name, base, sizeof(base));
-    char sidecar[44];
+    char sidecar[16 + RecNaming::kMaxRecNameLen + 1];
     snprintf(sidecar, sizeof(sidecar), "%s/%s.txt", RecNaming::kRecordingsDir, base);
     if (SD.exists(sidecar)) SD.remove(sidecar);
 
@@ -1682,12 +1711,43 @@ void VoiceRecorderApp::drawList() {
             display.fillRect(0, y - 1, 128, rowH);
             display.setColor(BLACK);
         }
-        char nm[16];
+        char nm[RecNaming::kMaxRecNameLen + 1];
         nameNoExt(listEntries[idx].name, nm, sizeof(nm));
-        display.setTextAlignment(TEXT_ALIGN_LEFT);
-        display.drawString(2, y, nm);
         char dur[12];
         formatDurationMSS(listEntries[idx].durationS, dur, sizeof(dur));
+        int durW = display.getStringWidth(dur);
+        int nameRight = 124 - durW;          // name must stay left of the duration
+        int areaW = nameRight - 2;
+        int nmW = display.getStringWidth(nm);
+
+        if (sel && nmW > areaW) {
+            // Scroll the selected row's full name so a long (portal-renamed) name
+            // is readable. No display clipping available, so after drawing the
+            // name we repaint the duration zone in the row's (white) background
+            // and lay the duration back on top — masking the right overflow; the
+            // left overflow scrolls harmlessly off-screen (x < 0).
+            int span = nmW - areaW;
+            if (millis_NOW - lastMarqueeMs > MARQUEE_STEP_MS) {
+                lastMarqueeMs = millis_NOW;
+                listMarqueeOffset += MARQUEE_STEP_PX;
+                if (listMarqueeOffset > span + MARQUEE_TAIL) {
+                    listMarqueeOffset = -MARQUEE_HEAD;
+                }
+            }
+            int off = listMarqueeOffset;
+            if (off < 0)    off = 0;          // head pause
+            if (off > span) off = span;       // tail pause
+            display.setTextAlignment(TEXT_ALIGN_LEFT);
+            display.drawString(2 - off, y, nm);
+            display.setColor(WHITE);          // selected-row background
+            display.fillRect(nameRight, y - 1, 128 - nameRight, rowH);
+            display.setColor(BLACK);
+        } else {
+            char shown[RecNaming::kMaxRecNameLen + 1];
+            fitName(nm, areaW, shown, sizeof(shown));
+            display.setTextAlignment(TEXT_ALIGN_LEFT);
+            display.drawString(2, y, shown);
+        }
         display.setTextAlignment(TEXT_ALIGN_RIGHT);
         display.drawString(126, y, dur);
         if (sel) display.setColor(WHITE);
@@ -1710,11 +1770,13 @@ void VoiceRecorderApp::drawPlayback() {
 
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER);
-    char nm[16];
+    char nm[RecNaming::kMaxRecNameLen + 1];
     nameNoExt(playName, nm, sizeof(nm));
+    char nmShown[RecNaming::kMaxRecNameLen + 1];
+    fitName(nm, 88, nmShown, sizeof(nmShown));   // clear of the cassette body
     if (playbackEof)            display.drawString(64, STRIP_TEXT_Y, "END");
     else if (!playbackActive)   display.drawString(64, STRIP_TEXT_Y, "PAUSED");
-    else                        display.drawString(64, STRIP_TEXT_Y, nm);
+    else                        display.drawString(64, STRIP_TEXT_Y, nmShown);
 
     // Byte-based progress (the decoder/I2S buffer lag is negligible for a bar).
     uint64_t pos = playFile ? (uint64_t)playFile.position() : 0;
@@ -1759,9 +1821,11 @@ void VoiceRecorderApp::drawConfirmDelete() {
 
     display.setFont(ArialMT_Plain_10);
     if (listCursor >= 0 && listCursor < listCount) {
-        char nm[16];
+        char nm[RecNaming::kMaxRecNameLen + 1];
         nameNoExt(listEntries[listCursor].name, nm, sizeof(nm));
-        display.drawString(64, 28, nm);
+        char nmShown[RecNaming::kMaxRecNameLen + 1];
+        fitName(nm, 124, nmShown, sizeof(nmShown));
+        display.drawString(64, 28, nmShown);
     }
     display.drawString(64, 46, "ENTER=yes   SEL=no");
 }
