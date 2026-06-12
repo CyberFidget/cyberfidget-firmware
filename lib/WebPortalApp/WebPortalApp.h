@@ -71,6 +71,8 @@ private:
 
     // Route handlers
     void handleFileList(AsyncWebServerRequest* req);
+    void handleBrowse(AsyncWebServerRequest* req);
+    void handleDownload(AsyncWebServerRequest* req);
     void handleUpload(AsyncWebServerRequest* req, const String& filename,
                       size_t index, uint8_t* data, size_t len, bool final);
     void handleDelete(AsyncWebServerRequest* req);
