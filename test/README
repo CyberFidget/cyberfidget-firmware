@@ -30,10 +30,11 @@ scopes which directories run for each test environment.
 
 ## Test environments
 
-| Env                | Runs                     | Invoke |
-|--------------------|--------------------------|--------|
-| `test_core`        | `test/test_core_*/`       | `pio test -e test_core` |
-| `test_breakout`    | `test/test_breakout_*/`   | `pio test -e test_breakout` |
+| Env                  | Runs                          | Invoke |
+|----------------------|-------------------------------|--------|
+| `test_core`          | `test/test_core_*/`           | `pio test -e test_core` |
+| `test_breakout`      | `test/test_breakout_*/`       | `pio test -e test_breakout` |
+| `test_voicerecorder` | `test/test_voicerecorder_*/`  | `pio test -e test_voicerecorder` |
 
 To add a new app's tests:
 
@@ -98,6 +99,14 @@ they can't run on a Windows laptop without one of the installs above.
   These catch the regression class "core silently changed slider
   range; how would we know?" — slider/accel range or sign changes
   break these tests immediately.
+
+- `test/test_voicerecorder_ringbuffer/` — SPSC ring buffer used by
+  the voice recorder capture pipeline (`RecRingBuffer.h`):
+  wraparound integrity, drop-newest overflow accounting, FIFO order
+  under heavy interleave.
+- `test/test_voicerecorder_naming/` — `RecNaming.h` sequential
+  naming with collision skip, PCM duration math, and index.csv row
+  formatting (blank timestamp when the device clock is unset).
 
 ## What's NOT here yet
 

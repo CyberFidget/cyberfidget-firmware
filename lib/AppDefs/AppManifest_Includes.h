@@ -26,3 +26,7 @@
 #include "WebPortalApp.h"
 #include "BewilderYourBrain.h"
 #include "PixelWaterfallGame.h"
+#include "DancingGnomes.h"
+#include "Cronchybird.h"
+#include "Snake.h"
+#include "VoiceRecorderApp.h"

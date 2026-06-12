@@ -55,6 +55,12 @@ private:
     void countFilesRecursive(const char* dir);
     void invalidateMusicCache();
 
+    // Voice-note index.csv maintenance (keeps a recording's metadata row in
+    // step when the portal renames/deletes the .wav). Crash-safe via index.tmp
+    // swap, mirroring VoiceRecorderApp::deleteIndexRow.
+    bool deleteRecordingIndexRow(const char* filename);
+    bool renameRecordingIndexRow(const char* oldName, const char* newName);
+
     // WiFi STA helpers
     void loadWifiCreds();
     void connectSTA(const String& ssid, const String& pass, bool save);
@@ -65,6 +71,8 @@ private:
 
     // Route handlers
     void handleFileList(AsyncWebServerRequest* req);
+    void handleBrowse(AsyncWebServerRequest* req);
+    void handleDownload(AsyncWebServerRequest* req);
     void handleUpload(AsyncWebServerRequest* req, const String& filename,
                       size_t index, uint8_t* data, size_t len, bool final);
     void handleDelete(AsyncWebServerRequest* req);
@@ -72,6 +80,8 @@ private:
     void handleMove(AsyncWebServerRequest* req);
     void handleTrackList(AsyncWebServerRequest* req);
     void handleStatus(AsyncWebServerRequest* req);
+    void handleRecordings(AsyncWebServerRequest* req);
+    void handleSetTime(AsyncWebServerRequest* req);
     void handlePlaylistList(AsyncWebServerRequest* req);
     void handlePlaylistGet(AsyncWebServerRequest* req);
     void handlePlaylistSave(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total);
