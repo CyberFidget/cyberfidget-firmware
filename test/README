@@ -36,6 +36,7 @@ scopes which directories run for each test environment.
 | `test_breakout`      | `test/test_breakout_*/`       | `pio test -e test_breakout` |
 | `test_voicerecorder` | `test/test_voicerecorder_*/`  | `pio test -e test_voicerecorder` |
 | `test_loadout`       | `test/test_loadout_*/`        | `pio test -e test_loadout` |
+| `test_cfgraphics`    | `test/test_cfgraphics_*/`     | `pio test -e test_cfgraphics` |
 
 To add a new app's tests:
 
@@ -119,6 +120,20 @@ they can't run on a Windows laptop without one of the installs above.
 - `test/test_loadout_apply/` — REQ-053 clause 4 sync vocabulary
   (adds / removes / hides + one declarative arrange op) and the
   section-contiguity-by-construction invariant.
+
+- `test/test_cfgraphics_player/` — `cf::gfx::AnimationPlayer`
+  (`lib/CFGraphics/`, T-111): frame timing across all four LoopModes,
+  ping-pong edge order, once-hold vs once-stop, fps-0 holds,
+  setIfChanged/stop/restart semantics.
+- `test/test_cfgraphics_actor/` — `cf::gfx::Actor`: Q8.8 fixed-point
+  position math, name/pointer `play()` with idempotency,
+  `findAnimation` hit/miss, pivot-aware draw math against the
+  HOST_TEST recording DisplayProxy stand-in.
+- `test/test_cfgraphics_collision/` — `sampleSprite` bit addressing
+  (pins XBM LSB-first order + `((w+7)/8)` row stride — the contract
+  the T-112 converter output must match) and `pixelCollides`
+  boundary/overlap cases for both the Sprite and Actor overloads.
+  Fixture asset: `lib/CFGraphics/test/fixtures/cf_gfx_test_asset.h`.
 
 ## What's NOT here yet
 

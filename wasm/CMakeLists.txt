@@ -66,6 +66,7 @@ include_directories(
     ${LIB_DIR}/Spaceship
     ${LIB_DIR}/BewilderYourBrain
     ${LIB_DIR}/LoadoutManifest
+    ${LIB_DIR}/CFGraphics/include
 )
 
 # ---- Source files ----
@@ -88,6 +89,13 @@ set(FW_SOURCES
     # the emulator's menu model in sync with firmware (T-115/T-134). The
     # LittleFS-backed LoadoutStore is device-only and deliberately absent.
     ${LIB_DIR}/LoadoutManifest/LoadoutManifest.cpp
+    # cf::gfx sprite/animation runtime (T-111) — pure C++, compiled here so
+    # the emulator build verifies the runtime before any app adopts it
+    # (first consumer: DinoGame migration, T-112). Unreferenced code is
+    # dropped by the wasm linker, so this costs nothing in the output.
+    ${LIB_DIR}/CFGraphics/src/cf_gfx_sprite.cpp
+    ${LIB_DIR}/CFGraphics/src/cf_gfx_actor.cpp
+    ${LIB_DIR}/CFGraphics/src/cf_gfx_collision.cpp
 )
 
 # ---- Per-app sources and defines ----
