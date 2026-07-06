@@ -65,6 +65,7 @@ include_directories(
     ${LIB_DIR}/Splooty
     ${LIB_DIR}/Spaceship
     ${LIB_DIR}/BewilderYourBrain
+    ${LIB_DIR}/LoadoutManifest
 )
 
 # ---- Source files ----
@@ -83,6 +84,10 @@ set(FW_SOURCES
     ${LIB_DIR}/Globals/globals.cpp
     ${LIB_DIR}/ButtonManager/ButtonManager.cpp
     ${LIB_DIR}/RGBController/RGBController.cpp
+    # Pure loadout-manifest core (no Arduino deps) — compiled here to keep
+    # the emulator's menu model in sync with firmware (T-115/T-134). The
+    # LittleFS-backed LoadoutStore is device-only and deliberately absent.
+    ${LIB_DIR}/LoadoutManifest/LoadoutManifest.cpp
 )
 
 # ---- Per-app sources and defines ----

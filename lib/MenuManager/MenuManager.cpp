@@ -428,6 +428,90 @@ void finalizeHighlightAnimation(UIElement* e)
     }
 }
 
+// ========== MOVE (REORDER) MODE ==========
+
+void MenuManager::enterMoveMode()
+{
+    if (moveMode) return;
+    if (crossSlideState != CROSS_SLIDE_NONE) return; // not mid-transition
+    if (!currentItemList || currentItemList->empty()) return;
+    if ((*currentItemList)[currentIndex].isCategory) return; // leaves only
+
+    moveMode = true;
+    // The Held press still gets a Released when the finger lifts — don't
+    // let it fall through to selectCurrentItem()/commitMove().
+    swallowNextSelectRelease = true;
+    moveSnapshot = *currentItemList; // restore point for cancel
+    savedHighlightShape = highlightShape;
+    highlightShape = HIGHLIGHT_PARALLELOGRAM; // visual cue: item picked up
+    ESP_LOGI(TAG_MAIN, "Move mode: picked up item %d", currentIndex);
+}
+
+void MenuManager::moveItemUp()
+{
+    if (currentIndex <= 0) return;
+    std::swap((*currentItemList)[currentIndex], (*currentItemList)[currentIndex - 1]);
+    moveHighlightUp(); // highlight follows the moved item
+}
+
+void MenuManager::moveItemDown()
+{
+    if (currentIndex >= (int)currentItemList->size() - 1) return;
+    std::swap((*currentItemList)[currentIndex], (*currentItemList)[currentIndex + 1]);
+    moveHighlightDown();
+}
+
+void MenuManager::commitMove()
+{
+    moveMode = false;
+    highlightShape = savedHighlightShape;
+    moveSnapshot.clear();
+
+    // Persist the FULL display order as one declarative arrange op so the
+    // new arrangement survives reboot.
+    std::vector<LoadoutManifest::ArrangeItem> order;
+    collectArrangeOrder(order);
+    AppManager::instance().persistMenuArrangement(order);
+    ESP_LOGI(TAG_MAIN, "Move mode: committed (%d items)", (int)order.size());
+}
+
+void MenuManager::cancelMove()
+{
+    moveMode = false;
+    highlightShape = savedHighlightShape;
+    *currentItemList = moveSnapshot; // restore pre-move order
+    moveSnapshot.clear();
+    ESP_LOGI(TAG_MAIN, "Move mode: cancelled");
+}
+
+// Recursive helper: leaves under a top-level category carry that label
+// (first path segment == the one-level flat category model); root leaves
+// carry "".
+static void collectLeaves(const std::vector<MenuItem>& items,
+                          const std::string& topCategory,
+                          std::vector<LoadoutManifest::ArrangeItem>& out)
+{
+    for (const auto& mi : items) {
+        if (mi.isCategory) {
+            collectLeaves(mi.children,
+                          topCategory.empty() ? mi.label : topCategory,
+                          out);
+        } else {
+            LoadoutManifest::ArrangeItem item;
+            item.id          = appIds[mi.appIndex];
+            item.category    = topCategory;
+            item.hasCategory = true;
+            out.push_back(item);
+        }
+    }
+}
+
+void MenuManager::collectArrangeOrder(std::vector<LoadoutManifest::ArrangeItem>& out) const
+{
+    out.clear();
+    collectLeaves(rootMenuItems, std::string(), out);
+}
+
 // Called on "Select" button
 // selectCurrentItem => if category => crossSlideForward
 void MenuManager::selectCurrentItem()
@@ -661,27 +745,42 @@ void MenuManager::onButtonUpPressed(const ButtonEvent& event)
 {
     // Press
     if (event.eventType == ButtonEvent_Pressed){
-        instance().moveHighlightUp();
+        if (instance().moveMode) instance().moveItemUp();
+        else                     instance().moveHighlightUp();
     }
 }
 void MenuManager::onButtonDownPressed(const ButtonEvent& event)
 {
     // Press
     if (event.eventType == ButtonEvent_Pressed){
-        instance().moveHighlightDown();
+        if (instance().moveMode) instance().moveItemDown();
+        else                     instance().moveHighlightDown();
     }
 }
 void MenuManager::onButtonBackPressed(const ButtonEvent& event)
 {    // Press
     if (event.eventType == ButtonEvent_Pressed){
-        instance().goBack();
-    } 
+        if (instance().moveMode) instance().cancelMove();
+        else                     instance().goBack();
+    }
 }
 void MenuManager::onButtonSelectPressed(const ButtonEvent& event)
-{    
+{
+    // Long-press picks up the current leaf for reordering (T-115).
+    if (event.eventType == ButtonEvent_Held){
+        instance().enterMoveMode();
+        return;
+    }
     // Press
     if (event.eventType == ButtonEvent_Released){  //Released intentionally to avoid carrying into event
-        instance().selectCurrentItem();
+        if (instance().swallowNextSelectRelease){
+            // This release belongs to the long-press that entered move
+            // mode — not a select.
+            instance().swallowNextSelectRelease = false;
+            return;
+        }
+        if (instance().moveMode) instance().commitMove();
+        else                     instance().selectCurrentItem();
     }
 }
 

@@ -13,6 +13,7 @@
 #include "HAL.h"          // So we can reference buttonManager, displayProxy, etc.
 #include "AppManager.h"    // We need to launch apps from here
 #include "ButtonManager.h" // For button callbacks
+#include "LoadoutManifest.h" // ArrangeItem for reorder persistence
 
 // Highlight shapes
 enum HighlightShape {
@@ -192,6 +193,32 @@ private:
      * @brief Helper to go back up one level in the navigation stack.
      */
     void goBack();
+
+    // ========== MOVE (REORDER) MODE ==========
+    //
+    // Long-press (ButtonEvent_Held) on a leaf item "picks it up"; up/down
+    // then reposition it within its current list (i.e. within its category
+    // section); select commits — the new order is persisted to the loadout
+    // manifest via AppManager::persistMenuArrangement so it survives
+    // reboot — and back cancels, restoring the pre-move order.
+
+    bool moveMode = false;                 // reorder mode active?
+    bool swallowNextSelectRelease = false; // eat the Released that follows the Held
+    std::vector<MenuItem> moveSnapshot;    // restore point for cancel
+    HighlightShape savedHighlightShape = HIGHLIGHT_SLANTED_CORNERS;
+
+    void enterMoveMode();
+    void commitMove();
+    void cancelMove();
+    void moveItemUp();
+    void moveItemDown();
+
+    /**
+     * @brief Walk the whole menu tree and emit the full display order as
+     * id-anchored arrange items (leaves under a top-level category carry
+     * that category's label — one-level flat model; root leaves carry "").
+     */
+    void collectArrangeOrder(std::vector<LoadoutManifest::ArrangeItem>& out) const;
 
     // ========== DRAWING ==========
 

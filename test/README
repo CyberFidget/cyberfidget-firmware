@@ -35,6 +35,7 @@ scopes which directories run for each test environment.
 | `test_core`          | `test/test_core_*/`           | `pio test -e test_core` |
 | `test_breakout`      | `test/test_breakout_*/`       | `pio test -e test_breakout` |
 | `test_voicerecorder` | `test/test_voicerecorder_*/`  | `pio test -e test_voicerecorder` |
+| `test_loadout`       | `test/test_loadout_*/`        | `pio test -e test_loadout` |
 
 To add a new app's tests:
 
@@ -107,6 +108,17 @@ they can't run on a Windows laptop without one of the installs above.
 - `test/test_voicerecorder_naming/` — `RecNaming.h` sequential
   naming with collision skip, PCM duration math, and index.csv row
   formatting (blank timestamp when the device clock is unset).
+
+- `test/test_loadout_parse/` — loadout manifest JSON parse/serialize
+  (`lib/LoadoutManifest/`): schema validation, unknown-field skip,
+  reserved-field round-trip, malformed input rejection (T-115).
+- `test/test_loadout_merge/` — manifest <-> compiled-in registry merge:
+  manifest order honored, unlisted apps appended in compile order,
+  stale ids pruned-not-fatal, hidden flags, empty manifest == compile
+  order.
+- `test/test_loadout_apply/` — REQ-053 clause 4 sync vocabulary
+  (adds / removes / hides + one declarative arrange op) and the
+  section-contiguity-by-construction invariant.
 
 ## What's NOT here yet
 
