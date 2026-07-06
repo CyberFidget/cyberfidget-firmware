@@ -7,9 +7,9 @@
 #include <vector>
 #include <string>
 
-// Forward declarations or includes for UIElement/Animation:
+// Forward declarations or includes for UIElement/UITween:
 #include "UIElement.h"
-#include "Animation.h"
+#include "UITween.h"
 #include "HAL.h"          // So we can reference buttonManager, displayProxy, etc.
 #include "AppManager.h"    // We need to launch apps from here
 #include "ButtonManager.h" // For button callbacks

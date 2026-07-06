@@ -264,8 +264,8 @@ void MenuManager::update()
 {
     if (!menuActive) return; // If an app is running, do nothing
 
-    // Update (animate) highlight, etc. 
-    animateAll();        // from your Animation.cpp
+    // Update (animate) highlight, etc.
+    tweenAll();        // from your UITween.cpp
     updateTmp();         // if needed from your code
     handleCrossSlide();  // Process the cross slide transition if needed
     drawMenu();          // Redraw the menu each frame (or only if something changed).
@@ -340,11 +340,11 @@ void MenuManager::updateScrollForCurrentIndex(int oldIndex)
     int bottomY = SCREEN_HEIGHT - MENU_ITEM_HEIGHT;
 
     // kill any old scroll animation
-    auto it = animationsInt.find(&scrollOffset);
-    if (it != animationsInt.end()) {
+    auto it = tweensInt.find(&scrollOffset);
+    if (it != tweensInt.end()) {
         it->second->updateToCurrentValue();
         delete it->second;
-        animationsInt.erase(it);
+        tweensInt.erase(it);
     }
 
     if (itemY < topY) {
@@ -353,8 +353,8 @@ void MenuManager::updateScrollForCurrentIndex(int oldIndex)
         int newScroll = currentIndex * MENU_ITEM_HEIGHT;
         // We'll animate scrollOffset from oldScrollOffset to newScroll
         oldScrollOffset = scrollOffset;
-        insertAnimation(
-            new Animation(
+        insertTween(
+            new UITween(
                 &scrollOffset,
                 INDENT,
                 newScroll,   // endVal
@@ -367,8 +367,8 @@ void MenuManager::updateScrollForCurrentIndex(int oldIndex)
         // e.g. new scrollOffset = currentIndex * MENU_ITEM_HEIGHT - bottomY
         int newScroll = currentIndex * MENU_ITEM_HEIGHT - bottomY;
         oldScrollOffset = scrollOffset;
-        insertAnimation(
-            new Animation(
+        insertTween(
+            new UITween(
                 &scrollOffset,
                 INDENT,
                 newScroll,
@@ -396,9 +396,9 @@ void MenuManager::animateHighlight(int oldIndex)
 
     // 4) Insert a brand-new animation from curY to newY (over 200ms, for instance)
     //    Because highlightElement’s .getY() is already curY, we only have to call
-    //    insertAnimation() with the new final Y.
-    insertAnimation(
-        new Animation(
+    //    insertTween() with the new final Y.
+    insertTween(
+        new UITween(
             &highlightElement,
             INDENT,        // or BOUNCE, etc.
             highlightElement.getX(),
@@ -414,17 +414,17 @@ void MenuManager::animateHighlight(int oldIndex)
 void finalizeHighlightAnimation(UIElement* e)
 {
     // Look up the UIElement in the map of active animations:
-    auto it = animationsUI.find(e);
-    if (it != animationsUI.end())
+    auto it = tweensUI.find(e);
+    if (it != tweensUI.end())
     {
-        Animation* oldAni = it->second;
+        UITween* oldAni = it->second;
 
         // Force it to update once to its "current" position:
         oldAni->updateToCurrentValue();
 
         // We then remove this animation from the map so it doesn’t keep running:
         delete oldAni;
-        animationsUI.erase(it);
+        tweensUI.erase(it);
     }
 }
 
@@ -574,11 +574,11 @@ void MenuManager::crossSlideForward(const MenuItem &child)
     newMenuX = SCREEN_WIDTH;
 
     // 4) Animate old to -SCREEN_WIDTH, new to 0
-    insertAnimation(new Animation((int*)&oldMenuX,
+    insertTween(new UITween((int*)&oldMenuX,
                                   INDENT,
                                   -SCREEN_WIDTH,  // end
                                   crossSlideDuration)); // Set type to true
-    insertAnimation(new Animation((int*)&newMenuX,
+    insertTween(new UITween((int*)&newMenuX,
                                   INDENT,
                                   0,              // end
                                   crossSlideDuration)); // Set type to true
@@ -609,11 +609,11 @@ void MenuManager::crossSlideBackward()
     newMenuX = -SCREEN_WIDTH;
 
     // Animate old to +SCREEN_WIDTH, new to 0
-    insertAnimation(new Animation((int*)&oldMenuX,
+    insertTween(new UITween((int*)&oldMenuX,
                                   INDENT,
                                   SCREEN_WIDTH,
                                   crossSlideDuration));
-    insertAnimation(new Animation((int*)&newMenuX,
+    insertTween(new UITween((int*)&newMenuX,
                                   INDENT,
                                   0,
                                   crossSlideDuration));
