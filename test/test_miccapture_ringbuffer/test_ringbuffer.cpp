@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
 // Copyright (c) 2023-2026 Dismo Industries LLC
 
-// test/test_voicerecorder_ringbuffer/test_ringbuffer.cpp
+// test/test_miccapture_ringbuffer/test_ringbuffer.cpp
 //
-// Pure-logic tests for RecRingBuffer (SPSC byte ring used by the voice
-// recorder capture pipeline). No HAL, no FreeRTOS — indices, wraparound,
+// Pure-logic tests for RecRingBuffer (SPSC byte ring used by the shared
+// lib/MicCapture pipeline). No HAL, no FreeRTOS — indices, wraparound,
 // and drop-newest overflow accounting.
 
 #include <unity.h>

@@ -313,6 +313,9 @@ input[type="file"]{display:none}
     <div class="nav-item" data-page="files" onclick="showPage('files')">
       <span class="icon">&#9636;</span> Files
     </div>
+    <div class="nav-item" onclick="window.location.href='/web/'">
+      <span class="icon">&#9678;</span> Live listening
+    </div>
     <div class="nav-item" data-page="settings" onclick="showPage('settings')">
       <span class="icon">&#9881;</span> Settings
     </div>

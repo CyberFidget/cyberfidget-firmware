@@ -18,6 +18,9 @@ public:
     // Switch apps
     void switchToApp(AppIndex newApp);
 
+    // Currently running app (read-only; used by the test-mode Serial CLI)
+    AppIndex activeApp() const { return appActive; }
+
 private:
     // Private constructor
     AppManager();

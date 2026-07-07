@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
+     Copyright (c) 2023-2026 Dismo Industries LLC
+
+     Cyber Fidget phone companion - served by the device itself from the
+     memory card (/web/). Everything here runs on the user's phone and talks
+     only to the device, except two explicit, user-consented flows: the
+     one-time transcription download and the bring-your-own-account summary
+     call. Keep it that way. -->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<meta name="theme-color" content="#0e0820">
+<title>Cyber Fidget Companion</title>
+<link rel="stylesheet" href="css/tokens.css">
+<link rel="stylesheet" href="css/app.css">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icons/icon.svg">
+</head>
+<body>
+
+<header class="hdr">
+  <div class="logo"><b>CYBER FIDGET</b><span>Companion</span></div>
+  <div class="spacer"></div>
+  <div class="chip" id="chipDevice"><span class="dot"></span><span id="chipDeviceText">device...</span></div>
+  <div class="chip" id="chipNet"><span class="dot"></span><span id="chipNetText">internet?</span></div>
+</header>
+
+<!-- ── LISTEN ── -->
+<main class="view" id="viewListen">
+  <div class="card" id="listenIntro">
+    <h2>Live listening</h2>
+    <p>Hear what your Cyber Fidget hears, watch it as a waveform, and (after
+    a one-time download) turn speech into captions that appear right on the
+    device's screen.</p>
+    <div class="btn-row">
+      <button class="btn btn-primary grow" id="btnStartSession">Start live session</button>
+    </div>
+    <p class="muted" id="listenHint" style="margin-top:10px">Your phone needs to be on the
+    CyberFidget network, or on the same home network as the device.</p>
+  </div>
+
+  <div class="card" id="sessionCard" hidden>
+    <h2>Session</h2>
+    <div class="phosphor"><canvas id="wave" width="640" height="220"></canvas></div>
+    <div class="session-strip">
+      <span class="chip on" id="chipSession"><span class="dot"></span><span id="chipSessionText">connecting...</span></span>
+      <span class="chip" id="chipCaptions" hidden><span class="dot"></span><span id="chipCaptionsText">captions off</span></span>
+    </div>
+    <div class="notice" id="sessionNotice" hidden></div>
+    <div class="btn-row">
+      <button class="btn" id="btnHear">&#128264; Hear it</button>
+      <button class="btn btn-magenta" id="btnCaptions">Start captions</button>
+      <button class="btn btn-danger" id="btnStopSession">Stop</button>
+    </div>
+    <p class="muted" style="margin-top:10px">Keep this screen on for the whole
+    session - phones pause the connection when the screen locks. <span id="wakeLockNote"></span></p>
+  </div>
+
+  <div class="card" id="captionCard" hidden>
+    <h2>Captions</h2>
+    <div class="phosphor"><div class="caption-feed" id="captionFeed"></div></div>
+    <p class="muted" style="margin-top:8px">Captions also appear on the device's
+    screen. They may lag a few seconds behind speech on this phone.</p>
+  </div>
+</main>
+
+<!-- ── NOTES ── -->
+<main class="view" id="viewNotes" hidden>
+  <div class="card">
+    <h2>Voice note transcripts</h2>
+    <p>Turn saved voice notes into text - right here on your phone. Transcripts
+    are saved back to the device's memory card next to each note.</p>
+    <div class="notice" id="notesNotice" hidden></div>
+    <ul class="rowlist" id="notesList"><li class="empty">Loading notes from the device...</li></ul>
+  </div>
+  <div class="card" id="transcriptCard" hidden>
+    <h2 id="transcriptTitle">Transcript</h2>
+    <div class="phosphor"><div class="terminal" id="transcriptView"></div></div>
+    <div class="btn-row">
+      <button class="btn" id="btnSaveSidecar">Save to device</button>
+      <button class="btn btn-ghost" id="btnCloseTranscript">Close</button>
+    </div>
+  </div>
+</main>
+
+<!-- ── DAILY NOTE ── -->
+<main class="view" id="viewDaily" hidden>
+  <div class="card">
+    <h2>Daily note</h2>
+    <p>Gather everything transcribed on one day and have a summary generator -
+    using your own account - write it up as a tidy daily note.</p>
+    <div class="notice" id="dailyNotice" hidden></div>
+    <div class="field" style="margin-top:10px">
+      <label for="dailyDate">Day</label>
+      <input type="date" id="dailyDate">
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary grow" id="btnAssemble">Gather transcripts</button>
+    </div>
+  </div>
+  <div class="card" id="assembledCard" hidden>
+    <h2>What would be sent</h2>
+    <p class="muted">This is the exact text the summary generator would receive -
+    nothing more, nothing less.</p>
+    <div class="preview-box" id="assembledPreview"></div>
+    <div class="btn-row">
+      <button class="btn btn-magenta grow" id="btnSummarize">Write my daily note...</button>
+    </div>
+  </div>
+  <div class="card" id="dailyResultCard" hidden>
+    <h2>Daily note</h2>
+    <div class="phosphor"><div class="terminal" id="dailyResult"></div></div>
+    <div class="btn-row">
+      <button class="btn" id="btnDownloadNote">Download</button>
+      <button class="btn" id="btnSaveNoteDevice">Save to device</button>
+    </div>
+  </div>
+</main>
+
+<!-- ── SETUP ── -->
+<main class="view" id="viewSetup" hidden>
+  <div class="card">
+    <h2>Transcription</h2>
+    <p>Speech is turned into text right on this phone. That needs a one-time
+    download of the transcription pack; after that it works with no internet
+    at all.</p>
+    <p class="muted">Captions run on your phone's processor, so a smaller pack
+    means faster, more responsive live captions. Pick <b>Fastest</b> for live
+    captions; a more accurate pack is better for transcribing saved notes,
+    where speed matters less.</p>
+    <div class="kv"><span class="k">Status</span><span class="v" id="engineStatus">checking...</span></div>
+    <div class="field">
+      <label for="modelPick">Transcription pack</label>
+      <select id="modelPick"></select>
+    </div>
+    <div class="bar" id="modelBar" hidden><div class="fill" id="modelFill"></div></div>
+    <div class="notice" id="engineNotice" hidden></div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btnGetModel">Download</button>
+      <button class="btn btn-danger" id="btnDropModel" hidden>Remove download</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Summary generator</h2>
+    <p>Daily notes are written by a provider you choose, using <b>your own
+    account and key</b>. The key is stored only in this browser, only for this
+    device's pages - it is never uploaded anywhere.</p>
+    <div class="field">
+      <label for="provPick">Provider</label>
+      <select id="provPick">
+        <option value="anthropic">Anthropic (Claude)</option>
+        <option value="openai">OpenAI</option>
+        <option value="gemini">Google (Gemini)</option>
+      </select>
+    </div>
+    <div class="field">
+      <label for="provKey">Your key</label>
+      <input type="password" id="provKey" placeholder="paste your key" autocomplete="off">
+    </div>
+    <p class="muted" id="provKeyHelp"></p>
+    <div class="field">
+      <label for="provModel">Model</label>
+      <select id="provModel"></select>
+    </div>
+    <div class="btn-row">
+      <button class="btn btn-primary" id="btnSaveProvider">Save</button>
+    </div>
+    <div class="notice" id="provNotice" hidden></div>
+  </div>
+
+  <div class="card">
+    <h2>Your data</h2>
+    <p>Sound and transcripts stay between the device and this phone. The only
+    times anything leaves: the one-time transcription download, and a daily-note
+    summary you approve - sent straight to your chosen provider, never through
+    cyberfidget.com.</p>
+    <div class="kv"><span class="k">Device</span><span class="v" id="aboutDevice">-</span></div>
+    <div class="kv"><span class="k">Companion</span><span class="v" id="aboutVersion">-</span></div>
+  </div>
+</main>
+
+<nav class="nav">
+  <button data-view="Listen" class="active"><span class="glyph">&#9678;</span>Listen</button>
+  <button data-view="Notes"><span class="glyph">&#9636;</span>Notes</button>
+  <button data-view="Daily"><span class="glyph">&#9783;</span>Daily</button>
+  <button data-view="Setup"><span class="glyph">&#9881;</span>Setup</button>
+</nav>
+
+<!-- ── Live-listening consent (shown before the first connection) ── -->
+<div class="overlay" id="consentOverlay" hidden>
+  <div class="box">
+    <h3>Before we listen</h3>
+    <div class="consent-quote">Sound from your device streams over its WiFi to
+    this page and is turned into text right here on your phone. Nothing is
+    uploaded anywhere.</div>
+    <p>Stopping the session, closing this page, or leaving the network ends the
+    stream immediately.</p>
+    <div class="btn-row">
+      <button class="btn btn-primary grow" id="btnConsentGo">Start listening</button>
+      <button class="btn btn-ghost" id="btnConsentNo">Not now</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Model download consent ── -->
+<div class="overlay" id="modelOverlay" hidden>
+  <div class="box">
+    <h3>One-time download</h3>
+    <p id="modelOverlayText"></p>
+    <div class="notice" id="modelCellWarn" hidden>You appear to be on mobile
+    data - this download is best done on WiFi.</div>
+    <p class="muted">Downloads once and is kept on this phone. If your phone
+    ever clears it, you can simply download it again.</p>
+    <div class="btn-row">
+      <button class="btn btn-primary grow" id="btnModelGo">Download</button>
+      <button class="btn btn-ghost" id="btnModelNo">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Per-action summary consent ── -->
+<div class="overlay" id="summaryOverlay" hidden>
+  <div class="box">
+    <h3>Send to your provider?</h3>
+    <p id="summaryConsentText"></p>
+    <p class="muted">Your key, your account. The text goes straight from this
+    phone to the provider - cyberfidget.com is never involved. Nothing is
+    remembered about this choice; you'll be asked every time.</p>
+    <div class="btn-row">
+      <button class="btn btn-magenta grow" id="btnSummaryGo">Send it</button>
+      <button class="btn btn-ghost" id="btnSummaryNo">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,66 @@
+/* SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
+ * Copyright (c) 2023-2026 Dismo Industries LLC
+ *
+ * Cyber Fidget design tokens — the companion's single source of visual
+ * truth, lifted from the Cyber Fidget style guide (00 _ Style Guide, June
+ * 2026 draft). Components in app.css consume ONLY these custom properties,
+ * so a future re-theme (or a rollback to compare) is a one-file swap.
+ *
+ * Font stacks intentionally end in system fallbacks: the companion is
+ * served by the device and must render offline with zero external
+ * requests, so no webfont fetches. If the display fonts (Chakra Petch /
+ * VT323) are ever shipped in the SD pack, only this file changes.
+ */
+:root {
+  /* Backgrounds, deepest to most elevated */
+  --cf-bg-deep:   #08050f;
+  --cf-bg-page:   #0e0820;
+  --cf-bg-card:   #15102a;
+  --cf-bg-elev:   #1f1840;
+  --cf-bg-line:   rgba(245, 236, 255, 0.08);
+
+  /* Ink */
+  --cf-ink:       #f5ecff;
+  --cf-ink-dim:   #a89cc8;
+  --cf-ink-mute:  #6b5e88;
+  --cf-ink-faint: #3a3055;
+
+  /* Synthwave accents */
+  --cf-cyan:          #68e1fd;
+  --cf-cyan-soft:     #a5edff;
+  --cf-cyan-deep:     #2596c2;
+  --cf-magenta:       #ff2bb8;
+  --cf-magenta-soft:  #ff6ed1;
+  --cf-magenta-deep:  #c4127d;
+  --cf-purple:        #b16cff;
+  --cf-green:         #4dffaf;
+  --cf-yellow:        #ffd84a;
+  --cf-sunset:        #ff8a3d;
+  /* Extension (not in the guide draft): destructive/error accent */
+  --cf-red:           #ff5252;
+
+  /* OLED / VFD phosphor (mirrors of the device screen) */
+  --cf-oled-bg:   #0a0a0a;
+  --cf-oled-fg:   #b8f1ff;
+  --cf-oled-glow: rgba(184, 241, 255, 0.4);
+
+  /* Bevels */
+  --cf-bevel-hi: rgba(255, 255, 255, 0.08);
+  --cf-bevel-lo: rgba(0, 0, 0, 0.5);
+
+  /* Radii */
+  --cf-r-sm: 4px;
+  --cf-r-md: 8px;
+  --cf-r-lg: 14px;
+
+  /* FX intensities */
+  --cf-scanline:   0.04;
+  --cf-grid-color: rgba(255, 43, 184, 0.32);
+
+  /* Type — guide stacks with reliable system tails */
+  --cf-font-display: 'Chakra Petch', system-ui, sans-serif;
+  --cf-font-ui:      'Chakra Petch', system-ui, sans-serif;
+  --cf-font-body:    'Chakra Petch', system-ui, sans-serif;
+  --cf-font-crt:     'VT323', 'Share Tech Mono', ui-monospace, Consolas, monospace;
+  --cf-font-mono:    'Space Mono', 'JetBrains Mono', ui-monospace, Consolas, monospace;
+}
