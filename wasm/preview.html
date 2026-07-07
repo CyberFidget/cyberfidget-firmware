@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<!--
+  SPDX-License-Identifier: GPL-3.0-or-later
+  Copyright (c) 2023-2026 Dismo Industries LLC
+
+  Self-contained local preview harness for the CyberFidget WASM emulator.
+  No website assets required. Build an app first:
+
+      build_app.bat Spaceship          (Windows)
+      ./build_app.sh Spaceship         (Unix)
+
+  then serve THIS directory over http (the browser refuses .wasm over file://):
+
+      C:\php\php.exe -S localhost:8000        (or)  python -m http.server 8000
+
+  and open  http://localhost:8000/preview.html
+
+  It loads ./build/cyberfidget.js, paints the 128x64 framebuffer to a canvas,
+  shows the 4 RGBW LEDs, and feeds buttons / slider / accelerometer to the app.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CyberFidget &mdash; Local WASM Preview</title>
+<style>
+  :root { --bg:#0a0e14; --panel:#121823; --line:#223; --ink:#cfe8ff; --accent:#56e1ff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink);
+         font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; }
+  header { padding:.6rem 1rem; border-bottom:1px solid var(--line); display:flex;
+           gap:1rem; align-items:baseline; flex-wrap:wrap; }
+  header b { color:var(--accent); }
+  header .app { opacity:.8; }
+  main { display:flex; gap:1.5rem; padding:1.25rem; flex-wrap:wrap; align-items:flex-start; }
+  .device { display:flex; gap:1rem; align-items:flex-start; }
+  .screen-wrap { display:flex; flex-direction:column; gap:.6rem; align-items:center; }
+  canvas#oled { width:512px; height:256px; image-rendering:pixelated;
+                background:#000; border:2px solid #2a3a4d; border-radius:6px;
+                box-shadow:0 0 24px #08304a inset; }
+  .leds { display:flex; gap:.75rem; }
+  .led { width:22px; height:22px; border-radius:50%; background:#111;
+         border:1px solid #2a3a4d; box-shadow:0 0 2px #000 inset; }
+  .led-lbl { font-size:11px; opacity:.6; text-align:center; }
+  .slider-col { display:flex; flex-direction:column; align-items:center; gap:.4rem; height:256px; }
+  input[type=range][orient=vertical]{ writing-mode:vertical-lr; direction:rtl;
+         width:24px; height:200px; accent-color:var(--accent); }
+  .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px;
+           padding:1rem; min-width:240px; }
+  .panel h3 { margin:.1rem 0 .7rem; font-size:13px; letter-spacing:.05em; color:var(--accent);
+              text-transform:uppercase; }
+  .pad { display:grid; grid-template-columns:repeat(2,1fr); gap:.5rem; max-width:240px; }
+  button.btn { background:#1b2433; color:var(--ink); border:1px solid #2f3e54;
+               border-radius:6px; padding:.55rem; cursor:pointer; user-select:none;
+               font:inherit; }
+  button.btn:active, button.btn.down { background:var(--accent); color:#04121b; border-color:var(--accent); }
+  button.btn small { display:block; opacity:.6; font-size:10px; }
+  .row { display:flex; gap:.5rem; flex-wrap:wrap; margin-top:.6rem; }
+  .key { display:inline-block; background:#0d141e; border:1px solid #2f3e54; border-radius:4px;
+         padding:0 .35rem; font-size:11px; }
+  #serial { background:#06090d; border:1px solid var(--line); border-radius:6px; padding:.6rem;
+            height:120px; overflow:auto; white-space:pre-wrap; font-size:12px; color:#9fd3b0; }
+  #status { font-size:12px; }
+  #status.err { color:#ff7a7a; }
+  .hint { font-size:11px; opacity:.6; margin-top:.4rem; }
+</style>
+</head>
+<body>
+<header>
+  <b>CYBER FIDGET</b><span class="app">local WASM preview &mdash; <span id="appname">build/cyberfidget.js</span></span>
+  <span id="status">loading&hellip;</span>
+  <span id="fps" style="margin-left:auto;opacity:.6"></span>
+</header>
+
+<main>
+  <div class="device">
+    <div class="screen-wrap">
+      <canvas id="oled" width="128" height="64"></canvas>
+      <div class="leds" id="leds"></div>
+      <div class="led-lbl">Back &nbsp; F-Top &nbsp; F-Mid &nbsp; F-Bot</div>
+    </div>
+    <div class="slider-col">
+      <input id="slider" type="range" min="0" max="100" value="55" orient="vertical">
+      <div class="led-lbl">slider</div>
+    </div>
+  </div>
+
+  <div class="panel">
+    <h3>Buttons</h3>
+    <div class="pad" id="pad"></div>
+    <div class="hint">Keyboard: arrows = the four triangle buttons,
+      <span class="key">Space</span> = &#9679; (fire/enter),
+      <span class="key">Backspace</span> = &#61; (back).</div>
+  </div>
+
+  <div class="panel">
+    <h3>Accelerometer</h3>
+    <div class="hint">Drag on the screen to tilt. Or use these to exercise Auto mode:</div>
+    <div class="row">
+      <button class="btn" id="pickup">Pick up (shake)</button>
+      <button class="btn" id="putdown">Put down (still)</button>
+    </div>
+    <div class="hint" id="accelReadout" style="margin-top:.6rem">accel: 0, 0, 1000</div>
+    <h3 style="margin-top:1rem">Serial</h3>
+    <div id="serial"></div>
+  </div>
+</main>
+
+<script>
+(function () {
+  'use strict';
+
+  // ---- Button model: index -> {icon, label, keys[]} ----
+  // Indices match the firmware: TopLeft0 TopRight1 MiddleLeft2 MiddleRight3 BottomLeft4 BottomRight5
+  var BUTTONS = [
+    { i:0, icon:'▲', label:'Up',    keys:['ArrowUp'] },
+    { i:1, icon:'▼', label:'Down',  keys:['ArrowDown'] },
+    { i:2, icon:'◄', label:'Left',  keys:['ArrowLeft'] },
+    { i:3, icon:'►', label:'Right', keys:['ArrowRight'] },
+    { i:4, icon:'=', label:'Back',  keys:['Backspace'] },
+    { i:5, icon:'●', label:'Fire',  keys:[' ','Enter'] }
+  ];
+  // Visual grid order: Up Down / Left Right / Back Fire
+  var GRID = [0,1,2,3,4,5];
+
+  var statusEl = document.getElementById('status');
+  var fpsEl    = document.getElementById('fps');
+  var serialEl = document.getElementById('serial');
+  var accelEl  = document.getElementById('accelReadout');
+  var canvas   = document.getElementById('oled');
+  var ctx      = canvas.getContext('2d');
+  var img      = ctx.createImageData(128, 64);
+
+  // Build LED dots
+  var ledEls = [];
+  var ledsWrap = document.getElementById('leds');
+  for (var li = 0; li < 4; li++) {
+    var d = document.createElement('div'); d.className = 'led'; ledsWrap.appendChild(d); ledEls.push(d);
+  }
+
+  var mod = null, btnPress = null, btnRelease = null, setSlider = null, setAccel = null;
+  var down = {};                 // index -> bool (debounce duplicate presses)
+  var keyMap = {};               // key -> index
+  BUTTONS.forEach(function (b) { b.keys.forEach(function (k) { keyMap[k] = b.i; }); });
+
+  function press(i)   { if (down[i] || !btnPress) return; down[i] = true; btnPress(i); paintBtn(i, true); }
+  function release(i) { if (!down[i] || !btnRelease) return; down[i] = false; btnRelease(i); paintBtn(i, false); }
+
+  // ---- On-screen buttons ----
+  var pad = document.getElementById('pad');
+  var btnEls = {};
+  GRID.forEach(function (i) {
+    var b = BUTTONS[i];
+    var el = document.createElement('button');
+    el.className = 'btn'; el.innerHTML = b.icon + '<small>' + b.label + '</small>';
+    el.addEventListener('mousedown', function (e) { e.preventDefault(); press(i); });
+    el.addEventListener('mouseup',   function () { release(i); });
+    el.addEventListener('mouseleave',function () { release(i); });
+    el.addEventListener('touchstart',function (e) { e.preventDefault(); press(i); }, {passive:false});
+    el.addEventListener('touchend',  function (e) { e.preventDefault(); release(i); }, {passive:false});
+    pad.appendChild(el); btnEls[i] = el;
+  });
+  function paintBtn(i, on) { if (btnEls[i]) btnEls[i].classList.toggle('down', on); }
+
+  // ---- Keyboard ----
+  window.addEventListener('keydown', function (e) {
+    if (e.key in keyMap) { e.preventDefault(); press(keyMap[e.key]); }
+  });
+  window.addEventListener('keyup', function (e) {
+    if (e.key in keyMap) { e.preventDefault(); release(keyMap[e.key]); }
+  });
+
+  // ---- Slider ----
+  var slider = document.getElementById('slider');
+  function pushSlider() { if (setSlider) setSlider(Math.round(slider.value * 4095 / 100)); }
+  slider.addEventListener('input', pushSlider);
+
+  // ---- Accelerometer (drag-to-tilt + decay; explicit pickup/putdown injectors) ----
+  var ax = 0, ay = 0, az = 1000;   // resting: flat, gravity on Z
+  var tiltX = 0, tiltY = 0;
+  var shakeFrames = 0, shakeSeed = 1;
+  var dragging = false, lastX = 0, lastY = 0;
+
+  canvas.addEventListener('mousedown', function (e) { dragging = true; lastX = e.clientX; lastY = e.clientY; });
+  window.addEventListener('mouseup', function () { dragging = false; });
+  window.addEventListener('mousemove', function (e) {
+    if (!dragging) return;
+    tiltX += (e.clientX - lastX) * 6; tiltY += (e.clientY - lastY) * 6;
+    lastX = e.clientX; lastY = e.clientY;
+  });
+  document.getElementById('pickup').addEventListener('click', function () { shakeFrames = 24; });
+  document.getElementById('putdown').addEventListener('click', function () { tiltX = tiltY = 0; shakeFrames = 0; });
+
+  setInterval(function () {
+    if (shakeFrames > 0) {
+      shakeFrames--;
+      // pseudo-random jitter so accel magnitude changes frame-to-frame (reads as motion)
+      shakeSeed = (shakeSeed * 1103515245 + 12345) & 0x7fffffff;
+      var r = shakeSeed / 0x7fffffff;
+      tiltX = (r - 0.5) * 1600; tiltY = ((1 - r) - 0.5) * 1600;
+    }
+    ax = tiltX; ay = tiltY; az = 1000;
+    tiltX *= 0.85; tiltY *= 0.85;          // decay back to rest when no input
+    if (setAccel) setAccel(ax, ay, az);
+    accelEl.textContent = 'accel: ' + ax.toFixed(0) + ', ' + ay.toFixed(0) + ', ' + az.toFixed(0);
+  }, 50);
+
+  // ---- Framebuffer render (8192 bytes, 1 byte/pixel, row-major y*128+x) ----
+  var frames = 0, lastFpsT = performance.now();
+  function onFrame(buf) {
+    var d = img.data;
+    for (var i = 0; i < 8192; i++) {
+      var on = buf[i] ? 255 : 0, o = i * 4;
+      d[o] = on ? 0x66 : 0; d[o+1] = on ? 0xe6 : 0; d[o+2] = on ? 0xff : 0; d[o+3] = 255;
+    }
+    ctx.putImageData(img, 0, 0);
+    frames++;
+    var now = performance.now();
+    if (now - lastFpsT > 500) { fpsEl.textContent = Math.round(frames * 1000 / (now - lastFpsT)) + ' fps';
+      frames = 0; lastFpsT = now; }
+  }
+
+  function onLed(index, r, g, b, w) {
+    if (index < 0 || index >= 4) return;
+    var rr = Math.min(255, r + w), gg = Math.min(255, g + w), bb = Math.min(255, b + w);
+    var el = ledEls[index];
+    el.style.background = 'rgb(' + rr + ',' + gg + ',' + bb + ')';
+    el.style.boxShadow = (rr+gg+bb > 30) ? '0 0 10px rgb(' + rr + ',' + gg + ',' + bb + ')' : '0 0 2px #000 inset';
+  }
+
+  // ---- Load the module ----
+  var s = document.createElement('script');
+  s.src = './build/cyberfidget.js';
+  s.onload = function () {
+    if (typeof CyberFidgetModule !== 'function') {
+      statusEl.textContent = 'CyberFidgetModule factory not found in build/cyberfidget.js'; statusEl.className = 'err'; return;
+    }
+    CyberFidgetModule({
+      onFrameReady:  onFrame,
+      onLedUpdate:   onLed,
+      onSerialOutput:function (t) { serialEl.textContent += t; serialEl.scrollTop = serialEl.scrollHeight; }
+    }).then(function (m) {
+      mod = m;
+      btnPress   = m.cwrap('wasm_button_press',   null, ['number']);
+      btnRelease = m.cwrap('wasm_button_release', null, ['number']);
+      setSlider  = m.cwrap('wasm_set_slider',     null, ['number']);
+      try { setAccel = m.cwrap('wasm_set_accel', null, ['number','number','number']); } catch (e) { setAccel = null; }
+      pushSlider();
+      var ver = '';
+      try { ver = m.cwrap('cyberfidget_version_string','string',[])(); } catch (e) {}
+      statusEl.textContent = 'running' + (ver ? '  (fw ' + ver + ')' : '');
+    }).catch(function (e) {
+      statusEl.textContent = 'load error: ' + e; statusEl.className = 'err'; console.error(e);
+    });
+  };
+  s.onerror = function () {
+    statusEl.textContent = 'could not load ./build/cyberfidget.js — did you run build_app.bat <App>?';
+    statusEl.className = 'err';
+  };
+  document.head.appendChild(s);
+})();
+</script>
+</body>
+</html>
