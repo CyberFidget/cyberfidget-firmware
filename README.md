@@ -56,6 +56,19 @@ Apps follow the `begin()` / `update()` / `end()` lifecycle and register via the 
 
 **Apps you create through the HAL API are yours** — the linking exception in the license means they are not considered derivative works of the firmware, regardless of how they are compiled or linked.
 
+## Manual test checklist
+
+Automated tests can't drive real hardware. Whenever a change touches LEDs, the OLED display, or audio, verify on-device before considering it done:
+
+1. **Build/flash version match.** After flashing, compare the boot banner (and the `version` CLI command at 921600 baud) against the build summary printed to console — `fw=X.Y.Z+hash type=... built=...` must match character-for-character. If it doesn't, something's stale (wrong binary, wrong port, partial flash) — don't proceed until it does.
+2. **LEDs.** Exercise every LED-driving path the change touches (idle, active states, transitions):
+   - Correct physical LED per the pixel index map (`0` Back, `1` Front Top, `2` Front Middle, `3` Front Bottom) — no cross-wiring.
+   - LEDs go fully dark on `begin()` (via `setColorsOff()`) and again on `end()` — no bleed from the previous app, none carried into the next.
+   - Nothing lit during states that shouldn't show activity (idle/menu).
+3. **Display.** No leftover pixels/tearing from the previous app on entry; screen clears appropriately on exit.
+4. **Audio.** `stopTone()` (or equivalent) fires on `end()` — no audio bleeding into the menu or the next app.
+5. **Sleep/power-cycle.** If the app's idle state drives LEDs, confirm they also go dark on deep-sleep entry, not just on app exit.
+
 ## Project Structure
 
 ```
