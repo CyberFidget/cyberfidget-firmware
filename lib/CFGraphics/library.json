@@ -1,0 +1,6 @@
+{
+    "name": "CFGraphics",
+    "version": "1.0.0",
+    "description": "cf::gfx sprite/animation runtime: POD asset types, AnimationPlayer, Actor, pixel-perfect collision. Runtime only - apps own their assets (REQ-042.2). Dependencies deliberately empty: DisplayProxy is resolved by the LDF (deep+) in firmware builds, and a declared dep would drag Arduino libs into the native test env (lib_ldf_mode=off).",
+    "dependencies": []
+}

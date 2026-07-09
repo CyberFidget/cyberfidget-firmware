@@ -32,6 +32,20 @@ cd /d "%~dp0"
 set "APP_DIR=%~dp0app"
 set "BUILD_DIR=%~dp0build"
 
+REM Regenerate version.h before any compilation — same standalone mode of
+REM the script PlatformIO uses, branded FW_BUILD_TYPE="wasm". (Mirrors
+REM build_wasm.sh; CMakeLists.txt expects wasm/generated/version.h to
+REM exist before configure. Without this, fresh checkouts fail with
+REM "version.h file not found".)
+echo === Generating wasm/generated/version.h ===
+set "CYBERFIDGET_BUILD_TYPE_OVERRIDE=wasm"
+python "%~dp0..\scripts\generate_version.py" --standalone --out "%~dp0generated\version.h" --repo-root "%~dp0.."
+if errorlevel 1 (
+    echo ERROR: generate_version.py failed. Is python on PATH?
+    exit /b 1
+)
+set "CYBERFIDGET_BUILD_TYPE_OVERRIDE="
+
 REM Locate Emscripten. If emcc isn't already on PATH, look in a few known
 REM places and source emsdk_env.bat automatically. Override with EMSDK_ROOT.
 where emcc >nul 2>nul
