@@ -106,8 +106,18 @@ bool parseBool(Cursor& c, bool& out) {
     return false;
 }
 
-// Skip any JSON value (for unknown fields — forward compatibility).
-bool skipValue(Cursor& c) {
+// Deepest object/array nesting skipValue will descend into before failing
+// the parse. The manifest and ops schemas nest only a couple of levels, so
+// 16 is generous headroom; the cap exists purely to keep a hostile document
+// (thousands of nested {/[ in an unknown field, reachable from the wire via
+// lapply/parseManifest) from overflowing the task stack via recursion.
+constexpr int kMaxSkipDepth = 16;
+
+// Skip any JSON value (for unknown fields — forward compatibility). `depth`
+// counts nested containers; exceeding kMaxSkipDepth fails the parse (and the
+// whole document rolls back) rather than recursing without bound.
+bool skipValue(Cursor& c, int depth) {
+    if (depth > kMaxSkipDepth) return false;
     skipWs(c);
     if (*c.p == '"') {
         std::string ignored;
@@ -128,7 +138,7 @@ bool skipValue(Cursor& c) {
                 if (*c.p != ':') return false;
                 c.p++;
             }
-            if (!skipValue(c)) return false;
+            if (!skipValue(c, depth + 1)) return false;
             skipWs(c);
             if (*c.p == ',') { c.p++; continue; }
             if (*c.p == close) { c.p++; return true; }
@@ -183,7 +193,7 @@ bool parseEntry(Cursor& c, LoadoutEntry& entry, bool& positionSeen) {
         else if (key == "version")   { if (!parseString(c, entry.version))   return false; }
         else if (key == "abi")       { if (!parseString(c, entry.abi))       return false; }
         else if (key == "signature") { if (!parseString(c, entry.signature)) return false; }
-        else                         { if (!skipValue(c))                    return false; }
+        else                         { if (!skipValue(c, 0))                 return false; }
 
         skipWs(c);
         if (*c.p == ',') { c.p++; continue; }
@@ -325,7 +335,7 @@ bool parseManifest(const char* json, Loadout& out) {
                     c.p++;
                 }
             } else {
-                if (!skipValue(c)) return false;
+                if (!skipValue(c, 0)) return false;
             }
 
             skipWs(c);
@@ -512,7 +522,7 @@ bool parseArrangeArray(Cursor& c, std::vector<ArrangeItem>& order) {
                     if (!parseString(c, item.category)) return false;
                     item.hasCategory = true;
                 } else {
-                    if (!skipValue(c)) return false;
+                    if (!skipValue(c, 0)) return false;
                 }
                 skipWs(c);
                 if (*c.p == ',') { c.p++; continue; }
@@ -569,7 +579,7 @@ bool applyOneOp(Cursor& c, Loadout& work, int& applied) {
                 if (!parseArrangeArray(c, order)) return false;
                 hasOrder = true;
             } else {
-                if (!skipValue(c)) return false;
+                if (!skipValue(c, 0)) return false;
             }
             skipWs(c);
             if (*c.p == ',') { c.p++; continue; }
@@ -665,7 +675,7 @@ bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut) {
                     c.p++;
                 }
             } else {
-                if (!skipValue(c)) return false; // unknown top-level field
+                if (!skipValue(c, 0)) return false; // unknown top-level field
             }
             skipWs(c);
             if (*c.p == ',') { c.p++; continue; }

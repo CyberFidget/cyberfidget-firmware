@@ -10,6 +10,8 @@
 // untouched (never half-applied), which is the manifest-level mirror of the
 // transport's checksum rejection.
 
+#include <string>
+
 #include <unity.h>
 #include "LoadoutManifest.h"
 
@@ -179,6 +181,36 @@ void test_ops_missing_required_field_rejected(void) {
     TEST_ASSERT_EQUAL_INT(4, (int)l.entries.size());
 }
 
+// The lapply payload reaches skipValue via applyOneOp's unknown-field branch,
+// so an ops document with a hostile deep-nested value in an entry must be
+// rejected cleanly (no stack overflow) and leave the loadout untouched — the
+// wire-reachable mirror of the parseManifest depth test.
+void test_ops_deeply_nested_unknown_field_rejected(void) {
+    Loadout l = makeBaseline();
+    std::string doc =
+        "{\"ops\":[{\"op\":\"add\",\"entry\":"
+        "{\"id\":\"APP_E\",\"category\":\"Games\",\"deep\":";
+    const int kDepth = 500; // well past the ~16-level cap
+    for (int i = 0; i < kDepth; i++) doc += "[";
+    for (int i = 0; i < kDepth; i++) doc += "]";
+    doc += "}}]}";
+    TEST_ASSERT_FALSE(applyOps(l, doc.c_str(), nullptr));
+    TEST_ASSERT_EQUAL_INT(4, (int)l.entries.size());   // untouched
+    TEST_ASSERT_EQUAL_INT(-1, indexOf(l, "APP_E"));    // not half-applied
+}
+
+void test_ops_shallow_nested_unknown_field_applies(void) {
+    // A shallow unknown field inside an op is skipped, and the op still applies.
+    Loadout l = makeBaseline();
+    const char* doc =
+        "{\"ops\":[{\"op\":\"add\",\"future\":[1,[2,{\"a\":true}]],"
+        "\"entry\":{\"id\":\"APP_E\",\"category\":\"Games\"}}]}";
+    int applied = 0;
+    TEST_ASSERT_TRUE(applyOps(l, doc, &applied));
+    TEST_ASSERT_EQUAL_INT(1, applied);
+    TEST_ASSERT_NOT_EQUAL(-1, indexOf(l, "APP_E"));
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -193,5 +225,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_ops_rejected_op_rolls_back_whole_document);
     RUN_TEST(test_ops_unknown_op_and_duplicate_add_rejected);
     RUN_TEST(test_ops_missing_required_field_rejected);
+    RUN_TEST(test_ops_deeply_nested_unknown_field_rejected);
+    RUN_TEST(test_ops_shallow_nested_unknown_field_applies);
     return UNITY_END();
 }

@@ -22,14 +22,19 @@ corruption rejection). Manifest-ops apply is in `LoadoutManifest::applyOps`
 ## Framing conventions
 
 * **Commands are newline-terminated ASCII lines** on the existing CLI, same
-  as `version` / `info`. Case-insensitive verb; space-separated args.
+  as `version` / `info`. Case-insensitive verb; space-separated args. Both
+  `\n` (LF) and `\r\n` (CRLF) are accepted line terminators: the device
+  dispatches on the `\r` and swallows a paired `\n`, so a length-framed
+  payload begins only after the **full** terminator sequence — never with a
+  stray `\n` misread as payload byte 0.
 * **Replies use the stable line prefixes** `[cmd]` (success/data) and
   `[err]` (rejection), so the browser parses line-by-line. Success replies
   are `[cmd] <verb>.<tag>=<fields>`; errors are `[err] <verb>.<reason>=...`.
 * **Binary payloads are length-framed, not line-framed.** A verb that moves
   bytes announces `<len>` (decimal) and a `<crc32>` (8 hex digits) on its
   command line; **exactly `len` raw bytes follow immediately after the
-  line's newline** and are consumed by the device, not parsed as commands.
+  line's terminator** (the `\n`, or the full `\r\n`) and are consumed by the
+  device, not parsed as commands.
   Device→browser payloads (`lget`) work the same way: read the header line,
   then read exactly `len` bytes.
 * **Checksum is CRC-32** (IEEE 802.3, reflected, poly `0xEDB88320`, the

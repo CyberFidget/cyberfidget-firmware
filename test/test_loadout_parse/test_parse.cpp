@@ -7,6 +7,8 @@
 // (LoadoutManifest::parseManifest / serializeManifest). Schema doc:
 // lib/LoadoutManifest/README.md.
 
+#include <string>
+
 #include <unity.h>
 #include "LoadoutManifest.h"
 
@@ -173,6 +175,37 @@ void test_serialize_parse_roundtrip_preserves_order(void) {
     }
 }
 
+void test_deeply_nested_unknown_field_rejected(void) {
+    // A hostile unknown field nested far past the parser's depth cap must be
+    // rejected cleanly (no crash / stack overflow), leaving output untouched.
+    std::string json = "{\"schemaVersion\": 1, \"deep\": ";
+    const int kDepth = 500; // well past the ~16-level cap
+    for (int i = 0; i < kDepth; i++) json += "[";
+    for (int i = 0; i < kDepth; i++) json += "]";
+    json += ", \"entries\": []}";
+
+    Loadout l;
+    // Seed with a valid manifest; the reject must leave it fully intact.
+    TEST_ASSERT_TRUE(parseManifest(kValidManifest, l));
+    TEST_ASSERT_FALSE(parseManifest(json.c_str(), l));
+    TEST_ASSERT_EQUAL_INT(2, (int)l.entries.size());
+    TEST_ASSERT_EQUAL_STRING("APP_BOOPER", l.entries[0].id.c_str());
+}
+
+void test_shallow_nested_unknown_field_parses(void) {
+    // A legitimately nested-but-shallow unknown field still parses (forward
+    // compat is preserved for anything under the depth cap).
+    const char* json = R"JSON({
+      "schemaVersion": 1,
+      "shallow": [1, [2, [3, {"a": [4, {"b": true}]}]]],
+      "entries": [ { "id": "APP_X", "name": "X", "category": "Games" } ]
+    })JSON";
+    Loadout l;
+    TEST_ASSERT_TRUE(parseManifest(json, l));
+    TEST_ASSERT_EQUAL_INT(1, (int)l.entries.size());
+    TEST_ASSERT_EQUAL_STRING("APP_X", l.entries[0].id.c_str());
+}
+
 void test_flatten_category(void) {
     TEST_ASSERT_EQUAL_STRING("Games", flattenCategory("Games/Arcade").c_str());
     TEST_ASSERT_EQUAL_STRING("Tools", flattenCategory("Tools/LEDs").c_str());
@@ -198,6 +231,8 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_missing_positions_use_array_order);
     RUN_TEST(test_string_escapes_roundtrip);
     RUN_TEST(test_serialize_parse_roundtrip_preserves_order);
+    RUN_TEST(test_deeply_nested_unknown_field_rejected);
+    RUN_TEST(test_shallow_nested_unknown_field_parses);
     RUN_TEST(test_flatten_category);
     return UNITY_END();
 }

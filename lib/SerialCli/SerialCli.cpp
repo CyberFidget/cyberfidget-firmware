@@ -78,35 +78,116 @@ uint32_t g_writeCrc        = 0;    // expected whole-file crc32
 // (never used by both at once). +1 for a null terminator on ops JSON.
 uint8_t  g_payloadBuf[SyncProtocol::kMaxApplyBytes + 1];
 
-// Read exactly n bytes of raw payload off the UART into buf, returning false
-// if the stream stalls for longer than timeoutMs between bytes.
-bool readExact(uint8_t* buf, size_t n, uint32_t timeoutMs) {
+// Payload read bounds. A framed payload read runs inside SerialCli::poll(),
+// which runs inside AppManager::loop(), so an unbounded read hands a hostile
+// (or merely wedged) host a lever to freeze the whole device. Two independent
+// bounds close that off:
+//   * Inter-byte gap: at 921600 baud a byte is ~11us on the wire, so a full
+//     second of silence mid-payload already means the transfer has died —
+//     stop waiting rather than hang on a yanked cable.
+//   * Total duration: a 4KB chunk is ~45ms of actual wire time and an 8KB ops
+//     doc ~90ms, so any legal payload completes in well under a second even
+//     with generous USB-host scheduling slack. Capping the whole read at
+//     max(2s, size/floor-rate) means a host that dribbles one byte just
+//     inside the gap window every time still can't hold the loop past a
+//     couple of seconds. Without the total cap the gap alone lets a
+//     1-byte-per-(gap-epsilon) drip block poll() indefinitely.
+constexpr uint32_t kPayloadGapMs       = 1000;  // max silence between bytes
+constexpr uint32_t kPayloadMinTotalMs  = 2000;  // floor for the whole read
+constexpr uint32_t kPayloadMaxTotalMs  = 4000;  // hard ceiling for the whole read
+// Conservative floor throughput used only for the size-proportional term:
+// ~10 bytes/ms (~10KB/s) is ~9x slower than the 921600-baud line, so this is
+// pure slack. In practice min/ceiling dominate for the current payload sizes.
+constexpr uint32_t kPayloadFloorBytesPerMs = 10;
+
+uint32_t payloadTotalCapMs(size_t n) {
+    uint32_t sized = (uint32_t)(n / kPayloadFloorBytesPerMs);
+    uint32_t total = (sized > kPayloadMinTotalMs) ? sized : kPayloadMinTotalMs;
+    return (total > kPayloadMaxTotalMs) ? kPayloadMaxTotalMs : total;
+}
+
+// Read exactly n bytes of raw payload off the UART into buf. Returns false if
+// the stream stalls (no byte for gapMs) OR the whole read outruns the total
+// cap (size-proportional, so it can never wedge poll() for more than a couple
+// of seconds). Both are duration deltas, so millis() wraparound is a no-op.
+bool readExact(uint8_t* buf, size_t n, uint32_t gapMs) {
     size_t got = 0;
-    uint32_t last = millis();
+    const uint32_t start    = millis();
+    const uint32_t totalCap = payloadTotalCapMs(n);
+    uint32_t lastByte = start;
     while (got < n) {
         int b = Serial.read();
         if (b < 0) {
-            if (millis() - last > timeoutMs) return false;
+            uint32_t now = millis();
+            if (now - lastByte > gapMs)    return false;  // inter-byte stall
+            if (now - start    > totalCap) return false;  // total-duration cap
             continue;
         }
         buf[got++] = (uint8_t)b;
-        last = millis();
+        lastByte = millis();
     }
     return true;
 }
 
 // Drain and discard exactly n bytes (used to stay in frame sync after a
 // header the device must reject but whose payload the browser still sends).
-void drainBytes(size_t n, uint32_t timeoutMs) {
-    uint32_t last = millis();
+// Bounded by the same gap + total-duration rules as readExact so a stalled
+// drain can't hang the loop either.
+void drainBytes(size_t n, uint32_t gapMs) {
+    const uint32_t start    = millis();
+    const uint32_t totalCap = payloadTotalCapMs(n);
+    uint32_t lastByte = start;
     while (n > 0) {
         int b = Serial.read();
         if (b < 0) {
-            if (millis() - last > timeoutMs) return;
+            uint32_t now = millis();
+            if (now - lastByte > gapMs)    return;  // inter-byte stall
+            if (now - start    > totalCap) return;  // total-duration cap
             continue;
         }
         n--;
-        last = millis();
+        lastByte = millis();
+    }
+}
+
+// A CRLF host terminates a command line with "\r\n". poll() dispatches on the
+// '\r'; the paired '\n' is ~11us behind it on the wire (921600 baud) and is
+// normally already sitting in the UART FIFO. Swallow exactly that one '\n'
+// before dispatch(), so it can never be read as byte 0 of a length-framed
+// payload (fwdata/lapply) — which would fail the chunk CRC AND leave a stray
+// byte that corrupts the next command line — nor be seen as a spurious empty
+// line. The short bounded wait covers the rare case where '\r' was the last
+// byte drained just before '\n' landed; a lone-'\r' host (no following '\n')
+// or an LF-only host falls through fast without consuming a real byte.
+constexpr uint32_t kCrlfPairWaitMs = 4;
+
+void swallowPairedLf() {
+    uint32_t start = millis();
+    for (;;) {
+        int b = Serial.peek();
+        if (b >= 0) {
+            if (b == '\n') Serial.read();  // consume the pair's '\n'
+            return;                         // stop at the first byte either way
+        }
+        if (millis() - start > kCrlfPairWaitMs) return;  // no pair arrived
+    }
+}
+
+// Create every intermediate directory in a confined file path so a nested
+// target (e.g. /apps/sub/x.dat) can actually be opened for write — Arduino
+// LittleFS does not auto-create parent directories on open(). `path` is an
+// absolute, already-confined file path; only its directory prefixes are
+// created, never the file itself.
+void ensureParentDirs(const char* path) {
+    char dir[sizeof(g_writeTemp)];
+    strncpy(dir, path, sizeof(dir) - 1);
+    dir[sizeof(dir) - 1] = '\0';
+    // Walk each '/' after the leading one, creating the prefix directory.
+    for (char* s = dir + 1; *s; ++s) {
+        if (*s != '/') continue;
+        *s = '\0';
+        if (!LittleFS.exists(dir)) LittleFS.mkdir(dir);
+        *s = '/';
     }
 }
 
@@ -139,6 +220,10 @@ void SerialCli::poll() {
             }
             if (bufferLen == 0) continue;  // ignore empty lines / lone \r before \n
             buffer[bufferLen] = '\0';
+            // On a '\r' terminator, swallow a paired '\n' BEFORE dispatch, so a
+            // CRLF host's '\n' is never consumed as the first payload byte by a
+            // fwdata/lapply read (nor left to desync the next command line).
+            if (c == '\r') swallowPairedLf();
             dispatch(buffer);
             bufferLen = 0;
             continue;
@@ -218,11 +303,6 @@ void SerialCli::cmdHelp() {
 // prefixes so the browser side can parse without regex acrobatics.
 // =========================================================================
 
-// Idle timeout waiting on payload bytes mid-frame. Generous: 921600 baud is
-// ~90KB/s, so a 4KB chunk is ~45ms on the wire — seconds of slack absorbs
-// host scheduling hiccups without wedging the CLI on a dropped cable.
-static constexpr uint32_t kPayloadTimeoutMs = 4000;
-
 void SerialCli::cmdFwrite(const char* args) {
     char path[SyncProtocol::kMaxPathLen + 1];
     uint32_t size = 0, crc = 0;
@@ -258,6 +338,11 @@ void SerialCli::cmdFwrite(const char* args) {
     g_writePath[sizeof(g_writePath) - 1] = '\0';
     snprintf(g_writeTemp, sizeof(g_writeTemp), "%s.part", g_writePath);
 
+    // Nested confined paths (/apps/sub/x.dat) pass confinement but LittleFS
+    // won't create the intermediate dirs on open — do it first so the open
+    // succeeds. Spot-check nested writes on hardware.
+    ensureParentDirs(g_writeTemp);
+
     g_writeFile = LittleFS.open(g_writeTemp, FILE_WRITE);
     if (!g_writeFile) {
         Serial.printf("[err] fwrite.open=%s\n", g_writeTemp);
@@ -284,23 +369,23 @@ void SerialCli::cmdFwdata(const char* args) {
         return;
     }
     if (len > SyncProtocol::kMaxChunkBytes) {
-        drainBytes(len, kPayloadTimeoutMs);
+        drainBytes(len, kPayloadGapMs);
         Serial.printf("[err] fwdata.toobig=%u max=%u\n",
                       (unsigned)len, (unsigned)SyncProtocol::kMaxChunkBytes);
         return;
     }
     if (!g_writeActive) {
-        drainBytes(len, kPayloadTimeoutMs);
+        drainBytes(len, kPayloadGapMs);
         Serial.println("[err] fwdata.nosession");
         return;
     }
     if ((uint64_t)offset + len > g_writeSize) {
-        drainBytes(len, kPayloadTimeoutMs);
+        drainBytes(len, kPayloadGapMs);
         Serial.printf("[err] fwdata.range=off %u len %u size %u\n",
                       (unsigned)offset, (unsigned)len, (unsigned)g_writeSize);
         return;
     }
-    if (!readExact(g_payloadBuf, len, kPayloadTimeoutMs)) {
+    if (!readExact(g_payloadBuf, len, kPayloadGapMs)) {
         if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
         clearWriteSession();
         Serial.println("[err] fwdata.timeout");
@@ -456,12 +541,12 @@ void SerialCli::cmdLapply(const char* args) {
         return;
     }
     if (len > SyncProtocol::kMaxApplyBytes) {
-        drainBytes(len, kPayloadTimeoutMs);
+        drainBytes(len, kPayloadGapMs);
         Serial.printf("[err] lapply.toobig=%u max=%u\n",
                       (unsigned)len, (unsigned)SyncProtocol::kMaxApplyBytes);
         return;
     }
-    if (!readExact(g_payloadBuf, len, kPayloadTimeoutMs)) {
+    if (!readExact(g_payloadBuf, len, kPayloadGapMs)) {
         Serial.println("[err] lapply.timeout");
         return;
     }
