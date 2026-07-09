@@ -128,13 +128,13 @@ verbs.
 ## Example byte flow (install one blob + stage a manifest edit)
 
 ```
---> fwrite /apps/hello.wasm 5 3610a686\n
-<-- [cmd] fwrite.ok=/apps/hello.wasm size=5 chunk=4096 crc=3610a686\n
---> fwdata 0 5 3610a686\n
+--> fwrite /apps/hello.wasm 5 c1446436\n
+<-- [cmd] fwrite.ok=/apps/hello.wasm size=5 chunk=4096 crc=c1446436\n
+--> fwdata 0 5 c1446436\n
 --> HELLO                      (5 raw bytes, no newline)
 <-- [cmd] fwdata.ok=off 0 len 5\n
 --> fwcommit\n
-<-- [cmd] fwcommit.ok=/apps/hello.wasm size=5 crc=3610a686\n
+<-- [cmd] fwcommit.ok=/apps/hello.wasm size=5 crc=c1446436\n
 
 --> lapply 78 1b9d1c4e\n
 --> {"ops":[{"op":"add","entry":{"id":"APP_HELLO","category":"Games", ... }}]}
@@ -146,5 +146,5 @@ verbs.
 <-- [cmd] syncinfo.fw=1.4.2+ab12cd3\n
 ```
 
-(`3610a686` is `crc32("HELLO")`; the manifest-payload CRC/len above are
+(`c1446436` is `crc32("HELLO")`; the manifest-payload CRC/len above are
 illustrative.)
