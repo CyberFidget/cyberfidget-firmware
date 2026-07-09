@@ -1,0 +1,6 @@
+{
+    "name": "SyncProtocol",
+    "version": "1.0.0",
+    "description": "Serial sync transport: CRC-32, command parsing, write confinement (pure core)",
+    "dependencies": []
+}

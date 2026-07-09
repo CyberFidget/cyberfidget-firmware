@@ -33,6 +33,21 @@ public:
      */
     void persistMenuArrangement(const std::vector<LoadoutManifest::ArrangeItem>& order);
 
+    /**
+     * Apply a staged-ops document (serial sync write direction) to the
+     * loadout manifest and persist it atomically. `opsJson` is the ops
+     * vocabulary consumed by LoadoutManifest::applyOps (adds/removes/hides +
+     * one arrange). Starts from the stored manifest, or a compiled-in
+     * registry snapshot on a device that has none yet. Returns true and
+     * (when non-null) reports the resulting entry count and applied-op count
+     * only when the document parses, every op succeeds, AND the save lands;
+     * a malformed or rejected document leaves the stored manifest untouched.
+     * The new order takes effect at the next boot menu build, mirroring the
+     * on-device reorder path.
+     */
+    bool applyLoadoutOps(const char* opsJson, int* entriesOut = nullptr,
+                         int* appliedOut = nullptr);
+
 private:
     // Private constructor
     AppManager();

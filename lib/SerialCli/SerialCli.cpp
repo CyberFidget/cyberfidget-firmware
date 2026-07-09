@@ -6,8 +6,16 @@
 #include <Arduino.h>
 #include <esp_system.h>
 
+#include <FS.h>
+#include <LittleFS.h>
+
 #include "globals.h"  // getFirmwareVersionString() and friends
 #include "version.h"  // FW_GIT_DIRTY for the `info` command
+
+#include "AppManager.h"       // applyLoadoutOps (manifest apply + persist)
+#include "LoadoutManifest.h"  // parse for the lget entry count
+#include "LoadoutStore.h"     // LittleFS mount + manifest read
+#include "SyncProtocol.h"     // pure crc / confinement / arg parsing
 
 #ifdef CF_TEST_CLI
 #include <Preferences.h>
@@ -34,7 +42,6 @@ bool ieq(const char* a, const char* b) {
     return *a == 0 && *b == 0;
 }
 
-#ifdef CF_TEST_CLI
 // True if `line` starts with `verb` followed by a space; sets *arg to the
 // first character after the space run. Case-insensitive on the verb.
 bool verbWithArg(const char* line, const char* verb, const char** arg) {
@@ -52,7 +59,65 @@ bool verbWithArg(const char* line, const char* verb, const char** arg) {
     *arg = p;
     return true;
 }
-#endif
+
+// =========================================================================
+// Sync-transport session state (device-only; SerialCli never compiles for
+// the native tests). One write session at a time — the browser opens with
+// `fwrite`, streams `fwdata` chunks, and closes with `fwcommit`/`fwabort`.
+// The whole-file CRC is recomputed from the temp file at commit, so chunks
+// may arrive in any order and any chunk may be retried (restartable).
+// =========================================================================
+bool     g_writeActive = false;
+File     g_writeFile;
+char     g_writePath[128]  = {0};  // final path (confined)
+char     g_writeTemp[128]  = {0};  // temp path (final + ".part")
+uint32_t g_writeSize       = 0;    // expected total size
+uint32_t g_writeCrc        = 0;    // expected whole-file crc32
+
+// Shared payload staging buffer for `fwdata` chunks and `lapply` documents
+// (never used by both at once). +1 for a null terminator on ops JSON.
+uint8_t  g_payloadBuf[SyncProtocol::kMaxApplyBytes + 1];
+
+// Read exactly n bytes of raw payload off the UART into buf, returning false
+// if the stream stalls for longer than timeoutMs between bytes.
+bool readExact(uint8_t* buf, size_t n, uint32_t timeoutMs) {
+    size_t got = 0;
+    uint32_t last = millis();
+    while (got < n) {
+        int b = Serial.read();
+        if (b < 0) {
+            if (millis() - last > timeoutMs) return false;
+            continue;
+        }
+        buf[got++] = (uint8_t)b;
+        last = millis();
+    }
+    return true;
+}
+
+// Drain and discard exactly n bytes (used to stay in frame sync after a
+// header the device must reject but whose payload the browser still sends).
+void drainBytes(size_t n, uint32_t timeoutMs) {
+    uint32_t last = millis();
+    while (n > 0) {
+        int b = Serial.read();
+        if (b < 0) {
+            if (millis() - last > timeoutMs) return;
+            continue;
+        }
+        n--;
+        last = millis();
+    }
+}
+
+void clearWriteSession() {
+    if (g_writeFile) g_writeFile.close();
+    g_writeActive = false;
+    g_writePath[0] = '\0';
+    g_writeTemp[0] = '\0';
+    g_writeSize = 0;
+    g_writeCrc  = 0;
+}
 }  // namespace
 
 SerialCli& SerialCli::instance() {
@@ -88,11 +153,21 @@ void SerialCli::poll() {
 }
 
 void SerialCli::dispatch(const char* line) {
+    const char* arg = nullptr;
     if (ieq(line, "version")) { cmdVersion(); return; }
     if (ieq(line, "info"))    { cmdInfo();    return; }
     if (ieq(line, "help"))    { cmdHelp();    return; }
+
+    // Sync-transport family (always compiled).
+    if (ieq(line, "fwcommit")) { cmdFwcommit(); return; }
+    if (ieq(line, "fwabort"))  { cmdFwabort();  return; }
+    if (ieq(line, "lget"))     { cmdLget();     return; }
+    if (ieq(line, "syncinfo")) { cmdSyncinfo(); return; }
+    if (verbWithArg(line, "fwrite", &arg))  { cmdFwrite(arg);  return; }
+    if (verbWithArg(line, "fwdata", &arg))  { cmdFwdata(arg);  return; }
+    if (verbWithArg(line, "fdelete", &arg)) { cmdFdelete(arg); return; }
+    if (verbWithArg(line, "lapply", &arg))  { cmdLapply(arg);  return; }
 #ifdef CF_TEST_CLI
-    const char* arg = nullptr;
     if (ieq(line, "apps")) { cmdApps(); return; }
     if (ieq(line, "app"))  { cmdApp();  return; }
     if (ieq(line, "net"))  { cmdNet();  return; }
@@ -127,11 +202,308 @@ void SerialCli::cmdInfo() {
 }
 
 void SerialCli::cmdHelp() {
+    Serial.println("[cmd] help=version,info,help,fwrite <path> <size> <crc>,"
+                   "fwdata <off> <len> <crc>,fwcommit,fwabort,fdelete <path>,"
+                   "lget,lapply <len> <crc>,syncinfo");
 #ifdef CF_TEST_CLI
-    Serial.println("[cmd] help=version,info,help,apps,launch <name|index>,app,net,mic,wifi <ssid>|<pass>");
-#else
-    Serial.println("[cmd] help=version,info,help");
+    Serial.println("[cmd] help.test=apps,launch <name|index>,app,net,mic,wifi <ssid>|<pass>");
 #endif
+}
+
+// =========================================================================
+// Sync-transport verbs (always compiled). The browser drives these over USB
+// to install app/asset blobs and edit the loadout manifest. Pure framing,
+// checksum, and confinement logic lives in SyncProtocol (native-tested); the
+// UART + LittleFS glue lives here. Every reply keeps the stable [cmd]/[err]
+// prefixes so the browser side can parse without regex acrobatics.
+// =========================================================================
+
+// Idle timeout waiting on payload bytes mid-frame. Generous: 921600 baud is
+// ~90KB/s, so a 4KB chunk is ~45ms on the wire — seconds of slack absorbs
+// host scheduling hiccups without wedging the CLI on a dropped cable.
+static constexpr uint32_t kPayloadTimeoutMs = 4000;
+
+void SerialCli::cmdFwrite(const char* args) {
+    char path[SyncProtocol::kMaxPathLen + 1];
+    uint32_t size = 0, crc = 0;
+    if (!SyncProtocol::parseWriteOpen(args, path, sizeof(path), size, crc)) {
+        Serial.println("[err] fwrite.usage=fwrite <path> <size> <crc32>");
+        return;
+    }
+    if (!SyncProtocol::pathConfined(path)) {
+        Serial.printf("[err] fwrite.path=%s (confined to /apps/ or /assets/)\n", path);
+        return;
+    }
+    if (!LoadoutStore::begin()) {
+        Serial.println("[err] fwrite.fs=mount failed");
+        return;
+    }
+    // Free-space guard (approximate — usedBytes includes an old copy if this
+    // overwrites, so this only rejects clearly-too-large transfers).
+    size_t total = LittleFS.totalBytes();
+    size_t used  = LittleFS.usedBytes();
+    size_t freeB = (total > used) ? (total - used) : 0;
+    if ((size_t)size > freeB) {
+        Serial.printf("[err] fwrite.space=need %u free %u\n",
+                      (unsigned)size, (unsigned)freeB);
+        return;
+    }
+
+    // Abort any stale session, then open a fresh temp file.
+    if (g_writeActive) {
+        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
+        clearWriteSession();
+    }
+    strncpy(g_writePath, path, sizeof(g_writePath) - 1);
+    g_writePath[sizeof(g_writePath) - 1] = '\0';
+    snprintf(g_writeTemp, sizeof(g_writeTemp), "%s.part", g_writePath);
+
+    g_writeFile = LittleFS.open(g_writeTemp, FILE_WRITE);
+    if (!g_writeFile) {
+        Serial.printf("[err] fwrite.open=%s\n", g_writeTemp);
+        clearWriteSession();
+        return;
+    }
+    g_writeActive = true;
+    g_writeSize   = size;
+    g_writeCrc    = crc;
+    Serial.printf("[cmd] fwrite.ok=%s size=%u chunk=%u crc=%08x\n",
+                  g_writePath, (unsigned)size,
+                  (unsigned)SyncProtocol::kMaxChunkBytes, (unsigned)crc);
+}
+
+void SerialCli::cmdFwdata(const char* args) {
+    uint32_t offset = 0, len = 0, crc = 0;
+    if (!SyncProtocol::parseChunkHeader(args, offset, len, crc)) {
+        // Length unknown -> cannot resync the stream; the browser must abort.
+        Serial.println("[err] fwdata.usage=fwdata <offset> <len> <crc32>");
+        return;
+    }
+    if (len == 0) {
+        Serial.println("[err] fwdata.len=0");
+        return;
+    }
+    if (len > SyncProtocol::kMaxChunkBytes) {
+        drainBytes(len, kPayloadTimeoutMs);
+        Serial.printf("[err] fwdata.toobig=%u max=%u\n",
+                      (unsigned)len, (unsigned)SyncProtocol::kMaxChunkBytes);
+        return;
+    }
+    if (!g_writeActive) {
+        drainBytes(len, kPayloadTimeoutMs);
+        Serial.println("[err] fwdata.nosession");
+        return;
+    }
+    if ((uint64_t)offset + len > g_writeSize) {
+        drainBytes(len, kPayloadTimeoutMs);
+        Serial.printf("[err] fwdata.range=off %u len %u size %u\n",
+                      (unsigned)offset, (unsigned)len, (unsigned)g_writeSize);
+        return;
+    }
+    if (!readExact(g_payloadBuf, len, kPayloadTimeoutMs)) {
+        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
+        clearWriteSession();
+        Serial.println("[err] fwdata.timeout");
+        return;
+    }
+    // Per-chunk integrity: a corrupt chunk is NAKed and never written, so the
+    // browser resends the same offset. The whole-file crc at commit is the
+    // final gate against a silently-missed chunk.
+    uint32_t got = SyncProtocol::crc32(g_payloadBuf, len);
+    if (got != crc) {
+        Serial.printf("[err] fwdata.crc=off %u got %08x want %08x\n",
+                      (unsigned)offset, (unsigned)got, (unsigned)crc);
+        return;
+    }
+    if (!g_writeFile.seek(offset, SeekSet)) {
+        Serial.printf("[err] fwdata.seek=%u\n", (unsigned)offset);
+        return;
+    }
+    size_t wrote = g_writeFile.write(g_payloadBuf, len);
+    if (wrote != len) {
+        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
+        clearWriteSession();
+        Serial.printf("[err] fwdata.write=%u/%u\n", (unsigned)wrote, (unsigned)len);
+        return;
+    }
+    Serial.printf("[cmd] fwdata.ok=off %u len %u\n", (unsigned)offset, (unsigned)len);
+}
+
+void SerialCli::cmdFwcommit() {
+    if (!g_writeActive) {
+        Serial.println("[err] fwcommit.nosession");
+        return;
+    }
+    g_writeFile.flush();
+    g_writeFile.close();
+
+    // Re-read the finished temp file and recompute the whole-file crc, so a
+    // dropped or out-of-order chunk (any transfer that doesn't reproduce the
+    // browser's bytes exactly) is rejected here rather than half-applied.
+    File rf = LittleFS.open(g_writeTemp, FILE_READ);
+    if (!rf) {
+        LittleFS.remove(g_writeTemp);
+        clearWriteSession();
+        Serial.println("[err] fwcommit.reopen");
+        return;
+    }
+    uint32_t fileSize = (uint32_t)rf.size();
+    uint32_t crc = SyncProtocol::crc32Begin();
+    while (true) {
+        int n = rf.read(g_payloadBuf, sizeof(g_payloadBuf));
+        if (n <= 0) break;
+        crc = SyncProtocol::crc32Update(crc, g_payloadBuf, (size_t)n);
+    }
+    crc = SyncProtocol::crc32Finish(crc);
+    rf.close();
+
+    if (fileSize != g_writeSize) {
+        LittleFS.remove(g_writeTemp);
+        Serial.printf("[err] fwcommit.size=got %u want %u\n",
+                      (unsigned)fileSize, (unsigned)g_writeSize);
+        clearWriteSession();
+        return;
+    }
+    if (crc != g_writeCrc) {
+        LittleFS.remove(g_writeTemp);
+        Serial.printf("[err] fwcommit.crc=got %08x want %08x\n",
+                      (unsigned)crc, (unsigned)g_writeCrc);
+        clearWriteSession();
+        return;
+    }
+
+    // Atomic-ish publish: rename temp over the final path. littlefs renames
+    // atomically; keep the remove+retry fallback the loadout store uses in
+    // case the VFS refuses an overwrite. A power cut here leaves the old file
+    // or none — never a half-written blob.
+    bool ok = LittleFS.rename(g_writeTemp, g_writePath);
+    if (!ok) {
+        LittleFS.remove(g_writePath);
+        ok = LittleFS.rename(g_writeTemp, g_writePath);
+    }
+    if (!ok) {
+        LittleFS.remove(g_writeTemp);
+        Serial.printf("[err] fwcommit.rename=%s\n", g_writePath);
+        clearWriteSession();
+        return;
+    }
+    Serial.printf("[cmd] fwcommit.ok=%s size=%u crc=%08x\n",
+                  g_writePath, (unsigned)fileSize, (unsigned)crc);
+    clearWriteSession();
+}
+
+void SerialCli::cmdFwabort() {
+    if (g_writeActive && g_writeTemp[0]) LittleFS.remove(g_writeTemp);
+    clearWriteSession();
+    Serial.println("[cmd] fwabort.ok");
+}
+
+void SerialCli::cmdFdelete(const char* args) {
+    char path[SyncProtocol::kMaxPathLen + 1];
+    if (!SyncProtocol::parsePathArg(args, path, sizeof(path))) {
+        Serial.println("[err] fdelete.usage=fdelete <path>");
+        return;
+    }
+    if (!SyncProtocol::pathConfined(path)) {
+        Serial.printf("[err] fdelete.path=%s (confined to /apps/ or /assets/)\n", path);
+        return;
+    }
+    if (!LoadoutStore::begin()) {
+        Serial.println("[err] fdelete.fs=mount failed");
+        return;
+    }
+    if (!LittleFS.exists(path)) {
+        Serial.printf("[err] fdelete.absent=%s\n", path);
+        return;
+    }
+    if (!LittleFS.remove(path)) {
+        Serial.printf("[err] fdelete.fail=%s\n", path);
+        return;
+    }
+    Serial.printf("[cmd] fdelete.ok=%s\n", path);
+}
+
+void SerialCli::cmdLget() {
+    LoadoutStore::begin();
+    std::string json;
+    bool present = LoadoutStore::load(json);
+    if (!present) {
+        Serial.println("[cmd] lget.present=0 entries=0 schema=0 len=0 crc=00000000");
+        return;
+    }
+    // Parse only to report entry count + schema alongside the raw bytes; the
+    // browser gets the authoritative document either way.
+    LoadoutManifest::Loadout lo;
+    int entries = 0, schema = 0;
+    if (LoadoutManifest::parseManifest(json.c_str(), lo)) {
+        entries = (int)lo.entries.size();
+        schema  = lo.schemaVersion;
+    }
+    uint32_t crc = SyncProtocol::crc32(json.data(), json.size());
+    Serial.printf("[cmd] lget.present=1 entries=%d schema=%d len=%u crc=%08x\n",
+                  entries, schema, (unsigned)json.size(), (unsigned)crc);
+    Serial.write((const uint8_t*)json.data(), json.size());
+}
+
+void SerialCli::cmdLapply(const char* args) {
+    uint32_t len = 0, crc = 0;
+    if (!SyncProtocol::parseApplyHeader(args, len, crc)) {
+        Serial.println("[err] lapply.usage=lapply <len> <crc32>");
+        return;
+    }
+    if (len == 0) {
+        Serial.println("[err] lapply.len=0");
+        return;
+    }
+    if (len > SyncProtocol::kMaxApplyBytes) {
+        drainBytes(len, kPayloadTimeoutMs);
+        Serial.printf("[err] lapply.toobig=%u max=%u\n",
+                      (unsigned)len, (unsigned)SyncProtocol::kMaxApplyBytes);
+        return;
+    }
+    if (!readExact(g_payloadBuf, len, kPayloadTimeoutMs)) {
+        Serial.println("[err] lapply.timeout");
+        return;
+    }
+    uint32_t got = SyncProtocol::crc32(g_payloadBuf, len);
+    if (got != crc) {
+        Serial.printf("[err] lapply.crc=got %08x want %08x\n",
+                      (unsigned)got, (unsigned)crc);
+        return;
+    }
+    g_payloadBuf[len] = '\0';
+    int entries = 0, applied = 0;
+    if (!AppManager::instance().applyLoadoutOps((const char*)g_payloadBuf,
+                                                &entries, &applied)) {
+        // Malformed document, a rejected op, or a failed save — the stored
+        // manifest is untouched, so the menu still falls back cleanly.
+        Serial.println("[err] lapply.reject");
+        return;
+    }
+    Serial.printf("[cmd] lapply.ok=applied %d entries %d\n", applied, entries);
+}
+
+void SerialCli::cmdSyncinfo() {
+    LoadoutStore::begin();
+    size_t total = LittleFS.totalBytes();
+    size_t used  = LittleFS.usedBytes();
+    size_t freeB = (total > used) ? (total - used) : 0;
+    Serial.printf("[cmd] syncinfo.fs_total=%u fs_used=%u fs_free=%u\n",
+                  (unsigned)total, (unsigned)used, (unsigned)freeB);
+
+    std::string json;
+    int entries = 0, schema = 0, present = 0;
+    if (LoadoutStore::load(json)) {
+        present = 1;
+        LoadoutManifest::Loadout lo;
+        if (LoadoutManifest::parseManifest(json.c_str(), lo)) {
+            entries = (int)lo.entries.size();
+            schema  = lo.schemaVersion;
+        }
+    }
+    Serial.printf("[cmd] syncinfo.manifest=%d entries=%d schema=%d\n",
+                  present, entries, schema);
+    Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
 }
 
 #ifdef CF_TEST_CLI

@@ -474,6 +474,135 @@ bool applyHide(Loadout& loadout, const char* id, bool hidden) {
     return true;
 }
 
+// ============================================================
+// Staged-ops document apply (serial sync write direction). Parses one op
+// object at the cursor and applies it to `work`, reusing the same
+// apply primitives the on-device reorder uses. Returns false on malformed
+// JSON or a rejected op (kept in the anonymous namespace with the other
+// parse helpers so it can reach Cursor / parseEntry / findEntry).
+// ============================================================
+namespace {
+
+// Parse an `order` array ([{ "id":.., "category"?:.. }, ...]) at the cursor
+// into `order`. Cursor must be on the opening '['.
+bool parseArrangeArray(Cursor& c, std::vector<ArrangeItem>& order) {
+    skipWs(c);
+    if (*c.p != '[') return false;
+    c.p++;
+    skipWs(c);
+    if (*c.p == ']') { c.p++; return true; }
+    while (true) {
+        skipWs(c);
+        if (*c.p != '{') return false;
+        c.p++;
+        ArrangeItem item;
+        skipWs(c);
+        if (*c.p != '}') {
+            while (true) {
+                skipWs(c);
+                std::string key;
+                if (!parseString(c, key)) return false;
+                skipWs(c);
+                if (*c.p != ':') return false;
+                c.p++;
+                skipWs(c);
+                if (key == "id") {
+                    if (!parseString(c, item.id)) return false;
+                } else if (key == "category") {
+                    if (!parseString(c, item.category)) return false;
+                    item.hasCategory = true;
+                } else {
+                    if (!skipValue(c)) return false;
+                }
+                skipWs(c);
+                if (*c.p == ',') { c.p++; continue; }
+                if (*c.p == '}') { c.p++; break; }
+                return false;
+            }
+        } else {
+            c.p++;
+        }
+        if (!item.id.empty()) order.push_back(item);
+        skipWs(c);
+        if (*c.p == ',') { c.p++; continue; }
+        if (*c.p == ']') { c.p++; break; }
+        return false;
+    }
+    return true;
+}
+
+// Parse and apply one op object (cursor on its opening '{') to `work`.
+bool applyOneOp(Cursor& c, Loadout& work, int& applied) {
+    skipWs(c);
+    if (*c.p != '{') return false;
+    c.p++;
+
+    std::string opType;
+    std::string id;
+    LoadoutEntry entry;
+    bool hasEntry = false;
+    bool hidden = false;
+    std::vector<ArrangeItem> order;
+    bool hasOrder = false;
+
+    skipWs(c);
+    if (*c.p != '}') {
+        while (true) {
+            skipWs(c);
+            std::string key;
+            if (!parseString(c, key)) return false;
+            skipWs(c);
+            if (*c.p != ':') return false;
+            c.p++;
+            skipWs(c);
+            if (key == "op") {
+                if (!parseString(c, opType)) return false;
+            } else if (key == "id") {
+                if (!parseString(c, id)) return false;
+            } else if (key == "hidden") {
+                if (!parseBool(c, hidden)) return false;
+            } else if (key == "entry") {
+                bool positionSeen;
+                if (!parseEntry(c, entry, positionSeen)) return false;
+                hasEntry = true;
+            } else if (key == "order") {
+                if (!parseArrangeArray(c, order)) return false;
+                hasOrder = true;
+            } else {
+                if (!skipValue(c)) return false;
+            }
+            skipWs(c);
+            if (*c.p == ',') { c.p++; continue; }
+            if (*c.p == '}') { c.p++; break; }
+            return false;
+        }
+    } else {
+        c.p++;
+    }
+
+    // Dispatch on the op discriminator. A rejected op fails the whole
+    // document (the caller left the real loadout untouched).
+    if (opType == "add") {
+        if (!hasEntry) return false;
+        if (!applyAdd(work, entry)) return false;
+    } else if (opType == "remove") {
+        if (id.empty()) return false;
+        if (!applyRemove(work, id.c_str())) return false;
+    } else if (opType == "hide") {
+        if (id.empty()) return false;
+        if (!applyHide(work, id.c_str(), hidden)) return false;
+    } else if (opType == "arrange") {
+        if (!hasOrder) return false;
+        if (!applyArrange(work, order)) return false;
+    } else {
+        return false; // unknown / missing op discriminator
+    }
+    applied++;
+    return true;
+}
+
+} // namespace
+
 bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order) {
     std::vector<LoadoutEntry> arranged;
     arranged.reserve(loadout.entries.size());
@@ -496,6 +625,61 @@ bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order) {
     }
     loadout.entries = std::move(arranged);
     normalizeSections(loadout); // contiguity by construction
+    return true;
+}
+
+bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut) {
+    if (appliedOut) *appliedOut = 0;
+    if (!opsJson) return false;
+
+    Cursor c{opsJson};
+    Loadout work = loadout; // apply to a copy so a failure leaves the original
+    int applied = 0;
+
+    skipWs(c);
+    if (*c.p != '{') return false;
+    c.p++;
+    skipWs(c);
+    if (*c.p != '}') {
+        while (true) {
+            skipWs(c);
+            std::string key;
+            if (!parseString(c, key)) return false;
+            skipWs(c);
+            if (*c.p != ':') return false;
+            c.p++;
+            skipWs(c);
+            if (key == "ops") {
+                if (*c.p != '[') return false;
+                c.p++;
+                skipWs(c);
+                if (*c.p != ']') {
+                    while (true) {
+                        if (!applyOneOp(c, work, applied)) return false;
+                        skipWs(c);
+                        if (*c.p == ',') { c.p++; continue; }
+                        if (*c.p == ']') { c.p++; break; }
+                        return false;
+                    }
+                } else {
+                    c.p++;
+                }
+            } else {
+                if (!skipValue(c)) return false; // unknown top-level field
+            }
+            skipWs(c);
+            if (*c.p == ',') { c.p++; continue; }
+            if (*c.p == '}') { c.p++; break; }
+            return false;
+        }
+    } else {
+        c.p++;
+    }
+    skipWs(c);
+    if (*c.p != '\0') return false; // trailing garbage
+
+    loadout = std::move(work);
+    if (appliedOut) *appliedOut = applied;
     return true;
 }
 

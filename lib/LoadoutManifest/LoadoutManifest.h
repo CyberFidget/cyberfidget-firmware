@@ -158,6 +158,31 @@ bool applyHide(Loadout& loadout, const char* id, bool hidden);
  */
 bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order);
 
+/**
+ * Apply a staged-ops document to `loadout`, atomically. `opsJson` is a
+ * JSON document in the transport's ops vocabulary (the write direction of
+ * the serial sync protocol):
+ *
+ *   { "ops": [
+ *       { "op": "add",     "entry": { "id": ..., "category": ..., ... } },
+ *       { "op": "remove",  "id": ... },
+ *       { "op": "hide",    "id": ..., "hidden": true },
+ *       { "op": "arrange", "order": [ { "id": ..., "category"?: ... }, ... ] }
+ *   ] }
+ *
+ * The vocabulary is exactly adds / removes / hides + ONE declarative
+ * arrange — the same staged-change set the on-device reorder and the
+ * website staging model speak — so this reuses applyAdd/applyRemove/
+ * applyHide/applyArrange rather than forking their logic.
+ *
+ * Atomic: the ops are applied to a working copy; if the document is
+ * malformed OR any op fails (duplicate/absent id, etc.) the function
+ * returns false and `loadout` is left untouched — never half-applied.
+ * On success `loadout` is replaced with the result and true is returned.
+ * When non-null, `*appliedOut` receives the number of ops applied.
+ */
+bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut = nullptr);
+
 } // namespace LoadoutManifest
 
 #endif // LOADOUT_MANIFEST_H
