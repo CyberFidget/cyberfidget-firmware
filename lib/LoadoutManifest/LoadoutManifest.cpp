@@ -11,6 +11,7 @@
 #include "LoadoutManifest.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 
 namespace LoadoutManifest {
@@ -284,6 +285,54 @@ std::string flattenCategory(const char* path) {
     return std::string(path, (size_t)(slash - path));
 }
 
+std::string slugifyBuiltinName(const char* name) {
+    std::string slug;
+    if (!name) return slug;
+    slug.reserve(std::strlen(name));
+    bool separatorPending = false;
+    for (const unsigned char* p = reinterpret_cast<const unsigned char*>(name); *p; ++p) {
+        if (std::isalnum(*p)) {
+            if (separatorPending && !slug.empty()) slug += '-';
+            slug += static_cast<char>(std::tolower(*p));
+            separatorPending = false;
+        } else if (!slug.empty()) {
+            separatorPending = true;
+        }
+    }
+    return slug;
+}
+
+bool normalizeBuiltinIds(Loadout& loadout, const RegistryApp* apps, int count) {
+    if (!apps || count <= 0) return false;
+    bool changed = false;
+    for (int app = 0; app < count; ++app) {
+        if (apps[app].legacyId.empty() || apps[app].id.empty()) continue;
+        while (true) {
+            int legacy = -1, canonical = -1;
+            for (int i = 0; i < (int)loadout.entries.size(); ++i) {
+                if (legacy < 0 && loadout.entries[i].id == apps[app].legacyId) legacy = i;
+                if (canonical < 0 && loadout.entries[i].id == apps[app].id) canonical = i;
+            }
+            if (legacy < 0) break;
+            if (canonical >= 0) {
+                if (legacy < canonical) {
+                    LoadoutEntry existing = std::move(loadout.entries[(size_t)canonical]);
+                    loadout.entries.erase(loadout.entries.begin() + canonical);
+                    loadout.entries[(size_t)legacy] = std::move(existing);
+                } else {
+                    loadout.entries.erase(loadout.entries.begin() + legacy);
+                }
+            } else {
+                loadout.entries[(size_t)legacy].id = apps[app].id;
+                loadout.entries[(size_t)legacy].format = "builtin";
+            }
+            changed = true;
+        }
+    }
+    if (changed) renumber(loadout);
+    return changed;
+}
+
 bool parseManifest(const char* json, Loadout& out) {
     if (!json) return false;
     Cursor c{json};
@@ -404,6 +453,7 @@ Loadout buildFromRegistry(const RegistryApp* apps, int count) {
         e.id       = apps[i].id;
         e.name     = apps[i].name;
         e.category = apps[i].category;
+        e.format   = "builtin";
         loadout.entries.push_back(e);
     }
     renumber(loadout);

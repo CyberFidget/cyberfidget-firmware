@@ -110,7 +110,7 @@ void AppManager::persistMenuArrangement(const std::vector<LoadoutManifest::Arran
     // arrange has something to anchor against.
     LoadoutManifest::Loadout loadout;
     std::string json;
-    if (!(LoadoutStore::load(json) && LoadoutManifest::parseManifest(json.c_str(), loadout))) {
+    if (!loadLoadoutManifest(loadout, &json)) {
         auto registry = buildLoadoutRegistryView();
         loadout = LoadoutManifest::buildFromRegistry(registry.data(), (int)registry.size());
     }
@@ -138,7 +138,7 @@ bool AppManager::applyLoadoutOps(const char* opsJson, int* entriesOut, int* appl
     // path uses).
     LoadoutManifest::Loadout loadout;
     std::string json;
-    if (!(LoadoutStore::load(json) && LoadoutManifest::parseManifest(json.c_str(), loadout))) {
+    if (!loadLoadoutManifest(loadout, &json)) {
         auto registry = buildLoadoutRegistryView();
         loadout = LoadoutManifest::buildFromRegistry(registry.data(), (int)registry.size());
     }

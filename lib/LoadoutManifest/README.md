@@ -24,11 +24,12 @@ Native tests: `pio test -e test_loadout` (see `test/test_loadout_*`).
   "schemaVersion": 1,
   "entries": [
     {
-      "id": "APP_BOOPER",
+      "id": "booper",
       "name": "Booper",
       "category": "Games",
       "position": 0,
-      "hidden": false
+      "hidden": false,
+      "format": "builtin"
     }
   ]
 }
@@ -45,7 +46,7 @@ Per entry:
 
 | Field | Type | Required | Meaning |
 |-------|------|----------|---------|
-| `id` | string | yes | Stable app identifier — the `APP_ENTRY` enum name from `AppManifest.h` (e.g. `"APP_BOOPER"`). Entries without an id are dropped. This is what survives firmware updates: labels and compile order can change freely. |
+| `id` | string | yes | Stable app identifier. Builtins use a slug of the registry display name: lowercase, each non-alphanumeric run becomes `-`, then leading/trailing dashes are trimmed (for example, `"Dino Run"` becomes `"dino-run"`). Existing persisted `APP_ENTRY` enum ids are migrated once on load. Non-builtin ids are supplied by their source. Entries without an id are dropped. |
 | `name` | string | no | Display label at the time the manifest was written. Informational — the compiled-in label wins at render time. |
 | `category` | string | no | Flat, **single-level** category (`"Games"`, `"Tools"`, `""` = root). Overrides the compiled-in category; `""` falls back to it. Sections in the menu are contiguous runs of the same category in position order. Nested categories (`"Games/Arcade"`) are NOT part of schema 1 — deeper nesting is deferred to a future `schemaVersion` bump. |
 | `position` | int | no | Display position, 0-based. Entries are stable-sorted by position on load and renumbered on save. Missing positions fall back to array order. |
@@ -57,7 +58,7 @@ them without a schema bump. Omitted from serialization while empty:
 
 | Field | Type | Reserved for |
 |-------|------|--------------|
-| `format` | string | entry format discriminator (e.g. `builtin` vs. a loadable blob) |
+| `format` | string | Entry format discriminator. Firmware-seeded registry entries use `builtin`; loadable entries use their blob format and carry `blobPath`. |
 | `blobPath` | string | filesystem path to an app blob |
 | `version` | string | app version |
 | `abi` | string | required ABI / HAL version for a blob |

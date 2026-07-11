@@ -26,6 +26,11 @@ static const RegistryApp kRegistry[] = {
 };
 static const int kRegistryCount = (int)(sizeof(kRegistry) / sizeof(kRegistry[0]));
 
+static const RegistryApp kCanonicalRegistry[] = {
+    { "booper", "Booper", "Games", "APP_BOOPER" },
+    { "snake",   "Snake",  "Games", "APP_SNAKE" },
+};
+
 static LoadoutEntry makeEntry(const char* id, const char* category,
                               bool hidden = false) {
     LoadoutEntry e;
@@ -160,6 +165,33 @@ void test_empty_registry_yields_empty_merge(void) {
     TEST_ASSERT_EQUAL_INT(0, (int)merged.size());
 }
 
+void test_slug_and_legacy_migration(void) {
+    TEST_ASSERT_EQUAL_STRING("dino-run", slugifyBuiltinName("--Dino  Run--").c_str());
+    Loadout l;
+    l.entries.push_back(makeEntry("APP_BOOPER", "Favorites", true));
+    TEST_ASSERT_TRUE(normalizeBuiltinIds(l, kCanonicalRegistry, 2));
+    TEST_ASSERT_EQUAL_STRING("booper", l.entries[0].id.c_str());
+    TEST_ASSERT_EQUAL_STRING("builtin", l.entries[0].format.c_str());
+    TEST_ASSERT_EQUAL_STRING("Favorites", l.entries[0].category.c_str());
+    TEST_ASSERT_TRUE(l.entries[0].hidden);
+    TEST_ASSERT_FALSE(normalizeBuiltinIds(l, kCanonicalRegistry, 2));
+}
+
+void test_migration_dedup_keeps_slug_at_earlier_position(void) {
+    Loadout l;
+    l.entries.push_back(makeEntry("APP_BOOPER", "Legacy"));
+    l.entries.push_back(makeEntry("snake", "Games"));
+    l.entries.push_back(makeEntry("booper", "Website"));
+    l.entries[2].format = "blob";
+    l.entries[2].blobPath = "/apps/booper.bin";
+    TEST_ASSERT_TRUE(normalizeBuiltinIds(l, kCanonicalRegistry, 2));
+    TEST_ASSERT_EQUAL_INT(2, (int)l.entries.size());
+    TEST_ASSERT_EQUAL_STRING("booper", l.entries[0].id.c_str());
+    TEST_ASSERT_EQUAL_STRING("Website", l.entries[0].category.c_str());
+    TEST_ASSERT_EQUAL_STRING("blob", l.entries[0].format.c_str());
+    TEST_ASSERT_EQUAL_STRING("snake", l.entries[1].id.c_str());
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -175,5 +207,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_manifest_category_overrides_registry);
     RUN_TEST(test_build_from_registry_snapshot);
     RUN_TEST(test_empty_registry_yields_empty_merge);
+    RUN_TEST(test_slug_and_legacy_migration);
+    RUN_TEST(test_migration_dedup_keeps_slug_at_earlier_position);
     return UNITY_END();
 }

@@ -29,12 +29,10 @@ namespace LoadoutManifest {
 constexpr int kSchemaVersion = 1;
 
 /**
- * One manifest entry. `id` is the stable app identifier (the APP_ENTRY
- * enum name, e.g. "APP_BOOPER") — it survives label renames and
- * reorderings of AppManifest.h across firmware updates.
+ * One manifest entry. Builtin ids are slugs of registry display names.
  */
 struct LoadoutEntry {
-    std::string id;        ///< stable app id, e.g. "APP_BOOPER"
+    std::string id;        ///< stable app id, e.g. "booper"
     std::string name;      ///< display label (informational; registry wins)
     std::string category;  ///< flat, single-level category ("" = root)
     int         position = 0;   ///< menu position (0-based, display order)
@@ -64,10 +62,14 @@ struct Loadout {
  * empty `name` (e.g. the menu itself) are not menu items and are skipped.
  */
 struct RegistryApp {
-    std::string id;        ///< stable app id ("APP_BOOPER")
+    std::string id;        ///< canonical builtin slug id ("booper")
     std::string name;      ///< menu label; "" = not a menu item
     std::string category;  ///< flat single-level category
+    std::string legacyId;  ///< exact APP_ENTRY enum name for migration
 };
+
+std::string slugifyBuiltinName(const char* name);
+bool normalizeBuiltinIds(Loadout& loadout, const RegistryApp* apps, int count);
 
 /// One merged menu row: an index into the registry array passed to
 /// mergeWithRegistry(), plus the category/hidden state the menu should use.

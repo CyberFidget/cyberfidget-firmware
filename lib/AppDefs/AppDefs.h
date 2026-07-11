@@ -56,10 +56,8 @@ static_assert(APP_COUNT > 0, "Error: APP_COUNT is zero or not properly defined."
 extern AppDefinition appDefs[APP_COUNT];
 
 /**
- * Stable per-app identifier strings — the APP_ENTRY enum names, e.g.
- * "APP_BOOPER". The loadout manifest (/loadout.json) references apps by
- * these ids so entries survive label renames and manifest reorderings
- * across firmware updates. Parallel to appDefs[] (same indices).
+ * Legacy APP_ENTRY enum strings retained only for exact migration of
+ * manifests written by older firmware. Parallel to appDefs[].
  */
 extern const char* const appIds[APP_COUNT];
 
@@ -68,6 +66,8 @@ extern const char* const appIds[APP_COUNT];
  * LoadoutManifest core consumes (categories flattened to one level).
  */
 std::vector<LoadoutManifest::RegistryApp> buildLoadoutRegistryView();
+bool loadLoadoutManifest(LoadoutManifest::Loadout& loadout,
+                         std::string* jsonOut = nullptr);
 
 /**
  * We'll define a function to build the nested menu from these definitions.

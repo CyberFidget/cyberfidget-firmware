@@ -192,6 +192,12 @@ def main():
                 pass
         report("lget returns manifest", h is not None and "lget" in (h or ""),
                (h or "") + (f" ({len(payload)} bytes json ok={base_manifest is not None})" if payload else " present=0"))
+        identities_ok = base_manifest is not None and all(
+            not entry.get("id", "").startswith("APP_") and
+            (entry.get("format") == "builtin" or
+             (bool(entry.get("format")) and bool(entry.get("blobPath"))))
+            for entry in base_manifest.get("entries", []))
+        report("lget manifest identities are canonical", identities_ok)
 
         # --- 8. lapply add + reboot persistence + rollback of a bad doc
         ops = json.dumps({"ops": [{"op": "add", "entry": {

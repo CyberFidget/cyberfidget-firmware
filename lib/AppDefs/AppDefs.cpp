@@ -35,8 +35,7 @@ AppDefinition appDefs[APP_COUNT] = {
 
 #undef APP_ENTRY
 
-// Parallel table of stable app ids: the APP_ENTRY enum names, stringified.
-// The loadout manifest matches entries to compiled-in apps by these.
+// Parallel legacy enum strings retained for exact manifest migration.
 #define APP_ENTRY(ID, LABEL, CATPATH, BEGINF, ENDF, RUNF) #ID,
 
 const char* const appIds[APP_COUNT] = {
@@ -83,12 +82,28 @@ std::vector<LoadoutManifest::RegistryApp> buildLoadoutRegistryView() {
     view.reserve((size_t)APP_COUNT);
     for (int i = 0; i < (int)APP_COUNT; i++) {
         LoadoutManifest::RegistryApp app;
-        app.id       = appIds[i];
         app.name     = appDefs[i].name ? appDefs[i].name : "";
+        app.id       = LoadoutManifest::slugifyBuiltinName(app.name.c_str());
         app.category = LoadoutManifest::flattenCategory(appDefs[i].categoryPath);
+        app.legacyId = appIds[i];
         view.push_back(app);
     }
     return view;
+}
+
+bool loadLoadoutManifest(LoadoutManifest::Loadout& loadout, std::string* jsonOut) {
+    std::string json;
+    if (!LoadoutStore::load(json) ||
+        !LoadoutManifest::parseManifest(json.c_str(), loadout)) return false;
+    auto registry = buildLoadoutRegistryView();
+    if (LoadoutManifest::normalizeBuiltinIds(loadout, registry.data(),
+                                             (int)registry.size())) {
+        json = LoadoutManifest::serializeManifest(loadout);
+        if (!LoadoutStore::save(json))
+            ESP_LOGE("AppDefs", "Failed to persist builtin id migration");
+    }
+    if (jsonOut) *jsonOut = std::move(json);
+    return true;
 }
 
 void buildNestedMenu() {
@@ -98,7 +113,7 @@ void buildNestedMenu() {
    // so the menu and the firmware never fall out of sync.
    std::string json;
    LoadoutManifest::Loadout loadout;
-   if (LoadoutStore::load(json) && LoadoutManifest::parseManifest(json.c_str(), loadout)) {
+   if (loadLoadoutManifest(loadout, &json)) {
        auto registry = buildLoadoutRegistryView();
        auto merged   = LoadoutManifest::mergeWithRegistry(loadout,
                                                           registry.data(),

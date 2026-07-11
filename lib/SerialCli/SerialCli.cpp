@@ -13,6 +13,7 @@
 #include "version.h"  // FW_GIT_DIRTY for the `info` command
 
 #include "AppManager.h"       // applyLoadoutOps (manifest apply + persist)
+#include "AppDefs.h"          // load + builtin identity migration
 #include "LoadoutManifest.h"  // parse for the lget entry count
 #include "LoadoutStore.h"     // LittleFS mount + manifest read
 #include "SyncProtocol.h"     // pure crc / confinement / arg parsing
@@ -511,19 +512,17 @@ void SerialCli::cmdFdelete(const char* args) {
 void SerialCli::cmdLget() {
     LoadoutStore::begin();
     std::string json;
-    bool present = LoadoutStore::load(json);
+    LoadoutManifest::Loadout lo;
+    bool present = loadLoadoutManifest(lo, &json);
     if (!present) {
         Serial.println("[cmd] lget.present=0 entries=0 schema=0 len=0 crc=00000000");
         return;
     }
     // Parse only to report entry count + schema alongside the raw bytes; the
     // browser gets the authoritative document either way.
-    LoadoutManifest::Loadout lo;
     int entries = 0, schema = 0;
-    if (LoadoutManifest::parseManifest(json.c_str(), lo)) {
-        entries = (int)lo.entries.size();
-        schema  = lo.schemaVersion;
-    }
+    entries = (int)lo.entries.size();
+    schema  = lo.schemaVersion;
     uint32_t crc = SyncProtocol::crc32(json.data(), json.size());
     Serial.printf("[cmd] lget.present=1 entries=%d schema=%d len=%u crc=%08x\n",
                   entries, schema, (unsigned)json.size(), (unsigned)crc);
@@ -578,13 +577,11 @@ void SerialCli::cmdSyncinfo() {
 
     std::string json;
     int entries = 0, schema = 0, present = 0;
-    if (LoadoutStore::load(json)) {
+    LoadoutManifest::Loadout lo;
+    if (loadLoadoutManifest(lo, &json)) {
         present = 1;
-        LoadoutManifest::Loadout lo;
-        if (LoadoutManifest::parseManifest(json.c_str(), lo)) {
-            entries = (int)lo.entries.size();
-            schema  = lo.schemaVersion;
-        }
+        entries = (int)lo.entries.size();
+        schema  = lo.schemaVersion;
     }
     Serial.printf("[cmd] syncinfo.manifest=%d entries=%d schema=%d\n",
                   present, entries, schema);
