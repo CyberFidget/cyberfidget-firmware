@@ -211,9 +211,19 @@ def main():
         lines = d.read_lines(n=3)
         report("device alive after deep-nest reject", any("fs_total" in l for l in lines))
 
-        # reboot, verify persistence
+        # reboot, verify persistence. A fixed post-reset delay races the boot:
+        # commands sent before the CLI is up are silently eaten (verified on
+        # hardware 2026-07-11 - the entry HAD persisted but this read missed
+        # it). Poll until the CLI answers, then query.
         d.reset()
         d.drain(4.5)
+        for _ in range(15):
+            d.s.reset_input_buffer()
+            d.rxbuf = b""
+            d.send_line("version")
+            if any("version=" in l for l in d.read_lines(n=1, timeout=1.5)):
+                break
+            time.sleep(1.0)
         d.s.reset_input_buffer()
         d.rxbuf = b""
         d.send_line("lget")
@@ -236,7 +246,9 @@ def main():
         d.read_lines(n=1)
         d.drain(0.5)
         d.send_line("version")
-        alive = "fw=" in d.drain(2.5)
+        # the version reply says "version=", not "fw=" (fw= only appears in
+        # the boot banner) - grepping fw= here fails on a healthy device
+        alive = "version=" in d.drain(2.5)
         report("device responsive after stall", alive)
 
         # --- 10. cleanup: remove bench entry + files, verify
