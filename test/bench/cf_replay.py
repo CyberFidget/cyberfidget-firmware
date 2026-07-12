@@ -202,7 +202,7 @@ def run_case(case, port, outdir):
                 ok, detail = t.ferry(st["path"], data)
                 res.step("ferry", ok, detail)
             elif do == "lapply_add":
-                entry = {k: st[k] for k in ("id", "name", "category", "format", "version") if k in st}
+                entry = {k: st[k] for k in ("id", "name", "category", "format", "version", "abi") if k in st}
                 entry.setdefault("category", "Tools")
                 entry.setdefault("format", "wasm")
                 if "path" in st:
@@ -218,7 +218,15 @@ def run_case(case, port, outdir):
             elif do == "launch":
                 out = t.cmd("launch %s" % st["id"], 1.5)
                 last = [l for l in out.splitlines() if "launch" in l or "[err]" in l]
-                res.step("launch", any(".ok" in l for l in last), " | ".join(last)[:120])
+                # A refusal (e.g. abi_unsupported) is a SUCCESSFUL assertion, not
+                # a failed launch: expect_error asserts the launch.error carrier
+                # instead of launch.ok.
+                exp_err = st.get("expect_error")
+                if exp_err:
+                    ok = any(("launch.error" in l and exp_err in l) for l in last)
+                else:
+                    ok = any(".ok" in l for l in last)
+                res.step("launch", ok, " | ".join(last)[:120])
             elif do == "screencap":
                 raw = t.screencap()
                 key = st.get("save", "cap")
