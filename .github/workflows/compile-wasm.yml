@@ -124,6 +124,74 @@ jobs:
           echo "=== Build output ==="
           ls -la wasm/build/cyberfidget.*
 
+      - name: Build device-profile WASM
+        if: inputs.app_name != '' && inputs.app_header_b64 != ''
+        env:
+          APP_NAME: ${{ inputs.app_name }}
+          APP_INSTANCE: ${{ inputs.app_instance }}
+        run: |
+          # Do NOT echo APP_NAME or source paths containing it. Workflow logs
+          # are public-readable, so preserve the custom-app source discipline
+          # from the emulator build above.
+          source emsdk/emsdk_env.sh
+          APP_INSTANCE="${APP_INSTANCE:-$APP_NAME}"
+          bash wasm/device_module/build_custom_device_app.sh \
+            "$APP_NAME" "$APP_INSTANCE" wasm/app wasm/build/cyberfidget.device.wasm
+
+      - name: Verify device-profile WASM contract
+        if: inputs.app_name != '' && inputs.app_header_b64 != ''
+        run: |
+          source emsdk/emsdk_env.sh
+          DEVICE_WAT=wasm/build/cyberfidget.device.wat
+          wasm-dis wasm/build/cyberfidget.device.wasm -o "$DEVICE_WAT"
+
+          exports_ok=true
+          for export_name in app_begin app_update app_end app_handle_button; do
+            if grep -q "(export \"${export_name}\"" "$DEVICE_WAT"; then
+              echo "Device WASM export ${export_name}: present"
+            else
+              echo "::error::Device WASM export ${export_name} is missing"
+              exports_ok=false
+            fi
+          done
+
+          imports_ok=true
+          invalid_import_count=0
+          while IFS= read -r import_module; do
+            case "$import_module" in
+              cf|wasi_snapshot_preview1|env) ;;
+              *) invalid_import_count=$((invalid_import_count + 1)) ;;
+            esac
+          done < <(sed -nE 's/^[[:space:]]*\(import "([^"]+)".*/\1/p' "$DEVICE_WAT")
+          if [ "$invalid_import_count" -eq 0 ]; then
+            echo "Device WASM import modules: allowed"
+          else
+            echo "::error::Device WASM imports use ${invalid_import_count} unsupported module(s)"
+            imports_ok=false
+          fi
+
+          initial_mem_ok=true
+          memory_line="$(grep -m1 -E '^[[:space:]]*\(memory ' "$DEVICE_WAT" || true)"
+          initial_pages="$(printf '%s\n' "$memory_line" | awk '{for (i = 2; i <= NF; i++) {gsub(/[()]/, "", $i); if ($i ~ /^[0-9]+$/) {print $i; exit}}}')"
+          if [ -z "$initial_pages" ] || [ "$initial_pages" -gt 16 ]; then
+            echo "::error::Device WASM initial memory is missing or exceeds 1 MiB"
+            initial_mem_ok=false
+          else
+            echo "Device WASM initial memory: ${initial_pages} page(s), within 1 MiB"
+          fi
+
+          if [ "$exports_ok" != true ] || [ "$imports_ok" != true ] || [ "$initial_mem_ok" != true ]; then
+            exit 1
+          fi
+
+          hal_abi="$(grep -E '^[[:space:]]*#define[[:space:]]+CF_HAL_ABI[[:space:]]+[0-9]+' wasm/device_module/cf_hal_abi.h | awk '{print $3}')"
+          if ! [[ "$hal_abi" =~ ^[0-9]+$ ]]; then
+            echo "::error::Unable to determine CF_HAL_ABI from cf_hal_abi.h"
+            exit 1
+          fi
+          printf '{ "hal_abi": %s, "exports_ok": true, "imports_ok": true, "initial_mem_ok": true, "device_wasm": "cyberfidget.device.wasm" }\n' "$hal_abi" > wasm/build/device-build-meta.json
+          echo "Device WASM contract: passed"
+
       - name: Upload WASM artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -131,4 +199,6 @@ jobs:
           path: |
             wasm/build/cyberfidget.js
             wasm/build/cyberfidget.wasm
+            wasm/build/cyberfidget.device.wasm
+            wasm/build/device-build-meta.json
           retention-days: 7
