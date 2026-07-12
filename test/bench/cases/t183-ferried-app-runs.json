@@ -1,0 +1,17 @@
+{
+  "name": "T-183 A1: a ferried wasm app launches and ticks frames",
+  "fw_min": "1.2.2",
+  "fixtures": ["breakout.wasm"],
+  "steps": [
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "ferry", "path": "/apps/breakout.wasm", "fixture": "breakout.wasm"},
+    {"do": "lapply_add", "id": "breakout-wasm", "name": "WASM Breakout", "category": "Games", "format": "wasm", "path": "/apps/breakout.wasm", "version": "1.0.0"},
+    {"do": "launch", "id": "breakout-wasm"},
+    {"do": "wait", "ms": 2500},
+    {"do": "screencap", "save": "breakout-running", "review": "human"},
+    {"do": "assert_wasmstat", "frames_gt": 0, "error": "none"},
+    {"do": "launch", "id": "menu"},
+    {"do": "lapply_remove", "id": "breakout-wasm"},
+    {"do": "fdelete", "path": "/apps/breakout.wasm"}
+  ]
+}
