@@ -44,6 +44,7 @@ struct MenuItem {
     // is the app's own name (appIndex points at the shared WASM_HOST row).
     std::string  blobPath;
     std::string  blobLabel;
+    int          blobAbi = 0;
 
     MenuItem(const std::string &lbl, bool cat, AppIndex idx)
         : label(lbl), isCategory(cat), appIndex(idx)
@@ -87,7 +88,8 @@ public:
      */
     void registerBlobApp(const std::string &path,
                          const std::string &label,
-                         const std::string &blobPath);
+                         const std::string &blobPath,
+                         int blobAbi);
 
     /**
      * @brief Initialize the menu system. 

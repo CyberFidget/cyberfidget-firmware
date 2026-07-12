@@ -310,7 +310,8 @@ void MenuManager::registerApp(const std::string &path,
 
 void MenuManager::registerBlobApp(const std::string &path,
                                     const std::string &label,
-                                    const std::string &blobPath)
+                                    const std::string &blobPath,
+                                    int blobAbi)
 {
     auto categories = parseCategoryPath(path);
     std::vector<MenuItem> *level = &rootMenuItems;
@@ -322,6 +323,7 @@ void MenuManager::registerBlobApp(const std::string &path,
     MenuItem leaf(label, false, APP_WASM_HOST);
     leaf.blobPath  = blobPath;
     leaf.blobLabel = label;
+    leaf.blobAbi   = blobAbi;
     level->push_back(leaf);
 }
 
@@ -563,7 +565,7 @@ void MenuManager::selectCurrentItem()
         // A ferried wasm leaf stages its file, then launches the shared
         // WASM_HOST slot; builtins launch by their own AppIndex (T-183).
         if (!mi.blobPath.empty()) {
-            WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str());
+            WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str(), mi.blobAbi);
         }
         AppManager::instance().switchToApp(mi.appIndex);
     }

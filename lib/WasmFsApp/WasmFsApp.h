@@ -22,10 +22,13 @@ namespace WasmFsApp {
 
 // Stage the next launch. Safe from any context; takes effect at the next
 // wasmFsAppBegin(). Path must be a confined loadout path (/apps/...).
-void setPending(const char* blobPath, const char* label);
+void setPending(const char* blobPath, const char* label, int abi);
 
 // True if a pending launch is staged (used by the test CLI for reporting).
 bool hasPending();
+
+// Whether the currently staged blob ABI is provided by this firmware.
+bool pendingAbiSupported();
 
 // Registry glue (wired via APP_ENTRY in AppManifest.h).
 void wasmFsAppBegin();

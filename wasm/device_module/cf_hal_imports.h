@@ -11,6 +11,8 @@
 #ifndef CF_HAL_IMPORTS_H
 #define CF_HAL_IMPORTS_H
 
+#include "cf_hal_abi.h"
+
 #include <stdint.h>
 
 #define CF_IMPORT(NAME) \

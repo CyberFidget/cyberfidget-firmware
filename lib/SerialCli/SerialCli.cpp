@@ -28,6 +28,7 @@
 #include "ButtonManager.h"   // injectEvent / ButtonEvent for `btn` (spike port)
 #include "HAL.h"             // HAL::buttonManager()
 #include "WasmFsApp.h"       // wasmstat (T-183)
+#include "WasmHostImports.h"  // kDeviceHalAbi (REQ-063)
 #endif
 
 #ifdef CF_TEST_CLI
@@ -756,9 +757,16 @@ void SerialCli::cmdLaunch(const char* arg) {
             for (const auto& e : lo.entries) {
                 if (e.format != "builtin" && !e.format.empty() && !e.blobPath.empty() &&
                     (ieq(arg, e.id.c_str()) || ieq(arg, e.name.c_str()))) {
+                    int abi = LoadoutManifest::parseAbiVersion(e.abi);
                     WasmFsApp::setPending(e.blobPath.c_str(),
-                                          e.name.empty() ? e.id.c_str() : e.name.c_str());
+                                          e.name.empty() ? e.id.c_str() : e.name.c_str(), abi);
+                    bool abiSupported = WasmFsApp::pendingAbiSupported();
                     AppManager::instance().switchToApp(APP_WASM_HOST);
+                    if (!abiSupported) {
+                        Serial.printf("[cmd] launch.error=abi_unsupported abi=%d abimax=%d\n",
+                                      abi, kDeviceHalAbi);
+                        return;
+                    }
                     Serial.printf("[cmd] launch.ok=blob path=%s\n", e.blobPath.c_str());
                     return;
                 }

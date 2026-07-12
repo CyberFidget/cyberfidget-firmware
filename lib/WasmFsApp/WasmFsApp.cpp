@@ -8,10 +8,14 @@
 #include <esp_heap_caps.h>
 
 #include <string>
+#include <string.h>
 
+#include "ButtonManager.h"
 #include "DisplayProxy.h"
 #include "HAL.h"
+#include "MenuManager.h"
 #include "WasmAppShell.h"
+#include "WasmHostImports.h"
 
 namespace WasmFsApp {
 namespace {
@@ -20,6 +24,7 @@ namespace {
 // buffers need not outlive the call.
 std::string s_pendingPath;
 std::string s_pendingLabel;
+int         s_pendingAbi = 0;
 
 // Live launch state. The shell parses/executes the module IN PLACE, so the
 // byte buffer must outlive it - both are torn down together in end().
@@ -27,6 +32,8 @@ WasmAppShell* s_shell    = nullptr;
 uint8_t*      s_bytes    = nullptr;
 size_t        s_len      = 0;
 char          s_loadErr[96] = {0};
+int           s_failedAbi = 0;
+bool          s_preShellErrorCallbacks = false;
 // The shell keeps only a const char* to its name (no copy), so the backing
 // string must outlive the shell - hold it here, not in a begin() local.
 std::string   s_runningLabel;
@@ -51,30 +58,81 @@ void drawLoadError(const char* line1, const char* line2) {
     d.display();
 }
 
+void drawAbiUnsupported() {
+    char firmwareLine[32];
+    snprintf(firmwareLine, sizeof(firmwareLine), "firmware (ABI %d)", kDeviceHalAbi);
+    auto& d = HAL::displayProxy();
+    d.clear();
+    d.setTextAlignment(TEXT_ALIGN_CENTER);
+    d.setFont(ArialMT_Plain_10);
+    d.drawString(64, 18, "App needs newer");
+    d.drawString(64, 32, firmwareLine);
+    d.drawString(64, 52, "press any button");
+    d.display();
+}
+
+void preShellErrorButton(const ButtonEvent& event) {
+    if (event.eventType == ButtonEvent_Released) {
+        MenuManager::instance().returnToMenu();
+    }
+}
+
+void registerPreShellErrorCallbacks() {
+    if (s_preShellErrorCallbacks) return;
+    for (int i = 0; i < 6; ++i) {
+        HAL::buttonManager().registerCallback(i, preShellErrorButton);
+    }
+    s_preShellErrorCallbacks = true;
+}
+
+void unregisterPreShellErrorCallbacks() {
+    if (!s_preShellErrorCallbacks) return;
+    for (int i = 0; i < 6; ++i) {
+        HAL::buttonManager().unregisterCallback(i);
+    }
+    s_preShellErrorCallbacks = false;
+}
+
 // The whole loadout partition is 1.5 MB; a single app image far smaller.
 // Cap the read so a corrupt manifest path can't try to allocate the world.
 constexpr size_t kMaxModuleBytes = 512 * 1024;
 
 }  // namespace
 
-void setPending(const char* blobPath, const char* label) {
+void setPending(const char* blobPath, const char* label, int abi) {
     s_pendingPath  = blobPath ? blobPath : "";
     s_pendingLabel = label ? label : "app";
+    s_pendingAbi   = abi;
 }
 
 bool hasPending() { return !s_pendingPath.empty(); }
 
+bool pendingAbiSupported() { return s_pendingAbi <= kDeviceHalAbi; }
+
 void wasmFsAppBegin() {
     s_loadErr[0] = '\0';
+    s_failedAbi = 0;
     std::string path  = s_pendingPath;
     std::string label = s_pendingLabel;
+    int abi = s_pendingAbi;
     // Consume the staged launch so a return-to-menu can't accidentally
     // relaunch the same blob.
     s_pendingPath.clear();
+    s_pendingAbi = 0;
 
     if (path.empty()) {
         snprintf(s_loadErr, sizeof(s_loadErr), "no app staged");
         drawLoadError("no app staged", nullptr);
+        return;
+    }
+
+    // Refuse a blob whose declared cf.* surface exceeds the ABI this firmware
+    // provides, before opening or parsing any guest bytes (REQ-063).
+    if (abi > kDeviceHalAbi) {
+        snprintf(s_loadErr, sizeof(s_loadErr), "abi_unsupported");
+        s_failedAbi = abi;
+        drawAbiUnsupported();
+        registerPreShellErrorCallbacks();
         return;
     }
 
@@ -125,10 +183,15 @@ void wasmFsAppRun() {
     if (s_shell) { s_shell->update(); return; }
     // Pre-shell load failure: hold the error screen; any button escapes via
     // the menu's own Back handling (the app manager still owns navigation).
+    if (strcmp(s_loadErr, "abi_unsupported") == 0) {
+        drawAbiUnsupported();
+        return;
+    }
     drawLoadError(s_loadErr[0] ? s_loadErr : "load failed", nullptr);
 }
 
 void wasmFsAppEnd() {
+    unregisterPreShellErrorCallbacks();
     if (s_shell) { s_shell->end(); delete s_shell; s_shell = nullptr; }
     freeBuffer();
     HAL::setRgbLedsOff();
@@ -137,6 +200,11 @@ void wasmFsAppEnd() {
 void statCli() {
     const char* src = s_shell ? s_shell->name() : "none";
     if (!s_shell) {
+        if (strcmp(s_loadErr, "abi_unsupported") == 0) {
+            Serial.printf("[cmd] wasmstat source=%s frames=0 error=abi_unsupported abi=%d abimax=%d\n",
+                          src, s_failedAbi, kDeviceHalAbi);
+            return;
+        }
         Serial.printf("[cmd] wasmstat source=%s frames=0 error=%s\n",
                       src, s_loadErr[0] ? s_loadErr : "none");
         return;

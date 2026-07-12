@@ -13,6 +13,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cstring>
+#include <limits.h>
+#include <stdlib.h>
 
 namespace LoadoutManifest {
 
@@ -483,6 +485,7 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
             m.hidden   = entry.hidden;
             m.label    = entry.name.empty() ? entry.id : entry.name;
             m.blobPath = entry.blobPath;
+            m.abi      = parseAbiVersion(entry.abi);
             out.push_back(m);
             continue;
         }
@@ -514,6 +517,14 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
         out.push_back(m);
     }
     return out;
+}
+
+int parseAbiVersion(const std::string& abi) {
+    if (abi.empty()) return 0;
+    char* end = nullptr;
+    long value = strtol(abi.c_str(), &end, 10);
+    if (end == abi.c_str() || *end != '\0' || value < 0 || value > INT_MAX) return 0;
+    return (int)value;
 }
 
 bool applyAdd(Loadout& loadout, const LoadoutEntry& entry) {

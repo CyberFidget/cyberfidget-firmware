@@ -44,7 +44,7 @@ struct LoadoutEntry {
     std::string format;    ///< reserved: entry format (e.g. "builtin", "blob")
     std::string blobPath;  ///< reserved: filesystem path to an app blob
     std::string version;   ///< reserved: app version string
-    std::string abi;       ///< reserved: required ABI/HAL version
+    std::string abi;       ///< required ABI/HAL version for a blob
     std::string signature; ///< reserved: blob signature
 };
 
@@ -82,7 +82,11 @@ struct MergedApp {
     // register and launch it (T-183). Empty for builtin rows.
     std::string label;     ///< blob: menu label (builtin uses registry name)
     std::string blobPath;  ///< blob: confined /apps/... path to the .wasm
+    int         abi = 0;   ///< blob: required HAL ABI; 0 = unversioned
 };
+
+/// Parse a manifest ABI string. Empty or invalid values are unversioned (0).
+int parseAbiVersion(const std::string& abi);
 
 /// One item of the declarative `arrange` op: the full display order,
 /// id-anchored. `category` optionally re-categorizes the entry.

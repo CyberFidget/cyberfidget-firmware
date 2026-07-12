@@ -417,6 +417,7 @@ static m3ApiRawFunction(envNotifyMemoryGrowth) {
 // ---------------------------------------------------------------------------
 
 static const WasmHostImport kImports[] = {
+    // Adding a row here keeps CF_HAL_ABI; removing/renumbering a row is a MAJOR ABI bump (REQ-063).
     // benchmark
     { "cf", "nop",                  "i(i)",     &cfNop },
     // display
