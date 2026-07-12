@@ -1,0 +1,25 @@
+{
+    "name": "wasm3",
+    "version": "0.5.1",
+    "description": "Vendored wasm3 WebAssembly interpreter for the spike/wasm3-apps spike. Upstream: github.com/wasm3/wasm3 commit d77cd814aa0bc68cb1df917580a6304d34cfb30b (2026-06-26, source/ directory only). Local patches (grep 'CYBERFIDGET SPIKE PATCH'): (1) d_m3CustomAllocator hook in m3_core.c so the host can route allocations to ESP32 PSRAM (see lib/WasmAppRuntime); (2) d_m3NativeStackGuard hook in m3_core.h/m3_exec.h so deep wasm call chains trap (m3Err_trapStackOverflow) instead of overrunning the native task stack and rebooting the device. M3_IN_IRAM is defined to keep interpreter opcodes OUT of IRAM (wasm3 defaults to IRAM_ATTR on ESP32; the name is upstream's, not a typo). -O2 overrides the project-wide -Os for interpreter speed.",
+    "license": "MIT",
+    "frameworks": "*",
+    "platforms": "espressif32",
+    "build": {
+        "srcDir": "src",
+        "srcFilter": [
+            "+<*.c>",
+            "-<m3_api_libc.c>",
+            "-<m3_api_meta_wasi.c>",
+            "-<m3_api_tracer.c>",
+            "-<m3_api_uvwasi.c>",
+            "-<m3_api_wasi.c>"
+        ],
+        "flags": [
+            "-O2",
+            "-DM3_IN_IRAM",
+            "-Dd_m3CustomAllocator",
+            "-Dd_m3NativeStackGuard"
+        ]
+    }
+}

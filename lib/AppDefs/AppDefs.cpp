@@ -122,6 +122,13 @@ void buildNestedMenu() {
                 (int)merged.size(), (int)APP_COUNT);
        for (const auto& m : merged) {
            if (m.hidden) continue;
+           if (m.appIndex < 0) {
+               // Ferried wasm app (T-183): register a blob leaf launched
+               // through the shared WASM_HOST slot.
+               MenuManager::instance().registerBlobApp(
+                   m.category, m.label, m.blobPath);
+               continue;
+           }
            addAppToMenu(appDefs[m.appIndex].name, m.category.c_str(), m.appIndex);
        }
        return;

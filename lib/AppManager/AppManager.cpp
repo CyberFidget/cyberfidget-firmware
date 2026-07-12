@@ -161,6 +161,10 @@ bool AppManager::applyLoadoutOps(const char* opsJson, int* entriesOut, int* appl
     if (appliedOut) *appliedOut = applied;
     ESP_LOGI(TAG_MAIN, "Loadout ops applied (%d ops, %d entries)",
              applied, (int)loadout.entries.size());
+    // T-183: the menu tree is built from this manifest; a sync just changed
+    // it, so the next menu entry must rebuild (ferried apps appear without a
+    // reboot). The rebuild happens on menu-entry, not here.
+    MenuManager::instance().markManifestDirty();
     return true;
 }
 

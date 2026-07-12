@@ -469,6 +469,21 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
     // 1) Manifest entries, in manifest order. Stale ids (no registry
     //    match) and duplicates are pruned, not fatal.
     for (const auto& entry : loadout.entries) {
+        // A ferried wasm app (format "blob") has no compile-time registry
+        // row; it launches from its file. Keep it as a blob MergedApp
+        // instead of pruning it (T-183). Guard: a blob entry with no path
+        // is unlaunchable, so it is dropped like a stale id.
+        if (entry.format == "blob") {
+            if (entry.blobPath.empty()) continue;
+            MergedApp m;
+            m.appIndex = -1;
+            m.category = entry.category;
+            m.hidden   = entry.hidden;
+            m.label    = entry.name.empty() ? entry.id : entry.name;
+            m.blobPath = entry.blobPath;
+            out.push_back(m);
+            continue;
+        }
         int idx = -1;
         for (int i = 0; i < count; i++) {
             if (apps[i].id == entry.id) { idx = i; break; }

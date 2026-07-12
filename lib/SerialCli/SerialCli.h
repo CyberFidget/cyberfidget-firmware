@@ -81,6 +81,12 @@ private:
     void cmdNet();
     void cmdWifi(const char* arg);
     void cmdMic();
+    // Serial button injection (T-191). tap auto-releases after a delay.
+    void cmdBtn(const char* args);
+    void pollPendingTapReleases();
+    static constexpr int kMaxInjectButtons = 6;
+    static constexpr unsigned long kTapReleaseMs = 120;
+    unsigned long tapReleaseDueMs[kMaxInjectButtons] = {0};
 #endif
 
     char   buffer[kBufferSize] = {0};

@@ -6,6 +6,7 @@
 #include "AppManager.h"   // So we can set appActive, appPreviously, etc.
 #include "globals.h"      // If you have global for 'millis_NOW', etc.
 #include "AppDefs.h"      // For AppIndex enum
+#include "WasmFsApp.h"    // T-183: stage a ferried wasm app before launch
 
 #include <sstream>        // For path parsing
 #include <algorithm>  // for std::min/max if needed
@@ -223,13 +224,19 @@ MenuManager::MenuManager()
 
 void MenuManager::begin()
 {
-    // If we've already built the menu, do NOT rebuild
-    if (!rootMenuItems.empty()) {
+    // If we've already built the menu, do NOT rebuild - UNLESS the manifest
+    // changed under us (a loadout sync / lapply). T-183: a ferried wasm app
+    // must appear on the menu the next time the user opens it, not only after
+    // a reboot. The dirty flag is set by applyLoadoutOps; consuming it here
+    // (menu-entry, never mid-app) keeps the rebuild off the hot path and away
+    // from live navigation state.
+    if (!rootMenuItems.empty() && !manifestDirty) {
         ESP_LOGI(TAG_MAIN, "Menu already built; not rebuilding");
         registerMenuCallbacks();
         menuActive = true;
         return;
     }
+    manifestDirty = false;
 
     // // Register the menu callbacks:
     registerMenuCallbacks();
@@ -299,7 +306,24 @@ void MenuManager::registerApp(const std::string &path,
     // we must pass 3 arguments: (label, isCategory=false, index)
     MenuItem leaf(label, false, index);
     level->push_back(leaf);
-}   
+}
+
+void MenuManager::registerBlobApp(const std::string &path,
+                                    const std::string &label,
+                                    const std::string &blobPath)
+{
+    auto categories = parseCategoryPath(path);
+    std::vector<MenuItem> *level = &rootMenuItems;
+    for (auto &catName : categories) {
+        level = &findOrCreateCategory(*level, catName);
+    }
+    // Leaf points at the shared WASM_HOST slot; blobPath/blobLabel carry
+    // what the launch needs to stage before switching to it.
+    MenuItem leaf(label, false, APP_WASM_HOST);
+    leaf.blobPath  = blobPath;
+    leaf.blobLabel = label;
+    level->push_back(leaf);
+}
 
 // Private method: move highlight up
 void MenuManager::moveHighlightUp()
@@ -536,6 +560,11 @@ void MenuManager::selectCurrentItem()
         // Leaf => launch
         menuActive = false;
         unregisterMenuCallbacks();
+        // A ferried wasm leaf stages its file, then launches the shared
+        // WASM_HOST slot; builtins launch by their own AppIndex (T-183).
+        if (!mi.blobPath.empty()) {
+            WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str());
+        }
         AppManager::instance().switchToApp(mi.appIndex);
     }
 }
@@ -804,3 +833,29 @@ extern void menuRun() {
     ESP_LOGI(TAG_MAIN, "menuRun start");
     MenuManager::instance().update();
 }//
+// T-183/T-191: read-only serial dump of the built menu tree. One [cmd]
+// line per node with rendered label text, so a bench (or a remote human)
+// can confirm what is actually on the device menu - including ferried
+// wasm apps, which is the exact gap this work closes.
+static void dumpMenuLevel(const std::vector<MenuItem>& items, int depth) {
+    for (const auto& mi : items) {
+        if (mi.isCategory) {
+            Serial.printf("[cmd] menutree.cat depth=%d label=%s\n",
+                          depth, mi.label.c_str());
+            dumpMenuLevel(mi.children, depth + 1);
+        } else {
+            Serial.printf("[cmd] menutree.app depth=%d label=%s blob=%d path=%s\n",
+                          depth, mi.label.c_str(),
+                          mi.blobPath.empty() ? 0 : 1,
+                          mi.blobPath.empty() ? "-" : mi.blobPath.c_str());
+        }
+    }
+}
+
+void MenuManager::dumpTree() const {
+    int cats = 0, apps = 0;
+    for (const auto& mi : rootMenuItems) { mi.isCategory ? cats++ : apps++; }
+    Serial.printf("[cmd] menutree.begin roots=%d\n", (int)rootMenuItems.size());
+    dumpMenuLevel(rootMenuItems, 0);
+    Serial.printf("[cmd] menutree.end\n");
+}

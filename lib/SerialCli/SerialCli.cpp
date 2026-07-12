@@ -16,7 +16,15 @@
 #include "AppDefs.h"          // load + builtin identity migration
 #include "LoadoutManifest.h"  // parse for the lget entry count
 #include "LoadoutStore.h"     // LittleFS mount + manifest read
+#include "MenuManager.h"      // menutree dump (T-183/T-191)
 #include "SyncProtocol.h"     // pure crc / confinement / arg parsing
+
+#ifdef CF_TEST_CLI
+#include <stdlib.h>          // strtol for `btn` argument parsing
+#include "ButtonManager.h"   // injectEvent / ButtonEvent for `btn` (spike port)
+#include "HAL.h"             // HAL::buttonManager()
+#include "WasmFsApp.h"       // wasmstat (T-183)
+#endif
 
 #ifdef CF_TEST_CLI
 #include <Preferences.h>
@@ -208,6 +216,9 @@ SerialCli& SerialCli::instance() {
 }
 
 void SerialCli::poll() {
+#ifdef CF_TEST_CLI
+    pollPendingTapReleases();
+#endif
     while (Serial.available() > 0) {
         int byte = Serial.read();
         if (byte < 0) break;
@@ -249,6 +260,7 @@ void SerialCli::dispatch(const char* line) {
     if (ieq(line, "fwabort"))  { cmdFwabort();  return; }
     if (ieq(line, "lget"))     { cmdLget();     return; }
     if (ieq(line, "syncinfo")) { cmdSyncinfo(); return; }
+    if (ieq(line, "menutree")) { MenuManager::instance().dumpTree(); return; }
     if (verbWithArg(line, "fwrite", &arg))  { cmdFwrite(arg);  return; }
     if (verbWithArg(line, "fwdata", &arg))  { cmdFwdata(arg);  return; }
     if (verbWithArg(line, "fdelete", &arg)) { cmdFdelete(arg); return; }
@@ -260,9 +272,56 @@ void SerialCli::dispatch(const char* line) {
     if (ieq(line, "mic"))  { cmdMic();  return; }
     if (verbWithArg(line, "launch", &arg)) { cmdLaunch(arg); return; }
     if (verbWithArg(line, "wifi", &arg))   { cmdWifi(arg);   return; }
+    if (ieq(line, "wasmstat")) { WasmFsApp::statCli(); return; }
+    if (verbWithArg(line, "btn", &arg))    { cmdBtn(arg);    return; }
 #endif
     Serial.printf("[err] unknown command: %s\n", line);
 }
+
+#ifdef CF_TEST_CLI
+// Serial button injection (T-191 leg 3; spike ButtonManager::injectEvent).
+// Drives a real app's ButtonManager events without touching GPIO, so a
+// bench or a remote human can navigate the menu and play an app over
+// serial. `tap` auto-releases after a short delay, polled in poll().
+void SerialCli::cmdBtn(const char* args) {
+    char* rest = nullptr;
+    long idx = strtol(args, &rest, 10);
+    if (rest == args) { Serial.println("[err] btn: usage: btn <index> <press|release|tap>"); return; }
+    while (*rest == ' ') rest++;
+    int numButtons = HAL::buttonManager().getNumButtons();
+    if (idx < 0 || idx >= numButtons || idx >= kMaxInjectButtons) {
+        Serial.printf("[err] btn: index %ld out of range (0..%d)\n", idx, numButtons - 1);
+        return;
+    }
+    if (ieq(rest, "press")) {
+        tapReleaseDueMs[idx] = 0;
+        HAL::buttonManager().injectEvent((int)idx, ButtonEvent_Pressed);
+        Serial.printf("[cmd] btn.press=%ld\n", idx);
+    } else if (ieq(rest, "release")) {
+        tapReleaseDueMs[idx] = 0;
+        HAL::buttonManager().injectEvent((int)idx, ButtonEvent_Released);
+        Serial.printf("[cmd] btn.release=%ld\n", idx);
+    } else if (ieq(rest, "tap")) {
+        HAL::buttonManager().injectEvent((int)idx, ButtonEvent_Pressed);
+        unsigned long due = millis() + kTapReleaseMs;
+        tapReleaseDueMs[idx] = (due == 0) ? 1 : due;
+        Serial.printf("[cmd] btn.tap=%ld release_in_ms=%lu\n", idx, kTapReleaseMs);
+    } else {
+        Serial.println("[err] btn: usage: btn <index> <press|release|tap>");
+    }
+}
+
+void SerialCli::pollPendingTapReleases() {
+    unsigned long now = millis();
+    for (int i = 0; i < kMaxInjectButtons; i++) {
+        if (tapReleaseDueMs[i] != 0 && (long)(now - tapReleaseDueMs[i]) >= 0) {
+            tapReleaseDueMs[i] = 0;
+            HAL::buttonManager().injectEvent(i, ButtonEvent_Released);
+            Serial.printf("[cmd] btn.release=%d\n", i);
+        }
+    }
+}
+#endif
 
 void SerialCli::cmdVersion() {
     Serial.printf("[cmd] version=%s\n", getFirmwareVersionString());
@@ -616,6 +675,24 @@ void SerialCli::cmdLaunch(const char* arg) {
     } else {
         for (int i = 0; i < APP_COUNT; ++i) {
             if (ieq(arg, appDefs[i].name)) { target = i; break; }
+        }
+    }
+    // T-183: a ferried wasm app has no builtin AppIndex. Resolve a manifest
+    // blob id (or name) to its path, stage it, and launch the WASM_HOST slot
+    // - the same path the menu leaf takes, so the bench drives it headlessly.
+    if (target < 0) {
+        LoadoutManifest::Loadout lo;
+        if (loadLoadoutManifest(lo, nullptr)) {
+            for (const auto& e : lo.entries) {
+                if (e.format == "blob" && !e.blobPath.empty() &&
+                    (ieq(arg, e.id.c_str()) || ieq(arg, e.name.c_str()))) {
+                    WasmFsApp::setPending(e.blobPath.c_str(),
+                                          e.name.empty() ? e.id.c_str() : e.name.c_str());
+                    AppManager::instance().switchToApp(APP_WASM_HOST);
+                    Serial.printf("[cmd] launch.ok=blob path=%s\n", e.blobPath.c_str());
+                    return;
+                }
+            }
         }
     }
     if (target < 0) {

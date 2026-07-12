@@ -74,9 +74,14 @@ bool normalizeBuiltinIds(Loadout& loadout, const RegistryApp* apps, int count);
 /// One merged menu row: an index into the registry array passed to
 /// mergeWithRegistry(), plus the category/hidden state the menu should use.
 struct MergedApp {
-    int         appIndex;  ///< index into the RegistryApp array
+    int         appIndex;  ///< builtin: index into the RegistryApp array; blob: -1
     std::string category;  ///< flat category to register the app under
     bool        hidden;    ///< true = do not show in the menu
+    // A ferried wasm app has no compile-time registry row. `appIndex == -1`
+    // marks a blob row; `label`/`blobPath` carry what the menu needs to
+    // register and launch it (T-183). Empty for builtin rows.
+    std::string label;     ///< blob: menu label (builtin uses registry name)
+    std::string blobPath;  ///< blob: confined /apps/... path to the .wasm
 };
 
 /// One item of the declarative `arrange` op: the full display order,

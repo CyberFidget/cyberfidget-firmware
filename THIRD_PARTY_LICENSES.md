@@ -14,6 +14,7 @@ Cyber Fidget firmware uses the following open-source libraries. We are grateful 
 | SparkFun LIS2DH12 | 1.0.3 | MIT | https://github.com/sparkfun/SparkFun_LIS2DH12_Arduino_Library |
 | SparkFun MAX1704x | 1.0.4 | MIT | https://github.com/sparkfun/SparkFun_MAX1704x_Fuel_Gauge_Arduino_Library |
 | WiFiManager | 2.0.17 | MIT | https://github.com/tzapu/WiFiManager |
+| wasm3 | d77cd814 (vendored in lib/wasm3, spike/wasm3-apps) | MIT | https://github.com/wasm3/wasm3 |
 
 ## Note on arduino-libhelix
 

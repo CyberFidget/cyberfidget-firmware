@@ -37,8 +37,13 @@ enum CrossSlideState {
 struct MenuItem {
     std::string  label;
     bool         isCategory;
-    AppIndex     appIndex;        // used if isCategory=false
+    AppIndex     appIndex;        // used if isCategory=false && blobPath empty
     std::vector<MenuItem> children;
+    // A ferried wasm app has no compile-time AppIndex; a non-empty blobPath
+    // marks a blob leaf, launched via the WASM_HOST slot (T-183). blobLabel
+    // is the app's own name (appIndex points at the shared WASM_HOST row).
+    std::string  blobPath;
+    std::string  blobLabel;
 
     MenuItem(const std::string &lbl, bool cat, AppIndex idx)
         : label(lbl), isCategory(cat), appIndex(idx)
@@ -69,9 +74,20 @@ public:
      * @param label The display name for the app, e.g., "WiFi Config."
      * @param index The AppIndex for this app.
      */ 
-    void registerApp(const std::string &path, 
-                     const std::string &label, 
+    void registerApp(const std::string &path,
+                     const std::string &label,
                      AppIndex index);
+
+    /**
+     * @brief Register a ferried wasm app leaf (T-183). Launched through the
+     * shared WASM_HOST slot, staging blobPath first.
+     * @param path      category path, e.g. "Games"
+     * @param label     the app's display name
+     * @param blobPath  confined /apps/... path to the .wasm file
+     */
+    void registerBlobApp(const std::string &path,
+                         const std::string &label,
+                         const std::string &blobPath);
 
     /**
      * @brief Initialize the menu system. 
@@ -111,6 +127,20 @@ public:
      */
     void setHighlightShape(HighlightShape shape) { highlightShape = shape; }
 
+    /**
+     * @brief Dump the built menu tree to Serial as machine-parseable
+     * `[cmd] menutree.*` lines (T-183/T-191): one line per category and
+     * leaf, with rendered label text, blob flag, and blob path. Read-only.
+     */
+    void dumpTree() const;
+
+    /**
+     * @brief Mark the menu stale after a loadout manifest change (T-183).
+     * The next begin() rebuilds the tree once. Safe to call from the sync
+     * path; the rebuild itself happens only on menu entry.
+     */
+    void markManifestDirty() { manifestDirty = true; }
+
 private:
     // Private constructor: we use the singleton pattern above
     MenuManager();
@@ -135,6 +165,10 @@ private:
 
     // Are we in the menu (true) or inside an app (false)?
     bool menuActive = true;
+    // T-183: set when the loadout manifest changes (sync/lapply) so the next
+    // menu entry rebuilds the tree once, surfacing ferried apps without a
+    // reboot. Consumed in begin().
+    bool manifestDirty = false;
 
     // If we navigate into a sub-menu, we push state here so we can go back
     struct MenuNavState {
