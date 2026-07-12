@@ -276,9 +276,17 @@ def run_case(case, port, outdir):
 def main(argv):
     ap = argparse.ArgumentParser(description="Replay a Cyber Fidget serial test case (T-194).")
     ap.add_argument("case", help="path to a case JSON file")
-    ap.add_argument("--port", default=os.environ.get("CF_BENCH_PORT", "COM30"))
+    # Port is the one platform-specific bit: Windows "COM30", Linux
+    # "/dev/ttyUSB0" or "/dev/ttyACM0". CF_BENCH_PORT is the portable knob
+    # the (eventually Linux) HIL host sets; --port overrides. Everything
+    # else here is pure pyserial + os.path and runs unchanged on Linux.
+    ap.add_argument("--port", default=os.environ.get("CF_BENCH_PORT"),
+                    help="serial port (or set CF_BENCH_PORT); e.g. COM30 or /dev/ttyUSB0")
     ap.add_argument("--out", default=None, help="dir for screencaps + result.json")
     args = ap.parse_args(argv)
+    if not args.port:
+        ap.error("no serial port: pass --port or set CF_BENCH_PORT "
+                 "(Windows COMx, Linux /dev/ttyUSB0)")
     case = json.load(open(args.case))
     outdir = args.out
     if outdir:

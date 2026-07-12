@@ -11,13 +11,18 @@ cases grows.
 ## Run
 
 ```
-# pio's python has pyserial
+# Windows (pio's python has pyserial):
 %USERPROFILE%\.platformio\penv\Scripts\python.exe cf_replay.py cases/t183-menu-visible.json --port COM30 --out runs/menu
+
+# Linux (the HIL host will land here): ports are /dev/ttyUSB0 or /dev/ttyACM0
+CF_BENCH_PORT=/dev/ttyUSB0 ~/.platformio/penv/bin/python cf_replay.py cases/t183-menu-visible.json
 ```
 
-`--port` defaults to `$CF_BENCH_PORT` or COM30. `--out <dir>` saves
-screencaps (`.bin` = raw 1024-byte 1bpp) + `result.json`. Exit code 0 =
-all asserts passed.
+The runner is pure pyserial + os.path - cross-platform by
+construction. The ONLY platform-specific bit is the port name; set
+`CF_BENCH_PORT` (the knob the Linux HIL host sets) or pass `--port`.
+`--out <dir>` saves screencaps (`.bin` = raw 1024-byte 1bpp) +
+`result.json`. Exit code 0 = all asserts passed.
 
 The runner embeds the bench session rules ONCE (reset dance +
 alive-poll before trusting the CLI; drain before framed reads) so no
