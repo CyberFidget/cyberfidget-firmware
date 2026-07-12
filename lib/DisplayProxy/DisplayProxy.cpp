@@ -193,3 +193,10 @@ void DisplayProxy::drawOverlayElements() {
     // m_display.drawXbm(112, 0, battery_width, battery_height, battery_bits);
     // Add additional overlay drawing logic as desired.
 }
+
+// --- T-191 serial tunnel: framebuffer read access ---
+const uint8_t* DisplayProxy::frameBuffer() const {
+    // The ThingPulse OLED base class exposes `buffer` publicly; it is the
+    // exact 1bpp bitmap last pushed to the panel via display(). Read-only.
+    return m_display.buffer;
+}

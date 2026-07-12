@@ -19,6 +19,10 @@
 #include "MenuManager.h"      // menutree dump (T-183/T-191)
 #include "SyncProtocol.h"     // pure crc / confinement / arg parsing
 
+#include "HAL.h"              // displayProxy() for screencap (T-191)
+#include "DisplayProxy.h"     // frameBuffer()
+#include <mbedtls/base64.h>   // framebuffer -> base64 for screencap
+
 #ifdef CF_TEST_CLI
 #include <stdlib.h>          // strtol for `btn` argument parsing
 #include "ButtonManager.h"   // injectEvent / ButtonEvent for `btn` (spike port)
@@ -49,6 +53,19 @@ bool ieq(const char* a, const char* b) {
         if (ca != cb) return false;
     }
     return *a == 0 && *b == 0;
+}
+
+// Case-insensitive prefix match; returns the remainder of `line` after the
+// prefix, or nullptr if it does not match. Used by the T-191 stream verb.
+const char* ieqPrefix(const char* line, const char* prefix) {
+    while (*prefix) {
+        char ca = *line++;
+        char cb = *prefix++;
+        if (ca >= 'A' && ca <= 'Z') ca = ca - 'A' + 'a';
+        if (cb >= 'A' && cb <= 'Z') cb = cb - 'A' + 'a';
+        if (ca != cb) return nullptr;
+    }
+    return line;
 }
 
 // True if `line` starts with `verb` followed by a space; sets *arg to the
@@ -216,6 +233,7 @@ SerialCli& SerialCli::instance() {
 }
 
 void SerialCli::poll() {
+    pollScreenStream();
 #ifdef CF_TEST_CLI
     pollPendingTapReleases();
 #endif
@@ -261,6 +279,8 @@ void SerialCli::dispatch(const char* line) {
     if (ieq(line, "lget"))     { cmdLget();     return; }
     if (ieq(line, "syncinfo")) { cmdSyncinfo(); return; }
     if (ieq(line, "menutree")) { MenuManager::instance().dumpTree(); return; }
+    if (ieq(line, "screencap")) { cmdScreencap(); return; }
+    if (verbWithArg(line, "screenstream", &arg)) { cmdScreenstream(arg); return; }
     if (verbWithArg(line, "fwrite", &arg))  { cmdFwrite(arg);  return; }
     if (verbWithArg(line, "fwdata", &arg))  { cmdFwdata(arg);  return; }
     if (verbWithArg(line, "fdelete", &arg)) { cmdFdelete(arg); return; }
@@ -626,6 +646,56 @@ void SerialCli::cmdLapply(const char* args) {
     Serial.printf("[cmd] lapply.ok=applied %d entries %d\n", applied, entries);
 }
 
+// T-191: base64-encode and emit the 128x64 1bpp framebuffer as one
+// `[cmd] screencap=<b64>` line. ~1024 bytes -> ~1368 chars; ~15ms at
+// 921600 baud. The copy happens here on the loop task, so the serial
+// side never touches the live buffer across contexts.
+void SerialCli::emitScreencap() {
+    const uint8_t* fb = HAL::displayProxy().frameBuffer();
+    if (!fb) { Serial.println("[err] screencap: no framebuffer"); return; }
+    static uint8_t b64[1400];  // ceil(1024/3)*4 = 1368 + NUL slack
+    size_t olen = 0;
+    int rc = mbedtls_base64_encode(b64, sizeof(b64), &olen, fb,
+                                   DisplayProxy::kFrameBufferBytes);
+    if (rc != 0) { Serial.println("[err] screencap: encode failed"); return; }
+    b64[olen] = '\0';
+    // w/h/bpp let the decoder reconstruct without hardcoding geometry.
+    Serial.printf("[cmd] screencap w=128 h=64 bpp=1 fmt=colpage len=%u b64=%s\n",
+                  (unsigned)olen, (const char*)b64);
+}
+
+void SerialCli::cmdScreencap() { emitScreencap(); }
+
+// T-191: screenstream on [fps] | off. Emits a screencap frame at the
+// requested rate from poll(), bounded so it never starves the app loop
+// (frames are dropped, ticks are not). Default 8 fps, cap 20.
+void SerialCli::cmdScreenstream(const char* arg) {
+    while (*arg == ' ') arg++;
+    if (ieqPrefix(arg, "off") || arg[0] == '\0') {
+        streamIntervalMs = 0;
+        Serial.println("[cmd] screenstream=off");
+        return;
+    }
+    const char* rest = ieqPrefix(arg, "on");
+    int fps = 8;
+    const char* num = rest ? rest : arg;
+    while (*num == ' ') num++;
+    if (*num >= '0' && *num <= '9') fps = atoi(num);
+    if (fps < 1) fps = 1;
+    if (fps > 20) fps = 20;  // 20fps * 1.4KB = 28KB/s, ~30% of the link
+    streamIntervalMs = 1000UL / (unsigned long)fps;
+    lastStreamMs = 0;  // fire immediately
+    Serial.printf("[cmd] screenstream=on fps=%d interval_ms=%lu\n", fps, streamIntervalMs);
+}
+
+void SerialCli::pollScreenStream() {
+    if (streamIntervalMs == 0) return;
+    unsigned long now = millis();
+    if (lastStreamMs != 0 && (now - lastStreamMs) < streamIntervalMs) return;
+    lastStreamMs = now;
+    emitScreencap();
+}
+
 void SerialCli::cmdSyncinfo() {
     LoadoutStore::begin();
     size_t total = LittleFS.totalBytes();
@@ -684,7 +754,7 @@ void SerialCli::cmdLaunch(const char* arg) {
         LoadoutManifest::Loadout lo;
         if (loadLoadoutManifest(lo, nullptr)) {
             for (const auto& e : lo.entries) {
-                if (e.format == "blob" && !e.blobPath.empty() &&
+                if (e.format != "builtin" && !e.format.empty() && !e.blobPath.empty() &&
                     (ieq(arg, e.id.c_str()) || ieq(arg, e.name.c_str()))) {
                     WasmFsApp::setPending(e.blobPath.c_str(),
                                           e.name.empty() ? e.id.c_str() : e.name.c_str());

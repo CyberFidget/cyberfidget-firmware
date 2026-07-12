@@ -66,6 +66,14 @@ public:
     void setOverlayMode(OverlayMode mode);
     OverlayMode getOverlayMode() const;
 
+    // --- T-191 serial tunnel: read-only access to the 1bpp framebuffer
+    // (128x64 = 1024 bytes, column-major pages) so `screencap` can ship
+    // exactly what the panel shows. The pointer is the library's live
+    // buffer; the serial verb copies it out immediately under the loop
+    // task, never handing the live pointer across contexts. ---
+    const uint8_t* frameBuffer() const;
+    static constexpr int kFrameBufferBytes = 1024;  // 128x64 / 8
+
 private:
     SSD1306Wire& m_display;    // Reference to the real display
     OverlayMode m_overlayMode; // Overlay mode setting

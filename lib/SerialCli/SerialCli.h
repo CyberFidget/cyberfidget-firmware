@@ -74,6 +74,14 @@ private:
     void cmdLget();
     void cmdLapply(const char* args);
     void cmdSyncinfo();
+    // T-191 serial tunnel: framebuffer capture + streaming (always compiled -
+    // these are observation/remote-display verbs, valuable in any build).
+    void cmdScreencap();
+    void cmdScreenstream(const char* arg);
+    void emitScreencap();
+    void pollScreenStream();
+    unsigned long streamIntervalMs = 0;  // 0 = off
+    unsigned long lastStreamMs     = 0;
 #ifdef CF_TEST_CLI
     void cmdApps();
     void cmdLaunch(const char* arg);
