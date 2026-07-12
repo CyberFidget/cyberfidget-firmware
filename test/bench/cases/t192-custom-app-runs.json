@@ -1,0 +1,23 @@
+{
+  "name": "T-192: a website-profile (Custom-path) device wasm launches and runs",
+  "fw_min": "1.2.2",
+  "fixtures": ["stopwatch.wasm"],
+  "steps": [
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "ferry", "path": "/apps/stopwatch.wasm", "fixture": "stopwatch.wasm"},
+    {"do": "lapply_add", "id": "stopwatch-demo", "name": "Stopwatch", "category": "Tools", "format": "wasm", "path": "/apps/stopwatch.wasm", "version": "1.0.0"},
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "assert_menutree", "has": "Stopwatch"},
+    {"do": "launch", "id": "stopwatch-demo"},
+    {"do": "wait", "ms": 2000},
+    {"do": "screencap", "save": "stopwatch-idle", "review": "human"},
+    {"do": "assert_wasmstat", "frames_gt": 0, "error": "none"},
+    {"do": "btn", "index": 5, "action": "tap"},
+    {"do": "wait", "ms": 1500},
+    {"do": "screencap", "save": "stopwatch-running", "review": "human"},
+    {"do": "assert_wasmstat", "frames_gt": 30, "error": "none"},
+    {"do": "launch", "id": "menu"},
+    {"do": "lapply_remove", "id": "stopwatch-demo"},
+    {"do": "fdelete", "path": "/apps/stopwatch.wasm"}
+  ]
+}

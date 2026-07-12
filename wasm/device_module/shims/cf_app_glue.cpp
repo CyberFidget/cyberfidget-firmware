@@ -35,8 +35,16 @@
 #elif defined(CF_WASM_APP_SPLOOTY)
 #include "Splooty.h"
 #define CF_APP_INSTANCE splootyApp
+#elif defined(CF_WASM_APP_CUSTOM)
+// T-192: the website's user-app path. Mirrors the emulator's WASM_APP_CUSTOM
+// branch so the SAME generated source builds both ways. The build passes the
+// header name and the instance identifier the same way the emulator CMake
+// does (CUSTOM_APP_NAME -> a <name>.h header; CUSTOM_APP_INSTANCE -> the
+// global). The force-includes come via -include cf_custom_app_device.h.
+#include CF_CUSTOM_APP_HEADER
+#define CF_APP_INSTANCE CUSTOM_APP_INSTANCE
 #else
-#error "Define one CF_WASM_APP_<APP> (see build_device_modules.bat)"
+#error "Define one CF_WASM_APP_<APP> (see build_device_modules.bat) or CF_WASM_APP_CUSTOM"
 #endif
 
 // ---- Globals declared in the shim headers ----
