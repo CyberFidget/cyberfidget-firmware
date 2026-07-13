@@ -1,4 +1,5 @@
 name: Compile App to WASM
+run-name: Compile ${{ inputs.app_name || 'demo' }} [cid:${{ inputs.correlation_id }}]
 
 on:
   workflow_dispatch:
@@ -17,6 +18,10 @@ on:
         default: ''
       app_cpp_b64:
         description: 'Base64-encoded .cpp file content'
+        required: false
+        default: ''
+      correlation_id:
+        description: 'Opaque id echoed into the run name so the dispatcher can match its exact run (avoids binding a concurrent workflow run)'
         required: false
         default: ''
 
