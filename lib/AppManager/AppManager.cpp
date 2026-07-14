@@ -8,6 +8,8 @@
 #include "PowerManager.h"
 #include "AppDefs.h"
 #include "SerialCli.h"
+#include "LoadoutManifest.h"
+#include "LoadoutStore.h"
 
 void (*keep_functions[])() = {menuBegin, menuEnd, menuRun};
 
@@ -29,6 +31,10 @@ void AppManager::setup() {
     esp_log_level_set("*", ESP_LOG_VERBOSE);
     esp_log_level_set(TAG_MAIN, ESP_LOG_VERBOSE);
     HAL::initHardware();
+
+    // Mount the filesystem before the first menu build: MenuManager::begin
+    // -> buildNestedMenu reads /loadout.json through LoadoutStore.
+    LoadoutStore::begin();
 
     ESP_LOGI(TAG_MAIN, "AppManager setup complete");
 
@@ -95,6 +101,71 @@ void AppManager::processButtonEvents()
             ESP_LOGD(TAG_MAIN, "Unhandled button event: %d %d", ev.buttonIndex, ev.eventType);
         }
     }
+}
+
+void AppManager::persistMenuArrangement(const std::vector<LoadoutManifest::ArrangeItem>& order)
+{
+    // Start from the stored manifest; a device that has never persisted
+    // one gets a baseline snapshot of the compiled-in registry so the
+    // arrange has something to anchor against.
+    LoadoutManifest::Loadout loadout;
+    std::string json;
+    if (!loadLoadoutManifest(loadout, &json)) {
+        auto registry = buildLoadoutRegistryView();
+        loadout = LoadoutManifest::buildFromRegistry(registry.data(), (int)registry.size());
+    }
+
+    LoadoutManifest::applyArrange(loadout, order);
+
+    if (LoadoutStore::save(LoadoutManifest::serializeManifest(loadout))) {
+        ESP_LOGI(TAG_MAIN, "Loadout manifest persisted (%d entries)",
+                 (int)loadout.entries.size());
+    } else {
+        // Non-fatal: the in-memory menu keeps the new order until reboot;
+        // worst case the reorder doesn't survive power-off.
+        ESP_LOGE(TAG_MAIN, "Failed to persist loadout manifest");
+    }
+}
+
+bool AppManager::applyLoadoutOps(const char* opsJson, int* entriesOut, int* appliedOut)
+{
+    if (entriesOut) *entriesOut = 0;
+    if (appliedOut) *appliedOut = 0;
+
+    // Start from the stored manifest; a device that has never persisted one
+    // gets a baseline snapshot of the compiled-in registry so removes/hides/
+    // arranges have real entries to anchor against (same seed the reorder
+    // path uses).
+    LoadoutManifest::Loadout loadout;
+    std::string json;
+    if (!loadLoadoutManifest(loadout, &json)) {
+        auto registry = buildLoadoutRegistryView();
+        loadout = LoadoutManifest::buildFromRegistry(registry.data(), (int)registry.size());
+    }
+
+    int applied = 0;
+    if (!LoadoutManifest::applyOps(loadout, opsJson, &applied)) {
+        ESP_LOGW(TAG_MAIN, "Loadout ops rejected; manifest unchanged");
+        return false; // malformed or a rejected op — nothing was applied
+    }
+
+    // Persist atomically (temp file + rename): a torn write leaves the old
+    // manifest or none, never a corrupt one, so the boot menu can always
+    // fall back per the missing/stale-manifest rules.
+    if (!LoadoutStore::save(LoadoutManifest::serializeManifest(loadout))) {
+        ESP_LOGE(TAG_MAIN, "Failed to persist loadout after ops apply");
+        return false;
+    }
+
+    if (entriesOut) *entriesOut = (int)loadout.entries.size();
+    if (appliedOut) *appliedOut = applied;
+    ESP_LOGI(TAG_MAIN, "Loadout ops applied (%d ops, %d entries)",
+             applied, (int)loadout.entries.size());
+    // T-183: the menu tree is built from this manifest; a sync just changed
+    // it, so the next menu entry must rebuild (ferried apps appear without a
+    // reboot). The rebuild happens on menu-entry, not here.
+    MenuManager::instance().markManifestDirty();
+    return true;
 }
 
 void AppManager::switchToApp(AppIndex newApp)

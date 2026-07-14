@@ -8,6 +8,8 @@
 #include <vector>
 #include <string>
 
+#include "LoadoutManifest.h"
+
 #define STR_HELPER(x) #x
 #define STR(x) STR_HELPER(x)
 
@@ -54,7 +56,21 @@ static_assert(APP_COUNT > 0, "Error: APP_COUNT is zero or not properly defined."
 extern AppDefinition appDefs[APP_COUNT];
 
 /**
- * We'll define a function to build the nested menu from these definitions. 
+ * Legacy APP_ENTRY enum strings retained only for exact migration of
+ * manifests written by older firmware. Parallel to appDefs[].
+ */
+extern const char* const appIds[APP_COUNT];
+
+/**
+ * Adapt appDefs[]/appIds[] into the minimal registry view the pure
+ * LoadoutManifest core consumes (categories flattened to one level).
+ */
+std::vector<LoadoutManifest::RegistryApp> buildLoadoutRegistryView();
+bool loadLoadoutManifest(LoadoutManifest::Loadout& loadout,
+                         std::string* jsonOut = nullptr);
+
+/**
+ * We'll define a function to build the nested menu from these definitions.
  * We'll show an example of how to parse the categoryPath into subcategories.
  */
 void buildNestedMenu();

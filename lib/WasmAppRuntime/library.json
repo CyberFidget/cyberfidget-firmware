@@ -1,0 +1,13 @@
+{
+    "name": "WasmAppRuntime",
+    "version": "0.1.0",
+    "description": "wasm3 host runtime for the spike/wasm3-apps spike: loads embedded .wasm modules, links the 'cf' host import table + WASI stubs, and runs app modules through the begin/update/end lifecycle (WasmAppShell).",
+    "dependencies": [
+        {"name": "wasm3"},
+        {"name": "HAL"},
+        {"name": "AudioManager"},
+        {"name": "ButtonManager"},
+        {"name": "MenuManager"},
+        {"name": "globals"}
+    ]
+}

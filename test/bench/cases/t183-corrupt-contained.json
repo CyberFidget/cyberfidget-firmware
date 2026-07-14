@@ -1,0 +1,19 @@
+{
+  "name": "T-183 A2: a corrupt/truncated blob is contained, no reboot",
+  "fw_min": "1.2.2",
+  "fixtures": ["bad.wasm"],
+  "steps": [
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "ferry", "path": "/apps/bad.wasm", "fixture": "bad.wasm"},
+    {"do": "lapply_add", "id": "bad-wasm", "name": "Bad WASM", "category": "Games", "format": "wasm", "path": "/apps/bad.wasm", "version": "1.0.0"},
+    {"do": "launch", "id": "bad-wasm"},
+    {"do": "wait", "ms": 1500},
+    {"do": "screencap", "save": "bad-error-screen", "review": "human"},
+    {"do": "assert_wasmstat", "error": "malformed Wasm binary"},
+    {"do": "wait_cli"},
+    {"do": "assert_syncinfo", "contains": ["fs_total="]},
+    {"do": "launch", "id": "menu"},
+    {"do": "lapply_remove", "id": "bad-wasm"},
+    {"do": "fdelete", "path": "/apps/bad.wasm"}
+  ]
+}

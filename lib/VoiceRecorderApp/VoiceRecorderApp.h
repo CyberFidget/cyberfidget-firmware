@@ -4,10 +4,9 @@
 // lib/VoiceRecorderApp/VoiceRecorderApp.h
 //
 // "Voice Notes" — record-first voice memo capture to SD as WAV.
-// Owns I2S port 1 directly (AudioManager's mic task only opens the port
-// when level metering is requested — same ownership precedent as
-// MusicPlayerApp owning port 0). Capture task on core 0 feeds a PSRAM
-// SPSC ring; update() drains the ring to /recordings/REC_NNNN.wav.
+// The mic pipeline (I2S port 1 + capture task + PSRAM SPSC ring) lives in
+// the shared lib/MicCapture/ service, acquired exclusively for the app's
+// session; update() drains the ring to /recordings/REC_NNNN.wav.
 
 #ifndef VOICE_RECORDER_APP_H
 #define VOICE_RECORDER_APP_H
@@ -31,7 +30,7 @@
 #include "AudioTools/AudioCodecs/CodecWAV.h"
 #include "AudioTools/AudioCodecs/AudioEncoded.h"
 
-#include "RecRingBuffer.h"
+#include "MicCapture.h"
 #include "RecNaming.h"
 
 enum VoiceRecState {
@@ -85,26 +84,11 @@ private:
     uint8_t  recQuality    = 0;
     uint32_t recSampleRate = 16000;
     uint32_t recByteRate   = 32000;
-    // Toggle hands the new rate to the capture task, which owns I2S port 1
-    // and re-opens it between reads — the main loop never touches the port
-    // mid-session, so this is the only safe way to re-clock it.
-    std::atomic<bool>     reconfigRequested{false};
-    std::atomic<uint32_t> pendingSampleRate{16000};
 
-    // --- Capture pipeline ---
-    RecRingBuffer ring;
-    uint8_t* ringStorage = nullptr;
-    uint32_t ringCapacity = 0;
-    audio_tools::I2SStream i2sIn;
-    audio_tools::I2SConfig micCfg;
-    bool i2sOpened = false;
-    TaskHandle_t captureTaskHandle = nullptr;
-    std::atomic<bool> exitRequested{false};
-    std::atomic<bool> recordingActive{false};
-    std::atomic<bool> captureTaskExited{true};
-    std::atomic<uint16_t> vuPeak{0};
-    std::atomic<uint32_t> skipBytesRemaining{0};
-    uint8_t captureBuf[1024];   // capture task only
+    // --- Capture pipeline (shared lib/MicCapture service) ---
+    // Acquired in begin(), released in end(); micHeld tracks the balance so
+    // a FAULT entry (acquire failed) doesn't release someone else's session.
+    bool micHeld = false;
     uint8_t drainBuf[2048];     // update() only
 
     // --- Recording session ---
@@ -227,8 +211,6 @@ private:
     void showNote(const char* msg);
     void dismissNote();
     uint32_t remainingSeconds() const;
-    static void captureTaskThunk(void* arg);
-    void captureTaskLoop();
 
     // --- Recordings list (REC_STATE_LIST) ---
     void enterList();

@@ -8,6 +8,9 @@
 #include <iostream>
 #include "esp_log.h"
 
+#include "LoadoutManifest.h"
+#include "LoadoutStore.h"
+
 #include "AppManifest_Includes.h"
 
 // Print APP_COUNT value when the program starts
@@ -28,6 +31,15 @@ extern void menuRun();
 
 AppDefinition appDefs[APP_COUNT] = {
     #include "AppManifest.h"  // each line expands into { LABEL, PATH, begin..., end..., run... }
+};
+
+#undef APP_ENTRY
+
+// Parallel legacy enum strings retained for exact manifest migration.
+#define APP_ENTRY(ID, LABEL, CATPATH, BEGINF, ENDF, RUNF) #ID,
+
+const char* const appIds[APP_COUNT] = {
+    #include "AppManifest.h"  // each line expands into "APP_..."
 };
 
 #undef APP_ENTRY
@@ -65,7 +77,66 @@ static void addAppToMenu(const char* label, const char* path, int appIndex)
     MenuManager::instance().registerApp(path, label, (AppIndex)appIndex);
 }
 
+std::vector<LoadoutManifest::RegistryApp> buildLoadoutRegistryView() {
+    std::vector<LoadoutManifest::RegistryApp> view;
+    view.reserve((size_t)APP_COUNT);
+    for (int i = 0; i < (int)APP_COUNT; i++) {
+        LoadoutManifest::RegistryApp app;
+        app.name     = appDefs[i].name ? appDefs[i].name : "";
+        app.id       = LoadoutManifest::slugifyBuiltinName(app.name.c_str());
+        app.category = LoadoutManifest::flattenCategory(appDefs[i].categoryPath);
+        app.legacyId = appIds[i];
+        view.push_back(app);
+    }
+    return view;
+}
+
+bool loadLoadoutManifest(LoadoutManifest::Loadout& loadout, std::string* jsonOut) {
+    std::string json;
+    if (!LoadoutStore::load(json) ||
+        !LoadoutManifest::parseManifest(json.c_str(), loadout)) return false;
+    auto registry = buildLoadoutRegistryView();
+    if (LoadoutManifest::normalizeBuiltinIds(loadout, registry.data(),
+                                             (int)registry.size())) {
+        json = LoadoutManifest::serializeManifest(loadout);
+        if (!LoadoutStore::save(json))
+            ESP_LOGE("AppDefs", "Failed to persist builtin id migration");
+    }
+    if (jsonOut) *jsonOut = std::move(json);
+    return true;
+}
+
 void buildNestedMenu() {
+   // Manifest-driven path: /loadout.json defines menu order, one-level
+   // flat categories, and hidden flags. mergeWithRegistry prunes stale
+   // ids and appends compiled-in apps the manifest doesn't know about,
+   // so the menu and the firmware never fall out of sync.
+   std::string json;
+   LoadoutManifest::Loadout loadout;
+   if (loadLoadoutManifest(loadout, &json)) {
+       auto registry = buildLoadoutRegistryView();
+       auto merged   = LoadoutManifest::mergeWithRegistry(loadout,
+                                                          registry.data(),
+                                                          (int)registry.size());
+       ESP_LOGI("AppDefs", "Menu from manifest: %d entries (%d compiled-in)",
+                (int)merged.size(), (int)APP_COUNT);
+       for (const auto& m : merged) {
+           if (m.hidden) continue;
+           if (m.appIndex < 0) {
+               // Ferried wasm app (T-183): register a blob leaf launched
+               // through the shared WASM_HOST slot.
+               MenuManager::instance().registerBlobApp(
+                   m.category, m.label, m.blobPath, m.abi);
+               continue;
+           }
+           addAppToMenu(appDefs[m.appIndex].name, m.category.c_str(), m.appIndex);
+       }
+       return;
+   }
+
+   // Fallback: no/unreadable manifest => compiled-in order (today's
+   // behavior, nested categoryPaths and all).
+   ESP_LOGI("AppDefs", "No loadout manifest; menu uses compiled-in order");
    for (int i=0; i<(int)APP_COUNT; i++){
        ESP_LOGI("AppDefs","i=%d name=%s path=%s beginFunc? %s",
                 i, appDefs[i].name, appDefs[i].categoryPath,

@@ -13,6 +13,8 @@
 #include "HAL.h"
 #include "AppDefs.h"
 #include "ButtonManager.h"
+#include "CaptionWrap.h"
+#include "LiveLinkProtocol.h"
 
 class WebPortalApp {
 public:
@@ -23,6 +25,7 @@ public:
     void end();
 
     static void onButtonBack(const ButtonEvent& event);
+    static void onButtonUp(const ButtonEvent& event);   // caption font toggle
 
 private:
     static WebPortalApp* instance;
@@ -49,6 +52,55 @@ private:
     volatile size_t uploadBytesReceived = 0;
     volatile size_t uploadBytesTotal = 0;
     File uploadFile;
+
+    // --- Live caption link (/ws/live) ---
+    //
+    // The WS event callback fires on the AsyncTCP task; everything the main
+    // loop consumes is handed across through rx* fields under liveMux, and
+    // update() does the actual work (mic acquire, clock set, caption wrap)
+    // in main-loop context. Owned by the server's handler list (freed with
+    // the server in end()).
+    AsyncWebSocket* ws = nullptr;
+    portMUX_TYPE liveMux = portMUX_INITIALIZER_UNLOCKED;
+    // Async-task -> main-loop mailbox (guarded by liveMux):
+    uint32_t wsClaimedId = 0;        // single-client gate, claimed at CONNECT
+    uint32_t rxConnectId = 0;        // nonzero: a client finished the WS handshake
+    bool     rxDisconnect = false;   // the live client went away
+    bool     rxTimeNew = false;
+    uint64_t rxEpochMs = 0;
+    bool     rxPartialNew = false;
+    char     rxPartial[LiveLink::kMaxCaptionText + 1] = "";
+    static const int RX_FINAL_QUEUE = 4;
+    int      rxFinalCount = 0;       // finals must not be lost; small FIFO
+    char     rxFinals[RX_FINAL_QUEUE][LiveLink::kMaxCaptionText + 1];
+
+    // Main-loop-only session state:
+    uint32_t liveClientId = 0;       // 0 = no live session
+    bool     liveMicHeld = false;
+    uint32_t liveSentFrames = 0;
+    uint32_t liveDroppedFrames = 0;
+    uint8_t  liveFrameBuf[LiveLink::kPcmFrameBytes];   // PCM frame staging
+    uint32_t liveFrameFill = 0;
+    unsigned long liveStartMs = 0;
+
+    // OLED caption screen (main-loop only). Finals are kept as raw text and
+    // wrapped at render time, so the font-size toggle re-wraps correctly.
+    static const int CAPTION_SCROLLBACK = 4;
+    char captionFinals[CAPTION_SCROLLBACK][LiveLink::kMaxCaptionText + 1];
+    int  captionFinalCount = 0;
+    char captionPartial[LiveLink::kMaxCaptionText + 1] = "";
+    bool captionLargeFont = false;
+    unsigned long captionLastRxMs = 0;
+
+    // Live link helpers (main loop unless noted)
+    void onWsEvent(AsyncWebSocketClient* client, AwsEventType type,
+                   void* arg, uint8_t* data, size_t len);  // AsyncTCP task
+    void processLiveMailbox();
+    void startLiveSession(uint32_t clientId);
+    void stopLiveSession(const char* reason, bool notifyClient);
+    void pumpLiveAudio();
+    void applyCaption(const char* text, bool isFinal);
+    void renderCaptionScreen();
 
     // SD helpers
     void initSD();

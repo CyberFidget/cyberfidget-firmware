@@ -6,6 +6,7 @@
 #include "AppManager.h"   // So we can set appActive, appPreviously, etc.
 #include "globals.h"      // If you have global for 'millis_NOW', etc.
 #include "AppDefs.h"      // For AppIndex enum
+#include "WasmFsApp.h"    // T-183: stage a ferried wasm app before launch
 
 #include <sstream>        // For path parsing
 #include <algorithm>  // for std::min/max if needed
@@ -223,13 +224,19 @@ MenuManager::MenuManager()
 
 void MenuManager::begin()
 {
-    // If we've already built the menu, do NOT rebuild
-    if (!rootMenuItems.empty()) {
+    // If we've already built the menu, do NOT rebuild - UNLESS the manifest
+    // changed under us (a loadout sync / lapply). T-183: a ferried wasm app
+    // must appear on the menu the next time the user opens it, not only after
+    // a reboot. The dirty flag is set by applyLoadoutOps; consuming it here
+    // (menu-entry, never mid-app) keeps the rebuild off the hot path and away
+    // from live navigation state.
+    if (!rootMenuItems.empty() && !manifestDirty) {
         ESP_LOGI(TAG_MAIN, "Menu already built; not rebuilding");
         registerMenuCallbacks();
         menuActive = true;
         return;
     }
+    manifestDirty = false;
 
     // // Register the menu callbacks:
     registerMenuCallbacks();
@@ -264,8 +271,8 @@ void MenuManager::update()
 {
     if (!menuActive) return; // If an app is running, do nothing
 
-    // Update (animate) highlight, etc. 
-    animateAll();        // from your Animation.cpp
+    // Update (animate) highlight, etc.
+    tweenAll();        // from your UITween.cpp
     updateTmp();         // if needed from your code
     handleCrossSlide();  // Process the cross slide transition if needed
     drawMenu();          // Redraw the menu each frame (or only if something changed).
@@ -299,7 +306,26 @@ void MenuManager::registerApp(const std::string &path,
     // we must pass 3 arguments: (label, isCategory=false, index)
     MenuItem leaf(label, false, index);
     level->push_back(leaf);
-}   
+}
+
+void MenuManager::registerBlobApp(const std::string &path,
+                                    const std::string &label,
+                                    const std::string &blobPath,
+                                    int blobAbi)
+{
+    auto categories = parseCategoryPath(path);
+    std::vector<MenuItem> *level = &rootMenuItems;
+    for (auto &catName : categories) {
+        level = &findOrCreateCategory(*level, catName);
+    }
+    // Leaf points at the shared WASM_HOST slot; blobPath/blobLabel carry
+    // what the launch needs to stage before switching to it.
+    MenuItem leaf(label, false, APP_WASM_HOST);
+    leaf.blobPath  = blobPath;
+    leaf.blobLabel = label;
+    leaf.blobAbi   = blobAbi;
+    level->push_back(leaf);
+}
 
 // Private method: move highlight up
 void MenuManager::moveHighlightUp()
@@ -340,11 +366,11 @@ void MenuManager::updateScrollForCurrentIndex(int oldIndex)
     int bottomY = SCREEN_HEIGHT - MENU_ITEM_HEIGHT;
 
     // kill any old scroll animation
-    auto it = animationsInt.find(&scrollOffset);
-    if (it != animationsInt.end()) {
+    auto it = tweensInt.find(&scrollOffset);
+    if (it != tweensInt.end()) {
         it->second->updateToCurrentValue();
         delete it->second;
-        animationsInt.erase(it);
+        tweensInt.erase(it);
     }
 
     if (itemY < topY) {
@@ -353,8 +379,8 @@ void MenuManager::updateScrollForCurrentIndex(int oldIndex)
         int newScroll = currentIndex * MENU_ITEM_HEIGHT;
         // We'll animate scrollOffset from oldScrollOffset to newScroll
         oldScrollOffset = scrollOffset;
-        insertAnimation(
-            new Animation(
+        insertTween(
+            new UITween(
                 &scrollOffset,
                 INDENT,
                 newScroll,   // endVal
@@ -367,8 +393,8 @@ void MenuManager::updateScrollForCurrentIndex(int oldIndex)
         // e.g. new scrollOffset = currentIndex * MENU_ITEM_HEIGHT - bottomY
         int newScroll = currentIndex * MENU_ITEM_HEIGHT - bottomY;
         oldScrollOffset = scrollOffset;
-        insertAnimation(
-            new Animation(
+        insertTween(
+            new UITween(
                 &scrollOffset,
                 INDENT,
                 newScroll,
@@ -396,9 +422,9 @@ void MenuManager::animateHighlight(int oldIndex)
 
     // 4) Insert a brand-new animation from curY to newY (over 200ms, for instance)
     //    Because highlightElement’s .getY() is already curY, we only have to call
-    //    insertAnimation() with the new final Y.
-    insertAnimation(
-        new Animation(
+    //    insertTween() with the new final Y.
+    insertTween(
+        new UITween(
             &highlightElement,
             INDENT,        // or BOUNCE, etc.
             highlightElement.getX(),
@@ -414,18 +440,102 @@ void MenuManager::animateHighlight(int oldIndex)
 void finalizeHighlightAnimation(UIElement* e)
 {
     // Look up the UIElement in the map of active animations:
-    auto it = animationsUI.find(e);
-    if (it != animationsUI.end())
+    auto it = tweensUI.find(e);
+    if (it != tweensUI.end())
     {
-        Animation* oldAni = it->second;
+        UITween* oldAni = it->second;
 
         // Force it to update once to its "current" position:
         oldAni->updateToCurrentValue();
 
         // We then remove this animation from the map so it doesn’t keep running:
         delete oldAni;
-        animationsUI.erase(it);
+        tweensUI.erase(it);
     }
+}
+
+// ========== MOVE (REORDER) MODE ==========
+
+void MenuManager::enterMoveMode()
+{
+    if (moveMode) return;
+    if (crossSlideState != CROSS_SLIDE_NONE) return; // not mid-transition
+    if (!currentItemList || currentItemList->empty()) return;
+    if ((*currentItemList)[currentIndex].isCategory) return; // leaves only
+
+    moveMode = true;
+    // The Held press still gets a Released when the finger lifts — don't
+    // let it fall through to selectCurrentItem()/commitMove().
+    swallowNextSelectRelease = true;
+    moveSnapshot = *currentItemList; // restore point for cancel
+    savedHighlightShape = highlightShape;
+    highlightShape = HIGHLIGHT_PARALLELOGRAM; // visual cue: item picked up
+    ESP_LOGI(TAG_MAIN, "Move mode: picked up item %d", currentIndex);
+}
+
+void MenuManager::moveItemUp()
+{
+    if (currentIndex <= 0) return;
+    std::swap((*currentItemList)[currentIndex], (*currentItemList)[currentIndex - 1]);
+    moveHighlightUp(); // highlight follows the moved item
+}
+
+void MenuManager::moveItemDown()
+{
+    if (currentIndex >= (int)currentItemList->size() - 1) return;
+    std::swap((*currentItemList)[currentIndex], (*currentItemList)[currentIndex + 1]);
+    moveHighlightDown();
+}
+
+void MenuManager::commitMove()
+{
+    moveMode = false;
+    highlightShape = savedHighlightShape;
+    moveSnapshot.clear();
+
+    // Persist the FULL display order as one declarative arrange op so the
+    // new arrangement survives reboot.
+    std::vector<LoadoutManifest::ArrangeItem> order;
+    collectArrangeOrder(order);
+    AppManager::instance().persistMenuArrangement(order);
+    ESP_LOGI(TAG_MAIN, "Move mode: committed (%d items)", (int)order.size());
+}
+
+void MenuManager::cancelMove()
+{
+    moveMode = false;
+    highlightShape = savedHighlightShape;
+    *currentItemList = moveSnapshot; // restore pre-move order
+    moveSnapshot.clear();
+    ESP_LOGI(TAG_MAIN, "Move mode: cancelled");
+}
+
+// Recursive helper: leaves under a top-level category carry that label
+// (first path segment == the one-level flat category model); root leaves
+// carry "".
+static void collectLeaves(const std::vector<MenuItem>& items,
+                          const std::string& topCategory,
+                          std::vector<LoadoutManifest::ArrangeItem>& out)
+{
+    for (const auto& mi : items) {
+        if (mi.isCategory) {
+            collectLeaves(mi.children,
+                          topCategory.empty() ? mi.label : topCategory,
+                          out);
+        } else {
+            LoadoutManifest::ArrangeItem item;
+            item.id          = appIds[mi.appIndex];
+            item.category    = topCategory;
+            item.hasCategory = true;
+            out.push_back(item);
+        }
+    }
+}
+
+void MenuManager::collectArrangeOrder(std::vector<LoadoutManifest::ArrangeItem>& out) const
+{
+    out.clear();
+    collectLeaves(rootMenuItems, std::string(), out);
 }
 
 // Called on "Select" button
@@ -452,6 +562,11 @@ void MenuManager::selectCurrentItem()
         // Leaf => launch
         menuActive = false;
         unregisterMenuCallbacks();
+        // A ferried wasm leaf stages its file, then launches the shared
+        // WASM_HOST slot; builtins launch by their own AppIndex (T-183).
+        if (!mi.blobPath.empty()) {
+            WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str(), mi.blobAbi);
+        }
         AppManager::instance().switchToApp(mi.appIndex);
     }
 }
@@ -490,11 +605,11 @@ void MenuManager::crossSlideForward(const MenuItem &child)
     newMenuX = SCREEN_WIDTH;
 
     // 4) Animate old to -SCREEN_WIDTH, new to 0
-    insertAnimation(new Animation((int*)&oldMenuX,
+    insertTween(new UITween((int*)&oldMenuX,
                                   INDENT,
                                   -SCREEN_WIDTH,  // end
                                   crossSlideDuration)); // Set type to true
-    insertAnimation(new Animation((int*)&newMenuX,
+    insertTween(new UITween((int*)&newMenuX,
                                   INDENT,
                                   0,              // end
                                   crossSlideDuration)); // Set type to true
@@ -525,11 +640,11 @@ void MenuManager::crossSlideBackward()
     newMenuX = -SCREEN_WIDTH;
 
     // Animate old to +SCREEN_WIDTH, new to 0
-    insertAnimation(new Animation((int*)&oldMenuX,
+    insertTween(new UITween((int*)&oldMenuX,
                                   INDENT,
                                   SCREEN_WIDTH,
                                   crossSlideDuration));
-    insertAnimation(new Animation((int*)&newMenuX,
+    insertTween(new UITween((int*)&newMenuX,
                                   INDENT,
                                   0,
                                   crossSlideDuration));
@@ -661,27 +776,42 @@ void MenuManager::onButtonUpPressed(const ButtonEvent& event)
 {
     // Press
     if (event.eventType == ButtonEvent_Pressed){
-        instance().moveHighlightUp();
+        if (instance().moveMode) instance().moveItemUp();
+        else                     instance().moveHighlightUp();
     }
 }
 void MenuManager::onButtonDownPressed(const ButtonEvent& event)
 {
     // Press
     if (event.eventType == ButtonEvent_Pressed){
-        instance().moveHighlightDown();
+        if (instance().moveMode) instance().moveItemDown();
+        else                     instance().moveHighlightDown();
     }
 }
 void MenuManager::onButtonBackPressed(const ButtonEvent& event)
 {    // Press
     if (event.eventType == ButtonEvent_Pressed){
-        instance().goBack();
-    } 
+        if (instance().moveMode) instance().cancelMove();
+        else                     instance().goBack();
+    }
 }
 void MenuManager::onButtonSelectPressed(const ButtonEvent& event)
-{    
+{
+    // Long-press picks up the current leaf for reordering (T-115).
+    if (event.eventType == ButtonEvent_Held){
+        instance().enterMoveMode();
+        return;
+    }
     // Press
     if (event.eventType == ButtonEvent_Released){  //Released intentionally to avoid carrying into event
-        instance().selectCurrentItem();
+        if (instance().swallowNextSelectRelease){
+            // This release belongs to the long-press that entered move
+            // mode — not a select.
+            instance().swallowNextSelectRelease = false;
+            return;
+        }
+        if (instance().moveMode) instance().commitMove();
+        else                     instance().selectCurrentItem();
     }
 }
 
@@ -705,3 +835,29 @@ extern void menuRun() {
     ESP_LOGI(TAG_MAIN, "menuRun start");
     MenuManager::instance().update();
 }//
+// T-183/T-191: read-only serial dump of the built menu tree. One [cmd]
+// line per node with rendered label text, so a bench (or a remote human)
+// can confirm what is actually on the device menu - including ferried
+// wasm apps, which is the exact gap this work closes.
+static void dumpMenuLevel(const std::vector<MenuItem>& items, int depth) {
+    for (const auto& mi : items) {
+        if (mi.isCategory) {
+            Serial.printf("[cmd] menutree.cat depth=%d label=%s\n",
+                          depth, mi.label.c_str());
+            dumpMenuLevel(mi.children, depth + 1);
+        } else {
+            Serial.printf("[cmd] menutree.app depth=%d label=%s blob=%d path=%s\n",
+                          depth, mi.label.c_str(),
+                          mi.blobPath.empty() ? 0 : 1,
+                          mi.blobPath.empty() ? "-" : mi.blobPath.c_str());
+        }
+    }
+}
+
+void MenuManager::dumpTree() const {
+    int cats = 0, apps = 0;
+    for (const auto& mi : rootMenuItems) { mi.isCategory ? cats++ : apps++; }
+    Serial.printf("[cmd] menutree.begin roots=%d\n", (int)rootMenuItems.size());
+    dumpMenuLevel(rootMenuItems, 0);
+    Serial.printf("[cmd] menutree.end\n");
+}

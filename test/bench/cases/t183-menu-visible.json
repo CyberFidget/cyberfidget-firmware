@@ -1,0 +1,14 @@
+{
+  "name": "T-183 A3: a ferried wasm app becomes visible on the device menu",
+  "fw_min": "1.2.2",
+  "fixtures": ["breakout.wasm"],
+  "steps": [
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "ferry", "path": "/apps/breakout.wasm", "fixture": "breakout.wasm"},
+    {"do": "lapply_add", "id": "breakout-wasm", "name": "WASM Breakout", "category": "Games", "format": "wasm", "path": "/apps/breakout.wasm", "version": "1.0.0"},
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "assert_menutree", "has": "WASM Breakout"},
+    {"do": "lapply_remove", "id": "breakout-wasm"},
+    {"do": "fdelete", "path": "/apps/breakout.wasm"}
+  ]
+}

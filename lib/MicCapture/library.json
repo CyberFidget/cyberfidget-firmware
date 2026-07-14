@@ -1,0 +1,8 @@
+{
+    "name": "MicCapture",
+    "version": "1.0.0",
+    "dependencies": [
+        {"name": "HAL"},
+        {"name": "globals"}
+    ]
+}

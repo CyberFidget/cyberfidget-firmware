@@ -3,6 +3,9 @@
     "version": "1.0.0",
     "dependencies": [
         {
+            "name": "LoadoutManifest"
+        },
+        {
             "name": "sstream"
         },
         {
@@ -42,7 +45,7 @@
             "name": "globals"
         },
         {
-            "name": "Animation"
+            "name": "UITween"
         },
         {
             "name": "map"

@@ -60,12 +60,7 @@ static const unsigned long NOTE_DURATION_MS     = 2500;
 static const unsigned long MIN_VALID_EPOCH      = 1600000000UL; // clock-is-set heuristic (ClockDisplay pattern)
 static const unsigned long RECONFIG_WAIT_MS     = 250;       // startRecording waits this long for a pending re-clock
 
-// Digital gain, applied (saturating) to every sample in the capture task.
-// The ICS-43434 is quiet by design (94dB SPL = -26dBFS), so normal speech
-// lands far down the 16-bit range; x8 (+18dB) brings voice memos up to a
-// comfortable playback level. This is the tuning knob if recordings still
-// play back quiet — each +1 shift adds 6dB but eats 6dB of clip headroom.
-static const int REC_GAIN_SHIFT = 3;
+// Digital gain lives with the capture pipeline now: MicCapture::kGainShift.
 
 // Audio to discard at the start of every recording so the mechanical click
 // of the record press doesn't open the file. Time-based so it holds at
@@ -95,7 +90,7 @@ static const uint32_t REC_TAIL_TRIM_MS = 150;
 // reels, so text and wheels are separated vertically and can never
 // collide regardless of text width. The bottom-right sub-area under the
 // VU bar only ever shows short numeric text (~44px max at its lowest row).
-static const int16_t CAS_X = 14, CAS_Y = 2, CAS_W = 100, CAS_H = 36;
+static const int16_t CAS_X = 24, CAS_Y = 2, CAS_W = 80, CAS_H = 36;
 static const int16_t REEL_LEFT_X  = 44;
 static const int16_t REEL_RIGHT_X = 84;
 static const int16_t REEL_Y       = 25;  // rim r=10: reel tops at y15
@@ -278,10 +273,6 @@ void VoiceRecorderApp::begin() {
     playName[0] = '\0';
     demoMode = false;
     demoLen = 0;
-    exitRequested.store(false, std::memory_order_relaxed);
-    recordingActive.store(false, std::memory_order_relaxed);
-    reconfigRequested.store(false, std::memory_order_relaxed);
-    vuPeak.store(0, std::memory_order_relaxed);
 
     // Restore the persisted quality before the port is clocked, so the mic
     // opens at the saved rate (no reconfigure needed on a clean entry).
@@ -294,7 +285,6 @@ void VoiceRecorderApp::begin() {
         }
         applyQuality(q);
     }
-    pendingSampleRate.store(recSampleRate, std::memory_order_relaxed);
 
     setColorsOff();
 
@@ -304,64 +294,13 @@ void VoiceRecorderApp::begin() {
     buttonManager.registerCallback(button_DownIndex, onButtonDown);
     buttonManager.registerCallback(button_RightIndex, onButtonRight);
 
-    // AudioManager's metering task only holds I2S port 1 while its run flag
-    // is set; clear it and give the task (<=5ms poll) time to close the port.
-    HAL::audioManager().enableMic(false);
-    delay(15);
-
-    if (ringStorage == nullptr) {
-        ringCapacity = REC_RING_SIZE_BYTES;
-        ringStorage  = (uint8_t*)ps_malloc(ringCapacity);
-        if (ringStorage == nullptr) {
-            // No PSRAM: a 64KB internal-RAM ring still buffers 2s of audio.
-            ringCapacity = 65536;
-            ringStorage  = (uint8_t*)heap_caps_malloc(ringCapacity, MALLOC_CAP_8BIT);
-        }
-    }
-    if (ringStorage == nullptr || !ring.init(ringStorage, ringCapacity)) {
-        ESP_LOGE(TAG_VREC, "ring alloc failed (%u bytes)", (unsigned)ringCapacity);
-        faultMsg = "MEMORY ERROR";
-        state = REC_STATE_FAULT;
-        return;
-    }
-
-    // Mic input — AudioManager.cpp's pin map, at the recording sample rate.
-    micCfg = i2sIn.defaultConfig(audio_tools::RX_MODE);
-    micCfg.port_no         = 1;
-    micCfg.i2s_format      = audio_tools::I2S_STD_FORMAT;
-    micCfg.sample_rate     = recSampleRate;
-    micCfg.bits_per_sample = 16;
-    micCfg.channels        = 1;
-    micCfg.pin_ws          = 25;
-    micCfg.pin_bck         = 32;
-    micCfg.pin_data_rx     = 33;
-    micCfg.pin_data        = -1;
-    micCfg.is_master       = true;
-    micCfg.buffer_count    = 8;    // 8 x 512B DMA: ~128ms cushion at Standard,
-    micCfg.buffer_size     = 512;  // ~43ms at High — both comfortably > the 5ms poll
-    i2sOpened = i2sIn.begin(micCfg);
-    if (!i2sOpened) {
-        ESP_LOGE(TAG_VREC, "I2S port 1 open failed");
-        faultMsg = "MIC ERROR";
-        state = REC_STATE_FAULT;
-        return;
-    }
-    i2sIn.setTimeout(0);
-
-    captureTaskExited.store(false, std::memory_order_relaxed);
-    BaseType_t created = xTaskCreatePinnedToCore(
-        &VoiceRecorderApp::captureTaskThunk,
-        "recPump",
-        4096,
-        this,
-        2,              // above the prio-1 background pumps; mic reads are time-sensitive
-        &captureTaskHandle,
-        0               // core 0, same as AudioManager's micPump
-    );
-    if (created != pdPASS) {
-        captureTaskExited.store(true, std::memory_order_relaxed);
-        captureTaskHandle = nullptr;
-        faultMsg = "TASK ERROR";
+    // Take the shared mic pipeline (ring + I2S port 1 + capture task) for
+    // the whole app session. The service parks AudioManager's metering task
+    // itself; on failure it reports which stage failed in display-safe form.
+    const char* micErr = nullptr;
+    micHeld = MicCapture::instance().acquire("Voice Notes", recSampleRate, &micErr);
+    if (!micHeld) {
+        faultMsg = (micErr != nullptr) ? micErr : "MIC ERROR";
         state = REC_STATE_FAULT;
         return;
     }
@@ -389,7 +328,7 @@ void VoiceRecorderApp::update() {
     } else if (state == REC_STATE_SAVING) {
         // UI is static here; drain harder than during recording.
         if (!writeErrorSeen) drainToFile(16384);
-        if (ring.available() == 0 || writeErrorSeen) {
+        if (MicCapture::instance().ring().available() == 0 || writeErrorSeen) {
             finishSave();
         }
     } else if (state == REC_STATE_SAVED_NOTE) {
@@ -431,9 +370,10 @@ void VoiceRecorderApp::end() {
     // Defensive finalize: the normal stop path runs through SAVING in
     // update(), but a forced switchToApp() can land here mid-recording.
     if (state == REC_STATE_RECORDING || state == REC_STATE_SAVING) {
-        recordingActive.store(false, std::memory_order_release);
+        MicCapture::instance().stopStreaming();
         unsigned long t0 = millis();
-        while (ring.available() > 0 && !writeErrorSeen && (millis() - t0) < 2000) {
+        while (MicCapture::instance().ring().available() > 0 &&
+               !writeErrorSeen && (millis() - t0) < 2000) {
             drainToFile(sizeof(drainBuf));
         }
         closeRecordingFile();
@@ -444,17 +384,9 @@ void VoiceRecorderApp::end() {
     // audio works in the next app. No-op if we weren't playing.
     destroyPlaybackPipeline();
 
-    exitRequested.store(true, std::memory_order_release);
-    unsigned long t0 = millis();
-    while (!captureTaskExited.load(std::memory_order_acquire) &&
-           (millis() - t0) < 500) {
-        vTaskDelay(1);
-    }
-    captureTaskHandle = nullptr;
-
-    if (i2sOpened) {
-        i2sIn.end();   // release I2S port 1 — leave shared hardware clean on exit
-        i2sOpened = false;
+    if (micHeld) {
+        MicCapture::instance().release();  // stop the task, close I2S port 1
+        micHeld = false;
     }
 
     buttonManager.unregisterCallback(button_EnterIndex);
@@ -463,10 +395,6 @@ void VoiceRecorderApp::end() {
     buttonManager.unregisterCallback(button_DownIndex);
     buttonManager.unregisterCallback(button_RightIndex);
 
-    if (ringStorage != nullptr) {
-        free(ringStorage);
-        ringStorage = nullptr;
-    }
     if (demoBuf != nullptr) {
         free(demoBuf);    // volatile by design; nothing to persist
         demoBuf = nullptr;
@@ -636,11 +564,9 @@ void VoiceRecorderApp::toggleQuality() {
         prefs.end();
     }
 
-    // Hand the new rate to the capture task. It owns I2S port 1 and applies
-    // the re-clock between reads (see captureTaskLoop), so the main loop
-    // never calls i2sIn.end()/begin() concurrently with a read.
-    pendingSampleRate.store(recSampleRate, std::memory_order_relaxed);
-    reconfigRequested.store(true, std::memory_order_release);
+    // Hand the new rate to the capture task (it owns I2S port 1 and applies
+    // the re-clock between reads — see MicCapture::captureTaskLoop).
+    MicCapture::instance().requestSampleRate(recSampleRate);
 }
 
 // =========================================================================
@@ -709,13 +635,11 @@ void VoiceRecorderApp::startRecording() {
     // matches the AudioInfo we're about to write into the header — otherwise
     // the file would declare the new rate but carry samples at the old one.
     unsigned long reconfigT0 = millis();
-    while (reconfigRequested.load(std::memory_order_acquire) &&
+    while (MicCapture::instance().reconfigPending() &&
            (millis() - reconfigT0) < RECONFIG_WAIT_MS) {
         delay(2);
     }
 
-    ring.reset();
-    ring.clearDropped();
     writeErrorSeen = false;
 
     uint32_t startCounter = 1;
@@ -762,18 +686,16 @@ void VoiceRecorderApp::startRecording() {
 
     tailTrimBytes = 0;
     finalDataBytes = 0;
-    // Must be set before recordingActive: the task only reads it after
-    // acquiring the recording flag. recByteRate is an exact multiple of 1000.
-    skipBytesRemaining.store((recByteRate / 1000) * REC_START_SKIP_MS,
-                             std::memory_order_relaxed);
-    recordingActive.store(true, std::memory_order_release);
+    // Resets the ring and opens the gate; the press-click skip is time-based
+    // (recByteRate is an exact multiple of 1000, so this never truncates).
+    MicCapture::instance().startStreaming((recByteRate / 1000) * REC_START_SKIP_MS);
     state = REC_STATE_RECORDING;
     ESP_LOGI(TAG_VREC, "recording -> %s @ %u Hz (q=%u)", recPath,
              (unsigned)recSampleRate, (unsigned)recQuality);
 }
 
 void VoiceRecorderApp::requestStop(VoiceRecStopReason reason, bool trimPressClick) {
-    recordingActive.store(false, std::memory_order_release);
+    MicCapture::instance().stopStreaming();
     stopReason = reason;
     tailTrimBytes = trimPressClick ? (recByteRate / 1000) * REC_TAIL_TRIM_MS : 0;
     armedHoldStop = false;
@@ -788,7 +710,7 @@ uint32_t VoiceRecorderApp::drainToFile(uint32_t maxBytes) {
     while (total < maxBytes) {
         uint32_t want = maxBytes - total;
         if (want > sizeof(drainBuf)) want = sizeof(drainBuf);
-        uint32_t chunk = ring.pop(drainBuf, want);
+        uint32_t chunk = MicCapture::instance().ring().pop(drainBuf, want);
         if (chunk == 0) break;
         size_t written = pEncOut->write(drainBuf, chunk);
         bytesWritten += written;
@@ -825,7 +747,7 @@ bool VoiceRecorderApp::closeRecordingFile() {
 }
 
 void VoiceRecorderApp::finishSave() {
-    savedDroppedBytes = ring.droppedBytes();
+    savedDroppedBytes = MicCapture::instance().ring().droppedBytes();
     savedCounter = recCounter;
 
     bool wavOk = closeRecordingFile();
@@ -1288,22 +1210,18 @@ void VoiceRecorderApp::exitDemo() {
 
 void VoiceRecorderApp::startDemoRecording() {
     if (demoBuf == nullptr || demoCapacity == 0) return;
-    ring.reset();
-    ring.clearDropped();
     demoLen = 0;
     demoSampleRate = recSampleRate;   // capture at the currently-clocked rate
     demoByteRate = recByteRate;
     recStartMs = millis_NOW;
-    skipBytesRemaining.store((recByteRate / 1000) * REC_START_SKIP_MS,
-                             std::memory_order_relaxed);
-    recordingActive.store(true, std::memory_order_release);
+    MicCapture::instance().startStreaming((recByteRate / 1000) * REC_START_SKIP_MS);
     state = REC_STATE_DEMO_RECORDING;
     ESP_LOGI(TAG_VREC, "demo recording @ %u Hz (cap %u B)",
              (unsigned)recSampleRate, (unsigned)demoCapacity);
 }
 
 void VoiceRecorderApp::stopDemoRecording() {
-    recordingActive.store(false, std::memory_order_release);
+    MicCapture::instance().stopStreaming();
     drainDemo();                 // sweep the ring tail into the buffer
     state = REC_STATE_DEMO_HOME;
 }
@@ -1314,7 +1232,7 @@ void VoiceRecorderApp::drainDemo() {
     while (demoLen < demoCapacity) {
         uint32_t room = demoCapacity - demoLen;
         uint32_t want = (room < sizeof(drainBuf)) ? room : sizeof(drainBuf);
-        uint32_t got = ring.pop(drainBuf, want);
+        uint32_t got = MicCapture::instance().ring().pop(drainBuf, want);
         if (got == 0) break;
         memcpy(demoBuf + demoLen, drainBuf, got);
         demoLen += got;
@@ -1343,88 +1261,6 @@ void VoiceRecorderApp::startDemoPlayback() {
 uint32_t VoiceRecorderApp::demoLimitSeconds() const {
     uint32_t br = (demoByteRate > 0) ? demoByteRate : recByteRate;
     return (br > 0) ? (demoCapacity / br) : 0;
-}
-
-// =========================================================================
-// Capture task (core 0) — reads I2S, publishes VU peak, feeds the ring
-// =========================================================================
-void VoiceRecorderApp::captureTaskThunk(void* arg) {
-    static_cast<VoiceRecorderApp*>(arg)->captureTaskLoop();
-}
-
-void VoiceRecorderApp::captureTaskLoop() {
-    const TickType_t idleDelay = pdMS_TO_TICKS(5);
-    while (!exitRequested.load(std::memory_order_acquire)) {
-        // Quality re-clock — only this task ever calls i2sIn.end()/begin()
-        // during a session, so re-opening the port here can't race a read.
-        // Guarded on !recordingActive: a toggle is HOME-only, but check
-        // anyway so a live capture is never re-clocked underneath itself.
-        if (reconfigRequested.load(std::memory_order_acquire) &&
-            !recordingActive.load(std::memory_order_acquire)) {
-            uint32_t newRate = pendingSampleRate.load(std::memory_order_relaxed);
-            if (newRate != micCfg.sample_rate || !i2sOpened) {
-                i2sIn.end();
-                micCfg.sample_rate = newRate;
-                i2sOpened = i2sIn.begin(micCfg);
-                if (i2sOpened) {
-                    i2sIn.setTimeout(0);
-                } else {
-                    ESP_LOGE(TAG_VREC, "I2S re-clock to %u Hz failed",
-                             (unsigned)newRate);
-                }
-            }
-            reconfigRequested.store(false, std::memory_order_release);
-            vuPeak.store(0, std::memory_order_relaxed);  // drop the stale peak
-            continue;
-        }
-        if (!i2sOpened) {                 // re-clock failed; idle until retried
-            vTaskDelay(idleDelay);
-            continue;
-        }
-
-        int avail = i2sIn.available();
-        if (avail > 0) {
-            size_t toRead = (size_t)avail;
-            if (toRead > sizeof(captureBuf)) toRead = sizeof(captureBuf);
-            int n = i2sIn.readBytes(captureBuf, toRead);
-            if (n > 0) {
-                // Apply digital gain in place (saturating) and track the
-                // post-gain peak so the VU's good-level band reflects what
-                // actually lands in the file.
-                int16_t* samples = (int16_t*)captureBuf;
-                int count = n / 2;
-                uint16_t peak = vuPeak.load(std::memory_order_relaxed);
-                for (int i = 0; i < count; ++i) {
-                    int32_t v = (int32_t)samples[i] << REC_GAIN_SHIFT;
-                    if (v > 32767) v = 32767;
-                    else if (v < -32768) v = -32768;
-                    samples[i] = (int16_t)v;
-                    uint16_t mag = (uint16_t)(v < 0 ? -v : v);
-                    if (mag > peak) peak = mag;
-                }
-                vuPeak.store(peak, std::memory_order_relaxed);
-                if (recordingActive.load(std::memory_order_acquire)) {
-                    // Discard the first 100ms so the record-press click
-                    // doesn't open the file.
-                    uint32_t skip = skipBytesRemaining.load(std::memory_order_relaxed);
-                    uint32_t offset = 0;
-                    if (skip > 0) {
-                        offset = (skip < (uint32_t)n) ? skip : (uint32_t)n;
-                        skipBytesRemaining.store(skip - offset,
-                                                 std::memory_order_relaxed);
-                    }
-                    if ((uint32_t)n > offset) {
-                        ring.push(captureBuf + offset,
-                                  (uint32_t)n - offset);  // drop-newest inside
-                    }
-                }
-            }
-        } else {
-            vTaskDelay(idleDelay);
-        }
-    }
-    captureTaskExited.store(true, std::memory_order_release);
-    vTaskDelete(nullptr);
 }
 
 // =========================================================================
@@ -1552,7 +1388,7 @@ void VoiceRecorderApp::drawHomeOrRecording() {
     // nothing (it's the default).
     if (recQuality) {
         display.setTextAlignment(TEXT_ALIGN_RIGHT);
-        display.drawString(111, 26, "HQ");
+        display.drawString(72, 20, "HQ");
     }
 
     // Elapsed timer, large type, bottom-left
@@ -1569,7 +1405,7 @@ void VoiceRecorderApp::drawHomeOrRecording() {
 
     // VU bar; good-level band tick placement gets a manual tuning pass
     // against real speech before this is considered final
-    uint16_t peakNow = vuPeak.exchange(0, std::memory_order_relaxed);
+    uint16_t peakNow = MicCapture::instance().vuPeakExchange();
     uint16_t decayed = (uiVuLevel > 8) ? uiVuLevel - uiVuLevel / 8 : 0;
     uiVuLevel = (peakNow > decayed) ? peakNow : decayed;
     display.drawRect(VU_X, VU_Y, VU_W, VU_H);
@@ -1843,7 +1679,7 @@ void VoiceRecorderApp::drawDemo() {
 
     if (recQuality) {   // High-quality tag, same spot as HOME
         display.setTextAlignment(TEXT_ALIGN_RIGHT);
-        display.drawString(111, 26, "HQ");
+        display.drawString(72, 20, "HQ");
         display.setTextAlignment(TEXT_ALIGN_CENTER);
     }
 

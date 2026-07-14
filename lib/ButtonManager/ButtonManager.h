@@ -94,7 +94,19 @@ public:
      */
     void registerCallback(int buttonIndex, ButtonCallback callback);
     void unregisterCallback(int buttonIndex);
-    
+
+#ifdef CF_TEST_CLI
+    /**
+     * @brief Test-only (CF_TEST_CLI): inject a button event as if the
+     * physical pin had changed. Feeds the same event queue / callback path
+     * physical presses use, so it works for native and wasm apps alike.
+     * Pressed also latches the pressed state (isPressed() agrees, and Held
+     * fires naturally if not released) until a Released injection.
+     * Only ButtonEvent_Pressed / ButtonEvent_Released are supported.
+     */
+    void injectEvent(int buttonIndex, ButtonEventType type);
+#endif
+
     // Getter methods
     int getNumButtons() const { return _numButtons; }
     bool hasCallback(int buttonIndex) const;
@@ -123,6 +135,9 @@ private:
     unsigned long* _lastChangeTime; ///< Last time (ms) the reading changed
     unsigned long* _pressStartTime; ///< When the button was pressed (for press duration)
     bool* _heldReported;         ///< Whether we've already sent a "Held" event for this press
+#ifdef CF_TEST_CLI
+    bool* _injectedHold;         ///< Test-only: pin scan treats button as pressed while set
+#endif
 
     // --- Event queue ---
     static const int MAX_EVENTS = 16;

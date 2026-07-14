@@ -30,3 +30,5 @@
 #include "Cronchybird.h"
 #include "Snake.h"
 #include "VoiceRecorderApp.h"
+#include "Starburst.h"
+#include "WasmFsApp.h"

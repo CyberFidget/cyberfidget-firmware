@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
 // Copyright (c) 2023-2026 Dismo Industries LLC
 
-#ifndef ANIMATION_H
-#define ANIMATION_H
+#ifndef UITWEEN_H
+#define UITWEEN_H
 
 #include <Arduino.h>
 #include <map>
@@ -11,14 +11,14 @@
 #include "UIElement.h"
 
 /**
- * @brief The supported animation types:
+ * @brief The supported easing types:
  *   - LINEAR: Simple linear interpolation
  *   - INDENT: Exponential ease-out (like a “mouse wheel” feel)
  *   - INDENTINV: The inverse of INDENT
  *   - BOUNCE: Bouncy easing curve
  *   - PARALLELOGRAM: A new "cyberpunk skew" animation using an “easeInOutBack” style
  */
-enum AnimationType {
+enum UIEaseType {
     LINEAR,
     INDENT,
     INDENTINV,
@@ -26,18 +26,18 @@ enum AnimationType {
     PARALLELOGRAM
 };
 
-class Animation {
+class UITween {
 public:
     /**
      * @brief Constructor for animating a UIElement’s position only (X,Y).
-     * 
+     *
      * @param targetUI The UIElement to animate
      * @param aniType  Which easing function (LINEAR, INDENT, etc.)
      * @param endX,endY  Target position (px)
      * @param totalTime   Duration in ms
      */
-    Animation(UIElement* targetUI,
-              AnimationType aniType,
+    UITween(UIElement* targetUI,
+              UIEaseType aniType,
               int endX,
               int endY,
               int totalTime);
@@ -45,8 +45,8 @@ public:
     /**
      * @brief Constructor for animating a UIElement’s position + size (X,Y,W,H).
      */
-    Animation(UIElement* targetUI,
-              AnimationType aniType,
+    UITween(UIElement* targetUI,
+              UIEaseType aniType,
               int endX,
               int endY,
               int endWidth,
@@ -56,23 +56,23 @@ public:
     /**
      * @brief Constructor for animating a single int* (e.g. brightness).
      */
-    Animation(int* targetVal,
-              AnimationType aniType,
+    UITween(int* targetVal,
+              UIEaseType aniType,
               int endVal,
               int totalTime);
 
     /**
      * @brief Overloaded versions that also include a delayTime before the animation starts.
      */
-    Animation(UIElement* targetUI,
-              AnimationType aniType,
+    UITween(UIElement* targetUI,
+              UIEaseType aniType,
               int endX,
               int endY,
               int totalTime,
               int delayTime);
 
-    Animation(UIElement* targetUI,
-              AnimationType aniType,
+    UITween(UIElement* targetUI,
+              UIEaseType aniType,
               int endX,
               int endY,
               int endWidth,
@@ -80,8 +80,8 @@ public:
               int totalTime,
               int delayTime);
 
-    Animation(int* targetVal,
-              AnimationType aniType,
+    UITween(int* targetVal,
+              UIEaseType aniType,
               int endVal,
               int totalTime,
               int delayTime);
@@ -97,8 +97,8 @@ public:
      * @param totalTime  Duration
      * @param delayTime  Optional delay before animation
      */
-    Animation(UIElement* targetUI,
-              AnimationType aniType,
+    UITween(UIElement* targetUI,
+              UIEaseType aniType,
               int endX,
               int endY,
               int endWidth,
@@ -164,7 +164,7 @@ private:
     void animateBounce();
 
     /**
-     * @brief Our new “PARALLELOGRAM” style, 
+     * @brief Our new “PARALLELOGRAM” style,
      *        which uses a variant of “easeInOutBack” to animate X/Y/Width/Height + Skew.
      */
     void animateParallelogram();
@@ -191,7 +191,7 @@ private:
     bool  useSkew   = false; // true if this animation includes skew
 
     // Easing type
-    AnimationType aniType;
+    UIEaseType aniType;
 
     // Timing
     int  prevTime;
@@ -206,16 +206,16 @@ private:
     bool isAnimating = false;
 };
 
-// Global data structures to store active animations:
-extern std::map<UIElement*, Animation*> animationsUI; 
-extern std::map<int*, Animation*>       animationsInt; 
-extern std::list<UIElement*>           tmpAnimationUI; 
+// Global data structures to store active tweens:
+extern std::map<UIElement*, UITween*> tweensUI;
+extern std::map<int*, UITween*>       tweensInt;
+extern std::list<UIElement*>          tmpTweenUI;
 
 /**
- * @brief Insert a new Animation into the system. 
- *        If there's an existing animation for the same target object, it’s replaced.
+ * @brief Insert a new UITween into the system.
+ *        If there's an existing tween for the same target object, it’s replaced.
  */
-void insertAnimation(Animation* animation);
+void insertTween(UITween* animation);
 
 /**
  * @brief Check whether an int* is currently being animated (i.e., not found => finished).
@@ -234,13 +234,13 @@ bool isFinished(UIElement* targetUI);
 void insertTmpAnimationPointer(UIElement* tmpUI);
 
 /**
- * @brief Called repeatedly (e.g. every frame or every ~10ms) to update all animations.
+ * @brief Called repeatedly (e.g. every frame or every ~10ms) to update all tweens.
  */
-void animateAll();
+void tweenAll();
 
 /**
- * @brief Cleans up items in tmpAnimationUI that have finished animating
+ * @brief Cleans up items in tmpTweenUI that have finished animating
  */
 void updateTmp();
 
-#endif // ANIMATION_H
+#endif // UITWEEN_H

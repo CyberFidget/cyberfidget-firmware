@@ -1,0 +1,6 @@
+{
+    "name": "LoadoutManifest",
+    "version": "1.0.0",
+    "description": "Loadout manifest: data-driven app registry (pure core) + LittleFS store",
+    "dependencies": []
+}

@@ -3,7 +3,9 @@
 
 #include "WebPortalApp.h"
 #include "portal_page.h"
+#include "companion_fallback_page.h"
 #include "MenuManager.h"
+#include "MicCapture.h"  // shared mic pipeline for the live caption stream
 #include "globals.h"
 #include "RecNaming.h"   // shared index.csv row parser (lib/VoiceRecorderApp)
 
@@ -11,7 +13,11 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <esp_bt.h>
-#include <sys/time.h>    // settimeofday for POST /api/time
+#include <esp_heap_caps.h>  // internal-heap health in /api/status
+#include <sys/time.h>    // settimeofday for POST /api/time + the time WS frame
+
+// External fonts (thingpulse OLED lib) for the caption screen's large mode
+extern const uint8_t ArialMT_Plain_16[];
 
 // ---------------------------------------------------------------------------
 // Debug logging
@@ -38,6 +44,17 @@ static const char* MEDIA_DIR      = "/media";
 static const char* PLAYLIST_DIR   = "/media/playlists";
 static const char* CACHE_PATH     = "/music.idx";
 static const char* RECORDINGS_DIR = "/recordings";
+
+// Live-caption internal-heap guards (the scarce resource: WiFi AP+STA + the
+// browser's HTTP connection pool + the mic all draw from internal RAM).
+// LIVE_HEAP_FLOOR gates starting a session at all (acquire wants ~12KB and
+// must leave WiFi/lwIP a working margin); LIVE_FRAME_HEAP_FLOOR aborts a
+// single 5KB frame enqueue when heap dips near empty mid-stream. Both refuse
+// gracefully instead of risking an OOM hard-fault — the device must stay
+// reachable. Tuned against measured hardware: AP+STA portal idles ~32KB,
+// ~13KB with a browser pool attached.
+static const size_t LIVE_HEAP_FLOOR       = 24000;
+static const size_t LIVE_FRAME_HEAP_FLOOR = 9000;
 
 // Max voice-note filename length (including ".wav") a portal rename may produce.
 // Single source of truth shared with the recorder so both sides agree (see
@@ -193,6 +210,21 @@ static String escJSON(const String& s) {
     return out;
 }
 
+// Content type for a companion file by extension. serveStatic's built-in
+// table omits .mjs and .wasm; ES-module and streaming-wasm loads fail under
+// strict MIME checking unless these are exact.
+static const char* webContentType(const String& path) {
+    if (path.endsWith(".html")) return "text/html";
+    if (path.endsWith(".mjs") || path.endsWith(".js")) return "text/javascript";
+    if (path.endsWith(".css")) return "text/css";
+    if (path.endsWith(".wasm")) return "application/wasm";
+    if (path.endsWith(".json") || path.endsWith(".webmanifest")) return "application/json";
+    if (path.endsWith(".svg")) return "image/svg+xml";
+    if (path.endsWith(".woff2")) return "font/woff2";
+    if (path.endsWith(".txt")) return "text/plain";
+    return "application/octet-stream";
+}
+
 // A browse/download/delete/mkdir/move path from the raw file browser must be an
 // absolute card path with no ".." escape. The portal trusts its own AP clients,
 // but this keeps a malformed request from walking off the card root. ("/" alone
@@ -299,13 +331,29 @@ void WebPortalApp::begin() {
     WP_LOG("begin: enter");
     instance = this;
 
-    // Register Back button
+    // Register Back button + the caption-screen font toggle
     buttonManager.registerCallback(button_SelectIndex, onButtonBack);
+    buttonManager.registerCallback(button_UpIndex, onButtonUp);
 
     // Reset upload state
     uploadInProgress = false;
     uploadBytesReceived = 0;
     uploadBytesTotal = 0;
+
+    // Reset live caption link state
+    wsClaimedId = 0;
+    rxConnectId = 0;
+    rxDisconnect = false;
+    rxTimeNew = false;
+    rxPartialNew = false;
+    rxFinalCount = 0;
+    liveClientId = 0;
+    liveMicHeld = false;
+    liveSentFrames = 0;
+    liveDroppedFrames = 0;
+    liveFrameFill = 0;
+    captionFinalCount = 0;
+    captionPartial[0] = '\0';
 
     // Init SD
     initSD();
@@ -352,17 +400,21 @@ void WebPortalApp::begin() {
 void WebPortalApp::end() {
     WP_LOG("end: enter");
 
+    // Tell a live listener the device is leaving, release the mic
+    stopLiveSession("portal closed", /*notifyClient=*/true);
+
     // Close any in-progress upload
     if (uploadFile) {
         uploadFile.close();
     }
     uploadInProgress = false;
 
-    // Stop web server
+    // Stop web server (its handler list owns and frees the WebSocket)
     if (server) {
         server->end();
         delete server;
         server = nullptr;
+        ws = nullptr;
     }
 
     // Stop DNS + mDNS
@@ -379,6 +431,7 @@ void WebPortalApp::end() {
 
     // Unregister callbacks
     buttonManager.unregisterCallback(button_SelectIndex);
+    buttonManager.unregisterCallback(button_UpIndex);
 
     WP_LOG("end: done");
 }
@@ -405,6 +458,11 @@ void WebPortalApp::update() {
     // Process DNS requests for captive portal
     dnsServer.processNextRequest();
 
+    // Live caption link: apply what the AsyncTCP task mailed over, then
+    // move captured audio toward the client.
+    processLiveMailbox();
+    pumpLiveAudio();
+
     // Render OLED
     render();
 }
@@ -416,6 +474,15 @@ void WebPortalApp::onButtonBack(const ButtonEvent& event) {
     if (event.eventType == ButtonEvent_Released) {
         WP_LOG("back pressed");
         MenuManager::instance().returnToMenu();
+    }
+}
+
+// Up toggles the caption text size while a live session shows captions —
+// legibility first, this screen is an accessibility aid.
+void WebPortalApp::onButtonUp(const ButtonEvent& event) {
+    if (event.eventType == ButtonEvent_Pressed && instance != nullptr &&
+        instance->liveClientId != 0) {
+        instance->captionLargeFont = !instance->captionLargeFont;
     }
 }
 
@@ -518,6 +585,25 @@ void WebPortalApp::setupRoutes() {
 
     // Serve voice notes for in-browser playback + download
     server->serveStatic("/recordings/", SD, "/recordings/");
+
+    // Phone companion (the SD "pack" built from portal-companion/): served
+    // by the onNotFound catch-all below, NOT serveStatic. serveStatic's
+    // content-type table doesn't know `.mjs` or `.wasm` (it served them as
+    // text/plain, which strict browsers reject for ES modules / streaming
+    // wasm) — the companion's transcription runtime is exactly those. The
+    // catch-all sets the right type per extension and a no-cache header so
+    // an updated pack isn't shadowed by a stale browser copy.
+
+    // Live caption link: one WebSocket streams mic audio out and accepts
+    // typed-JSON frames back (see LiveLinkProtocol.h for the contract).
+    // The event handler runs on the AsyncTCP task — it only fills the
+    // mailbox; update() does the real work in main-loop context.
+    ws = new AsyncWebSocket("/ws/live");
+    ws->onEvent([this](AsyncWebSocket*, AsyncWebSocketClient* client,
+                       AwsEventType type, void* arg, uint8_t* data, size_t len) {
+        onWsEvent(client, type, arg, data, len);
+    });
+    server->addHandler(ws);
 
     // API: File list (recursive JSON — for folder tree view)
     server->on("/api/files", HTTP_GET, [this](AsyncWebServerRequest* req) {
@@ -637,8 +723,44 @@ void WebPortalApp::setupRoutes() {
         handleWifiForget(req);
     });
 
-    // Captive portal catch-all: redirect everything else to our page
-    server->onNotFound([](AsyncWebServerRequest* req) {
+    // Catch-all: serves the companion from SD (with correct content-types)
+    // and is the captive-portal redirect for everything else.
+    server->onNotFound([this](AsyncWebServerRequest* req) {
+        const String& u = req->url();
+        if (u == "/web") {
+            req->redirect("/web/");
+            return;
+        }
+        if (u.startsWith("/web/")) {
+            // Map to an SD path; a directory request gets index.html.
+            String path = u;
+            if (path.endsWith("/")) path += "index.html";
+            if (wpPathSafe(path) && sdReady) {
+                File f = SD.open(path);
+                bool isFile = f && !f.isDirectory();
+                if (f) f.close();
+                if (isFile) {
+                    AsyncWebServerResponse* resp =
+                        req->beginResponse(SD, path, webContentType(path));
+                    // The shell (index.html) changes between SD-pack builds —
+                    // revalidate so an update isn't shadowed by a stale copy.
+                    // The vendor runtime (transformers.js + the multi-MB ort
+                    // wasm) is immutable and loaded through the browser HTTP
+                    // cache, so cache it hard — otherwise the big wasm
+                    // re-downloads every visit.
+                    if (path.endsWith(".html")) {
+                        resp->addHeader("Cache-Control", "no-cache");
+                    } else {
+                        resp->addHeader("Cache-Control", "public, max-age=31536000, immutable");
+                    }
+                    req->send(resp);
+                    return;
+                }
+            }
+            // Pack missing / card absent — explain how to get it.
+            req->send(200, "text/html", COMPANION_FALLBACK_HTML);
+            return;
+        }
         req->redirect("http://192.168.4.1/");
     });
 }
@@ -1045,6 +1167,17 @@ void WebPortalApp::handleStatus(AsyncWebServerRequest* req) {
     json += ",\"totalBytes\":" + String((unsigned long)totalBytes);
     json += ",\"usedBytes\":" + String((unsigned long)usedBytes);
     json += ",\"clients\":" + String(WiFi.softAPgetStationNum());
+    // Live caption link health: dropped counts make the contract's
+    // backpressure behavior observable from a test or a curious user.
+    json += ",\"live\":{\"connected\":" + String(liveClientId != 0 ? "true" : "false");
+    json += ",\"sentFrames\":" + String((unsigned long)liveSentFrames);
+    json += ",\"droppedFrames\":" + String((unsigned long)liveDroppedFrames) + "}";
+    // Internal-heap health (the scarce resource under AP+STA + a live
+    // stream): lets a soak test watch for leaks without a serial cable.
+    json += ",\"heap\":{\"free\":" +
+            String((unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    json += ",\"largest\":" +
+            String((unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) + "}";
     json += "}";
     req->send(200, "application/json", json);
 }
@@ -1455,10 +1588,405 @@ void WebPortalApp::handleWifiForget(AsyncWebServerRequest* req) {
 }
 
 // ---------------------------------------------------------------------------
+// Live caption link (/ws/live)
+// ---------------------------------------------------------------------------
+
+// AsyncTCP-task context: claim/release the single-client slot and fill the
+// mailbox; never touch SD, the display, or MicCapture from here.
+void WebPortalApp::onWsEvent(AsyncWebSocketClient* client, AwsEventType type,
+                             void* arg, uint8_t* data, size_t len) {
+    switch (type) {
+        case WS_EVT_CONNECT: {
+            bool busy;
+            portENTER_CRITICAL(&liveMux);
+            busy = (wsClaimedId != 0);
+            if (!busy) {
+                wsClaimedId = client->id();
+                rxConnectId = client->id();
+            }
+            portEXIT_CRITICAL(&liveMux);
+            if (busy) {
+                // Single client enforced: tell the second one why, then close.
+                char err[80];
+                if (LiveLink::buildError(err, sizeof(err),
+                                         "busy: another listener is connected")) {
+                    client->text(err);
+                }
+                client->close();
+                return;
+            }
+            // Don't let a saturated queue kill the connection — the audio
+            // pump checks queue depth itself and drops frames instead.
+            client->setCloseClientOnQueueFull(false);
+            break;
+        }
+
+        case WS_EVT_DISCONNECT: {
+            portENTER_CRITICAL(&liveMux);
+            if (client->id() == wsClaimedId) {
+                wsClaimedId = 0;
+                rxDisconnect = true;
+            }
+            portEXIT_CRITICAL(&liveMux);
+            break;
+        }
+
+        case WS_EVT_DATA: {
+            AwsFrameInfo* info = (AwsFrameInfo*)arg;
+            // The contract's inbound frames are small single-fragment text;
+            // anything else (binary, fragmented, oversized) is dropped.
+            if (!info->final || info->index != 0 || info->opcode != WS_TEXT) break;
+            char buf[LiveLink::kMaxCaptionText * 2 + 96];
+            if (len >= sizeof(buf)) break;
+            memcpy(buf, data, len);
+            buf[len] = '\0';
+            LiveLink::Msg msg;
+            if (!LiveLink::parseMessage(buf, msg)) break;
+
+            portENTER_CRITICAL(&liveMux);
+            if (client->id() == wsClaimedId) {
+                if (msg.type == LiveLink::MsgType::Time) {
+                    rxEpochMs = msg.epochMs;
+                    rxTimeNew = true;
+                } else if (msg.type == LiveLink::MsgType::Caption) {
+                    if (msg.isFinal) {
+                        if (rxFinalCount < RX_FINAL_QUEUE) {
+                            strncpy(rxFinals[rxFinalCount], msg.text,
+                                    LiveLink::kMaxCaptionText);
+                            rxFinals[rxFinalCount][LiveLink::kMaxCaptionText] = '\0';
+                            rxFinalCount++;
+                        }
+                        // A final supersedes the in-flight partial.
+                        rxPartial[0] = '\0';
+                        rxPartialNew = true;
+                    } else {
+                        strncpy(rxPartial, msg.text, LiveLink::kMaxCaptionText);
+                        rxPartial[LiveLink::kMaxCaptionText] = '\0';
+                        rxPartialNew = true;
+                    }
+                }
+            }
+            portEXIT_CRITICAL(&liveMux);
+            break;
+        }
+
+        default:
+            break;
+    }
+}
+
+// Main loop: drain the mailbox and act on it. Disconnect is processed
+// before connect so a quick reconnect can't be torn down by its
+// predecessor's leftover disconnect flag.
+void WebPortalApp::processLiveMailbox() {
+    uint32_t connectId;
+    bool disconnect, timeNew, partialNew;
+    uint64_t epochMs;
+    char partial[LiveLink::kMaxCaptionText + 1];
+    char finals[RX_FINAL_QUEUE][LiveLink::kMaxCaptionText + 1];
+    int finalCount;
+
+    portENTER_CRITICAL(&liveMux);
+    connectId  = rxConnectId;   rxConnectId = 0;
+    disconnect = rxDisconnect;  rxDisconnect = false;
+    timeNew    = rxTimeNew;     rxTimeNew = false;
+    epochMs    = rxEpochMs;
+    partialNew = rxPartialNew;  rxPartialNew = false;
+    memcpy(partial, rxPartial, sizeof(partial));
+    finalCount = rxFinalCount;  rxFinalCount = 0;
+    for (int i = 0; i < finalCount; ++i) {
+        memcpy(finals[i], rxFinals[i], sizeof(finals[i]));
+    }
+    portEXIT_CRITICAL(&liveMux);
+
+    if (disconnect && liveClientId != 0) {
+        WP_LOG("live: client disconnected");
+        stopLiveSession(nullptr, /*notifyClient=*/false);
+    }
+    if (connectId != 0) {
+        startLiveSession(connectId);
+    }
+    if (liveClientId != 0) {
+        if (timeNew && epochMs >= 1600000000000ULL) {
+            // Same clock-set semantics as POST /api/time (tz-adjusted
+            // local-naive epoch), piggybacked on the live link.
+            struct timeval tv;
+            tv.tv_sec  = (time_t)(epochMs / 1000ULL);
+            tv.tv_usec = (suseconds_t)((epochMs % 1000ULL) * 1000ULL);
+            settimeofday(&tv, nullptr);
+            WP_LOGF("live: clock set, epoch %lu", (unsigned long)tv.tv_sec);
+        }
+        for (int i = 0; i < finalCount; ++i) {
+            applyCaption(finals[i], true);
+        }
+        if (partialNew) {
+            applyCaption(partial, false);
+        }
+    }
+}
+
+void WebPortalApp::startLiveSession(uint32_t clientId) {
+    AsyncWebSocketClient* client = (ws != nullptr) ? ws->client(clientId) : nullptr;
+    if (client == nullptr || client->status() != WS_CONNECTED) {
+        // Connected and vanished within one tick — give back the claim.
+        portENTER_CRITICAL(&liveMux);
+        if (wsClaimedId == clientId) wsClaimedId = 0;
+        portEXIT_CRITICAL(&liveMux);
+        return;
+    }
+
+    // Internal heap is the scarce resource here: WiFi AP+STA + the browser's
+    // HTTP connection pool already burn most of it, and the mic acquire wants
+    // ~12KB more. If we let acquire run when there isn't a safe margin, the
+    // I2S/WiFi allocations can tip the system into an OOM abort (a hard
+    // reboot that kills the portal) instead of failing cleanly. So gate the
+    // whole session on a heap floor and refuse gracefully below it — the
+    // device must stay reachable no matter how tight memory gets.
+    size_t freeHeap = heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+    if (freeHeap < LIVE_HEAP_FLOOR) {
+        WP_LOGF("live: refused, low heap (%u < %u)",
+                (unsigned)freeHeap, (unsigned)LIVE_HEAP_FLOOR);
+        char buf[120];
+        if (LiveLink::buildError(buf, sizeof(buf),
+                "device is low on memory - close other browser tabs and reconnect")) {
+            client->text(buf);
+        }
+        client->close();
+        portENTER_CRITICAL(&liveMux);
+        if (wsClaimedId == clientId) wsClaimedId = 0;
+        portEXIT_CRITICAL(&liveMux);
+        return;
+    }
+
+    const char* err = nullptr;
+    // Smallest viable DMA cushion (2 x 512B = ~32ms, still >> the capture
+    // task's 5ms poll) to leave the most internal heap for WiFi + the WS
+    // frame queue.
+    if (!MicCapture::instance().acquire("Live captions",
+                                        LiveLink::kPcmSampleRate, &err, 2)) {
+        WP_LOGF("live: mic acquire failed (%s)", err ? err : "?");
+        char buf[80];
+        if (LiveLink::buildError(buf, sizeof(buf),
+                                 err != nullptr ? err : "mic unavailable")) {
+            client->text(buf);
+        }
+        client->close();
+        portENTER_CRITICAL(&liveMux);
+        if (wsClaimedId == clientId) wsClaimedId = 0;
+        portEXIT_CRITICAL(&liveMux);
+        return;
+    }
+
+    liveMicHeld = true;
+    liveClientId = clientId;
+    liveSentFrames = 0;
+    liveDroppedFrames = 0;
+    liveFrameFill = 0;
+    liveStartMs = millis_NOW;
+    captionFinalCount = 0;
+    captionPartial[0] = '\0';
+    captionLastRxMs = 0;
+
+    char hello[128];
+    if (LiveLink::buildHello(hello, sizeof(hello), getFirmwareVersionString())) {
+        client->text(hello);
+    }
+    MicCapture::instance().startStreaming(0);  // no press-click to skip here
+    WP_LOGF("live: session started (client %u)", (unsigned)clientId);
+}
+
+void WebPortalApp::stopLiveSession(const char* reason, bool notifyClient) {
+    if (liveClientId == 0) return;
+    uint32_t oldId = liveClientId;
+
+    if (notifyClient && ws != nullptr) {
+        AsyncWebSocketClient* client = ws->client(oldId);
+        if (client != nullptr && client->status() == WS_CONNECTED) {
+            char buf[80];
+            if (LiveLink::buildStop(buf, sizeof(buf),
+                                    reason != nullptr ? reason : "stopped")) {
+                client->text(buf);
+            }
+            client->close();
+        }
+    }
+
+    if (liveMicHeld) {
+        MicCapture::instance().stopStreaming();
+        MicCapture::instance().release();
+        liveMicHeld = false;
+    }
+    liveClientId = 0;
+    liveFrameFill = 0;
+
+    portENTER_CRITICAL(&liveMux);
+    if (wsClaimedId == oldId) wsClaimedId = 0;
+    portEXIT_CRITICAL(&liveMux);
+    WP_LOG("live: session stopped");
+}
+
+// Main loop: move captured PCM toward the client in fixed kPcmFrameBytes
+// frames. Backpressure per the link contract: never block, never buffer
+// unboundedly — when the client's send queue saturates and the ring is
+// half full, the OLDEST staged frame is dropped (and counted) so the
+// freshest audio survives.
+void WebPortalApp::pumpLiveAudio() {
+    if (liveClientId == 0 || !liveMicHeld || ws == nullptr) return;
+    AsyncWebSocketClient* client = ws->client(liveClientId);
+    if (client == nullptr || client->status() != WS_CONNECTED) {
+        stopLiveSession(nullptr, false);
+        return;
+    }
+
+    RecRingBuffer& ring = MicCapture::instance().ring();
+    // Real time is ~0.4 frames per 20ms tick; allow a few for catch-up
+    // after a WiFi power-save burst without monopolizing the loop.
+    int sends = 0;
+    while (sends < 4) {
+        if (liveFrameFill < LiveLink::kPcmFrameBytes) {
+            liveFrameFill += ring.pop(liveFrameBuf + liveFrameFill,
+                                      LiveLink::kPcmFrameBytes - liveFrameFill);
+            if (liveFrameFill < LiveLink::kPcmFrameBytes) break;  // partial frame
+        }
+        // Cap in-flight frames well below WS_MAX_QUEUED_MESSAGES: each
+        // queued frame is a 5KB DRAM copy inside AsyncWebSocket, and with
+        // WiFi AP+STA up the portal runs lean after the mic acquire — two
+        // in flight keeps real-time cadence with headroom.
+        if (client->queueLen() >= 2) {
+            if (ring.available() >= ring.capacity() / 2) {
+                liveFrameFill = 0;          // drop-oldest
+                liveDroppedFrames++;
+                continue;
+            }
+            break;                          // ring has headroom; just wait
+        }
+        // Heap floor before the 5KB enqueue malloc: if internal heap has
+        // fallen near empty (a new HTTP client landed, WiFi burst), DON'T
+        // hand AsyncWebSocket a 5KB allocation it might satisfy at the
+        // expense of the WiFi/lwIP stack — drop the frame and let heap
+        // recover. Keeps a busy stream from starving the radio into a
+        // hard fault; audio degrades, the device stays up.
+        if (heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)
+                < LIVE_FRAME_HEAP_FLOOR) {
+            liveFrameFill = 0;
+            liveDroppedFrames++;
+            break;
+        }
+        if (client->binary(liveFrameBuf, LiveLink::kPcmFrameBytes)) {
+            liveSentFrames++;
+        } else {
+            liveDroppedFrames++;            // enqueue refused = frame lost
+        }
+        liveFrameFill = 0;
+        sends++;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// OLED caption screen
+// ---------------------------------------------------------------------------
+
+// Width measurer for CaptionWrap — uses the display's CURRENT font, so the
+// caller must select the caption font before wrapping.
+static int wpMeasureWidth(const char* s, void* /*ctx*/) {
+    return (int)display.getStringWidth(String(s));
+}
+
+void WebPortalApp::applyCaption(const char* text, bool isFinal) {
+    captionLastRxMs = millis_NOW;
+    if (!isFinal) {
+        // Partial: replaces the in-progress line (re-wrapped every render).
+        strncpy(captionPartial, text, LiveLink::kMaxCaptionText);
+        captionPartial[LiveLink::kMaxCaptionText] = '\0';
+        return;
+    }
+    if (text[0] == '\0') {
+        captionPartial[0] = '\0';   // empty final just clears the partial
+        return;
+    }
+    // Final: commit to the scrollback (oldest falls off), clear the partial.
+    if (captionFinalCount == CAPTION_SCROLLBACK) {
+        for (int i = 1; i < CAPTION_SCROLLBACK; ++i) {
+            memcpy(captionFinals[i - 1], captionFinals[i], sizeof(captionFinals[i]));
+        }
+        captionFinalCount = CAPTION_SCROLLBACK - 1;
+    }
+    strncpy(captionFinals[captionFinalCount], text, LiveLink::kMaxCaptionText);
+    captionFinals[captionFinalCount][LiveLink::kMaxCaptionText] = '\0';
+    captionFinalCount++;
+    captionPartial[0] = '\0';
+}
+
+void WebPortalApp::renderCaptionScreen() {
+    // Header strip: a live dot + elapsed time, kept compact so the caption
+    // rows get the screen.
+    display.setColor(WHITE);
+    display.fillRect(0, 0, 128, 13);
+    display.setColor(BLACK);
+    display.setFont(ArialMT_Plain_10);
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    unsigned long upS = (millis_NOW - liveStartMs) / 1000;
+    char hdr[24];
+    snprintf(hdr, sizeof(hdr), "LIVE  %lu:%02lu", upS / 60, upS % 60);
+    display.drawString(3, 1, hdr);
+    if ((millis_NOW / 600) & 1) display.fillCircle(121, 6, 3);
+    display.setColor(WHITE);
+
+    const uint8_t* font = captionLargeFont ? ArialMT_Plain_16 : ArialMT_Plain_10;
+    const int lineH    = captionLargeFont ? 16 : 12;
+    const int topY     = 15;
+    const int maxRows  = captionLargeFont ? 3 : 4;
+    display.setFont(font);
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+
+    if (captionFinalCount == 0 && captionPartial[0] == '\0') {
+        display.setTextAlignment(TEXT_ALIGN_CENTER);
+        display.setFont(ArialMT_Plain_10);
+        display.drawString(64, 24, "Listening...");
+        display.drawString(64, 38, "Captions appear here");
+        display.display();
+        return;
+    }
+
+    // Wrap finals + partial into display rows; keep the newest rows.
+    char rows[12][CaptionWrap::kMaxLineChars + 1];
+    int rowCount = 0;
+    auto appendWrapped = [&](const char* text) {
+        char wrapped[6][CaptionWrap::kMaxLineChars + 1];
+        int n = CaptionWrap::wrap(text, 124, wpMeasureWidth, nullptr, wrapped, 6);
+        for (int i = 0; i < n; ++i) {
+            if (rowCount == 12) {
+                for (int j = 1; j < 12; ++j) memcpy(rows[j - 1], rows[j], sizeof(rows[j]));
+                rowCount = 11;
+            }
+            memcpy(rows[rowCount], wrapped[i], sizeof(rows[rowCount]));
+            rowCount++;
+        }
+    };
+    for (int i = 0; i < captionFinalCount; ++i) appendWrapped(captionFinals[i]);
+    if (captionPartial[0] != '\0') appendWrapped(captionPartial);
+
+    int first = (rowCount > maxRows) ? rowCount - maxRows : 0;
+    int y = topY;
+    for (int i = first; i < rowCount; ++i) {
+        display.drawString(2, y, rows[i]);
+        y += lineH;
+    }
+    display.display();
+}
+
+// ---------------------------------------------------------------------------
 // OLED rendering
 // ---------------------------------------------------------------------------
 void WebPortalApp::render() {
     display.clear();
+
+    // A live caption session takes over the screen — it IS the product
+    // surface while a listener is connected.
+    if (liveClientId != 0) {
+        renderCaptionScreen();
+        return;
+    }
 
     // Header bar
     display.setColor(WHITE);

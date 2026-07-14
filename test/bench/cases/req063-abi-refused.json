@@ -1,0 +1,36 @@
+{
+  "name": "REQ-063: device refuses a blob whose HAL ABI it cannot satisfy (contained), and runs one it can",
+  "fw_min": "1.2.2",
+  "fixtures": ["stopwatch.wasm"],
+  "steps": [
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "ferry", "path": "/apps/stopwatch.wasm", "fixture": "stopwatch.wasm"},
+
+    {"_comment": "PHASE 1 - a valid device blob but declaring abi=2, above what this firmware provides (abimax=1). Must be REFUSED, contained, no reboot.",
+     "do": "lapply_add", "id": "abi-future", "name": "FutureApp", "category": "Tools", "format": "wasm", "path": "/apps/stopwatch.wasm", "version": "1.0.0", "abi": "2"},
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"_comment": "the gate is at launch, not menu-build: the entry still appears on the menu",
+     "do": "assert_menutree", "has": "FutureApp"},
+    {"do": "launch", "id": "abi-future", "expect_error": "abi_unsupported"},
+    {"do": "wait", "ms": 1200},
+    {"do": "screencap", "save": "abi-refused-screen", "review": "human"},
+    {"_comment": "contained: no frames ran, wasmstat reports the refusal reason",
+     "do": "assert_wasmstat", "error": "abi_unsupported"},
+
+    {"_comment": "PHASE 2 - same blob re-declared at abi=1 (<= abimax). Must LOAD and RUN.",
+     "do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "lapply_remove", "id": "abi-future"},
+    {"do": "lapply_add", "id": "abi-ok", "name": "AbiOkApp", "category": "Tools", "format": "wasm", "path": "/apps/stopwatch.wasm", "version": "1.0.0", "abi": "1"},
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "assert_menutree", "has": "AbiOkApp"},
+    {"do": "launch", "id": "abi-ok"},
+    {"do": "wait", "ms": 2000},
+    {"do": "screencap", "save": "abi-ok-running", "review": "human"},
+    {"do": "assert_wasmstat", "frames_gt": 0, "error": "none"},
+
+    {"_comment": "cleanup",
+     "do": "launch", "id": "menu"},
+    {"do": "lapply_remove", "id": "abi-ok"},
+    {"do": "fdelete", "path": "/apps/stopwatch.wasm"}
+  ]
+}

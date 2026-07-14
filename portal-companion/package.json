@@ -1,0 +1,15 @@
+{
+  "name": "cyberfidget-portal-companion",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Cyber Fidget phone companion - SD pack source (served by the device at /web/)",
+  "license": "GPL-3.0-or-later",
+  "type": "module",
+  "scripts": {
+    "build": "node build_sdpack.mjs"
+  },
+  "devDependencies": {
+    "@huggingface/transformers": "^3.4.0",
+    "esbuild": "^0.25.0"
+  }
+}

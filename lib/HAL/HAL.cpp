@@ -150,6 +150,10 @@ namespace HAL
         pinMode(POWER_PIN_AUX, OUTPUT);
         digitalWrite(POWER_PIN_AUX, HIGH);
 
+        // Sync-protocol payload chunks (up to 8 KB) arrive faster than the
+        // app-loop poll cadence drains them; the default RX buffer overflows
+        // mid-chunk. Must be set before begin() to take effect.
+        Serial.setRxBufferSize(16384);
         Serial.begin(921600);
         printFirmwareBanner();
 

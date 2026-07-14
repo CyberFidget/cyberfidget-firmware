@@ -1,23 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
 // Copyright (c) 2023-2026 Dismo Industries LLC
 
-#include "Animation.h"
+#include "UITween.h"
 #include <math.h>
 #include "globals.h"  // Logging
 
-// Keep track of active animations:
-std::map<UIElement*, Animation*> animationsUI;
-std::map<int*, Animation*>       animationsInt;
-std::list<UIElement*>            tmpAnimationUI;
+// Keep track of active tweens:
+std::map<UIElement*, UITween*> tweensUI;
+std::map<int*, UITween*>       tweensInt;
+std::list<UIElement*>          tmpTweenUI;
 
-static int durationWhole = 0; // used in animateAll() for small throttling
+static int durationWhole = 0; // used in tweenAll() for small throttling
 
 /****************************************************
  *  Constructors
  ****************************************************/
 
-Animation::Animation(UIElement* targetUI,
-                     AnimationType aniType,
+UITween::UITween(UIElement* targetUI,
+                     UIEaseType aniType,
                      int endX, int endY,
                      int totalTime)
 {
@@ -44,8 +44,8 @@ Animation::Animation(UIElement* targetUI,
     this->delayTime = 0;
 }
 
-Animation::Animation(UIElement* targetUI,
-                     AnimationType aniType,
+UITween::UITween(UIElement* targetUI,
+                     UIEaseType aniType,
                      int endX, int endY,
                      int endWidth, int endHeight,
                      int totalTime)
@@ -70,8 +70,8 @@ Animation::Animation(UIElement* targetUI,
     this->delayTime = 0;
 }
 
-Animation::Animation(int* targetVal,
-                     AnimationType aniType,
+UITween::UITween(int* targetVal,
+                     UIEaseType aniType,
                      int endVal,
                      int totalTime)
 {
@@ -87,31 +87,31 @@ Animation::Animation(int* targetVal,
 }
 
 // Versions with delayTime:
-Animation::Animation(UIElement* targetUI,
-                     AnimationType aniType,
+UITween::UITween(UIElement* targetUI,
+                     UIEaseType aniType,
                      int endX, int endY,
                      int totalTime,
                      int delayTime)
-    : Animation(targetUI, aniType, endX, endY, totalTime)
+    : UITween(targetUI, aniType, endX, endY, totalTime)
 {
     this->delayTime = delayTime;
 }
-Animation::Animation(UIElement* targetUI,
-                     AnimationType aniType,
+UITween::UITween(UIElement* targetUI,
+                     UIEaseType aniType,
                      int endX, int endY,
                      int endWidth, int endHeight,
                      int totalTime,
                      int delayTime)
-    : Animation(targetUI, aniType, endX, endY, endWidth, endHeight, totalTime)
+    : UITween(targetUI, aniType, endX, endY, endWidth, endHeight, totalTime)
 {
     this->delayTime = delayTime;
 }
-Animation::Animation(int* targetVal,
-                     AnimationType aniType,
+UITween::UITween(int* targetVal,
+                     UIEaseType aniType,
                      int endVal,
                      int totalTime,
                      int delayTime)
-    : Animation(targetVal, aniType, endVal, totalTime)
+    : UITween(targetVal, aniType, endVal, totalTime)
 {
     this->delayTime = delayTime;
 }
@@ -119,8 +119,8 @@ Animation::Animation(int* targetVal,
 /**
  * @brief NEW constructor for animating X/Y/W/H + Skew
  */
-Animation::Animation(UIElement* targetUI,
-                     AnimationType aniType,
+UITween::UITween(UIElement* targetUI,
+                     UIEaseType aniType,
                      int endX, int endY,
                      int endWidth, int endHeight,
                      float endSkew,
@@ -139,7 +139,7 @@ Animation::Animation(UIElement* targetUI,
     this->startHeight = targetUI->getHeight();
 
     // If your UIElement lacks getSkew(), remove or adapt
-    this->startSkew   = targetUI->getSkew(); 
+    this->startSkew   = targetUI->getSkew();
     this->useSkew     = true;
 
     // End
@@ -157,16 +157,16 @@ Animation::Animation(UIElement* targetUI,
  *  Initialization
  ****************************************************/
 
-void Animation::init() {
+void UITween::init() {
     createTime = millis();
     isStarted  = true;
 }
 
-bool Animation::checkTime() {
+bool UITween::checkTime() {
     return (millis() - createTime >= (unsigned long)delayTime);
 }
 
-void Animation::initAni() {
+void UITween::initAni() {
     prevTime    = millis();
     startTime   = millis();
     isAnimating = true;
@@ -176,24 +176,24 @@ void Animation::initAni() {
  *  Getters
  ****************************************************/
 
-bool Animation::getIsStarted()    { return isStarted; }
-bool Animation::getIsAnimating()  { return isAnimating; }
-bool Animation::getIsFinished()   { return isFinished; }
+bool UITween::getIsStarted()    { return isStarted; }
+bool UITween::getIsAnimating()  { return isAnimating; }
+bool UITween::getIsFinished()   { return isFinished; }
 
-UIElement* Animation::getTargetElement() { return targetUI; }
-int* Animation::getTargetVal()           { return targetVal; }
+UIElement* UITween::getTargetElement() { return targetUI; }
+int* UITween::getTargetVal()           { return targetVal; }
 
 /****************************************************
  *  Internal Helpers
  ****************************************************/
-int Animation::getCurDuration() {
+int UITween::getCurDuration() {
     int curTime = (int)millis();
     return (curTime - prevTime);
 }
-int Animation::getTotDuration() {
+int UITween::getTotDuration() {
     return totalTime;
 }
-void Animation::updateTime() {
+void UITween::updateTime() {
     prevTime = millis();
 }
 
@@ -201,7 +201,7 @@ void Animation::updateTime() {
  *  Animate Subroutines
  ****************************************************/
 
-void Animation::animateLinear()
+void UITween::animateLinear()
 {
     if (getCurDuration() > 10 && !isFinished) {
         float t = float(millis() - startTime) / float(totalTime);
@@ -252,7 +252,7 @@ void Animation::animateLinear()
     }
 }
 
-void Animation::animateIndent()
+void UITween::animateIndent()
 {
     if (getCurDuration() > 10 && !isFinished) {
         float t = float(millis() - startTime) / float(totalTime);
@@ -301,7 +301,7 @@ void Animation::animateIndent()
     }
 }
 
-void Animation::animateIndentInv()
+void UITween::animateIndentInv()
 {
     if (getCurDuration() > 10 && !isFinished) {
         float t = float(millis() - startTime) / float(totalTime);
@@ -349,7 +349,7 @@ void Animation::animateIndentInv()
     }
 }
 
-void Animation::animateBounce()
+void UITween::animateBounce()
 {
     if (getCurDuration() > 10 && !isFinished) {
         float t = float(millis() - startTime) / float(totalTime);
@@ -404,7 +404,7 @@ void Animation::animateBounce()
  * @brief Our new "PARALLELOGRAM" method, using an "easeInOutBack" style approach
  *        to animate X, Y, W, H, plus skew in a fun "cyberpunk" style.
  */
-void Animation::animateParallelogram()
+void UITween::animateParallelogram()
 {
     if (getCurDuration() > 10 && !isFinished) {
         float t = float(millis() - startTime) / float(totalTime);
@@ -438,8 +438,8 @@ void Animation::animateParallelogram()
             }
         }
         else {
-            // If type=1 => int*, we won't do a parallelogram. 
-            // Or we could do the same approach for an int. 
+            // If type=1 => int*, we won't do a parallelogram.
+            // Or we could do the same approach for an int.
             // But typically "PARALLELOGRAM" is for UIElements.
             int nxtVal = startVal + int(easingVal * (endVal - startVal));
             *targetVal = nxtVal;
@@ -467,7 +467,7 @@ void Animation::animateParallelogram()
 /****************************************************
  *  animate()  (Called each frame or ~10ms)
  ****************************************************/
-void Animation::animate()
+void UITween::animate()
 {
     switch (this->aniType) {
         case LINEAR:
@@ -493,43 +493,43 @@ void Animation::animate()
 }
 
 /****************************************************
- *  Animation Management
+ *  UITween Management
  ****************************************************/
 
 /**
- * @brief Insert a new animation. 
- *        If there's already an animation on the same target, we replace it.
+ * @brief Insert a new tween.
+ *        If there's already a tween on the same target, we replace it.
  */
-void insertAnimation(Animation* animation)
+void insertTween(UITween* animation)
 {
     static int getTargetType = 0; // 0=init, 1=UIElement, 2=int*
     // If it’s animating a UIElement
     if (animation->getTargetElement() != nullptr) {
         UIElement* tgt = animation->getTargetElement();
-        // If there’s an existing animation for that UIElement, remove it
-        auto it = animationsUI.find(tgt);
-        if (it != animationsUI.end()) {
-            delete it->second;       // free the old animation
-            animationsUI.erase(it);  // remove from map
+        // If there’s an existing tween for that UIElement, remove it
+        auto it = tweensUI.find(tgt);
+        if (it != tweensUI.end()) {
+            delete it->second;       // free the old tween
+            tweensUI.erase(it);  // remove from map
         }
         // Insert the new one
-        animationsUI[tgt] = animation;
+        tweensUI[tgt] = animation;
         getTargetType = 1; // UIElement
     }
     else {
         // Otherwise, it’s an int*
         int* valPtr = animation->getTargetVal();
-        auto it = animationsInt.find(valPtr);
-        if (it != animationsInt.end()) {
+        auto it = tweensInt.find(valPtr);
+        if (it != tweensInt.end()) {
             delete it->second;
-            animationsInt.erase(it);
+            tweensInt.erase(it);
         }
-        animationsInt[valPtr] = animation;
+        tweensInt[valPtr] = animation;
         getTargetType = 2; // int*
     }
     // ESP_LOGI(TAG_MAIN, "Inserted UIElement* animation for %p", animation->getTargetElement());
     // ESP_LOGI(TAG_MAIN, "Inserted int* for %p", animation->getTargetVal());
-    // ESP_LOGI(TAG_MAIN, "AnimationsUI size = %d", animationsUI.size());
+    // ESP_LOGI(TAG_MAIN, "tweensUI size = %d", tweensUI.size());
     // ESP_LOGI(TAG_MAIN, "getTargetType = %d", getTargetType);
 }
 
@@ -538,7 +538,7 @@ void insertAnimation(Animation* animation)
  */
 bool isFinished(int* targetInt)
 {
-    return (animationsInt.find(targetInt) == animationsInt.end());
+    return (tweensInt.find(targetInt) == tweensInt.end());
 }
 
 /**
@@ -546,30 +546,30 @@ bool isFinished(int* targetInt)
  */
 bool isFinished(UIElement* targetUI)
 {
-    return (animationsUI.find(targetUI) == animationsUI.end());
+    return (tweensUI.find(targetUI) == tweensUI.end());
 }
 
 /**
- * @brief Add a UIElement* to tmpAnimationUI so we can remove it after animations.
+ * @brief Add a UIElement* to tmpTweenUI so we can remove it after animations.
  */
 void insertTmpAnimationPointer(UIElement* tmpUI)
 {
-    tmpAnimationUI.push_back(tmpUI);
+    tmpTweenUI.push_back(tmpUI);
 }
 
 /**
- * @brief animateAll() is called in your main loop. It updates all active animations
+ * @brief tweenAll() is called in your main loop. It updates all active tweens
  *        if enough time has passed since the last update.
  */
-void animateAll()
+void tweenAll()
 {
     // For example, throttle to every 5ms
     if (millis() - durationWhole < 5) return;
     durationWhole = millis();
 
-    // Update UIElement animations
-    for (auto it = animationsUI.begin(); it != animationsUI.end(); ) {
-        Animation* ani = it->second;
+    // Update UIElement tweens
+    for (auto it = tweensUI.begin(); it != tweensUI.end(); ) {
+        UITween* ani = it->second;
         if (!ani->getIsFinished()) {
             if (!ani->getIsStarted()) {
                 ani->init();
@@ -584,13 +584,13 @@ void animateAll()
         }
         else {
             // done, remove
-            it = animationsUI.erase(it);
+            it = tweensUI.erase(it);
         }
     }
 
-    // Update int* animations
-    for (auto it = animationsInt.begin(); it != animationsInt.end(); ) {
-        Animation* ani = it->second;
+    // Update int* tweens
+    for (auto it = tweensInt.begin(); it != tweensInt.end(); ) {
+        UITween* ani = it->second;
         if (!ani->getIsFinished()) {
             if (!ani->getIsStarted()) {
                 ani->init();
@@ -605,27 +605,27 @@ void animateAll()
         }
         else {
             // done, remove
-            it = animationsInt.erase(it);
+            it = tweensInt.erase(it);
         }
     }
 }
 
 /**
- * @brief Removes ephemeral UIElements from tmpAnimationUI if they’re finished animating.
- *        Typically called each frame too, right after animateAll().
+ * @brief Removes ephemeral UIElements from tmpTweenUI if they’re finished animating.
+ *        Typically called each frame too, right after tweenAll().
  */
 void updateTmp()
 {
-    for (auto it = tmpAnimationUI.begin(); it != tmpAnimationUI.end(); ) {
+    for (auto it = tmpTweenUI.begin(); it != tmpTweenUI.end(); ) {
         if (!isFinished(*it)) {
             ++it;
         } else {
-            it = tmpAnimationUI.erase(it);
+            it = tmpTweenUI.erase(it);
         }
     }
 }
 
-void Animation::updateToCurrentValue()
+void UITween::updateToCurrentValue()
 {
     // If not even started, we must init (this sets createTime, etc.)
     if (!isStarted)
