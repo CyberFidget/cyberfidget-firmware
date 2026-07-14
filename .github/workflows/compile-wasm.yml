@@ -147,6 +147,13 @@ jobs:
         if: inputs.app_name != '' && inputs.app_header_b64 != ''
         run: |
           source emsdk/emsdk_env.sh
+          # emsdk_env only puts upstream/emscripten on PATH; the binaryen
+          # tools (wasm-dis) live in upstream/bin. Add it, with an apt
+          # fallback in case a future emsdk stops bundling binaryen.
+          export PATH="$EMSDK/upstream/bin:$PATH"
+          if ! command -v wasm-dis >/dev/null 2>&1; then
+            sudo apt-get update && sudo apt-get install -y binaryen
+          fi
           DEVICE_WAT=wasm/build/cyberfidget.device.wat
           wasm-dis wasm/build/cyberfidget.device.wasm -o "$DEVICE_WAT"
 
