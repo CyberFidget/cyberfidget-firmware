@@ -139,6 +139,7 @@ void setColorsOff() { cf_led_all_off(); }
 // No-op: the host flushes the strip every loop and cf.led_set marks it dirty
 // host-side (see shims/RGBController.h).
 void updateStrip() {}
+void markDirty() {}
 
 // Exact copy of lib/RGBController/RGBController.cpp mapToRainbow — pure math,
 // kept guest-side because reference out-params can't cross the wasm ABI.

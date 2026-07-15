@@ -20,6 +20,11 @@ void setColorsOff();
 // the strip explicitly (e.g. Starburst) compiles unmodified.
 void updateStrip();
 
+// Also a no-op in guests (host owns the dirty flag). Public in the real
+// lib/RGBController API and called directly by some core apps (e.g.
+// Spaceship), so the shim must shadow it or those apps fail to compile.
+void markDirty();
+
 // Pure math (hue 0..4095 -> RGB), implemented guest-side in cf_app_glue.cpp
 // as an exact copy of lib/RGBController/RGBController.cpp — reference
 // out-params can't cross the wasm ABI, and a host round-trip per LED per
