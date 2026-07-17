@@ -20,13 +20,14 @@ enum ButtonEventType {
 struct ButtonEvent {
     int buttonIndex;
     ButtonEventType eventType;
+    unsigned long duration;
 };
 
 typedef void (*ButtonCallback)(const ButtonEvent&);
 
 class ButtonManager {
 public:
-    static constexpr int kMaxButtons = 8;
+    static constexpr int kMaxButtons = 6;
 
     void registerCallback(int buttonIndex, ButtonCallback callback);
     void unregisterCallback(int buttonIndex);

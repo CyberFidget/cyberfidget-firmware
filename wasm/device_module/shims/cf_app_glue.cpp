@@ -116,14 +116,15 @@ void ButtonManager::dispatch(int buttonIndex, int eventType) {
     ButtonEvent ev;
     ev.buttonIndex = buttonIndex;
     ev.eventType   = (ButtonEventType)eventType;
+    ev.duration    = 0;  // The host ABI does not yet carry event duration.
     cb(ev);
 }
 
 // ---- RGBController free functions ----
 void setRandomColors() {
-    for (int i = 0; i < 4; i++) {
-        cf_led_set(i, (int32_t)random(0, 256), (int32_t)random(0, 256),
-                   (int32_t)random(0, 256), 0);
+    for (int i = 1; i < 4; i++) {  // Match firmware: skip the back LED (0).
+        cf_led_set(i, (int32_t)random(0, 10), (int32_t)random(0, 10),
+                   (int32_t)random(0, 10), 0);
     }
 }
 void setDeterminedColorsFront(uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
