@@ -194,10 +194,16 @@ const APPS = {
         },
     },
     "sphfluid.wasm": {
-        frames: 100, stepMs: 20,
-        buttons: [],
+        // The sim boots into a start menu (pick the render style); a short
+        // Enter press begins the simulation with the selected style. Drive
+        // the menu, then expect particle rendering. (To exercise the other
+        // style, add a Down press before the Enter.)
+        frames: 150, stepMs: 20,
+        buttons: [{ at: 10, idx: 5, evs: [1, 2] }],
+        backPresses: 2, // sim -> start menu -> exit
         assert: (h, c) => {
-            if (!c.display_set_pixel) throw new Error("no particles drawn");
+            if (!c.display_draw_string) throw new Error("start menu never drew");
+            if (!c.display_set_pixel) throw new Error("no particles drawn after starting the sim");
             if (c.display_show < 50) throw new Error("render loop stalled");
         },
     },
@@ -231,7 +237,12 @@ async function runApp(file, spec) {
         host.simMs += spec.stepMs;
     }
     // Back button (BottomLeft=4) release must request exit for every app.
-    ex.app_handle_button(4, 2);
+    // Apps with layered navigation may need several Backs (each one pops a
+    // level - e.g. sim -> start menu -> exit); backPresses says how many.
+    for (let i = 0; i < (spec.backPresses || 1); i++) {
+        ex.app_handle_button(4, 2);
+        ex.app_update();
+    }
     if (!host.exitRequested) throw new Error("back button did not request exit_to_menu");
     ex.app_end();
 
