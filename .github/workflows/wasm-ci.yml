@@ -5,6 +5,7 @@ on:
     paths:
       - 'lib/**'
       - 'wasm/**'
+      - 'scripts/check_hal_imports_additive/**'
       - 'scripts/generate_version.py'
       - '.github/workflows/wasm-ci.yml'
   push:
@@ -12,6 +13,23 @@ on:
   workflow_dispatch:
 
 jobs:
+  hal-imports-additive:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check HAL imports stay additive
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          git fetch origin "$BASE_REF"
+          python scripts/check_hal_imports_additive/check_hal_imports_additive.py \
+            --base-ref "origin/$BASE_REF"
+
   wasm-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
