@@ -1,0 +1,7 @@
+# Shipped device-profile apps: ModuleName|globalInstance|srcDir|output
+ReactionTimeGame|reactionTimeGame|lib/ReactionTimeGame|reaction.wasm
+BreakoutGame|breakoutGame|lib/BreakoutGame|breakout.wasm
+Starburst|starburstApp|lib/Starburst|starburst.wasm
+Spaceship|spaceshipApp|lib/Spaceship|spaceship.wasm
+SPHFluidGame|sphFluidGame|lib/SPHFluidGame|sphfluid.wasm
+Splooty|splootyApp|lib/Splooty|splooty.wasm
