@@ -24,3 +24,4 @@ wasm/font_preview/build/
 *.log
 PLAN.md
 CLAUDE.md
+__pycache__/
