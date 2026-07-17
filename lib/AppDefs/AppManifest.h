@@ -54,6 +54,7 @@ APP_ENTRY(APP_CRONCHYBIRD,           "Cronchybird",         "Games",          []
 APP_ENTRY(APP_SNAKE,                 "Snake",               "Games",          [](){ snakeApp.begin();                        }, [](){ snakeApp.end();                  }, [](){ snakeApp.update();                              })
 APP_ENTRY(APP_VOICE_RECORDER,        "Voice Notes",         "Media",          [](){ voiceRecorderApp.begin();                }, [](){ voiceRecorderApp.end();                }, [](){ voiceRecorderApp.update();                })
 APP_ENTRY(APP_STARBURST,             "Starburst",           "Screensavers",   [](){ starburstApp.begin();                    }, [](){ starburstApp.end();                    }, [](){ starburstApp.update();                    })
+APP_ENTRY(APP_TIMERS,                "Timers",              "Tools",          [](){ timersApp.begin();                       }, [](){ timersApp.end();                       }, [](){ timersApp.update();                       })
 // T-183: the shared host slot behind EVERY ferried wasm app. Empty name =
 // no menu leaf of its own (like APP_MENU); blob leaves point their AppIndex
 // here after staging the file path via WasmFsApp::setPending.

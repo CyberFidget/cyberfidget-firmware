@@ -1,0 +1,24 @@
+{
+  "name": "T-192 H1 (local proof): Sam's real Timers, device-compiled, runs on hardware",
+  "fw_min": "1.2.2",
+  "fixtures": ["timers.device.wasm"],
+  "steps": [
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "ferry", "path": "/apps/timers.device.wasm", "fixture": "timers.device.wasm"},
+    {"do": "lapply_add", "id": "timers", "name": "Timers", "category": "Tools", "format": "wasm", "path": "/apps/timers.device.wasm", "version": "1.0.0", "abi": "1"},
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "assert_menutree", "has": "Timers"},
+    {"do": "launch", "id": "timers"},
+    {"do": "wait", "ms": 2000},
+    {"do": "screencap", "save": "timers-idle", "review": "human"},
+    {"do": "assert_wasmstat", "frames_gt": 0, "error": "none"},
+    {"_comment": "drive a button (select) to exercise callbacks + confirm it keeps running",
+     "do": "btn", "index": 5, "action": "tap"},
+    {"do": "wait", "ms": 1500},
+    {"do": "screencap", "save": "timers-after-btn", "review": "human"},
+    {"do": "assert_wasmstat", "frames_gt": 30, "error": "none"},
+    {"do": "launch", "id": "menu"},
+    {"do": "lapply_remove", "id": "timers"},
+    {"do": "fdelete", "path": "/apps/timers.device.wasm"}
+  ]
+}
