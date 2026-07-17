@@ -6,6 +6,7 @@ on:
       - 'lib/**'
       - 'wasm/**'
       - 'scripts/check_hal_imports_additive/**'
+      - 'scripts/check_shim_drift/**'
       - 'scripts/generate_version.py'
       - '.github/workflows/wasm-ci.yml'
   push:
@@ -13,6 +14,22 @@ on:
   workflow_dispatch:
 
 jobs:
+  shim-drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Test and check device shim drift
+        run: |
+          python scripts/check_shim_drift/test_check_shim_drift.py
+          python scripts/check_shim_drift/check_shim_drift.py
+
   hal-imports-additive:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest

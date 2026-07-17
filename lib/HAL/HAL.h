@@ -17,32 +17,32 @@ class SPARKFUN_LIS2DH12;
 class Adafruit_NeoPixel;
 
 // Buttons
-extern const int button_TopLeft;
-extern const int button_TopRight;
-extern const int button_MiddleLeft;
-extern const int button_MiddleRight;
-extern const int button_BottomLeft;
-extern const int button_BottomRight;
+constexpr int button_TopLeft     = 36;
+constexpr int button_TopRight    = 37;
+constexpr int button_MiddleLeft  = 38;
+constexpr int button_MiddleRight = 39;
+constexpr int button_BottomLeft  = 34;
+constexpr int button_BottomRight = 15;
 
-extern const int button_TopLeftIndex;
-extern const int button_TopRightIndex;
-extern const int button_MiddleLeftIndex;
-extern const int button_MiddleRightIndex;
-extern const int button_BottomLeftIndex;
-extern const int button_BottomRightIndex;
+constexpr int button_TopLeftIndex     = 0;
+constexpr int button_TopRightIndex    = 1;
+constexpr int button_MiddleLeftIndex  = 2;
+constexpr int button_MiddleRightIndex = 3;
+constexpr int button_BottomLeftIndex  = 4;
+constexpr int button_BottomRightIndex = 5;
 
-extern const int button_LeftIndex;
-extern const int button_RightIndex;
-extern const int button_UpIndex;
-extern const int button_DownIndex;
-extern const int button_SelectIndex;
-extern const int button_EnterIndex;
+constexpr int button_LeftIndex   = button_MiddleLeftIndex;
+constexpr int button_RightIndex  = button_MiddleRightIndex;
+constexpr int button_UpIndex     = button_TopLeftIndex;
+constexpr int button_DownIndex   = button_TopRightIndex;
+constexpr int button_SelectIndex = button_BottomLeftIndex;
+constexpr int button_EnterIndex  = button_BottomRightIndex;
 
 // RGBW LEDS
-extern const uint16_t pixel_Front_Top;
-extern const uint16_t pixel_Front_Middle;
-extern const uint16_t pixel_Front_Bottom;
-extern const uint16_t pixel_Back;
+constexpr uint16_t pixel_Front_Top    = 1;
+constexpr uint16_t pixel_Front_Middle = 2;
+constexpr uint16_t pixel_Front_Bottom = 3;
+constexpr uint16_t pixel_Back         = 0;
 
 // Accelerometer readings
 extern float accelX;
