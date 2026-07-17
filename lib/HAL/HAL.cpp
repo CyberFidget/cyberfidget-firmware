@@ -33,32 +33,6 @@ constexpr int VOLT_READ_PIN  = 35;  // Analog pin for slider voltage reading
 
 // RGBW LEDs (PIN_NEOPIXEL macro defined by board variant = GPIO 0)
 constexpr int RGB_COUNT    = 4;
-const uint16_t pixel_Front_Top    = 1;
-const uint16_t pixel_Front_Middle = 2;
-const uint16_t pixel_Front_Bottom = 3;
-const uint16_t pixel_Back         = 0;
-
-// Buttons
-const int button_TopLeft = 36;
-const int button_TopRight = 37;
-const int button_MiddleLeft = 38;
-const int button_MiddleRight = 39;
-const int button_BottomLeft = 34;
-const int button_BottomRight = 15;
-
-const int button_TopLeftIndex = 0;
-const int button_TopRightIndex = 1;
-const int button_MiddleLeftIndex = 2;
-const int button_MiddleRightIndex = 3;
-const int button_BottomLeftIndex = 4;
-const int button_BottomRightIndex = 5;
-
-const int button_LeftIndex = button_MiddleLeftIndex;
-const int button_RightIndex = button_MiddleRightIndex;
-const int button_UpIndex = button_TopLeftIndex;
-const int button_DownIndex = button_TopRightIndex;
-const int button_SelectIndex = button_BottomLeftIndex;
-const int button_EnterIndex = button_BottomRightIndex;
 
 // Accelerometer
 float accelX = 0;

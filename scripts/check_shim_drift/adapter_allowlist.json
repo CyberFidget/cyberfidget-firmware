@@ -1,0 +1,50 @@
+{
+  "_spdx": "SPDX-License-Identifier: MIT",
+  "entries": [
+    {
+      "file": "wasm/device_module/shims/cf_app_glue.cpp",
+      "symbol": "HAL::setRgbLed / cf_led_set",
+      "rationale": "The glue accepts the public 8-bit LED channels while the signed 32-bit guest ABI carries them to host-owned brightness policy."
+    },
+    {
+      "file": "wasm/device_module/shims/ButtonManager.h",
+      "symbol": "dispatch",
+      "rationale": "Guest-local callback dispatch receives button events forwarded by the host lifecycle glue."
+    },
+    {
+      "file": "wasm/device_module/shims/DisplayProxy.h",
+      "symbol": "setOverlayMode",
+      "rationale": "The device host owns overlay state, so the guest setter is intentionally a no-op."
+    },
+    {
+      "file": "wasm/device_module/shims/DisplayProxy.h",
+      "symbol": "getOverlayMode",
+      "rationale": "The device host owns overlay state, so guests intentionally observe OVERLAY_OFF."
+    },
+    {
+      "file": "wasm/device_module/shims/DisplayProxy.h",
+      "symbol": "ThingPulse/SSD1306 API subset",
+      "rationale": "This hand-authored adapter mirrors only the ThingPulse methods available through the guest ABI."
+    },
+    {
+      "file": "wasm/device_module/shims/Arduino.h",
+      "symbol": "*",
+      "rationale": "The fixed-buffer Arduino compatibility surface is deliberately smaller and nonblocking in a guest module."
+    },
+    {
+      "file": "wasm/device_module/shims/esp_log.h",
+      "symbol": "ESP_LOG*",
+      "rationale": "ESP logging macros intentionally compile out to avoid pulling formatted libc into guest modules."
+    },
+    {
+      "file": "wasm/device_module/shims/cf_custom_app_device.h",
+      "symbol": "*",
+      "rationale": "This force-included compatibility aggregator supplies the device guest's intentionally reduced header set."
+    },
+    {
+      "file": "wasm/device_module/shims/cf_app_glue.cpp",
+      "symbol": "app_* lifecycle",
+      "rationale": "Guest lifecycle exports and host-state refresh are adapter glue with no firmware-header counterpart."
+    }
+  ]
+}
