@@ -25,3 +25,4 @@ wasm/font_preview/build/
 PLAN.md
 CLAUDE.md
 __pycache__/
+wasm/device_module/*.wat
