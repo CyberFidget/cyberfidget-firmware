@@ -27,7 +27,9 @@ int fib(int n) {
 }
 
 // Integer math loop: LCG + xorshift-style mixing, no memory traffic.
-// Must match nativeMix() in lib/WasmBenchApp/WasmBenchApp.cpp exactly.
+// Mirrors the native mixing loop the sync-bench compares against
+// (the original native counterpart lived on the retired wasm3 spike;
+// see the archive tag if the constants ever need re-deriving).
 __attribute__((export_name("mix"), noinline))
 int mix(int n) {
     unsigned int a = 0x12345678u;

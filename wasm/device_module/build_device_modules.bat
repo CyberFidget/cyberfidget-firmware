@@ -46,49 +46,35 @@ echo === bench.wasm (freestanding clang, no libc) ===
 "%CF_EMSDK%\upstream\bin\clang.exe" --target=wasm32 -O3 -nostdlib ^
  -Wl,--no-entry -Wl,--strip-all -o bench\bench.wasm bench\bench.c
 if errorlevel 1 exit /b 1
-python wasm2header.py bench\bench.wasm ..\..\lib\WasmBenchApp\bench_wasm.h bench_wasm
-if errorlevel 1 exit /b 1
 
 echo === reaction.wasm ===
 call em++ %APPFLAGS% -I ..\..\lib\ReactionTimeGame -DCF_WASM_APP_REACTION ^
  shims\cf_app_glue.cpp ..\..\lib\ReactionTimeGame\ReactionTimeGame.cpp -o reaction.wasm
-if errorlevel 1 exit /b 1
-python wasm2header.py reaction.wasm ..\..\lib\WasmApps\reaction_wasm.h reaction_wasm
 if errorlevel 1 exit /b 1
 
 echo === breakout.wasm ===
 call em++ %APPFLAGS% -I ..\..\lib\BreakoutGame -DCF_WASM_APP_BREAKOUT ^
  shims\cf_app_glue.cpp ..\..\lib\BreakoutGame\BreakoutGame.cpp -o breakout.wasm
 if errorlevel 1 exit /b 1
-python wasm2header.py breakout.wasm ..\..\lib\WasmApps\breakout_wasm.h breakout_wasm
-if errorlevel 1 exit /b 1
 
 echo === starburst.wasm ===
 call em++ %APPFLAGS% -I ..\..\lib\Starburst -DCF_WASM_APP_STARBURST ^
  shims\cf_app_glue.cpp ..\..\lib\Starburst\Starburst.cpp -o starburst.wasm
-if errorlevel 1 exit /b 1
-python wasm2header.py starburst.wasm ..\..\lib\WasmApps\starburst_wasm.h starburst_wasm
 if errorlevel 1 exit /b 1
 
 echo === spaceship.wasm ===
 call em++ %APPFLAGS% -I ..\..\lib\Spaceship -DCF_WASM_APP_SPACESHIP ^
  shims\cf_app_glue.cpp ..\..\lib\Spaceship\Spaceship.cpp -o spaceship.wasm
 if errorlevel 1 exit /b 1
-python wasm2header.py spaceship.wasm ..\..\lib\WasmApps\spaceship_wasm.h spaceship_wasm
-if errorlevel 1 exit /b 1
 
 echo === sphfluid.wasm ===
 call em++ %APPFLAGS% -I ..\..\lib\SPHFluidGame -DCF_WASM_APP_SPHFLUID ^
  shims\cf_app_glue.cpp ..\..\lib\SPHFluidGame\SPHFluidGame.cpp -o sphfluid.wasm
 if errorlevel 1 exit /b 1
-python wasm2header.py sphfluid.wasm ..\..\lib\WasmApps\sphfluid_wasm.h sphfluid_wasm
-if errorlevel 1 exit /b 1
 
 echo === splooty.wasm ===
 call em++ %APPFLAGS% -I ..\..\lib\Splooty -DCF_WASM_APP_SPLOOTY ^
  shims\cf_app_glue.cpp ..\..\lib\Splooty\Splooty.cpp -o splooty.wasm
-if errorlevel 1 exit /b 1
-python wasm2header.py splooty.wasm ..\..\lib\WasmApps\splooty_wasm.h splooty_wasm
 if errorlevel 1 exit /b 1
 
 echo.
