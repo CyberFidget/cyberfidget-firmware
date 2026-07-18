@@ -53,7 +53,7 @@ engine.
 | do | fields | passes when |
 |---|---|---|
 | `assert_menutree` | `has`,`not_has` | a menu row contains / omits the text |
-| `assert_wasmstat` | `frames_gt`,`error` | frame count / error field match |
+| `assert_wasmstat` | `frames_gt`,`error`,`timeout_s` | frame count / error field match (`timeout_s` widens the reply window - a busy wasm app can starve the serial task past the 0.8s default) |
 | `assert_syncinfo` | `contains[]` | syncinfo carries the substrings |
 
 `screencap` with `review:"human"` is the deliberate escape hatch for
@@ -72,3 +72,8 @@ the ticket + AC they prove (e.g. `t183-ferried-app-runs.json`).
 `launch`, `btn`, `wasmstat` need a `-DCF_TEST_CLI=1` firmware
 (`pio run -e local_test`). `menutree`, `screencap`, `ferry`, `lapply`,
 `syncinfo`, `lget` are always compiled.
+
+Symptom of running a case against a non-test build: `launch`/`btn`
+steps fail with `[err] unknown command: ...` and `assert_wasmstat`
+reports `frames=-1 error='?'` (no reply at all). Check the boot
+banner's build type before debugging the case.

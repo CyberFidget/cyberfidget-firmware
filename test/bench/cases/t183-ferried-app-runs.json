@@ -9,7 +9,7 @@
     {"do": "launch", "id": "breakout-wasm"},
     {"do": "wait", "ms": 2500},
     {"do": "screencap", "save": "breakout-running", "review": "human"},
-    {"do": "assert_wasmstat", "frames_gt": 0, "error": "none"},
+    {"do": "assert_wasmstat", "frames_gt": 0, "error": "none", "timeout_s": 3.0},
     {"do": "launch", "id": "menu"},
     {"do": "lapply_remove", "id": "breakout-wasm"},
     {"do": "fdelete", "path": "/apps/breakout.wasm"}

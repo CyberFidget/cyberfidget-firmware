@@ -251,7 +251,7 @@ def run_case(case, port, outdir):
                     ok = ok and absent; d += "not_has '%s'=%s " % (nhas, absent)
                 res.step("assert_menutree", ok, d)
             elif do == "assert_wasmstat":
-                ws = t.cmd("wasmstat", 0.8)
+                ws = t.cmd("wasmstat", float(st.get("timeout_s", 0.8)))
                 fr = re.search(r"frames=(\d+)", ws)
                 # error runs to end of line (it is the last printf field and
                 # a human string with spaces), so capture the rest and
