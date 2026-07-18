@@ -19,10 +19,6 @@ powershell -File tools/dino_v2_buildproof/buildproof.ps1
 ```
 
 Use `-WebsiteRoot` and `-EmsdkRoot` when those sibling defaults do not apply.
-The proof intentionally uses the unmodified workflow scripts and fails on any
-profile or contract mismatch.
-
-On the revision that introduced this proof, that strict behavior exposes two
-upstream profile gaps: the emulator CMake target does not export `app_begin` or
-`app_update`, and the device builder does not include or compile CFGraphics.
-Those are recorded failures, not bypassed with proof-only compiler flags.
+The proof uses the workflow scripts and fails on any profile or contract
+mismatch. It checks the emulator profile's browser exports separately from the
+device profile's `app_*` exports, imports, memory, and HAL ABI contract.

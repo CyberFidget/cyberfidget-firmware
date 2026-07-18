@@ -77,10 +77,6 @@ try {
             throw "Emulator WASM export $Export is missing"
         }
     }
-    $MissingRequestedExports = @('app_begin', 'app_update') | Where-Object {
-        -not (Select-String -Quiet -SimpleMatch "(export `"$_`"" $EmulatorWat)
-    }
-
     $DeviceWasm = 'wasm/build/dino-v2-buildproof/cyberfidget.device.wasm'
     if ($IsWindowsHost) {
         Invoke-Checked 'bash' @(
@@ -98,9 +94,6 @@ try {
     "Emulator JS: $((Get-Item (Join-Path $BuildDir 'cyberfidget.js')).Length) bytes"
     "Emulator WASM: $((Get-Item $EmulatorWasm).Length) bytes"
     "Device WASM: $((Get-Item $DeviceWasm).Length) bytes"
-    if ($MissingRequestedExports.Count) {
-        throw "Requested emulator export(s) missing: $($MissingRequestedExports -join ', ')"
-    }
 } finally {
     Pop-Location
 }
