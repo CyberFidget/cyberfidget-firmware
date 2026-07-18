@@ -1,0 +1,65 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "name": "Dino",
+    "author": "Dismo Industries",
+    "license": "GPL-3.0-or-later",
+    "kind": "character",
+    "size": {
+      "w": 16,
+      "h": 16
+    },
+    "pivot": {
+      "x": 8,
+      "y": 16
+    }
+  },
+  "frames": [
+    {
+      "name": "Stand",
+      "durationMs": 0,
+      "layers": [
+        {
+          "name": "Dino_Stand_16x16",
+          "x": 0,
+          "y": 0,
+          "visible": true,
+          "bits": "DwAfABmAGYAfgBmAGYAfABgAOAA4ADgAcAAwAAAAAAA="
+        }
+      ]
+    },
+    {
+      "name": "Duck",
+      "durationMs": 0,
+      "layers": [
+        {
+          "name": "Dino_Duck_16x8",
+          "x": 0,
+          "y": 0,
+          "visible": true,
+          "bits": "AAAAAAAAAAAAAAAAAAAAAAAAH8A/4DMwMzA/4B/AAAA="
+        }
+      ]
+    }
+  ],
+  "animations": {
+    "run": {
+      "frames": [
+        0
+      ],
+      "loop": true
+    },
+    "duck": {
+      "frames": [
+        1
+      ],
+      "loop": true
+    },
+    "jump": {
+      "frames": [
+        0
+      ],
+      "loop": true
+    }
+  }
+}

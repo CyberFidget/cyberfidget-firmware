@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "name": "Cactus",
+    "author": "Dismo Industries",
+    "license": "GPL-3.0-or-later",
+    "kind": "sprite",
+    "size": {
+      "w": 8,
+      "h": 16
+    },
+    "pivot": {
+      "x": 4,
+      "y": 16
+    }
+  },
+  "frames": [
+    {
+      "name": "Cactus",
+      "durationMs": 0,
+      "layers": [
+        {
+          "name": "Cactus_8x16",
+          "x": 0,
+          "y": 0,
+          "visible": true,
+          "bits": "GBgYfn4YGBgYGBg8PDwAAA=="
+        }
+      ]
+    }
+  ],
+  "animations": {
+    "idle": {
+      "frames": [
+        0
+      ],
+      "loop": true
+    }
+  }
+}

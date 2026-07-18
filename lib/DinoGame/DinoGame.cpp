@@ -9,6 +9,21 @@ DinoGame dinoGame(HAL::buttonManager());
 
 DinoGame* DinoGame::instance = nullptr;
 
+namespace {
+
+constexpr int kDinoX = 10;
+constexpr int kGroundY = 48;
+constexpr int kGroundTileCount = 4;
+
+const cf::gfx::Animation* const kGroundAnimations[kGroundTileCount] = {
+    cf::gfx::ground::anim_tile_a,
+    cf::gfx::ground::anim_tile_b,
+    cf::gfx::ground::anim_tile_c,
+    cf::gfx::ground::anim_tile_d,
+};
+
+}  // namespace
+
 DinoGame::DinoGame(ButtonManager& btnMgr)
   : display(HAL::displayProxy()),
     buttonManager(btnMgr),
@@ -33,6 +48,10 @@ DinoGame::DinoGame(ButtonManager& btnMgr)
         obstacles[i].passed = false;
     }
 
+    dinoActor.setSheet(&cf::gfx::dino::sheet);
+    dinoActor.play(cf::gfx::dino::anim_run, millis());
+    dinoActor.setPos(kDinoX + 8, kGroundY);
+
     initGround();
 
     DinoGame::instance = this;
@@ -54,7 +73,12 @@ void DinoGame::resetGame() {
         obstacles[i].x = -100;
         obstacles[i].isHigh = false;
         obstacles[i].passed = false;
+        obstacles[i].actor = cf::gfx::Actor();
     }
+
+    dinoActor = cf::gfx::Actor();
+    dinoActor.setSheet(&cf::gfx::dino::sheet);
+    dinoActor.setPos(kDinoX + 8, kGroundY);
 
     // Speed
     obstacleSpeed = 1.5f;
@@ -62,6 +86,7 @@ void DinoGame::resetGame() {
 
     // Next spawn
     unsigned long now = millis();
+    dinoActor.play(cf::gfx::dino::anim_run, now);
     nextSpawnTime = now + random(minGapTime, maxGapTime);
 
     // Pterodactyl unlock logic
@@ -72,6 +97,11 @@ void DinoGame::resetGame() {
     initGround();
 }
 
+void DinoGame::resetGame(uint32_t seed) {
+    randomSeed(seed);
+    resetGame();
+}
+
 //---------------------------------------------------------------------------------
 // Ground initialization
 //---------------------------------------------------------------------------------
@@ -80,7 +110,7 @@ void DinoGame::initGround() {
     float xPos = 0;
     for(int i=0; i<GROUND_SEGMENTS; i++){
         groundSegs[i].x = xPos;
-        groundSegs[i].tileIndex = random(0, NUM_GROUND_TILES);
+        groundSegs[i].tileIndex = random(0, kGroundTileCount);
         xPos += 16.0f; // each tile is 16 wide
     }
 }
@@ -110,29 +140,13 @@ void DinoGame::draw() {
     drawGround();
 
     // 2) Dino
-    int dinoX = 10;
-    int groundY = 48;  // bottom line for Dino
-    int dinoScreenY = groundY - (int)dinoY;
-
-    if(!isDucking){
-        // standing => 16×16
-        display.drawXbm(dinoX, dinoScreenY-16, 16, 16, Dino_Stand_16x16);
-    } else {
-        // ducking => 16×8
-        display.drawXbm(dinoX, dinoScreenY-8, 16, 8, Dino_Duck_16x8);
-    }
+    dinoActor.draw(display);
 
     // 3) Obstacles
     //    pterodactyl => y=24 (HIGH)
     //    cactus => y=32
     for(int i=0; i<obstacleCount; i++){
-        int ox = (int)obstacles[i].x;
-        if(obstacles[i].isHigh){
-            // must duck => higher, so you can't jump over
-            display.drawXbm(ox, 20, 16, 16, Pterodactyl_16x16);
-        } else {
-            display.drawXbm(ox, 32, 8, 16, Cactus_8x16);
-        }
+        obstacles[i].actor.draw(display);
     }
 
     // 4) Score or GameOver
@@ -222,6 +236,14 @@ void DinoGame::updateDino() {
             dinoVelocity = 0;
         }
     }
+
+    unsigned long now = millis();
+    const cf::gfx::Animation* animation = isJumping
+        ? cf::gfx::dino::anim_jump
+        : (isDucking ? cf::gfx::dino::anim_duck : cf::gfx::dino::anim_run);
+    dinoActor.play(animation, now);
+    dinoActor.update(now);
+    dinoActor.setPos(kDinoX + 8, kGroundY - (int)dinoY);
 }
 
 //---------------------------------------------------------------------------------
@@ -243,7 +265,7 @@ void DinoGame::updateGround() {
             }
             // place this segment just beyond the farRight
             groundSegs[i].x = farRight + 16;
-            groundSegs[i].tileIndex = random(0, NUM_GROUND_TILES);
+            groundSegs[i].tileIndex = random(0, kGroundTileCount);
         }
     }
 }
@@ -253,9 +275,8 @@ void DinoGame::drawGround() {
     for(int i=0; i<GROUND_SEGMENTS; i++){
         int sx = (int)groundSegs[i].x;
         int tileIdx = groundSegs[i].tileIndex;
-        // read pointer from array in PROGMEM
-        const unsigned char* tilePtr = GroundTiles[tileIdx];
-        display.drawXbm(sx, 56, 16, 8, tilePtr);
+        const cf::gfx::Sprite* tile = kGroundAnimations[tileIdx]->frames[0];
+        cf::gfx::drawSpritePivoted(display, *tile, sx + 8, 64);
     }
 }
 
@@ -271,11 +292,15 @@ void DinoGame::updateObstacles() {
         nextSpawnTime = now + random(minGapTime, maxGapTime);
     }
 
-    int dinoX = 10;
     // Move obstacles, track passing
     for(int i=0; i<obstacleCount; i++){
         obstacles[i].x -= obstacleSpeed;
-        if(!obstacles[i].passed && obstacles[i].x < dinoX){
+        const int obstacleX = (int)obstacles[i].x;
+        obstacles[i].actor.setPos(
+            obstacleX + (obstacles[i].isHigh ? 8 : 4),
+            obstacles[i].isHigh ? 36 : kGroundY);
+        obstacles[i].actor.update(now);
+        if(!obstacles[i].passed && obstacles[i].x < kDinoX){
             obstacles[i].passed = true;
             obstaclesAvoidedCount++;
             if(!pterodactylUnlocked && obstaclesAvoidedCount >= pterodactylUnlockAt){
@@ -308,6 +333,16 @@ void DinoGame::spawnObstacle() {
         }
 
         obstacles[obstacleCount++] = obs;
+        Obstacle& spawned = obstacles[obstacleCount - 1];
+        spawned.actor.setSheet(spawned.isHigh
+            ? &cf::gfx::pterodactyl::sheet
+            : &cf::gfx::cactus::sheet);
+        spawned.actor.play(spawned.isHigh
+            ? cf::gfx::pterodactyl::anim_fly
+            : cf::gfx::cactus::anim_idle, millis());
+        spawned.actor.setPos(
+            (int)spawned.x + (spawned.isHigh ? 8 : 4),
+            spawned.isHigh ? 36 : kGroundY);
     }
 }
 
@@ -317,93 +352,13 @@ void DinoGame::spawnObstacle() {
 void DinoGame::checkCollisions() {
     if(obstacleCount == 0) return;
 
-    int dinoX = 10;
-    // Dino’s top Y on screen
-    int groundY = 48;
-    int dinoScreenY = groundY - (int)dinoY;
-
-    // pick dino sprite
-    const unsigned char* dinoSprite;
-    int dinoW, dinoH, dinoTopY;
-    if(!isDucking){
-        dinoSprite = Dino_Stand_16x16;
-        dinoW=16; dinoH=16;
-        dinoTopY = dinoScreenY-16;
-    } else {
-        dinoSprite = Dino_Duck_16x8;
-        dinoW=16; dinoH=8;
-        dinoTopY = dinoScreenY-8;
-    }
-
-    // check each obstacle
     for(int i=0; i<obstacleCount; i++){
-        int ox = (int)obstacles[i].x;
-        if(obstacles[i].isHigh){
-            // pterodactyl => must duck => y=16
-            if(pixelCollides(dinoSprite, dinoW, dinoH, dinoX, dinoTopY,
-                             Pterodactyl_16x16, 16,16, ox,20))
-            {
-                gameOver=true;
-                return;
-            }
-        } else {
-            // cactus => y=32
-            if(pixelCollides(dinoSprite, dinoW, dinoH, dinoX, dinoTopY,
-                             Cactus_8x16, 8,16, ox,32))
-            {
-                gameOver=true;
-                return;
-            }
+        if(cf::gfx::pixelCollides(dinoActor, obstacles[i].actor)) {
+            gameOver=true;
+            return;
         }
     }
 }
-
-// same pixelCollides(...) as before
-bool DinoGame::pixelCollides(
-    const unsigned char* spriteA, int wA,int hA,int xA,int yA,
-    const unsigned char* spriteB, int wB,int hB,int xB,int yB)
-{
-    // bounding box check
-    int Aleft=xA, Aright=xA+wA-1, Atop=yA, Abottom=yA+hA-1;
-    int Bleft=xB, Bright=xB+wB-1, Btop=yB, Bbottom=yB+hB-1;
-
-    if(Aright < Bleft || Aleft > Bright || Abottom < Btop || Atop > Bbottom){
-        return false;
-    }
-
-    int overlapLeft   = max(Aleft, Bleft);
-    int overlapRight  = min(Aright, Bright);
-    int overlapTop    = max(Atop, Btop);
-    int overlapBottom = min(Abottom, Bbottom);
-
-    for(int py=overlapTop; py<=overlapBottom; py++){
-        for(int px=overlapLeft; px<=overlapRight; px++){
-            // sprite A local coords
-            int aCol = px - Aleft;
-            int aRow = py - Atop;
-            int bytesPerRowA=(wA+7)/8;
-            int byteIndexA=aRow*bytesPerRowA+(aCol/8);
-            int bitIndexA=7-(aCol%8);
-            unsigned char dataA = pgm_read_byte(&spriteA[byteIndexA]);
-            bool pixelA = (dataA >> bitIndexA) & 1;
-
-            // sprite B local coords
-            int bCol = px - Bleft;
-            int bRow = py - Btop;
-            int bytesPerRowB=(wB+7)/8;
-            int byteIndexB=bRow*bytesPerRowB+(bCol/8);
-            int bitIndexB=7-(bCol%8);
-            unsigned char dataB = pgm_read_byte(&spriteB[byteIndexB]);
-            bool pixelB = (dataB >> bitIndexB) & 1;
-
-            if(pixelA && pixelB){
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 
 //---------------------------------------------------------------------------------
 // Register button callbacks

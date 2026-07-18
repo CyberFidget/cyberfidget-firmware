@@ -1,0 +1,40 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "name": "Pterodactyl",
+    "author": "Dismo Industries",
+    "license": "GPL-3.0-or-later",
+    "kind": "sprite",
+    "size": {
+      "w": 16,
+      "h": 16
+    },
+    "pivot": {
+      "x": 8,
+      "y": 16
+    }
+  },
+  "frames": [
+    {
+      "name": "Fly",
+      "durationMs": 0,
+      "layers": [
+        {
+          "name": "Pterodactyl_16x16",
+          "x": 0,
+          "y": 0,
+          "visible": true,
+          "bits": "AAAIABgAPAB+AP8APMAYYAAwABgAGAAwAGAAwAAAAAA="
+        }
+      ]
+    }
+  ],
+  "animations": {
+    "fly": {
+      "frames": [
+        0
+      ],
+      "loop": true
+    }
+  }
+}

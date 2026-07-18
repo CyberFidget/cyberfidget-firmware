@@ -7,7 +7,10 @@
 #include <Arduino.h>
 #include "DisplayProxy.h"
 #include "ButtonManager.h"
-#include "DinoSprites.h"
+#include "generated/cactus.h"
+#include "generated/dino.h"
+#include "generated/ground.h"
+#include "generated/pterodactyl.h"
 
 /**
  * DinoGame with:
@@ -30,6 +33,7 @@ public:
     void draw();
 
     void resetGame();
+    void resetGame(uint32_t seed);
     void setSpeedBySlider(float sliderPercentage);
 
     static void jumpButtonCallback(const ButtonEvent &ev);
@@ -54,12 +58,14 @@ private:
     float dinoVelocity;
     bool  isJumping;
     bool  isDucking;
+    cf::gfx::Actor dinoActor;
 
     // Obstacles
     struct Obstacle {
         float x;
         bool  isHigh;   // pterodactyl (duck needed) or cactus
         bool  passed;   // track if we counted it as avoided
+        cf::gfx::Actor actor;
     };
     static const int MAX_OBSTACLES = 8;
     Obstacle obstacles[MAX_OBSTACLES];
@@ -79,7 +85,7 @@ private:
     static const int GROUND_SEGMENTS = 10; // how many 16px wide segments across 128px (plus extras)
     struct GroundSegment {
         float x;          // left position
-        int   tileIndex;  // which tile from GroundTiles[]
+        int   tileIndex;  // index into the generated ground animations
     };
     GroundSegment groundSegs[GROUND_SEGMENTS];
     float groundScrollSpeed; // typically same or smaller than obstacleSpeed
@@ -98,11 +104,6 @@ private:
     void updateObstacles();
     void spawnObstacle();
     void checkCollisions();
-
-    bool pixelCollides(
-        const unsigned char* spriteA, int wA, int hA, int xA, int yA,
-        const unsigned char* spriteB, int wB, int hB, int xB, int yB
-    );
 };
 
 // Declare that there's a global object called below somewhere for AppDefs to use

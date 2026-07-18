@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "meta": {
+    "name": "Ground",
+    "author": "Dismo Industries",
+    "license": "GPL-3.0-or-later",
+    "kind": "tile",
+    "size": {
+      "w": 16,
+      "h": 8
+    },
+    "pivot": {
+      "x": 8,
+      "y": 8
+    }
+  },
+  "frames": [
+    {
+      "name": "Tile A",
+      "durationMs": 0,
+      "layers": [
+        {
+          "name": "GroundTileA_16x8",
+          "x": 0,
+          "y": 0,
+          "visible": true,
+          "bits": "wAOAAYABwAPgB/AP+B/8Pw=="
+        }
+      ]
+    },
+    {
+      "name": "Tile B",
+      "durationMs": 0,
+      "layers": [
+        {
+          "name": "GroundTileB_16x8",
+          "x": 0,
+          "y": 0,
+          "visible": true,
+          "bits": "4AfAA8AD4AfwD/AP+B/8Pw=="
+        }
+      ]
+    },
+    {
+      "name": "Tile C",
+      "durationMs": 0,
+      "layers": [
+        {
+          "name": "GroundTileC_16x8",
+          "x": 0,
+          "y": 0,
+          "visible": true,
+          "bits": "8A/gB8ADwAPgB/AP+B/8Pw=="
+        }
+      ]
+    },
+    {
+      "name": "Tile D",
+      "durationMs": 0,
+      "layers": [
+        {
+          "name": "GroundTileD_16x8",
+          "x": 0,
+          "y": 0,
+          "visible": true,
+          "bits": "wAPAA8AD4AfgB/AP+B/8Pw=="
+        }
+      ]
+    }
+  ],
+  "animations": {
+    "tile_a": {
+      "frames": [
+        0
+      ],
+      "loop": true
+    },
+    "tile_b": {
+      "frames": [
+        1
+      ],
+      "loop": true
+    },
+    "tile_c": {
+      "frames": [
+        2
+      ],
+      "loop": true
+    },
+    "tile_d": {
+      "frames": [
+        3
+      ],
+      "loop": true
+    }
+  }
+}
