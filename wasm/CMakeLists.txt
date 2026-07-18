@@ -6,6 +6,10 @@ project(cyberfidget_wasm)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Deterministic, manually stepped DinoGame surface used only by the parity
+# proof under tools/dino_parity. Normal emulator builds leave this disabled.
+option(CF_DINO_PARITY "Enable deterministic DinoGame parity hooks" OFF)
+
 # ---- App selection ----
 # Pass -DWASM_APP=DinoGame (or Flashlight, Demo) to select which app to build.
 # Default: Demo (built-in Hello OLED test screen)
@@ -14,6 +18,13 @@ if(NOT DEFINED WASM_APP)
 endif()
 
 message(STATUS "Building WASM app: ${WASM_APP}")
+
+if(CF_DINO_PARITY)
+    if(NOT WASM_APP STREQUAL "DinoGame")
+        message(FATAL_ERROR "CF_DINO_PARITY requires -DWASM_APP=DinoGame")
+    endif()
+    add_compile_definitions(CF_DINO_PARITY)
+endif()
 
 # ---- Include paths ----
 # Shims MUST come first so they override real ESP32/Arduino headers
@@ -220,8 +231,13 @@ if(EMSCRIPTEN)
         SUFFIX ".js"
     )
 
+    set(WASM_EXPORTED_FUNCTIONS "['_main','_wasm_button_press','_wasm_button_release','_wasm_set_slider','_wasm_set_accel','_wasm_get_framebuffer','_wasm_get_framebuffer_size','_wasm_stop','_cyberfidget_version_string','_cyberfidget_version_encoded','_cyberfidget_build_type']")
+    if(CF_DINO_PARITY)
+        set(WASM_EXPORTED_FUNCTIONS "['_main','_wasm_button_press','_wasm_button_release','_wasm_set_slider','_wasm_set_accel','_wasm_get_framebuffer','_wasm_get_framebuffer_size','_wasm_stop','_wasm_dino_parity_reset','_wasm_dino_parity_step','_wasm_dino_parity_game_over','_cyberfidget_version_string','_cyberfidget_version_encoded','_cyberfidget_build_type']")
+    endif()
+
     target_link_options(cyberfidget PRIVATE
-        "SHELL:-s EXPORTED_FUNCTIONS=['_main','_wasm_button_press','_wasm_button_release','_wasm_set_slider','_wasm_set_accel','_wasm_get_framebuffer','_wasm_get_framebuffer_size','_wasm_stop','_cyberfidget_version_string','_cyberfidget_version_encoded','_cyberfidget_build_type']"
+        "SHELL:-s EXPORTED_FUNCTIONS=${WASM_EXPORTED_FUNCTIONS}"
         "SHELL:-s EXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
 
         "SHELL:-s INITIAL_MEMORY=4194304"

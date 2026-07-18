@@ -36,6 +36,11 @@ public:
     void resetGame(uint32_t seed);
     void setSpeedBySlider(float sliderPercentage);
 
+#ifdef CF_DINO_PARITY
+    // Read-only state for the deterministic migration parity harness.
+    bool parityGameOver() const { return gameOver; }
+#endif
+
     static void jumpButtonCallback(const ButtonEvent &ev);
     static void duckButtonCallback(const ButtonEvent &ev);
     static void resetButtonCallback(const ButtonEvent &ev);

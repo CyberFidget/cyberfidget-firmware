@@ -35,8 +35,24 @@ void js_serial_write(const char* str, int len) { (void)str; (void)len; }
 static uint32_t s_startMs = 0;
 static bool s_inited = false;
 
+#ifdef CF_DINO_PARITY
+// Parity builds are stepped synchronously by Node, so wall-clock time would
+// make obstacle spawning and button debounce nondeterministic.
+static uint32_t s_parityMillis = 0;
+
+extern "C" void wasm_parity_set_millis(uint32_t value) {
+    s_parityMillis = value;
+}
+
+extern "C" void wasm_parity_advance_millis(uint32_t delta) {
+    s_parityMillis += delta;
+}
+#endif
+
 uint32_t millis() {
-#ifdef __EMSCRIPTEN__
+#ifdef CF_DINO_PARITY
+    return s_parityMillis;
+#elif defined(__EMSCRIPTEN__)
     return (uint32_t)emscripten_get_now();
 #else
     return 0;

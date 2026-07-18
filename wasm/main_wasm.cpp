@@ -75,6 +75,13 @@
 extern uint8_t wasm_button_states[];
 extern int wasm_analog_values[];
 
+#ifdef CF_DINO_PARITY
+extern "C" void wasm_parity_set_millis(uint32_t value);
+extern "C" void wasm_parity_advance_millis(uint32_t delta);
+#endif
+
+static void mainLoop();
+
 // ---- Exported C functions for JS bridge ----
 extern "C" {
 
@@ -107,6 +114,27 @@ void wasm_stop() {
     emscripten_cancel_main_loop();
 #endif
 }
+
+#if defined(CF_DINO_PARITY) && defined(WASM_APP_DINOGAME)
+// Test-only migration parity surface. Each step advances the synthetic clock
+// by one 50 FPS frame and reports whether that frame caused game over.
+KEEPALIVE void wasm_dino_parity_reset(uint32_t seed) {
+    wasm_parity_set_millis(0);
+    for (int i = 0; i < 8; ++i) wasm_button_states[i] = 0;
+    dinoGame.resetGame(seed);
+}
+
+KEEPALIVE int wasm_dino_parity_step() {
+    const bool wasGameOver = dinoGame.parityGameOver();
+    wasm_parity_advance_millis(20);
+    mainLoop();
+    return (!wasGameOver && dinoGame.parityGameOver()) ? 1 : 0;
+}
+
+KEEPALIVE int wasm_dino_parity_game_over() {
+    return dinoGame.parityGameOver() ? 1 : 0;
+}
+#endif
 
 // Firmware version surface for JS callers (App Builder mismatch warning,
 // The Archives compatibility checks). Same values as the firmware HAL exposes.
@@ -175,7 +203,9 @@ int main() {
 #endif
 
 #ifdef __EMSCRIPTEN__
+#ifndef CF_DINO_PARITY
     emscripten_set_main_loop(mainLoop, 50, 1);
+#endif
 #else
     for (int i = 0; i < 300; i++) mainLoop();
 #endif
