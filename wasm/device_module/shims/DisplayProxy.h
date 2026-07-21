@@ -66,14 +66,39 @@ public:
                       int16_t x2, int16_t y2) {
         cf_display_draw_triangle(x0, y0, x1, y1, x2, y2);
     }
+    // Guest-side scanline fill from the hline import; matches the firmware's
+    // filled-triangle raster without needing a new host hook.
+    void fillTriangle(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
+                      int16_t x2, int16_t y2) {
+        int16_t minY = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
+        int16_t maxY = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
+        for (int16_t y = minY; y <= maxY; y++) {
+            int16_t xmin = INT16_MAX, xmax = INT16_MIN;
+            scanEdge(x0, y0, x1, y1, y, xmin, xmax);
+            scanEdge(x1, y1, x2, y2, y, xmin, xmax);
+            scanEdge(x2, y2, x0, y0, y, xmin, xmax);
+            if (xmin <= xmax) cf_display_draw_hline(xmin, y, (int16_t)(xmax - xmin + 1));
+        }
+    }
     void drawXbm(int16_t x, int16_t y, int16_t w, int16_t h, const unsigned char* data) {
         cf_display_draw_xbm(x, y, w, h, data);
+    }
+    void drawProgressBar(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint8_t progress) {
+        cf_display_draw_rect((int16_t)x, (int16_t)y, (int16_t)w, (int16_t)h);
+        uint16_t fill = (uint16_t)((w - 2) * progress / 100);
+        cf_display_fill_rect((int16_t)(x + 1), (int16_t)(y + 1), (int16_t)fill, (int16_t)(h - 2));
     }
 
     // --- Text ---
     uint16_t drawString(int16_t x, int16_t y, const String& text) {
         cf_display_draw_string(x, y, text.c_str(), (int32_t)text.length());
         return 0;
+    }
+    // Emulator surface renders unwrapped (same behavior as wasm/shims); the
+    // width argument is accepted for firmware API compatibility.
+    uint16_t drawStringMaxWidth(int16_t x, int16_t y, uint16_t maxLineWidth, const String& text) {
+        (void)maxLineWidth;
+        return drawString(x, y, text);
     }
     uint16_t getStringWidth(const String& text) {
         return (uint16_t)cf_display_string_width(text.c_str(), (int32_t)text.length());
@@ -91,6 +116,22 @@ public:
     // --- Overlay (no-op in guest; host overlay stays host-controlled) ---
     void setOverlayMode(OverlayMode) {}
     OverlayMode getOverlayMode() const { return OverlayMode::OVERLAY_OFF; }
+
+private:
+    static void scanEdge(int16_t ax, int16_t ay, int16_t bx, int16_t by,
+                         int16_t y, int16_t& xmin, int16_t& xmax) {
+        if (!((ay <= y && by >= y) || (by <= y && ay >= y))) return;
+        if (ay == by) {
+            if (ax < xmin) xmin = ax;
+            if (bx < xmin) xmin = bx;
+            if (ax > xmax) xmax = ax;
+            if (bx > xmax) xmax = bx;
+            return;
+        }
+        int16_t xi = (int16_t)(ax + (long)(y - ay) * (bx - ax) / (by - ay));
+        if (xi < xmin) xmin = xi;
+        if (xi > xmax) xmax = xi;
+    }
 };
 
 #endif  // DISPLAY_PROXY_H
