@@ -367,15 +367,28 @@ void WebPortalApp::begin() {
     btStop();
     delay(100);
 
-    // Start WiFi in AP+STA dual mode
+    // Bring WiFi up in AP+STA dual mode. softAP() can fail at radio bring-up
+    // when the WiFi driver can't allocate its DMA RX-buffer pool -- this build
+    // runs very tight on internal RAM, so the portal context can be left with
+    // too little free for esp_wifi to init. Its bool return was previously
+    // ignored, which left the portal silently on "AP: 0.0.0.0" with nothing
+    // broadcasting. Don't swallow it: surface on the OLED + gate captive DNS.
+    staConnected = false;
     WP_LOG("begin: starting WiFi AP+STA");
     WiFi.mode(WIFI_AP_STA);
-    WiFi.softAP(AP_SSID);
+    apReady = WiFi.softAP(AP_SSID);
     delay(100);
-    WP_LOGF("begin: AP started, IP=%s", WiFi.softAPIP().toString().c_str());
+    if (apReady) {
+        WP_LOGF("begin: AP started, SSID=%s IP=%s", AP_SSID,
+                WiFi.softAPIP().toString().c_str());
+    } else {
+        ESP_LOGE(TAG_MAIN,
+                 "[WebPortal] begin: softAP() FAILED, free heap=%u -- AP not "
+                 "broadcasting (WiFi DMA/RX-buffer starvation)",
+                 (unsigned)ESP.getFreeHeap());
+    }
 
-    // Auto-connect to saved WiFi network (STA)
-    staConnected = false;
+    // Auto-connect to the saved network (only touches the radio if creds exist).
     loadWifiCreds();
 
     // mDNS: cyberfidget.local
@@ -384,8 +397,11 @@ void WebPortalApp::begin() {
         WP_LOG("begin: mDNS started (cyberfidget.local)");
     }
 
-    // Start captive portal DNS (binds to AP interface only)
-    dnsServer.start(53, "*", WiFi.softAPIP());
+    // Start captive portal DNS (binds to AP interface only). Skip if the AP
+    // never came up -- otherwise it just binds the dead 0.0.0.0 address.
+    if (apReady) {
+        dnsServer.start(53, "*", WiFi.softAPIP());
+    }
 
     // Create web server
     server = new AsyncWebServer(80);
@@ -2008,7 +2024,11 @@ void WebPortalApp::render() {
     display.setTextAlignment(TEXT_ALIGN_LEFT);
 
     // AP info
-    display.drawString(4, 16, String("AP: ") + WiFi.softAPIP().toString());
+    if (apReady) {
+        display.drawString(4, 16, String("AP: ") + WiFi.softAPIP().toString());
+    } else {
+        display.drawString(4, 16, "AP failed (low mem)");
+    }
 
     // STA info
     if (staConnected) {
