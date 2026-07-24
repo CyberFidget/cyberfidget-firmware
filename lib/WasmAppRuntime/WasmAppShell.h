@@ -53,6 +53,7 @@ public:
     const FrameStats& stats() const { return frameStats; }
     bool hasError() const { return errored; }
     const char* errorText() const { return errBuf; }
+    bool wantsExit() const { return exitRequested; }
 
 private:
     struct PendingButtonEvent {
@@ -86,6 +87,7 @@ private:
 
     FrameStats frameStats;
     bool       errored = false;
+    bool       exitRequested = false;
     char       errBuf[96] = {0};
 
     static WasmAppShell* s_running;

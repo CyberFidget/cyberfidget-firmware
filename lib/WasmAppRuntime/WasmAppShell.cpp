@@ -10,7 +10,6 @@
 #include <esp_timer.h>
 
 #include "HAL.h"
-#include "MenuManager.h"
 #include "WasmAppRuntime.h"
 #include "WasmHostImports.h"
 
@@ -31,6 +30,7 @@ void WasmAppShell::fail(const char* what) {
 
 void WasmAppShell::begin() {
     errored    = false;
+    exitRequested = false;
     errBuf[0]  = '\0';
     frameStats = FrameStats();
     fnBegin = fnUpdate = fnEnd = fnButton = nullptr;
@@ -111,7 +111,7 @@ void WasmAppShell::update() {
     frameStats.frames++;
 
     if (wasmHostConsumeExitRequest()) {
-        MenuManager::instance().returnToMenu();  // triggers our end() via AppManager
+        exitRequested = true;
     }
 }
 
@@ -167,7 +167,7 @@ void WasmAppShell::callGuestButton(int buttonIndex, int eventType) {
     if (errored || !fnButton) {
         // Errored state: any button release exits back to the menu.
         if (errored && eventType == (int)ButtonEvent_Released) {
-            MenuManager::instance().returnToMenu();
+            exitRequested = true;
         }
         return;
     }
@@ -181,7 +181,7 @@ void WasmAppShell::callGuestButton(int buttonIndex, int eventType) {
         return;
     }
     if (wasmHostConsumeExitRequest()) {
-        MenuManager::instance().returnToMenu();
+        exitRequested = true;
     }
 }
 
