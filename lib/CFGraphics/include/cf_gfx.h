@@ -26,6 +26,7 @@
 
 #include "cf_gfx_sprite.h"
 #include "cf_gfx_actor.h"
+#include "cf_gfx_mesh.h"
 #include "cf_gfx_collision.h"
 #include "cf_gfx_icons.h"
 
