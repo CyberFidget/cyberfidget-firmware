@@ -33,6 +33,9 @@
 #include <type_traits>
 
 #ifdef HOST_TEST
+#include <stdlib.h>
+#include <utility>
+
 // Native host build (pio test -e test_cfgraphics): no Arduino runtime, no
 // OLED driver (lib_ldf_mode = off keeps them out on purpose).
 #ifndef PROGMEM
@@ -63,6 +66,19 @@ public:
     XbmCall calls[kMaxRecordedCalls] = {};
     int callCount = 0;
 
+    struct LineCall {
+        int16_t x0;
+        int16_t y0;
+        int16_t x1;
+        int16_t y1;
+    };
+
+    static constexpr int kMaxRecordedLines = 64;
+
+    uint8_t fb[1024] = {};
+    LineCall lines[kMaxRecordedLines] = {};
+    int lineCount = 0;
+
     void drawXbm(int16_t x, int16_t y, int16_t w, int16_t h,
                  const unsigned char* data) {
         if (callCount < kMaxRecordedCalls) {
@@ -71,7 +87,42 @@ public:
         ++callCount;
     }
 
-    void reset() { callCount = 0; }
+    void setPixel(int16_t x, int16_t y) {
+        if (x < 0 || x >= 128 || y < 0 || y >= 64) return;
+        fb[x + (y / 8) * 128] |= (uint8_t)(1U << (y & 7));
+    }
+
+    // Transcription of OLEDDisplay::drawLine from the ThingPulse SSD1306
+    // driver. It must be kept in step with that device rasterizer.
+    void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
+        if (lineCount < kMaxRecordedLines) {
+            lines[lineCount] = LineCall{x0, y0, x1, y1};
+        }
+        ++lineCount;
+
+        using std::swap;
+        int16_t steep = abs(y1 - y0) > abs(x1 - x0);
+        if (steep) { swap(x0, y0); swap(x1, y1); }
+        if (x0 > x1) { swap(x0, x1); swap(y0, y1); }
+        int16_t dx = x1 - x0;
+        int16_t dy = abs(y1 - y0);
+        int16_t err = dx / 2;
+        int16_t ystep = (y0 < y1) ? 1 : -1;
+        for (; x0 <= x1; x0++) {
+            if (steep) setPixel(y0, x0); else setPixel(x0, y0);
+            err -= dy;
+            if (err < 0) { y0 += ystep; err += dx; }
+        }
+    }
+
+    const uint8_t* frameBuffer() const { return fb; }
+
+    void reset() {
+        callCount = 0;
+        lineCount = 0;
+        memset(fb, 0, sizeof(fb));
+        memset(lines, 0, sizeof(lines));
+    }
 };
 #else
 #include <Arduino.h>       // PROGMEM / pgm_read_byte (no-op reads on ESP32)
