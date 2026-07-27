@@ -3,3 +3,11 @@
 # Shell scripts run on Linux CI runners - force LF so a Windows checkin
 # (core.autocrlf=true) can't store CRLF and break them with bash: $'\r'.
 *.sh text eol=lf
+
+# Generated asset headers are compared BYTE FOR BYTE against fresh compiler
+# output by the pre-build staleness gate, and the compiler always emits LF.
+# Without this, core.autocrlf=true rewrites them to CRLF at checkout and the
+# gate reports drift on every Windows working copy even though the committed
+# content is identical - which fails the build for a reason that has nothing
+# to do with the assets.
+lib/*/generated/*.h text eol=lf
