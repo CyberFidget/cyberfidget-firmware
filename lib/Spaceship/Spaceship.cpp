@@ -6,6 +6,7 @@
 #include "HAL.h"
 #include "MenuManager.h"
 #include "RGBController.h"
+#include "generated/ship.h"
 #include <math.h>
 
 Spaceship spaceshipApp(HAL::buttonManager());
@@ -21,6 +22,10 @@ static const float   AST_WORLD_Y = 0.55f;  // fixed world y -> asteroids descend
 // ---- Ship geometry ----
 static const int16_t SHIP_Y = 50;          // screen row the ship rides on
 static const float   SHIP_HALF = 42.0f;    // px from centre at shipX = +/-1
+// Q8.8 model scale; adjust this one value for pixel-size matching. At 112 the
+// drawn wingspan matches the pre-model ship exactly (35 px at zero bank).
+// The host test mirrors this value - change both together.
+static const uint16_t SHIP_MODEL_SCALE_Q8 = 112;
 
 // ---- Tunables (asteroid sizes, lasers, difficulty, scoring) ----
 static const int16_t TIER_R[3]   = { 4, 6, 9 };   // base screen radius per tier
@@ -791,54 +796,16 @@ void Spaceship::drawShip(int16_t cx, int16_t cy, float bankAmt, bool blink) {
     if (blink && (((millis() / 110) % 2) == 0)) return;  // flicker while invulnerable
 
     display.setColor(WHITE);
-    float b = clampf(bankAmt, -0.6f, 0.6f);
-    float cosb = cosf(b), sinb = sinf(b);
+    const float b = clampf(bankAmt, -0.6f, 0.6f);
+    const uint8_t yaw =
+        (uint8_t)lroundf(b * 256.0f / (2.0f * PI));
 
-    // local point -> screen, with a roll approximation (x rotates, wings shear in y)
-    // capture by value via small lambda
-    struct P { int16_t x, y; };
-    auto proj = [&](float lx, float ly) -> P {
-        float rx = lx * cosb;
-        float ry = ly - lx * sinb * 0.55f;
-        P p; p.x = cx + (int16_t)rx; p.y = cy + (int16_t)ry; return p;
-    };
-
-    // fuselage
-    P nose  = proj(0,  -9);
-    P tail  = proj(0,   7);
-    P bellyL= proj(-3,  6);
-    P bellyR= proj( 3,  6);
-    // wings
-    P wRootL= proj(-2, -1), wRootR= proj(2, -1);
-    P wTipL = proj(-17, 5), wTipR = proj(17, 5);
-    P finL  = proj(-17,-2), finR  = proj(17,-2);  // upswept wingtip fins
-    // cockpit canopy
-    P canT  = proj(0, -5), canL = proj(-2,-2), canR = proj(2,-2);
-    // engines
-    P engL  = proj(-5, 6), engR = proj(5, 6);
-
-    // fuselage outline
-    display.drawLine(nose.x, nose.y, bellyL.x, bellyL.y);
-    display.drawLine(nose.x, nose.y, bellyR.x, bellyR.y);
-    display.drawLine(bellyL.x, bellyL.y, tail.x, tail.y);
-    display.drawLine(bellyR.x, bellyR.y, tail.x, tail.y);
-    display.drawLine(nose.x, nose.y, tail.x, tail.y);
-
-    // wings (leading + trailing edges)
-    display.drawLine(wRootL.x, wRootL.y, wTipL.x, wTipL.y);
-    display.drawLine(wTipL.x, wTipL.y, bellyL.x, bellyL.y);
-    display.drawLine(wRootR.x, wRootR.y, wTipR.x, wTipR.y);
-    display.drawLine(wTipR.x, wTipR.y, bellyR.x, bellyR.y);
-    // upswept fins
-    display.drawLine(wTipL.x, wTipL.y, finL.x, finL.y);
-    display.drawLine(wTipR.x, wTipR.y, finR.x, finR.y);
-    // cockpit
-    display.drawLine(canT.x, canT.y, canL.x, canL.y);
-    display.drawLine(canT.x, canT.y, canR.x, canR.y);
-    display.drawLine(canL.x, canL.y, canR.x, canR.y);
-    // engine nubs
-    display.setPixel(engL.x, engL.y);
-    display.setPixel(engR.x, engR.y);
+    cf::gfx::MeshActor actor;
+    actor.setMesh(&cf::gfx::ship::ship);
+    actor.setPos(cx, cy);
+    actor.setScaleQ8(SHIP_MODEL_SCALE_Q8);
+    actor.setRotation(yaw, 0, 0);
+    actor.draw(display);
 }
 
 // ===========================================================================
