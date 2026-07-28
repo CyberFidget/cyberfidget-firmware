@@ -86,15 +86,41 @@ public:
 
     // ---- Lines ----
     void drawLine(int16_t x0, int16_t y0, int16_t x1, int16_t y1) {
-        int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
-        int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
-        int err = dx + dy;
-        while (true) {
-            setPixel(x0, y0);
-            if (x0 == x1 && y0 == y1) break;
-            int e2 = 2 * err;
-            if (e2 >= dy) { err += dy; x0 += sx; }
-            if (e2 <= dx) { err += dx; y0 += sy; }
+        int16_t steep = abs(y1 - y0) > abs(x1 - x0);
+        if (steep) {
+            std::swap(x0, y0);
+            std::swap(x1, y1);
+        }
+
+        if (x0 > x1) {
+            std::swap(x0, x1);
+            std::swap(y0, y1);
+        }
+
+        int16_t dx, dy;
+        dx = x1 - x0;
+        dy = abs(y1 - y0);
+
+        int16_t err = dx / 2;
+        int16_t ystep;
+
+        if (y0 < y1) {
+            ystep = 1;
+        } else {
+            ystep = -1;
+        }
+
+        for (; x0 <= x1; x0++) {
+            if (steep) {
+                setPixel(y0, x0);
+            } else {
+                setPixel(x0, y0);
+            }
+            err -= dy;
+            if (err < 0) {
+                y0 += ystep;
+                err += dx;
+            }
         }
     }
 
