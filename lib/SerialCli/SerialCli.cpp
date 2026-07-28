@@ -4,6 +4,7 @@
 #include "SerialCli.h"
 
 #include <Arduino.h>
+#include <esp_heap_caps.h>
 #include <esp_system.h>
 
 #include <FS.h>
@@ -103,7 +104,25 @@ uint32_t g_writeCrc        = 0;    // expected whole-file crc32
 
 // Shared payload staging buffer for `fwdata` chunks and `lapply` documents
 // (never used by both at once). +1 for a null terminator on ops JSON.
-uint8_t  g_payloadBuf[SyncProtocol::kMaxApplyBytes + 1];
+constexpr size_t kPayloadBufBytes = SyncProtocol::kMaxApplyBytes + 1;
+uint8_t* g_payloadBuf = nullptr;
+
+bool allocatePayloadBuffer() {
+    if (g_payloadBuf != nullptr) return true;
+    g_payloadBuf = static_cast<uint8_t*>(heap_caps_malloc(
+        kPayloadBufBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (g_payloadBuf == nullptr) {
+        g_payloadBuf = static_cast<uint8_t*>(malloc(kPayloadBufBytes));
+    }
+    return g_payloadBuf != nullptr;
+}
+
+void releasePayloadIfIdle() {
+    if (!g_writeActive && g_payloadBuf != nullptr) {
+        free(g_payloadBuf);
+        g_payloadBuf = nullptr;
+    }
+}
 
 // Payload read bounds. A framed payload read runs inside SerialCli::poll(),
 // which runs inside AppManager::loop(), so an unbounded read hands a hostile
@@ -225,6 +244,7 @@ void clearWriteSession() {
     g_writeTemp[0] = '\0';
     g_writeSize = 0;
     g_writeCrc  = 0;
+    releasePayloadIfIdle();
 }
 }  // namespace
 
@@ -415,6 +435,10 @@ void SerialCli::cmdFwrite(const char* args) {
         if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
         clearWriteSession();
     }
+    if (!allocatePayloadBuffer()) {
+        Serial.println("[err] fwrite.nomem");
+        return;
+    }
     strncpy(g_writePath, path, sizeof(g_writePath) - 1);
     g_writePath[sizeof(g_writePath) - 1] = '\0';
     snprintf(g_writeTemp, sizeof(g_writeTemp), "%s.part", g_writePath);
@@ -466,6 +490,13 @@ void SerialCli::cmdFwdata(const char* args) {
                       (unsigned)offset, (unsigned)len, (unsigned)g_writeSize);
         return;
     }
+    if (g_payloadBuf == nullptr) {
+        drainBytes(len, kPayloadGapMs);
+        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
+        clearWriteSession();
+        Serial.println("[err] fwdata.nomem");
+        return;
+    }
     if (!readExact(g_payloadBuf, len, kPayloadGapMs)) {
         if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
         clearWriteSession();
@@ -500,6 +531,12 @@ void SerialCli::cmdFwcommit() {
         Serial.println("[err] fwcommit.nosession");
         return;
     }
+    if (g_payloadBuf == nullptr) {
+        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
+        clearWriteSession();
+        Serial.println("[err] fwcommit.nomem");
+        return;
+    }
     g_writeFile.flush();
     g_writeFile.close();
 
@@ -516,7 +553,7 @@ void SerialCli::cmdFwcommit() {
     uint32_t fileSize = (uint32_t)rf.size();
     uint32_t crc = SyncProtocol::crc32Begin();
     while (true) {
-        int n = rf.read(g_payloadBuf, sizeof(g_payloadBuf));
+        int n = rf.read(g_payloadBuf, kPayloadBufBytes);
         if (n <= 0) break;
         crc = SyncProtocol::crc32Update(crc, g_payloadBuf, (size_t)n);
     }
@@ -625,14 +662,21 @@ void SerialCli::cmdLapply(const char* args) {
                       (unsigned)len, (unsigned)SyncProtocol::kMaxApplyBytes);
         return;
     }
+    if (!allocatePayloadBuffer()) {
+        drainBytes(len, kPayloadGapMs);
+        Serial.println("[err] lapply.nomem");
+        return;
+    }
     if (!readExact(g_payloadBuf, len, kPayloadGapMs)) {
         Serial.println("[err] lapply.timeout");
+        releasePayloadIfIdle();
         return;
     }
     uint32_t got = SyncProtocol::crc32(g_payloadBuf, len);
     if (got != crc) {
         Serial.printf("[err] lapply.crc=got %08x want %08x\n",
                       (unsigned)got, (unsigned)crc);
+        releasePayloadIfIdle();
         return;
     }
     g_payloadBuf[len] = '\0';
@@ -642,9 +686,11 @@ void SerialCli::cmdLapply(const char* args) {
         // Malformed document, a rejected op, or a failed save — the stored
         // manifest is untouched, so the menu still falls back cleanly.
         Serial.println("[err] lapply.reject");
+        releasePayloadIfIdle();
         return;
     }
     Serial.printf("[cmd] lapply.ok=applied %d entries %d\n", applied, entries);
+    releasePayloadIfIdle();
 }
 
 // T-191: base64-encode and emit the 128x64 1bpp framebuffer as one
@@ -654,15 +700,21 @@ void SerialCli::cmdLapply(const char* args) {
 void SerialCli::emitScreencap() {
     const uint8_t* fb = HAL::displayProxy().frameBuffer();
     if (!fb) { Serial.println("[err] screencap: no framebuffer"); return; }
-    static uint8_t b64[1400];  // ceil(1024/3)*4 = 1368 + NUL slack
+    uint8_t* b64 = static_cast<uint8_t*>(malloc(1400));
+    if (!b64) { Serial.println("[err] screencap: no mem"); return; }
     size_t olen = 0;
-    int rc = mbedtls_base64_encode(b64, sizeof(b64), &olen, fb,
+    int rc = mbedtls_base64_encode(b64, 1400, &olen, fb,
                                    DisplayProxy::kFrameBufferBytes);
-    if (rc != 0) { Serial.println("[err] screencap: encode failed"); return; }
+    if (rc != 0) {
+        free(b64);
+        Serial.println("[err] screencap: encode failed");
+        return;
+    }
     b64[olen] = '\0';
     // w/h/bpp let the decoder reconstruct without hardcoding geometry.
     Serial.printf("[cmd] screencap w=128 h=64 bpp=1 fmt=colpage len=%u b64=%s\n",
                   (unsigned)olen, (const char*)b64);
+    free(b64);
 }
 
 void SerialCli::cmdScreencap() { emitScreencap(); }

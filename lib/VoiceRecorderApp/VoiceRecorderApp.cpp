@@ -274,6 +274,23 @@ void VoiceRecorderApp::begin() {
     demoMode = false;
     demoLen = 0;
 
+    // The list is cold UI data, so prefer PSRAM. The ring-to-SD staging hop
+    // stays in internal RAM via plain malloc below (size is under 4096 bytes).
+    listEntries = static_cast<RecListEntry*>(heap_caps_malloc(
+        sizeof(RecListEntry) * REC_LIST_MAX,
+        MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (listEntries == nullptr) {
+        listEntries = static_cast<RecListEntry*>(
+            malloc(sizeof(RecListEntry) * REC_LIST_MAX));
+    }
+    if (listEntries == nullptr) {
+        ESP_LOGE(TAG_VREC, "recordings list allocation failed");
+    }
+    drainBuf = static_cast<uint8_t*>(malloc(DRAIN_BUF_BYTES));
+    if (drainBuf == nullptr) {
+        ESP_LOGE(TAG_VREC, "recording drain allocation failed");
+    }
+
     // Restore the persisted quality before the port is clocked, so the mic
     // opens at the saved rate (no reconfigure needed on a clean entry).
     {
@@ -374,7 +391,7 @@ void VoiceRecorderApp::end() {
         unsigned long t0 = millis();
         while (MicCapture::instance().ring().available() > 0 &&
                !writeErrorSeen && (millis() - t0) < 2000) {
-            drainToFile(sizeof(drainBuf));
+            drainToFile(DRAIN_BUF_BYTES);
         }
         closeRecordingFile();
     }
@@ -401,6 +418,15 @@ void VoiceRecorderApp::end() {
         demoCapacity = 0;
     }
     demoMode = false;
+
+    if (listEntries != nullptr) {
+        free(listEntries);
+        listEntries = nullptr;
+    }
+    if (drainBuf != nullptr) {
+        free(drainBuf);
+        drainBuf = nullptr;
+    }
 
     setColorsOff();
 }
@@ -625,6 +651,10 @@ uint32_t VoiceRecorderApp::remainingSeconds() const {
 // Recording session
 // =========================================================================
 void VoiceRecorderApp::startRecording() {
+    if (drainBuf == nullptr) {
+        showNote("NO MEMORY");
+        return;
+    }
     if (!sdMounted) {
         state = REC_STATE_NO_SD;
         return;
@@ -705,11 +735,11 @@ void VoiceRecorderApp::requestStop(VoiceRecStopReason reason, bool trimPressClic
 // Pop from the ring into the WAV encoder, up to maxBytes. Tracks short
 // writes (card yanked / FS error) in writeErrorSeen.
 uint32_t VoiceRecorderApp::drainToFile(uint32_t maxBytes) {
-    if (pEncOut == nullptr) return 0;
+    if (pEncOut == nullptr || drainBuf == nullptr) return 0;
     uint32_t total = 0;
     while (total < maxBytes) {
         uint32_t want = maxBytes - total;
-        if (want > sizeof(drainBuf)) want = sizeof(drainBuf);
+        if (want > DRAIN_BUF_BYTES) want = DRAIN_BUF_BYTES;
         uint32_t chunk = MicCapture::instance().ring().pop(drainBuf, want);
         if (chunk == 0) break;
         size_t written = pEncOut->write(drainBuf, chunk);
@@ -883,6 +913,7 @@ void VoiceRecorderApp::enterList() {
 void VoiceRecorderApp::loadRecordingsList() {
     listCount = 0;
     listTotal = 0;
+    if (listEntries == nullptr) return;
 
     char indexPath[40];
     snprintf(indexPath, sizeof(indexPath), "%s/index.csv",
@@ -1209,6 +1240,10 @@ void VoiceRecorderApp::exitDemo() {
 }
 
 void VoiceRecorderApp::startDemoRecording() {
+    if (drainBuf == nullptr) {
+        showNote("NO MEMORY");
+        return;
+    }
     if (demoBuf == nullptr || demoCapacity == 0) return;
     demoLen = 0;
     demoSampleRate = recSampleRate;   // capture at the currently-clocked rate
@@ -1228,10 +1263,10 @@ void VoiceRecorderApp::stopDemoRecording() {
 
 // Pop captured PCM from the ring into the PSRAM clip, bounded by the byte cap.
 void VoiceRecorderApp::drainDemo() {
-    if (demoBuf == nullptr) return;
+    if (demoBuf == nullptr || drainBuf == nullptr) return;
     while (demoLen < demoCapacity) {
         uint32_t room = demoCapacity - demoLen;
-        uint32_t want = (room < sizeof(drainBuf)) ? room : sizeof(drainBuf);
+        uint32_t want = (room < DRAIN_BUF_BYTES) ? room : DRAIN_BUF_BYTES;
         uint32_t got = MicCapture::instance().ring().pop(drainBuf, want);
         if (got == 0) break;
         memcpy(demoBuf + demoLen, drainBuf, got);
@@ -1526,6 +1561,12 @@ void VoiceRecorderApp::drawList() {
     }
     display.drawLine(0, 12, 127, 12);
 
+    if (listEntries == nullptr) {
+        display.setTextAlignment(TEXT_ALIGN_CENTER);
+        display.drawString(64, 26, "List unavailable");
+        display.drawString(64, 42, "SELECT = back");
+        return;
+    }
     if (listCount == 0) {
         display.setTextAlignment(TEXT_ALIGN_CENTER);
         display.drawString(64, 26, "No recordings yet");

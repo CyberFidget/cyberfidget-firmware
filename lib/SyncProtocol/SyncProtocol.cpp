@@ -11,26 +11,26 @@
 namespace SyncProtocol {
 
 // ============================================================
-// CRC-32 (reflected, poly 0xEDB88320). Table computed once on
-// first use — no static initializer order concerns, no lookup
-// table baked into flash.
+// CRC-32 (reflected, poly 0xEDB88320). The constexpr lookup table stays in
+// flash and requires no runtime initialization.
 // ============================================================
 namespace {
 
-uint32_t g_table[256];
-bool     g_tableReady = false;
+struct Crc32Table {
+    uint32_t v[256];
 
-void ensureTable() {
-    if (g_tableReady) return;
-    for (uint32_t i = 0; i < 256; i++) {
-        uint32_t c = i;
-        for (int k = 0; k < 8; k++) {
-            c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+    constexpr Crc32Table() : v() {
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++) {
+                c = (c & 1) ? (0xEDB88320u ^ (c >> 1)) : (c >> 1);
+            }
+            v[i] = c;
         }
-        g_table[i] = c;
     }
-    g_tableReady = true;
-}
+};
+
+constexpr Crc32Table kCrc32Table;
 
 // Roots a write/delete path must live under. A path outside these is
 // refused before the filesystem is ever touched.
@@ -109,10 +109,9 @@ bool atEnd(const char* p) {
 uint32_t crc32Begin() { return 0xFFFFFFFFu; }
 
 uint32_t crc32Update(uint32_t crc, const void* data, size_t len) {
-    ensureTable();
     const uint8_t* p = static_cast<const uint8_t*>(data);
     for (size_t i = 0; i < len; i++) {
-        crc = g_table[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
+        crc = kCrc32Table.v[(crc ^ p[i]) & 0xFF] ^ (crc >> 8);
     }
     return crc;
 }

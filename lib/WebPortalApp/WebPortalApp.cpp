@@ -4,6 +4,7 @@
 #include "WebPortalApp.h"
 #include "portal_page.h"
 #include "companion_fallback_page.h"
+#include "AudioManager.h"
 #include "MenuManager.h"
 #include "MicCapture.h"  // shared mic pipeline for the live caption stream
 #include "globals.h"
@@ -353,7 +354,7 @@ void WebPortalApp::begin() {
     liveDroppedFrames = 0;
     liveFrameFill = 0;
     captionFinalCount = 0;
-    captionPartial[0] = '\0';
+    mdnsStarted = false;
 
     // Init SD
     initSD();
@@ -361,6 +362,10 @@ void WebPortalApp::begin() {
     // Count files
     fileCount = 0;
     if (sdReady) countFilesRecursive(MEDIA_DIR);
+
+    // The portal does not play tones. Release I2S0 before WiFi claims its
+    // DMA-capable internal heap; MicCapture uses the independent I2S1 port.
+    HAL::audioManager().releaseI2S();
 
     // Stop Bluetooth to free the radio for WiFi
     WP_LOG("begin: stopping BT controller");
@@ -390,12 +395,6 @@ void WebPortalApp::begin() {
 
     // Auto-connect to the saved network (only touches the radio if creds exist).
     loadWifiCreds();
-
-    // mDNS: cyberfidget.local
-    if (MDNS.begin("cyberfidget")) {
-        MDNS.addService("http", "tcp", 80);
-        WP_LOG("begin: mDNS started (cyberfidget.local)");
-    }
 
     // Start captive portal DNS (binds to AP interface only). Skip if the AP
     // never came up -- otherwise it just binds the dead 0.0.0.0 address.
@@ -435,7 +434,10 @@ void WebPortalApp::end() {
 
     // Stop DNS + mDNS
     dnsServer.stop();
-    MDNS.end();
+    if (mdnsStarted) {
+        MDNS.end();
+        mdnsStarted = false;
+    }
 
     // Stop WiFi (STA + AP)
     WiFi.disconnect(false);
@@ -444,6 +446,8 @@ void WebPortalApp::end() {
     staConnected = false;
     delay(100);
     WP_LOG("end: WiFi stopped");
+
+    HAL::audioManager().reclaimI2S();
 
     // Unregister callbacks
     buttonManager.unregisterCallback(button_SelectIndex);
@@ -461,6 +465,11 @@ void WebPortalApp::update() {
         if (WiFi.status() == WL_CONNECTED) {
             staConnected = true;
             WP_LOGF("STA connected, IP=%s", WiFi.localIP().toString().c_str());
+            if (!mdnsStarted && MDNS.begin("cyberfidget")) {
+                MDNS.addService("http", "tcp", 80);
+                mdnsStarted = true;
+                WP_LOG("mDNS started (cyberfidget.local)");
+            }
         } else if (millis() - staConnectStart > STA_TIMEOUT_MS) {
             WP_LOG("STA connect timeout");
             staSSID = "";
@@ -470,9 +479,6 @@ void WebPortalApp::update() {
         staConnected = false;
         WP_LOG("STA connection lost");
     }
-
-    // Process DNS requests for captive portal
-    dnsServer.processNextRequest();
 
     // Live caption link: apply what the AsyncTCP task mailed over, then
     // move captured audio toward the client.
@@ -593,7 +599,9 @@ void WebPortalApp::disconnectSTA() {
 void WebPortalApp::setupRoutes() {
     // Main portal page
     server->on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
-        req->send(200, "text/html", PORTAL_PAGE_HTML);
+        req->send(req->beginResponse(
+            200, "text/html", reinterpret_cast<const uint8_t*>(PORTAL_PAGE_HTML),
+            sizeof(PORTAL_PAGE_HTML) - 1));
     });
 
     // Serve media files for audio playback
@@ -1664,20 +1672,23 @@ void WebPortalApp::onWsEvent(AsyncWebSocketClient* client, AwsEventType type,
                 if (msg.type == LiveLink::MsgType::Time) {
                     rxEpochMs = msg.epochMs;
                     rxTimeNew = true;
-                } else if (msg.type == LiveLink::MsgType::Caption) {
+                } else if (msg.type == LiveLink::MsgType::Caption &&
+                           liveBufs != nullptr) {
                     if (msg.isFinal) {
                         if (rxFinalCount < RX_FINAL_QUEUE) {
-                            strncpy(rxFinals[rxFinalCount], msg.text,
+                            strncpy(liveBufs->rxFinals[rxFinalCount], msg.text,
                                     LiveLink::kMaxCaptionText);
-                            rxFinals[rxFinalCount][LiveLink::kMaxCaptionText] = '\0';
+                            liveBufs->rxFinals[rxFinalCount]
+                                               [LiveLink::kMaxCaptionText] = '\0';
                             rxFinalCount++;
                         }
                         // A final supersedes the in-flight partial.
-                        rxPartial[0] = '\0';
+                        liveBufs->rxPartial[0] = '\0';
                         rxPartialNew = true;
                     } else {
-                        strncpy(rxPartial, msg.text, LiveLink::kMaxCaptionText);
-                        rxPartial[LiveLink::kMaxCaptionText] = '\0';
+                        strncpy(liveBufs->rxPartial, msg.text,
+                                LiveLink::kMaxCaptionText);
+                        liveBufs->rxPartial[LiveLink::kMaxCaptionText] = '\0';
                         rxPartialNew = true;
                     }
                 }
@@ -1708,11 +1719,18 @@ void WebPortalApp::processLiveMailbox() {
     timeNew    = rxTimeNew;     rxTimeNew = false;
     epochMs    = rxEpochMs;
     partialNew = rxPartialNew;  rxPartialNew = false;
-    memcpy(partial, rxPartial, sizeof(partial));
-    finalCount = rxFinalCount;  rxFinalCount = 0;
-    for (int i = 0; i < finalCount; ++i) {
-        memcpy(finals[i], rxFinals[i], sizeof(finals[i]));
+    if (liveBufs != nullptr) {
+        memcpy(partial, liveBufs->rxPartial, sizeof(partial));
+        finalCount = rxFinalCount;
+        for (int i = 0; i < finalCount; ++i) {
+            memcpy(finals[i], liveBufs->rxFinals[i], sizeof(finals[i]));
+        }
+    } else {
+        partial[0] = '\0';
+        partialNew = false;
+        finalCount = 0;
     }
+    rxFinalCount = 0;
     portEXIT_CRITICAL(&liveMux);
 
     if (disconnect && liveClientId != 0) {
@@ -1774,6 +1792,33 @@ void WebPortalApp::startLiveSession(uint32_t clientId) {
         return;
     }
 
+    LiveSessionBufs* sessionBufs = static_cast<LiveSessionBufs*>(
+        heap_caps_malloc(sizeof(LiveSessionBufs),
+                         MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (sessionBufs == nullptr) {
+        sessionBufs = static_cast<LiveSessionBufs*>(
+            malloc(sizeof(LiveSessionBufs)));
+    }
+    if (sessionBufs == nullptr) {
+        WP_LOG("live: refused, session buffer allocation failed");
+        char buf[120];
+        if (LiveLink::buildError(buf, sizeof(buf),
+                "device is low on memory - close other browser tabs and reconnect")) {
+            client->text(buf);
+        }
+        client->close();
+        portENTER_CRITICAL(&liveMux);
+        if (wsClaimedId == clientId) wsClaimedId = 0;
+        portEXIT_CRITICAL(&liveMux);
+        return;
+    }
+    memset(sessionBufs, 0, sizeof(*sessionBufs));
+    portENTER_CRITICAL(&liveMux);
+    liveBufs = sessionBufs;
+    rxPartialNew = false;
+    rxFinalCount = 0;
+    portEXIT_CRITICAL(&liveMux);
+
     const char* err = nullptr;
     // Smallest viable DMA cushion (2 x 512B = ~32ms, still >> the capture
     // task's 5ms poll) to leave the most internal heap for WiFi + the WS
@@ -1788,8 +1833,10 @@ void WebPortalApp::startLiveSession(uint32_t clientId) {
         }
         client->close();
         portENTER_CRITICAL(&liveMux);
+        liveBufs = nullptr;
         if (wsClaimedId == clientId) wsClaimedId = 0;
         portEXIT_CRITICAL(&liveMux);
+        free(sessionBufs);
         return;
     }
 
@@ -1800,7 +1847,7 @@ void WebPortalApp::startLiveSession(uint32_t clientId) {
     liveFrameFill = 0;
     liveStartMs = millis_NOW;
     captionFinalCount = 0;
-    captionPartial[0] = '\0';
+    liveBufs->captionPartial[0] = '\0';
     captionLastRxMs = 0;
 
     char hello[128];
@@ -1836,8 +1883,11 @@ void WebPortalApp::stopLiveSession(const char* reason, bool notifyClient) {
     liveFrameFill = 0;
 
     portENTER_CRITICAL(&liveMux);
+    LiveSessionBufs* sessionBufs = liveBufs;
+    liveBufs = nullptr;
     if (wsClaimedId == oldId) wsClaimedId = 0;
     portEXIT_CRITICAL(&liveMux);
+    free(sessionBufs);
     WP_LOG("live: session stopped");
 }
 
@@ -1847,7 +1897,8 @@ void WebPortalApp::stopLiveSession(const char* reason, bool notifyClient) {
 // half full, the OLDEST staged frame is dropped (and counted) so the
 // freshest audio survives.
 void WebPortalApp::pumpLiveAudio() {
-    if (liveClientId == 0 || !liveMicHeld || ws == nullptr) return;
+    if (liveClientId == 0 || liveBufs == nullptr ||
+        !liveMicHeld || ws == nullptr) return;
     AsyncWebSocketClient* client = ws->client(liveClientId);
     if (client == nullptr || client->status() != WS_CONNECTED) {
         stopLiveSession(nullptr, false);
@@ -1860,7 +1911,7 @@ void WebPortalApp::pumpLiveAudio() {
     int sends = 0;
     while (sends < 4) {
         if (liveFrameFill < LiveLink::kPcmFrameBytes) {
-            liveFrameFill += ring.pop(liveFrameBuf + liveFrameFill,
+            liveFrameFill += ring.pop(liveBufs->liveFrameBuf + liveFrameFill,
                                       LiveLink::kPcmFrameBytes - liveFrameFill);
             if (liveFrameFill < LiveLink::kPcmFrameBytes) break;  // partial frame
         }
@@ -1888,7 +1939,7 @@ void WebPortalApp::pumpLiveAudio() {
             liveDroppedFrames++;
             break;
         }
-        if (client->binary(liveFrameBuf, LiveLink::kPcmFrameBytes)) {
+        if (client->binary(liveBufs->liveFrameBuf, LiveLink::kPcmFrameBytes)) {
             liveSentFrames++;
         } else {
             liveDroppedFrames++;            // enqueue refused = frame lost
@@ -1909,31 +1960,37 @@ static int wpMeasureWidth(const char* s, void* /*ctx*/) {
 }
 
 void WebPortalApp::applyCaption(const char* text, bool isFinal) {
+    if (liveBufs == nullptr) return;
     captionLastRxMs = millis_NOW;
     if (!isFinal) {
         // Partial: replaces the in-progress line (re-wrapped every render).
-        strncpy(captionPartial, text, LiveLink::kMaxCaptionText);
-        captionPartial[LiveLink::kMaxCaptionText] = '\0';
+        strncpy(liveBufs->captionPartial, text, LiveLink::kMaxCaptionText);
+        liveBufs->captionPartial[LiveLink::kMaxCaptionText] = '\0';
         return;
     }
     if (text[0] == '\0') {
-        captionPartial[0] = '\0';   // empty final just clears the partial
+        liveBufs->captionPartial[0] = '\0';   // empty final just clears the partial
         return;
     }
     // Final: commit to the scrollback (oldest falls off), clear the partial.
     if (captionFinalCount == CAPTION_SCROLLBACK) {
         for (int i = 1; i < CAPTION_SCROLLBACK; ++i) {
-            memcpy(captionFinals[i - 1], captionFinals[i], sizeof(captionFinals[i]));
+            memcpy(liveBufs->captionFinals[i - 1],
+                   liveBufs->captionFinals[i],
+                   sizeof(liveBufs->captionFinals[i]));
         }
         captionFinalCount = CAPTION_SCROLLBACK - 1;
     }
-    strncpy(captionFinals[captionFinalCount], text, LiveLink::kMaxCaptionText);
-    captionFinals[captionFinalCount][LiveLink::kMaxCaptionText] = '\0';
+    strncpy(liveBufs->captionFinals[captionFinalCount], text,
+            LiveLink::kMaxCaptionText);
+    liveBufs->captionFinals[captionFinalCount]
+                           [LiveLink::kMaxCaptionText] = '\0';
     captionFinalCount++;
-    captionPartial[0] = '\0';
+    liveBufs->captionPartial[0] = '\0';
 }
 
 void WebPortalApp::renderCaptionScreen() {
+    if (liveBufs == nullptr) return;
     // Header strip: a live dot + elapsed time, kept compact so the caption
     // rows get the screen.
     display.setColor(WHITE);
@@ -1955,7 +2012,7 @@ void WebPortalApp::renderCaptionScreen() {
     display.setFont(font);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
 
-    if (captionFinalCount == 0 && captionPartial[0] == '\0') {
+    if (captionFinalCount == 0 && liveBufs->captionPartial[0] == '\0') {
         display.setTextAlignment(TEXT_ALIGN_CENTER);
         display.setFont(ArialMT_Plain_10);
         display.drawString(64, 24, "Listening...");
@@ -1979,8 +2036,12 @@ void WebPortalApp::renderCaptionScreen() {
             rowCount++;
         }
     };
-    for (int i = 0; i < captionFinalCount; ++i) appendWrapped(captionFinals[i]);
-    if (captionPartial[0] != '\0') appendWrapped(captionPartial);
+    for (int i = 0; i < captionFinalCount; ++i) {
+        appendWrapped(liveBufs->captionFinals[i]);
+    }
+    if (liveBufs->captionPartial[0] != '\0') {
+        appendWrapped(liveBufs->captionPartial);
+    }
 
     int first = (rowCount > maxRows) ? rowCount - maxRows : 0;
     int y = topY;

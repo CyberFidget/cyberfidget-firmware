@@ -3,6 +3,7 @@
 
 #ifndef STARBURST_H
 #define STARBURST_H
+#include <stdint.h>
 #include "DisplayProxy.h"
 #include "ButtonManager.h"
 
@@ -23,14 +24,14 @@ private:
     // style 4=Enter (filled star polygon)
     struct Burst {
         bool active;
-        int cx, cy;          // center
-        int style;           // pattern type
-        int variant;         // random within style
+        int16_t cx, cy;      // center, 10..117 and 10..53
+        int16_t style;       // pattern type, 0..4
+        int16_t variant;     // random within style, 0..999
         unsigned long birth; // ms when created
-        int lifetime;        // ms until gone
-        int size;            // base size
-        int seed;            // randomness seed
-        int hue;             // 0-4095 color this burst lends to its LED
+        int16_t lifetime;    // ms until gone, 600..1799
+        int16_t size;        // base size, 8..29
+        int16_t seed;        // randomness seed, 0..9999
+        int16_t hue;         // 0..4095 color this burst lends to its LED
     };
 
     static const int MAX_BURSTS = 40;

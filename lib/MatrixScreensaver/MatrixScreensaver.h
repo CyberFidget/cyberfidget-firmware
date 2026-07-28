@@ -59,8 +59,8 @@ private:
     // Info about each row
     struct RowInfo {
         char ch;
-        int litPixels;          // 0..FONT_HEIGHT
-        unsigned long nextChange; // next time to flicker
+        uint8_t litPixels;      // 0..FONT_HEIGHT (8)
+        uint32_t nextChange;    // next time to flicker
     };
 
     struct Column {

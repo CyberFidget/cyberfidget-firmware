@@ -89,7 +89,8 @@ private:
     // Acquired in begin(), released in end(); micHeld tracks the balance so
     // a FAULT entry (acquire failed) doesn't release someone else's session.
     bool micHeld = false;
-    uint8_t drainBuf[2048];     // update() only
+    static const size_t DRAIN_BUF_BYTES = 2048;
+    uint8_t* drainBuf = nullptr;  // update() only; internal RAM staging
 
     // --- Recording session ---
     File recFile;
@@ -138,7 +139,7 @@ private:
         uint64_t bytes;
     };
     static const int REC_LIST_MAX = 64;
-    RecListEntry listEntries[REC_LIST_MAX];
+    RecListEntry* listEntries = nullptr;
     int listCount = 0;           // entries actually loaded (<= REC_LIST_MAX)
     int listTotal = 0;           // total data rows in index.csv
     int listCursor = 0;          // selected index into listEntries
