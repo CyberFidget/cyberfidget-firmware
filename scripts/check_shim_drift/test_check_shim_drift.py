@@ -50,6 +50,22 @@ class ShimDriftTests(unittest.TestCase):
         with self.assertRaisesRegex(checker.CheckError, "unterminated struct Event"):
             checker.parse_struct("struct Event { int index;", "Event", Path("broken.h"))
 
+    def test_inline_body_call_statement_is_not_a_declaration(self):
+        text = (
+            "class Proxy { public:\n"
+            "    uint16_t drawString(int16_t x, int16_t y, const String& text) {\n"
+            "        return 0;\n"
+            "    }\n"
+            "    uint16_t drawStringMaxWidth(int16_t x, int16_t y, uint16_t w, const String& text) {\n"
+            "        return drawString(x, y, text);\n"
+            "    }\n"
+            "};"
+        )
+        methods = checker.parse_methods(text, "Proxy", Path("shim.h"))
+        names = [method.name for method in methods]
+        self.assertEqual(["drawString", "drawStringMaxWidth"], names)
+        self.assertEqual(2, len(methods))
+
 
 if __name__ == "__main__":
     unittest.main()
