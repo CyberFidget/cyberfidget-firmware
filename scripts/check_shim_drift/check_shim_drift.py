@@ -41,7 +41,11 @@ CONST_RE = re.compile(
     r"(?P<name>[A-Za-z_]\w*)\s*=\s*(?P<value>[^;]+);"
 )
 METHOD_RE = re.compile(
-    r"^\s*(?P<return>[A-Za-z_][\w:<>&*\s]*?)\s+"
+    # The leading lookahead keeps statement keywords out of the return-type
+    # group: without it, a one-line body like `return drawString(x, y, t);`
+    # parses as a declaration of drawString and can never match its mirror.
+    r"^\s*(?!return\b|throw\b|else\b|new\b|delete\b|case\b|goto\b)"
+    r"(?P<return>[A-Za-z_][\w:<>&*\s]*?)\s+"
     r"(?P<name>[A-Za-z_]\w*)\s*\((?P<params>[^)]*)\)\s*"
     r"(?P<const>const\s*)?(?:;|\{)",
     re.MULTILINE,

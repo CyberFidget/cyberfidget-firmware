@@ -9,6 +9,7 @@
 #define CF_CUSTOM_APP_H
 
 #include "App.h"
+#include "cf_gfx.h"
 #include <Arduino.h>
 #include "HAL.h"
 #include "globals.h"

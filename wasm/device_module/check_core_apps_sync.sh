@@ -38,13 +38,20 @@ cut -d '|' -f 1,3,4 "$TMP_DIR/list" | sort > "$TMP_DIR/expected-build"
 awk '
   /^call em\+\+/ {
     line = $0
-    if (getline next_line) line = line " " next_line
+    # A stanza may span any number of caret-continued lines; join them all
+    # (the old single-getline join silently dropped apps whose stanza grew).
+    while (line ~ /\^[[:space:]]*$/ && (getline next_line) > 0) {
+      sub(/\^[[:space:]]*$/, " ", line)
+      line = line next_line
+    }
     gsub(/\\/, "/", line)
     print line
   }
 ' "$BUILD_FILE" | while IFS= read -r command; do
   src_dir="$(printf '%s\n' "$command" | sed -nE 's@.*-I \.\./\.\./(lib/[^ ]+).*@\1@p')"
-  module="$(printf '%s\n' "$command" | sed -nE 's@.*\.\./\.\./lib/[^ ]+/([A-Za-z_][A-Za-z0-9_]*)\.cpp .*@\1@p')"
+  # The module is the .cpp that lives in the app'\''s own -I directory; other
+  # compiled sources (shared runtime .cpps) must not be mistaken for it.
+  module="$(printf '%s\n' "$command" | sed -nE "s@.*\.\./\.\./${src_dir}/([A-Za-z_][A-Za-z0-9_]*)\.cpp .*@\1@p")"
   output="$(printf '%s\n' "$command" | sed -nE 's@.* -o ([a-z0-9_-]+\.wasm).*@\1@p')"
   if [ -n "$src_dir" ] && [ -n "$module" ] && [ -n "$output" ]; then
     printf '%s|%s|%s\n' "$module" "$src_dir" "$output"
