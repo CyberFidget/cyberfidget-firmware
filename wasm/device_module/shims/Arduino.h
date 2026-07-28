@@ -46,6 +46,13 @@ template <typename T> inline T max(T a, T b) { return (a > b) ? a : b; }
 #define pgm_read_byte(addr) (*(const uint8_t*)(addr))
 #define pgm_read_word(addr) (*(const uint16_t*)(addr))
 
+#ifndef PI
+#define PI 3.14159265358979323846
+#endif
+
+inline float radians(float deg) { return deg * PI / 180.0f; }
+inline float degrees(float rad) { return rad * 180.0f / PI; }
+
 // ---- Minimal fixed-buffer Arduino String ----
 // Truncates silently at kCap-1 chars; plenty for a 128px-wide display line.
 class String {

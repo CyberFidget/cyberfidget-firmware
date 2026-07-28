@@ -40,7 +40,7 @@ REM are all supported by the vendored wasm3.
 set APPFLAGS=-O2 -fno-exceptions -fno-rtti --no-entry -sSTANDALONE_WASM=1 ^
  -sERROR_ON_UNDEFINED_SYMBOLS=0 -sINITIAL_MEMORY=262144 -sMAXIMUM_MEMORY=1048576 ^
  -sALLOW_MEMORY_GROWTH=1 -sSTACK_SIZE=32768 ^
- -mnontrapping-fptoint -mbulk-memory -msign-ext -I shims -I .
+ -mnontrapping-fptoint -mbulk-memory -msign-ext -I shims -I . -I ..\..\lib\CFGraphics\include
 
 echo === bench.wasm (freestanding clang, no libc) ===
 "%CF_EMSDK%\upstream\bin\clang.exe" --target=wasm32 -O3 -nostdlib ^
@@ -64,7 +64,10 @@ if errorlevel 1 exit /b 1
 
 echo === spaceship.wasm ===
 call em++ %APPFLAGS% -I ..\..\lib\Spaceship -DCF_WASM_APP_SPACESHIP ^
- shims\cf_app_glue.cpp ..\..\lib\Spaceship\Spaceship.cpp -o spaceship.wasm
+ shims\cf_app_glue.cpp ..\..\lib\Spaceship\Spaceship.cpp ^
+ ..\..\lib\CFGraphics\src\cf_gfx_sprite.cpp ^
+ ..\..\lib\CFGraphics\src\cf_gfx_actor.cpp ^
+ ..\..\lib\CFGraphics\src\cf_gfx_collision.cpp -o spaceship.wasm
 if errorlevel 1 exit /b 1
 
 echo === sphfluid.wasm ===

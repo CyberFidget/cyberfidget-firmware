@@ -21,6 +21,7 @@
 #include <cmath>
 
 #include "App.h"           // optional base class some generated apps use
+#include "cf_gfx.h"
 #include <Arduino.h>
 #include "HAL.h"
 #include "globals.h"
