@@ -1183,8 +1183,11 @@ void WebPortalApp::handleMove(AsyncWebServerRequest* req) {
 // Route: Status
 // ---------------------------------------------------------------------------
 void WebPortalApp::handleStatus(AsyncWebServerRequest* req) {
-    uint64_t totalBytes = SD.totalBytes();
-    uint64_t usedBytes = SD.usedBytes();
+    // Card-less guard: f_getfree on an unmounted card spins in the SD-SPI
+    // retry loop on the async_tcp task until the task watchdog reboots the
+    // device (seen on hardware). Never touch SD here unless the mount worked.
+    uint64_t totalBytes = sdReady ? SD.totalBytes() : 0;
+    uint64_t usedBytes = sdReady ? SD.usedBytes() : 0;
 
     String json = "{";
     json += "\"files\":" + String(fileCount);
