@@ -29,7 +29,7 @@ extern void menuRun();
 #define APP_ENTRY(ID, LABEL, CATPATH, BEGINF, ENDF, RUNF) \
     { LABEL, CATPATH, BEGINF, ENDF, RUNF },
 
-AppDefinition appDefs[APP_COUNT] = {
+const AppDefinition appDefs[APP_COUNT] = {
     #include "AppManifest.h"  // each line expands into { LABEL, PATH, begin..., end..., run... }
 };
 

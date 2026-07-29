@@ -53,7 +53,7 @@ static_assert(APP_COUNT > 0, "Error: APP_COUNT is zero or not properly defined."
  * We'll also declare a global array appDefs, 
  * each entry has (name, categoryPath, beginFunc, endFunc, runFunc)
  */
-extern AppDefinition appDefs[APP_COUNT];
+extern const AppDefinition appDefs[APP_COUNT];
 
 /**
  * Legacy APP_ENTRY enum strings retained only for exact migration of

@@ -154,7 +154,7 @@ void MatrixScreensaver::update() {
                     RowInfo &rw = col.rows[r];
                     // If the row is fully lit
                     if (rw.litPixels == FONT_HEIGHT) {
-                        if (now >= rw.nextChange) {
+                        if ((int32_t)((uint32_t)now - rw.nextChange) >= 0) {
                             rw.ch = randomAlienChar();
                             // next flicker in 300..800 ms
                             rw.nextChange = now + random(300, 800);

@@ -47,6 +47,7 @@ private:
 
     // WiFi STA state
     bool staConnected = false;
+    bool mdnsStarted = false;
     String staSSID;
     unsigned long staConnectStart = 0;
     static const unsigned long STA_TIMEOUT_MS = 15000;
@@ -73,28 +74,34 @@ private:
     bool     rxTimeNew = false;
     uint64_t rxEpochMs = 0;
     bool     rxPartialNew = false;
-    char     rxPartial[LiveLink::kMaxCaptionText + 1] = "";
     static const int RX_FINAL_QUEUE = 4;
     int      rxFinalCount = 0;       // finals must not be lost; small FIFO
-    char     rxFinals[RX_FINAL_QUEUE][LiveLink::kMaxCaptionText + 1];
 
     // Main-loop-only session state:
     uint32_t liveClientId = 0;       // 0 = no live session
     bool     liveMicHeld = false;
     uint32_t liveSentFrames = 0;
     uint32_t liveDroppedFrames = 0;
-    uint8_t  liveFrameBuf[LiveLink::kPcmFrameBytes];   // PCM frame staging
     uint32_t liveFrameFill = 0;
     unsigned long liveStartMs = 0;
 
     // OLED caption screen (main-loop only). Finals are kept as raw text and
     // wrapped at render time, so the font-size toggle re-wraps correctly.
     static const int CAPTION_SCROLLBACK = 4;
-    char captionFinals[CAPTION_SCROLLBACK][LiveLink::kMaxCaptionText + 1];
     int  captionFinalCount = 0;
-    char captionPartial[LiveLink::kMaxCaptionText + 1] = "";
     bool captionLargeFont = false;
     unsigned long captionLastRxMs = 0;
+
+    struct LiveSessionBufs {
+        // AsyncTCP task under liveMux:
+        char rxPartial[LiveLink::kMaxCaptionText + 1];
+        char rxFinals[RX_FINAL_QUEUE][LiveLink::kMaxCaptionText + 1];
+        // Main loop only:
+        uint8_t liveFrameBuf[LiveLink::kPcmFrameBytes];
+        char captionFinals[CAPTION_SCROLLBACK][LiveLink::kMaxCaptionText + 1];
+        char captionPartial[LiveLink::kMaxCaptionText + 1];
+    };
+    LiveSessionBufs* liveBufs = nullptr;
 
     // Live link helpers (main loop unless noted)
     void onWsEvent(AsyncWebSocketClient* client, AwsEventType type,

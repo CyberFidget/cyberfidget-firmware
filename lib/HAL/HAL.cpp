@@ -124,10 +124,10 @@ namespace HAL
         pinMode(POWER_PIN_AUX, OUTPUT);
         digitalWrite(POWER_PIN_AUX, HIGH);
 
-        // Sync-protocol payload chunks (up to 8 KB) arrive faster than the
-        // app-loop poll cadence drains them; the default RX buffer overflows
-        // mid-chunk. Must be set before begin() to take effect.
-        Serial.setRxBufferSize(16384);
+        // Sync is stop-and-wait: one announced 4096-byte fwdata chunk plus
+        // framing is the maximum in flight before the host waits for fwdata.ok.
+        // 8192 keeps 2x headroom and must be set before begin() to take effect.
+        Serial.setRxBufferSize(8192);
         Serial.begin(921600);
         printFirmwareBanner();
 
