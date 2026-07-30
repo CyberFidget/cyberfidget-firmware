@@ -31,6 +31,9 @@
 #elif defined(WASM_APP_SPACESHIP)
     #include "Spaceship.h"
     #define APP_INSTANCE  spaceshipApp
+#elif defined(WASM_APP_RAGDOLLFIDGIE)
+    #include "RagdollFidgie.h"
+    #define APP_INSTANCE  ragdollFidgieApp
 #elif defined(WASM_APP_BEWILDERYOURBRAIN)
     #include "BewilderYourBrain.h"
     #define APP_INSTANCE  bewilderYourBrainApp
