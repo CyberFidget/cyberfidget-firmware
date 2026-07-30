@@ -522,11 +522,17 @@ void WebPortalApp::releaseBluetoothMemory() {
     }
 
     esp_err_t releaseErr = esp_bt_mem_release(ESP_BT_MODE_BTDM);
+    if (releaseErr != ESP_OK) {
+        // The audio runtime releases the BLE region on its own during static
+        // init, and a combined-mode release fails outright once any part of
+        // the region is gone (bench-measured: the failed BTDM call returned
+        // ~0 KB). The Classic-BT region is the remaining reservation - claim
+        // it explicitly.
+        releaseErr = esp_bt_mem_release(ESP_BT_MODE_CLASSIC_BT);
+    }
     if (releaseErr == ESP_OK) {
         WP_LOG("BT release: controller memory released");
     } else {
-        // A2DPStream may already have released the BLE region. A failed
-        // combined-region release is diagnostic only; portal entry continues.
         WP_LOGF("BT release: memory release returned %s; continuing",
                 esp_err_to_name(releaseErr));
     }
