@@ -14,7 +14,9 @@
 #include <SPI.h>
 #include <WiFi.h>
 #include <esp_bt.h>
+#include <esp_bt_main.h>
 #include <esp_heap_caps.h>  // internal-heap health in /api/status
+#include <esp_system.h>
 #include <sys/time.h>    // settimeofday for POST /api/time + the time WS frame
 
 // External fonts (thingpulse OLED lib) for the caption screen's large mode
@@ -315,6 +317,7 @@ static void collectMP3Paths(const char* dir, String& json, bool& first) {
 // Singleton
 // ---------------------------------------------------------------------------
 WebPortalApp* WebPortalApp::instance = nullptr;
+bool WebPortalApp::btReleasedThisPowerCycle = false;
 WebPortalApp webPortalApp(HAL::buttonManager());
 
 // ---------------------------------------------------------------------------
@@ -325,6 +328,10 @@ WebPortalApp::WebPortalApp(ButtonManager& btnMgr)
     instance = this;
 }
 
+bool WebPortalApp::bluetoothReleasedThisPowerCycle() {
+    return btReleasedThisPowerCycle;
+}
+
 // ---------------------------------------------------------------------------
 // Lifecycle
 // ---------------------------------------------------------------------------
@@ -332,8 +339,9 @@ void WebPortalApp::begin() {
     WP_LOG("begin: enter");
     instance = this;
 
-    // Register Back button + the caption-screen font toggle
+    // Register portal controls + the caption-screen font toggle
     buttonManager.registerCallback(button_SelectIndex, onButtonBack);
+    buttonManager.registerCallback(button_EnterIndex, onButtonEnter);
     buttonManager.registerCallback(button_UpIndex, onButtonUp);
 
     // Reset upload state
@@ -355,6 +363,9 @@ void WebPortalApp::begin() {
     liveFrameFill = 0;
     captionFinalCount = 0;
     mdnsStarted = false;
+    lastMdnsAttempt = 0;
+    exitConfirmPending = false;
+    teardownDone = false;
 
     // Init SD
     initSD();
@@ -371,6 +382,7 @@ void WebPortalApp::begin() {
     WP_LOG("begin: stopping BT controller");
     btStop();
     delay(100);
+    releaseBluetoothMemory();
 
     // Bring WiFi up in AP+STA dual mode. softAP() can fail at radio bring-up
     // when the WiFi driver can't allocate its DMA RX-buffer pool -- this build
@@ -413,6 +425,15 @@ void WebPortalApp::begin() {
 }
 
 void WebPortalApp::end() {
+    teardown();
+}
+
+void WebPortalApp::teardown() {
+    if (teardownDone) {
+        WP_LOG("teardown: already complete");
+        return;
+    }
+    teardownDone = true;
     WP_LOG("end: enter");
 
     // Tell a live listener the device is leaving, release the mic
@@ -434,10 +455,7 @@ void WebPortalApp::end() {
 
     // Stop DNS + mDNS
     dnsServer.stop();
-    if (mdnsStarted) {
-        MDNS.end();
-        mdnsStarted = false;
-    }
+    stopMDNS();
 
     // Stop WiFi (STA + AP)
     WiFi.disconnect(false);
@@ -451,9 +469,71 @@ void WebPortalApp::end() {
 
     // Unregister callbacks
     buttonManager.unregisterCallback(button_SelectIndex);
+    buttonManager.unregisterCallback(button_EnterIndex);
     buttonManager.unregisterCallback(button_UpIndex);
 
     WP_LOG("end: done");
+}
+
+void WebPortalApp::releaseBluetoothMemory() {
+    esp_bluedroid_status_t bluedroidStatus = esp_bluedroid_get_status();
+    if (bluedroidStatus == ESP_BLUEDROID_STATUS_ENABLED) {
+        esp_err_t err = esp_bluedroid_disable();
+        if (err != ESP_OK) {
+            WP_LOGF("BT release: bluedroid disable failed: %s",
+                    esp_err_to_name(err));
+        }
+        bluedroidStatus = esp_bluedroid_get_status();
+    }
+
+    if (bluedroidStatus == ESP_BLUEDROID_STATUS_INITIALIZED) {
+        esp_err_t err = esp_bluedroid_deinit();
+        if (err != ESP_OK) {
+            WP_LOGF("BT release: bluedroid deinit failed: %s",
+                    esp_err_to_name(err));
+        }
+    } else if (bluedroidStatus != ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+        WP_LOGF("BT release: unexpected bluedroid status after disable: %d",
+                (int)bluedroidStatus);
+    }
+
+    esp_bt_controller_status_t controllerStatus =
+        esp_bt_controller_get_status();
+    if (controllerStatus == ESP_BT_CONTROLLER_STATUS_ENABLED) {
+        esp_err_t err = esp_bt_controller_disable();
+        if (err != ESP_OK) {
+            WP_LOGF("BT release: controller disable failed: %s",
+                    esp_err_to_name(err));
+        }
+        controllerStatus = esp_bt_controller_get_status();
+    }
+
+    if (controllerStatus == ESP_BT_CONTROLLER_STATUS_INITED) {
+        esp_err_t err = esp_bt_controller_deinit();
+        if (err != ESP_OK) {
+            WP_LOGF("BT release: controller deinit failed: %s",
+                    esp_err_to_name(err));
+        }
+        controllerStatus = esp_bt_controller_get_status();
+    }
+    if (controllerStatus != ESP_BT_CONTROLLER_STATUS_IDLE) {
+        WP_LOGF("BT release: unexpected controller status before memory release: %d",
+                (int)controllerStatus);
+    }
+
+    esp_err_t releaseErr = esp_bt_mem_release(ESP_BT_MODE_BTDM);
+    if (releaseErr == ESP_OK) {
+        WP_LOG("BT release: controller memory released");
+    } else {
+        // A2DPStream may already have released the BLE region. A failed
+        // combined-region release is diagnostic only; portal entry continues.
+        WP_LOGF("BT release: memory release returned %s; continuing",
+                esp_err_to_name(releaseErr));
+    }
+
+    // Even when a teardown call reports an unexpected state, do not let later
+    // code in this power cycle attempt to rebuild a stack the portal dismantled.
+    btReleasedThisPowerCycle = true;
 }
 
 void WebPortalApp::update() {
@@ -465,11 +545,7 @@ void WebPortalApp::update() {
         if (WiFi.status() == WL_CONNECTED) {
             staConnected = true;
             WP_LOGF("STA connected, IP=%s", WiFi.localIP().toString().c_str());
-            if (!mdnsStarted && MDNS.begin("cyberfidget")) {
-                MDNS.addService("http", "tcp", 80);
-                mdnsStarted = true;
-                WP_LOG("mDNS started (cyberfidget.local)");
-            }
+            tryStartMDNS();
         } else if (millis() - staConnectStart > STA_TIMEOUT_MS) {
             WP_LOG("STA connect timeout");
             staSSID = "";
@@ -477,7 +553,12 @@ void WebPortalApp::update() {
     }
     if (staConnected && WiFi.status() != WL_CONNECTED) {
         staConnected = false;
+        stopMDNS();
         WP_LOG("STA connection lost");
+    }
+    if (staConnected && !mdnsStarted &&
+        millis() - lastMdnsAttempt >= MDNS_RETRY_MS) {
+        tryStartMDNS();
     }
 
     // Live caption link: apply what the AsyncTCP task mailed over, then
@@ -493,9 +574,21 @@ void WebPortalApp::update() {
 // Button callback
 // ---------------------------------------------------------------------------
 void WebPortalApp::onButtonBack(const ButtonEvent& event) {
-    if (event.eventType == ButtonEvent_Released) {
-        WP_LOG("back pressed");
-        MenuManager::instance().returnToMenu();
+    if (event.eventType == ButtonEvent_Released && instance != nullptr) {
+        if (instance->exitConfirmPending) {
+            WP_LOG("exit confirmation cancelled");
+            instance->exitConfirmPending = false;
+        } else {
+            WP_LOG("exit confirmation opened");
+            instance->exitConfirmPending = true;
+        }
+    }
+}
+
+void WebPortalApp::onButtonEnter(const ButtonEvent& event) {
+    if (event.eventType == ButtonEvent_Released && instance != nullptr &&
+        instance->exitConfirmPending) {
+        instance->confirmExitAndRestart();
     }
 }
 
@@ -565,6 +658,7 @@ void WebPortalApp::loadWifiCreds() {
 }
 
 void WebPortalApp::connectSTA(const String& ssid, const String& pass, bool save) {
+    stopMDNS();
     WiFi.disconnect(false);  // disconnect STA only, keep AP
     delay(100);
     WiFi.begin(ssid.c_str(), pass.c_str());
@@ -583,6 +677,7 @@ void WebPortalApp::connectSTA(const String& ssid, const String& pass, bool save)
 }
 
 void WebPortalApp::disconnectSTA() {
+    stopMDNS();
     WiFi.disconnect(false);
     staSSID = "";
     staConnected = false;
@@ -591,6 +686,45 @@ void WebPortalApp::disconnectSTA() {
     prefs.clear();
     prefs.end();
     WP_LOG("WiFi credentials cleared");
+}
+
+void WebPortalApp::tryStartMDNS() {
+    if (!staConnected || mdnsStarted) return;
+    lastMdnsAttempt = millis();
+    if (MDNS.begin("cyberfidget")) {
+        MDNS.addService("http", "tcp", 80);
+        mdnsStarted = true;
+        WP_LOG("mDNS started (cyberfidget.local)");
+    } else {
+        MDNS.end();
+        WP_LOG("mDNS start failed; will retry");
+    }
+}
+
+void WebPortalApp::stopMDNS() {
+    if (!mdnsStarted) return;
+    MDNS.end();
+    mdnsStarted = false;
+}
+
+void WebPortalApp::confirmExitAndRestart() {
+    WP_LOG("exit confirmed; restarting");
+    teardown();
+
+    Preferences prefs;
+    if (prefs.begin("bootcfg", false)) {
+        size_t written = prefs.putBool("skipanim", true);
+        prefs.end();
+        if (written == 0) {
+            WP_LOG("exit restart: failed to write animation skip flag");
+        }
+    } else {
+        WP_LOG("exit restart: failed to open boot preferences");
+    }
+
+    Serial.flush();
+    delay(50);
+    esp_restart();
 }
 
 // ---------------------------------------------------------------------------
@@ -1599,7 +1733,9 @@ void WebPortalApp::handleWifiStatus(AsyncWebServerRequest* req) {
     if (staConnected) {
         json += ",\"ssid\":\"" + escJSON(staSSID) + "\"";
         json += ",\"ip\":\"" + WiFi.localIP().toString() + "\"";
-        json += ",\"mdns\":\"cyberfidget.local\"";
+        if (mdnsStarted) {
+            json += ",\"mdns\":\"cyberfidget.local\"";
+        }
     } else if (staSSID.length()) {
         json += ",\"ssid\":\"" + escJSON(staSSID) + "\"";
         json += ",\"status\":\"connecting\"";
@@ -2061,6 +2197,19 @@ void WebPortalApp::renderCaptionScreen() {
 void WebPortalApp::render() {
     display.clear();
 
+    if (exitConfirmPending) {
+        display.setColor(WHITE);
+        display.setFont(ArialMT_Plain_16);
+        display.setTextAlignment(TEXT_ALIGN_CENTER);
+        display.drawString(64, 4, "Exit portal?");
+        display.setFont(ArialMT_Plain_10);
+        display.drawString(64, 27, "Your Cyber Fidget");
+        display.drawString(64, 39, "will restart.");
+        display.drawString(64, 52, "ENTER = yes   BACK = no");
+        display.display();
+        return;
+    }
+
     // A live caption session takes over the screen — it IS the product
     // surface while a listener is connected.
     if (liveClientId != 0) {
@@ -2097,7 +2246,11 @@ void WebPortalApp::render() {
     // STA info
     if (staConnected) {
         display.drawString(4, 28, staSSID + " " + WiFi.localIP().toString());
-        display.drawString(4, 40, "cyberfidget.local");
+        if (mdnsStarted) {
+            display.drawString(4, 40, "cyberfidget.local");
+        } else {
+            display.drawString(4, 40, String("Files: ") + String(fileCount));
+        }
     } else if (staSSID.length()) {
         display.drawString(4, 28, "Connecting: " + staSSID);
         display.drawString(4, 40, String("Files: ") + String(fileCount));

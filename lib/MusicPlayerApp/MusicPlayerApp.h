@@ -103,6 +103,7 @@ private:
     unsigned long connectStartTime = 0;
     static const unsigned long CONNECT_TIMEOUT_MS = 15000;
     bool btConnected = false;
+    bool connectFailNeedsRestart = false;
 
     // Device switching (disconnect old → connect new)
     SavedDevice switchTargetDevice;
@@ -139,6 +140,7 @@ private:
     void createAudioPipeline();
     void destroyAudioPipeline();
     void disconnectBT();
+    void showBluetoothNeedsRestart();
 
     // Library / metadata
     std::vector<TrackInfo> trackLibrary;

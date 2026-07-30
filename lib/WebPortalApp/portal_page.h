@@ -1498,12 +1498,13 @@ async function loadWifiStatus(){
     $('connAP').textContent=s.ap_ip||'192.168.4.1';
     $('apIPDisplay').textContent=s.ap_ip||'192.168.4.1';
     if(s.connected){
+      const mdns=s.mdns||'';
       tag.style.display='';dot.className='dot on';
-      sta.textContent=s.mdns+' ('+s.ip+')';
+      sta.textContent=mdns?mdns+' ('+s.ip+')':s.ip;
       sc.innerHTML='<div class="info-row"><span class="label">Status</span><span class="val" style="color:var(--success)">Connected</span></div>'+
         '<div class="info-row"><span class="label">Network</span><span class="val">'+esc(s.ssid)+'</span></div>'+
         '<div class="info-row"><span class="label">IP Address</span><span class="val accent">'+s.ip+'</span></div>'+
-        '<div class="info-row"><span class="label">mDNS</span><span class="val accent">'+s.mdns+'</span></div>'+
+        (mdns?'<div class="info-row"><span class="label">mDNS</span><span class="val accent">'+mdns+'</span></div>':'')+
         '<div style="margin-top:12px"><button class="btn btn-del" onclick="forgetWifi()">Forget Network</button></div>';
     }else if(s.ssid&&s.status==='connecting'){
       tag.style.display='';dot.className='dot off';

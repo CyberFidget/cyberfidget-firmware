@@ -4,6 +4,7 @@
 #include "MusicPlayerApp.h"
 #include "AudioManager.h"
 #include "RGBController.h"
+#include "WebPortalApp.h"
 #include "globals.h"        // millis_APP_LASTINTERACTION (sleep prevention)
 #include <SD.h>
 #include <SPI.h>
@@ -145,6 +146,7 @@ void MusicPlayerApp::begin() {
     nowPlayingArtist = "";
     connectingDeviceName = "";
     connectedDeviceName = "";
+    connectFailNeedsRestart = false;
     currentTrackIndex = -1;
     marqueeOffset = 0;
 
@@ -348,6 +350,7 @@ void MusicPlayerApp::update() {
             } else if (millis() - connectStartTime > CONNECT_TIMEOUT_MS) {
                 // Timeout — clean up and show failure
                 destroyAudioPipeline();
+                connectFailNeedsRestart = false;
                 setState(STATE_CONNECT_FAIL);
             }
             break;
@@ -428,6 +431,11 @@ void MusicPlayerApp::initSD() {
 
 void MusicPlayerApp::startConnectingByAddress(const SavedDevice& dev) {
     MPLAYER_LOG("startConnectingByAddress: enter");
+    if (WebPortalApp::bluetoothReleasedThisPowerCycle()) {
+        showBluetoothNeedsRestart();
+        return;
+    }
+
     if (scannerActive) {
         btScanner.end();
         scannerActive = false;
@@ -511,6 +519,12 @@ void MusicPlayerApp::startConnectingByAddress(const SavedDevice& dev) {
 
     connectStartTime = millis();
     setState(STATE_BT_CONNECTING);
+}
+
+void MusicPlayerApp::showBluetoothNeedsRestart() {
+    MPLAYER_LOG("Bluetooth unavailable until restart");
+    connectFailNeedsRestart = true;
+    setState(STATE_CONNECT_FAIL);
 }
 
 void MusicPlayerApp::startOnboardSpeaker() {
@@ -1194,10 +1208,14 @@ void MusicPlayerApp::handleEnter() {
             } else {
                 // "Scan for new..." selected
                 if (!scannerActive) {
-                    if (btScanner.begin()) {
+                    if (WebPortalApp::bluetoothReleasedThisPowerCycle()) {
+                        showBluetoothNeedsRestart();
+                    } else if (btScanner.begin()) {
                         scannerActive = true;
                         btScanner.startScan(12);
                         setState(STATE_BT_SCANNING);
+                    } else {
+                        showBluetoothNeedsRestart();
                     }
                 }
             }
@@ -1590,8 +1608,14 @@ void MusicPlayerApp::renderConnectFail() {
 
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(64, 24, "Connection Failed");
-    display.drawString(64, 40, "Press any button");
+    if (connectFailNeedsRestart) {
+        display.drawString(64, 20, "Bluetooth needs");
+        display.drawString(64, 33, "a restart");
+        display.drawString(64, 48, "Press any button");
+    } else {
+        display.drawString(64, 24, "Connection Failed");
+        display.drawString(64, 40, "Press any button");
+    }
 }
 
 void MusicPlayerApp::renderMainMenu() {
