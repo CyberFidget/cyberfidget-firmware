@@ -25,10 +25,13 @@ public:
     void end();
 
     static void onButtonBack(const ButtonEvent& event);
+    static void onButtonEnter(const ButtonEvent& event);
     static void onButtonUp(const ButtonEvent& event);   // caption font toggle
+    static bool bluetoothReleasedThisPowerCycle();
 
 private:
     static WebPortalApp* instance;
+    static bool btReleasedThisPowerCycle;
     ButtonManager& buttonManager;
 
     static constexpr const char* AP_SSID = "CyberFidget";
@@ -48,9 +51,15 @@ private:
     // WiFi STA state
     bool staConnected = false;
     bool mdnsStarted = false;
+    unsigned long lastMdnsAttempt = 0;
     String staSSID;
     unsigned long staConnectStart = 0;
     static const unsigned long STA_TIMEOUT_MS = 15000;
+    static const unsigned long MDNS_RETRY_MS = 3000;
+
+    // Portal exit is a deliberate reboot, confirmed on-device.
+    bool exitConfirmPending = false;
+    bool teardownDone = false;
 
     // Upload tracking (written by async handler, read by render loop)
     volatile bool uploadInProgress = false;
@@ -128,6 +137,13 @@ private:
     void loadWifiCreds();
     void connectSTA(const String& ssid, const String& pass, bool save);
     void disconnectSTA();
+    void tryStartMDNS();
+    void stopMDNS();
+
+    // Shared lifecycle body for AppManager-driven exit and confirmed reboot.
+    void teardown();
+    void confirmExitAndRestart();
+    void releaseBluetoothMemory();
 
     // Web server setup
     void setupRoutes();

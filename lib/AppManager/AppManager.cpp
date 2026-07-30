@@ -10,6 +10,7 @@
 #include "SerialCli.h"
 #include "LoadoutManifest.h"
 #include "LoadoutStore.h"
+#include <Preferences.h>
 
 void (*keep_functions[])() = {menuBegin, menuEnd, menuRun};
 
@@ -43,8 +44,15 @@ void AppManager::setup() {
     MenuManager &m = MenuManager::instance();
     ESP_LOGI(TAG_MAIN, "MenuManager::instance() returned: %p", (void*)&m);
 
-    // Default to menu
-    appActive     = APP_BOOT_ANIMATION;
+    // A confirmed portal exit sets this one-shot immediately before reboot.
+    // Read-write mode is required so the same boot consumes the flag.
+    Preferences bootPrefs;
+    bootPrefs.begin("bootcfg", false);
+    bool skipBootAnimation = bootPrefs.getBool("skipanim", false);
+    bootPrefs.remove("skipanim");
+    bootPrefs.end();
+
+    appActive     = skipBootAnimation ? APP_MENU : APP_BOOT_ANIMATION;
     appPreviously = APP_MENU;
 
     printAppCount(); // Debugging
