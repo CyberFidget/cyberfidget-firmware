@@ -135,6 +135,12 @@ elseif(WASM_APP STREQUAL "Spaceship")
     list(APPEND FW_SOURCES
         ${LIB_DIR}/Spaceship/Spaceship.cpp
     )
+elseif(WASM_APP STREQUAL "RagdollFidgie")
+    add_compile_definitions(WASM_APP_RAGDOLLFIDGIE)
+    include_directories(${LIB_DIR}/RagdollFidgie)
+    list(APPEND FW_SOURCES
+        ${LIB_DIR}/RagdollFidgie/RagdollFidgie.cpp
+    )
 elseif(WASM_APP STREQUAL "BewilderYourBrain")
     add_compile_definitions(WASM_APP_BEWILDERYOURBRAIN)
     list(APPEND FW_SOURCES
