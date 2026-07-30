@@ -61,7 +61,7 @@ public:
         const unsigned char* data;
     };
 
-    static constexpr int kMaxRecordedCalls = 16;
+    static constexpr int kMaxRecordedCalls = 48;
 
     XbmCall calls[kMaxRecordedCalls] = {};
     int callCount = 0;
@@ -78,6 +78,15 @@ public:
     uint8_t fb[1024] = {};
     LineCall lines[kMaxRecordedLines] = {};
     int lineCount = 0;
+
+    struct CircleCall {
+        int16_t x;
+        int16_t y;
+        int16_t radius;
+    };
+
+    CircleCall circles[kMaxRecordedCalls] = {};
+    int circleCount = 0;
 
     void drawXbm(int16_t x, int16_t y, int16_t w, int16_t h,
                  const unsigned char* data) {
@@ -115,13 +124,29 @@ public:
         }
     }
 
+    void fillCircle(int16_t x, int16_t y, int16_t radius) {
+        if (circleCount < kMaxRecordedCalls) {
+            circles[circleCount] = CircleCall{x, y, radius};
+        }
+        ++circleCount;
+        for (int16_t dy = -radius; dy <= radius; ++dy) {
+            for (int16_t dx = -radius; dx <= radius; ++dx) {
+                if (dx * dx + dy * dy <= radius * radius) {
+                    setPixel(x + dx, y + dy);
+                }
+            }
+        }
+    }
+
     const uint8_t* frameBuffer() const { return fb; }
 
     void reset() {
         callCount = 0;
         lineCount = 0;
+        circleCount = 0;
         memset(fb, 0, sizeof(fb));
         memset(lines, 0, sizeof(lines));
+        memset(circles, 0, sizeof(circles));
     }
 };
 #else

@@ -22,6 +22,7 @@
 #include "MyScreensaver.h"
 #include "Splooty.h"
 #include "Spaceship.h"
+#include "RagdollFidgie.h"
 #include "MusicPlayerApp.h"
 #include "WebPortalApp.h"
 #include "BewilderYourBrain.h"
