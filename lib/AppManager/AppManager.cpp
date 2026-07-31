@@ -44,15 +44,23 @@ void AppManager::setup() {
     MenuManager &m = MenuManager::instance();
     ESP_LOGI(TAG_MAIN, "MenuManager::instance() returned: %p", (void*)&m);
 
-    // A confirmed portal exit sets this one-shot immediately before reboot.
-    // Read-write mode is required so the same boot consumes the flag.
+    // Portal entry and exit set these one-shots immediately before reboot.
+    // Read-write mode is required so the same boot consumes the flags.
     Preferences bootPrefs;
-    bootPrefs.begin("bootcfg", false);
-    bool skipBootAnimation = bootPrefs.getBool("skipanim", false);
-    bootPrefs.remove("skipanim");
-    bootPrefs.end();
+    bool skipBootAnimation = false;
+    bool bootPortal = false;
+    if (bootPrefs.begin("bootcfg", false)) {
+        skipBootAnimation = bootPrefs.getBool("skipanim", false);
+        bootPortal = bootPrefs.getBool("bootapp", false);
+        bootPrefs.remove("skipanim");
+        bootPrefs.remove("bootapp");
+        bootPrefs.end();
+    } else {
+        ESP_LOGW(TAG_MAIN, "Failed to open boot preferences");
+    }
 
-    appActive     = skipBootAnimation ? APP_MENU : APP_BOOT_ANIMATION;
+    appActive     = bootPortal ? APP_WEB_PORTAL
+                               : (skipBootAnimation ? APP_MENU : APP_BOOT_ANIMATION);
     appPreviously = APP_MENU;
 
     printAppCount(); // Debugging
