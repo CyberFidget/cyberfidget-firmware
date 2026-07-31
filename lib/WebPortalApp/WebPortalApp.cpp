@@ -336,6 +336,34 @@ bool WebPortalApp::bluetoothReleasedThisPowerCycle() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 void WebPortalApp::begin() {
+    if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE) {
+        WP_LOG("begin: Bluetooth active; restarting before portal entry");
+
+        display.clear();
+        display.setColor(WHITE);
+        display.setFont(ArialMT_Plain_10);
+        display.setTextAlignment(TEXT_ALIGN_CENTER);
+        display.drawString(64, 27, "Opening portal...");
+        display.display();
+
+        Preferences prefs;
+        if (prefs.begin("bootcfg", false)) {
+            if (prefs.putBool("skipanim", true) == 0) {
+                WP_LOG("entry restart: failed to write animation skip flag");
+            }
+            if (prefs.putBool("bootapp", true) == 0) {
+                WP_LOG("entry restart: failed to write portal boot flag");
+            }
+            prefs.end();
+        } else {
+            WP_LOG("entry restart: failed to open boot preferences");
+        }
+
+        Serial.flush();
+        delay(50);
+        esp_restart();
+    }
+
     WP_LOG("begin: enter");
     instance = this;
 
