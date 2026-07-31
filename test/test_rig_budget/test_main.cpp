@@ -55,11 +55,67 @@ void test_worst_case_ragdoll_tick_budget(void) {
     TEST_ASSERT_LESS_THAN_FLOAT(500.0f, static_cast<float>(microseconds));
 }
 
+// A rig wider than the particle budget cannot ragdoll. That refusal used
+// to be silent, so an over-budget rig simply did nothing with no way for
+// the caller to know.
+void test_over_budget_rig_reports_refusal(void) {
+    static constexpr RigBone kWideBones[12] = {
+        {"root", -1, 0, 0, 0, 0},   {"b1", 0, 0, -6, 0, -6},
+        {"b2", 1, 0, -6, 0, -6},    {"b3", 2, 0, -5, 0, -5},
+        {"b4", 3, -5, 0, -5, 0},    {"b5", 4, -6, 0, -6, 0},
+        {"b6", 3, 5, 0, 5, 0},      {"b7", 6, 6, 0, 6, 0},
+        {"b8", 0, -4, 6, -4, 6},    {"b9", 8, 0, 6, 0, 6},
+        {"b10", 0, 4, 6, 4, 6},     {"b11", 10, 0, 6, 0, 6},
+    };
+    static constexpr int16_t kWideRestOffsets[12] = {};
+    static constexpr RigPose kWideRest = {"rest", kWideRestOffsets, 0};
+    static constexpr Rig kWideRig = {
+        "over-budget", kWideBones, 12, nullptr, 0, &kWideRest, 1, nullptr, 0};
+
+    RigActor actor;
+    actor.setRig(&kWideRig);
+    actor.setPos(64, 30);
+    TEST_ASSERT_FALSE(actor.ragdoll());
+
+    RigActor inBudget;
+    inBudget.setRig(&kRig);
+    inBudget.setPos(64, 30);
+    TEST_ASSERT_TRUE(inBudget.ragdoll());
+}
+
+// The settle counter used to be a wrapping uint8, so a pin held past 256
+// ticks re-armed the settle window and the stand-up stalled for ~2 s on
+// roughly a quarter of release times. Hold well past the wrap point and
+// require a prompt stand-up.
+void test_long_pin_hold_still_stands_up_promptly(void) {
+    RigActor actor;
+    actor.setRig(&kRig);
+    actor.setPos(64, 30);
+    actor.ragdoll();
+    TEST_ASSERT_TRUE(actor.pin(static_cast<uint8_t>(0), 64.0f, 30.0f));
+
+    uint32_t tick = 0;
+    for (; tick < 400; ++tick) actor.update(tick * 20);
+    actor.unpin();
+
+    const uint32_t unpinnedAt = tick;
+    while (actor.state() != RigActor::STATE_STANDING &&
+           tick < unpinnedAt + 200) {
+        actor.update(tick * 20);
+        ++tick;
+    }
+    TEST_ASSERT_EQUAL(static_cast<int>(RigActor::STATE_STANDING),
+                      static_cast<int>(actor.state()));
+    TEST_ASSERT_LESS_THAN_UINT32(unpinnedAt + 100, tick);
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_worst_case_ragdoll_tick_budget);
+    RUN_TEST(test_over_budget_rig_reports_refusal);
+    RUN_TEST(test_long_pin_hold_still_stands_up_promptly);
     return UNITY_END();
 }

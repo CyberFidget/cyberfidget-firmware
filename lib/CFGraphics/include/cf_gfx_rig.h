@@ -59,6 +59,13 @@ namespace cf { namespace gfx {
  * 8. Physics (verlet ragdoll) is deliberately NOT part of this contract.
  *    Pose/FK agreement is a byte claim; ragdoll agreement is a feel judgment.
  *
+ * Bones must be authored parent-first: every non-root parent index is less
+ * than its bone's index. RigPose::boneDegrees carries no length metadata, so
+ * every authored pose array must contain exactly Rig::boneCount entries. The
+ * golden-fixture sync script enforces both conventions. Ragdoll physics has a
+ * separate kMaxRigParticles budget; ragdoll() returns false for larger rigs
+ * even though their poses can still use up to kMaxRigBones bones.
+ *
  * FK coordinates are integer screen pixels (+x right, +y down). RigActor's
  * position is plain int16_t screen pixels, like MeshActor. A caller holding
  * Q8.8 coordinates must convert them before calling setPos().
@@ -390,10 +397,10 @@ public:
         return blend(&poseA, &poseB, amount);
     }
 
-    void ragdoll(float impulseX = 0.0f, float impulseY = 0.0f) {
+    bool ragdoll(float impulseX = 0.0f, float impulseY = 0.0f) {
         if (rig_ == nullptr || !transformsValid_ ||
             rig_->boneCount == 0 || rig_->boneCount > kMaxRigParticles) {
-            return;
+            return false;
         }
         particleCount_ = rig_->boneCount;
         for (uint8_t i = 0; i < particleCount_; ++i) {
@@ -411,6 +418,7 @@ public:
         settledTicks_ = 0;
         pinIndex_ = -1;
         state_ = STATE_RAGDOLL;
+        return true;
     }
 
     bool pin(const char* bone, float x, float y) {
@@ -658,7 +666,9 @@ private:
             }
         }
         settledTicks_ = speed < 0.9f
-                            ? static_cast<uint8_t>(settledTicks_ + 1)
+                            ? (settledTicks_ < 255
+                                   ? static_cast<uint8_t>(settledTicks_ + 1)
+                                   : settledTicks_)
                             : 0;
         return settledTicks_ > 70;
     }
