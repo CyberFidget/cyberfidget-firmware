@@ -3,9 +3,10 @@
 #
 """Sync-protocol hardware bench against the Cyber Fidget on COM30.
 
-Drives the serial verbs end-to-end: version ritual, syncinfo, blob round-trip,
-corruption rejection, confinement, nested paths, lapply + reboot persistence,
-timeout/hostage fix, CRLF tolerance, deep-nesting rejection.
+Drives the serial verbs end-to-end: version ritual, syncinfo, write/list/stat/
+read-back comparison, corruption rejection, confinement, nested paths, lapply
+and reboot persistence, timeout/hostage fix, CRLF tolerance, deep-nesting
+rejection.
 Leaves the device clean (test blobs deleted, manifest restored).
 """
 import sys, time, zlib, json
@@ -64,7 +65,7 @@ class Dev:
                 self.rxbuf += chunk
         return out
     def read_payload_reply(self, timeout=5.0):
-        """Read a header line then a length-framed payload (for lget)."""
+        """Read a header line then a length-framed payload (lget or fread)."""
         hdr = self.read_lines(n=1, timeout=timeout)
         if not hdr:
             return None, None
@@ -83,6 +84,18 @@ class Dev:
             if b:
                 data += b
         return h, data
+    def read_until(self, marker, timeout=5.0, max_lines=66):
+        """Collect reply lines through the first line containing marker."""
+        out = []
+        end = time.time() + timeout
+        while time.time() < end and len(out) < max_lines:
+            line = self.read_lines(n=1, timeout=max(0.1, end - time.time()))
+            if not line:
+                break
+            out.extend(line)
+            if marker in line[0]:
+                break
+        return out
 
 def crc(b):
     return format(zlib.crc32(b) & 0xFFFFFFFF, "08x")
@@ -120,6 +133,26 @@ def write_file(d, path, data, corrupt_chunk=False, term=b"\n"):
     r = d.read_lines(n=1, timeout=10)
     return (r[0] if r and ".ok" in r[0] else None), r
 
+def read_file(d, path, size):
+    """Read a file in advertised-size chunks and verify every reply CRC."""
+    out = bytearray()
+    transcript = []
+    while len(out) < size:
+        want = min(4096, size - len(out))
+        d.send_line(f"fread {path} {len(out)} {want}")
+        header, payload = d.read_payload_reply(timeout=6)
+        transcript.append(header or "<no fread header>")
+        if not header or ".ok" not in header or payload is None:
+            return None, transcript
+        chunk_crc = None
+        for tok in header.split():
+            if tok.startswith("crc="):
+                chunk_crc = tok[4:]
+        if len(payload) != want or chunk_crc != crc(payload):
+            return None, transcript
+        out.extend(payload)
+    return bytes(out), transcript
+
 def main():
     d = Dev()
     try:
@@ -149,10 +182,28 @@ def main():
                 if tok.startswith("fs_free="):
                     fs_free0 = int(tok.split("=")[1])
 
-        # --- 2. blob round-trip (2.5 chunks to exercise chunking)
+        # --- 2. write -> list -> stat -> read -> compare (2.5 chunks)
         data = bytes((i * 7 + 13) & 0xFF for i in range(10240))
         okline, tr = write_file(d, "/apps/bench_t.bin", data)
-        report("fwrite/fwdata/fwcommit round-trip 10KB", bool(okline), okline or str(tr))
+        report("read-back case: write 10KB", bool(okline), okline or str(tr))
+
+        d.send_line("flist /apps")
+        lines = d.read_until("flist.done=", timeout=6)
+        listed = any("flist.entry=bench_t.bin size=10240" in line for line in lines)
+        complete = any("flist.done=" in line and "truncated=0" in line for line in lines)
+        report("read-back case: list finds complete entry", listed and complete,
+               " | ".join(lines))
+
+        d.send_line("fstat /apps/bench_t.bin")
+        lines = d.read_lines(n=1, timeout=10)
+        stat_ok = bool(lines) and ".ok" in lines[0] and \
+            f"size={len(data)}" in lines[0] and f"crc={crc(data)}" in lines[0]
+        report("read-back case: stat size and CRC match", stat_ok,
+               lines[0] if lines else "")
+
+        readback, tr = read_file(d, "/apps/bench_t.bin", len(data))
+        report("read-back case: fread bytes compare", readback == data,
+               " | ".join(tr))
 
         # --- 3. corrupted chunk NAK + clean resend succeeds
         okline, tr = write_file(d, "/apps/bench_c.bin", data[:5000], corrupt_chunk=True)
