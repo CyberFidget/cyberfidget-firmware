@@ -183,7 +183,15 @@ def main():
                     fs_free0 = int(tok.split("=")[1])
 
         # --- 2. write -> list -> stat -> read -> compare (2.5 chunks)
-        data = bytes((i * 7 + 13) & 0xFF for i in range(10240))
+        # The payload must NOT repeat with a period that divides the 4096-byte
+        # chunk size. A plain (i * 7 + 13) & 0xFF ramp repeats every 256 bytes,
+        # so every chunk boundary lands on the same phase and a device that
+        # ignored the read offset entirely would return byte-identical chunks
+        # that still reassemble into the original - the comparison below would
+        # pass against a completely broken seek. Mixing in the high bits of the
+        # index makes each 256-byte block distinct, so an offset fault shows up
+        # as both a CRC mismatch and a compare failure.
+        data = bytes((((i * 7 + 13) ^ (i >> 8)) & 0xFF) for i in range(10240))
         okline, tr = write_file(d, "/apps/bench_t.bin", data)
         report("read-back case: write 10KB", bool(okline), okline or str(tr))
 
