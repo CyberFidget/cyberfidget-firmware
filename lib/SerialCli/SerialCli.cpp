@@ -90,7 +90,7 @@ bool verbWithArg(const char* line, const char* verb, const char** arg) {
 
 // =========================================================================
 // Sync-transport session state (device-only; SerialCli never compiles for
-// the native tests). One write session at a time — the browser opens with
+// the native tests). One write session at a time - the browser opens with
 // `fwrite`, streams `fwdata` chunks, and closes with `fwcommit`/`fwabort`.
 // The whole-file CRC is recomputed from the temp file at commit, so chunks
 // may arrive in any order and any chunk may be retried (restartable).
@@ -129,7 +129,7 @@ void releasePayloadIfIdle() {
 // (or merely wedged) host a lever to freeze the whole device. Two independent
 // bounds close that off:
 //   * Inter-byte gap: at 921600 baud a byte is ~11us on the wire, so a full
-//     second of silence mid-payload already means the transfer has died —
+//     second of silence mid-payload already means the transfer has died -
 //     stop waiting rather than hang on a yanked cable.
 //   * Total duration: a 4KB chunk is ~45ms of actual wire time and an 8KB ops
 //     doc ~90ms, so any legal payload completes in well under a second even
@@ -200,8 +200,8 @@ void drainBytes(size_t n, uint32_t gapMs) {
 // '\r'; the paired '\n' is ~11us behind it on the wire (921600 baud) and is
 // normally already sitting in the UART FIFO. Swallow exactly that one '\n'
 // before dispatch(), so it can never be read as byte 0 of a length-framed
-// payload (fwdata/lapply) — which would fail the chunk CRC AND leave a stray
-// byte that corrupts the next command line — nor be seen as a spurious empty
+// payload (fwdata/lapply) - which would fail the chunk CRC AND leave a stray
+// byte that corrupts the next command line - nor be seen as a spurious empty
 // line. The short bounded wait covers the rare case where '\r' was the last
 // byte drained just before '\n' landed; a lone-'\r' host (no following '\n')
 // or an LF-only host falls through fast without consuming a real byte.
@@ -220,7 +220,7 @@ void swallowPairedLf() {
 }
 
 // Create every intermediate directory in a confined file path so a nested
-// target (e.g. /apps/sub/x.dat) can actually be opened for write — Arduino
+// target (e.g. /apps/sub/x.dat) can actually be opened for write - Arduino
 // LittleFS does not auto-create parent directories on open(). `path` is an
 // absolute, already-confined file path; only its directory prefixes are
 // created, never the file itself.
@@ -305,6 +305,9 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "fwrite", &arg))  { cmdFwrite(arg);  return; }
     if (verbWithArg(line, "fwdata", &arg))  { cmdFwdata(arg);  return; }
     if (verbWithArg(line, "fdelete", &arg)) { cmdFdelete(arg); return; }
+    if (verbWithArg(line, "flist", &arg))   { cmdFlist(arg);   return; }
+    if (verbWithArg(line, "fstat", &arg))   { cmdFstat(arg);   return; }
+    if (verbWithArg(line, "fread", &arg))   { cmdFread(arg);   return; }
     if (verbWithArg(line, "lapply", &arg))  { cmdLapply(arg);  return; }
 #ifdef CF_TEST_CLI
     if (ieq(line, "apps")) { cmdApps(); return; }
@@ -390,6 +393,7 @@ void SerialCli::cmdInfo() {
 void SerialCli::cmdHelp() {
     Serial.println("[cmd] help=version,info,help,fwrite <path> <size> <crc>,"
                    "fwdata <off> <len> <crc>,fwcommit,fwabort,fdelete <path>,"
+                   "flist <dir>,fstat <path>,fread <path> <off> <len>,"
                    "lget,lapply <len> <crc>,syncinfo");
 #ifdef CF_TEST_CLI
     Serial.println("[cmd] help.test=apps,launch <name|index>,app,net,mic,wifi <ssid>|<pass>");
@@ -419,7 +423,7 @@ void SerialCli::cmdFwrite(const char* args) {
         Serial.println("[err] fwrite.fs=mount failed");
         return;
     }
-    // Free-space guard (approximate — usedBytes includes an old copy if this
+    // Free-space guard (approximate - usedBytes includes an old copy if this
     // overwrites, so this only rejects clearly-too-large transfers).
     size_t total = LittleFS.totalBytes();
     size_t used  = LittleFS.usedBytes();
@@ -444,7 +448,7 @@ void SerialCli::cmdFwrite(const char* args) {
     snprintf(g_writeTemp, sizeof(g_writeTemp), "%s.part", g_writePath);
 
     // Nested confined paths (/apps/sub/x.dat) pass confinement but LittleFS
-    // won't create the intermediate dirs on open — do it first so the open
+    // won't create the intermediate dirs on open - do it first so the open
     // succeeds. Spot-check nested writes on hardware.
     ensureParentDirs(g_writeTemp);
 
@@ -578,7 +582,7 @@ void SerialCli::cmdFwcommit() {
     // Atomic-ish publish: rename temp over the final path. littlefs renames
     // atomically; keep the remove+retry fallback the loadout store uses in
     // case the VFS refuses an overwrite. A power cut here leaves the old file
-    // or none — never a half-written blob.
+    // or none - never a half-written blob.
     bool ok = LittleFS.rename(g_writeTemp, g_writePath);
     if (!ok) {
         LittleFS.remove(g_writePath);
@@ -624,6 +628,195 @@ void SerialCli::cmdFdelete(const char* args) {
         return;
     }
     Serial.printf("[cmd] fdelete.ok=%s\n", path);
+}
+
+void SerialCli::cmdFlist(const char* args) {
+    char dir[SyncProtocol::kMaxPathLen + 1];
+    char probe[SyncProtocol::kMaxPathLen + 1];
+    if (!SyncProtocol::parseListArgs(args, dir, sizeof(dir))) {
+        Serial.println("[err] flist.usage=flist <dir>");
+        return;
+    }
+    // Directory arguments omit the trailing slash. A synthetic child makes
+    // the existing file-shaped predicate validate the directory unchanged;
+    // pathConfined() remains the only root/segment/byte security decision.
+    if (!SyncProtocol::makeListConfinementProbe(dir, probe, sizeof(probe)) ||
+        !SyncProtocol::pathConfined(probe)) {
+        Serial.printf("[err] flist.path=%s (confined to /apps or /assets)\n", dir);
+        return;
+    }
+    if (!LoadoutStore::begin()) {
+        Serial.println("[err] flist.fs=mount failed");
+        return;
+    }
+    File directory = LittleFS.open(dir, FILE_READ);
+    if (!directory) {
+        Serial.printf("[err] flist.absent=%s\n", dir);
+        return;
+    }
+    if (!directory.isDirectory()) {
+        directory.close();
+        Serial.printf("[err] flist.notdir=%s\n", dir);
+        return;
+    }
+
+    SyncProtocol::ListProgress progress;
+    while (true) {
+        File entry = directory.openNextFile();
+        if (!entry) break;
+        if (!SyncProtocol::admitListEntry(progress)) {
+            entry.close();
+            break;
+        }
+        const char* name = entry.name();
+        const char* slash = strrchr(name, '/');
+        if (slash != nullptr) name = slash + 1;
+        Serial.printf("[cmd] flist.entry=%s size=%u\n",
+                      name, (unsigned)entry.size());
+        entry.close();
+    }
+    directory.close();
+
+    char summary[SyncProtocol::kReadReplyBytes];
+    size_t summaryLen = SyncProtocol::formatListSummary(
+        summary, sizeof(summary), dir, progress);
+    if (summaryLen == 0) {
+        Serial.println("[err] flist.reply");
+        return;
+    }
+    Serial.write((const uint8_t*)summary, summaryLen);
+}
+
+void SerialCli::cmdFstat(const char* args) {
+    char path[SyncProtocol::kMaxPathLen + 1];
+    if (!SyncProtocol::parseStatArgs(args, path, sizeof(path))) {
+        Serial.println("[err] fstat.usage=fstat <path>");
+        return;
+    }
+    if (!SyncProtocol::pathConfined(path)) {
+        Serial.printf("[err] fstat.path=%s (confined to /apps/ or /assets/)\n", path);
+        return;
+    }
+    if (!LoadoutStore::begin()) {
+        Serial.println("[err] fstat.fs=mount failed");
+        return;
+    }
+    File file = LittleFS.open(path, FILE_READ);
+    if (!file) {
+        Serial.printf("[err] fstat.absent=%s\n", path);
+        return;
+    }
+    if (file.isDirectory()) {
+        file.close();
+        Serial.printf("[err] fstat.notfile=%s\n", path);
+        return;
+    }
+    if (!allocatePayloadBuffer()) {
+        file.close();
+        Serial.println("[err] fstat.nomem");
+        return;
+    }
+
+    const uint32_t size = (uint32_t)file.size();
+    uint32_t remaining = size;
+    uint32_t crc = SyncProtocol::crc32Begin();
+    while (remaining > 0) {
+        const size_t want = remaining > SyncProtocol::kMaxChunkBytes
+            ? SyncProtocol::kMaxChunkBytes : (size_t)remaining;
+        const int got = file.read(g_payloadBuf, want);
+        if (got <= 0) {
+            file.close();
+            releasePayloadIfIdle();
+            Serial.printf("[err] fstat.read=%s\n", path);
+            return;
+        }
+        crc = SyncProtocol::crc32Update(crc, g_payloadBuf, (size_t)got);
+        remaining -= (uint32_t)got;
+    }
+    file.close();
+    crc = SyncProtocol::crc32Finish(crc);
+    releasePayloadIfIdle();
+    Serial.printf("[cmd] fstat.ok=%s size=%u crc=%08x\n",
+                  path, (unsigned)size, (unsigned)crc);
+}
+
+void SerialCli::cmdFread(const char* args) {
+    char path[SyncProtocol::kMaxPathLen + 1];
+    uint32_t offset = 0, len = 0;
+    if (!SyncProtocol::parseReadArgs(args, path, sizeof(path), offset, len)) {
+        Serial.println("[err] fread.usage=fread <path> <offset> <len>");
+        return;
+    }
+    if (!SyncProtocol::pathConfined(path)) {
+        Serial.printf("[err] fread.path=%s (confined to /apps/ or /assets/)\n", path);
+        return;
+    }
+    if (len == 0) {
+        Serial.println("[err] fread.len=0");
+        return;
+    }
+    if (!SyncProtocol::readLengthAllowed(len)) {
+        Serial.printf("[err] fread.toobig=%u max=%u\n",
+                      (unsigned)len, (unsigned)SyncProtocol::kMaxChunkBytes);
+        return;
+    }
+    if (!LoadoutStore::begin()) {
+        Serial.println("[err] fread.fs=mount failed");
+        return;
+    }
+    File file = LittleFS.open(path, FILE_READ);
+    if (!file) {
+        Serial.printf("[err] fread.absent=%s\n", path);
+        return;
+    }
+    if (file.isDirectory()) {
+        file.close();
+        Serial.printf("[err] fread.notfile=%s\n", path);
+        return;
+    }
+    const uint32_t size = (uint32_t)file.size();
+    if ((uint64_t)offset + len > size) {
+        file.close();
+        Serial.printf("[err] fread.range=off %u len %u size %u\n",
+                      (unsigned)offset, (unsigned)len, (unsigned)size);
+        return;
+    }
+    if (!allocatePayloadBuffer()) {
+        file.close();
+        Serial.println("[err] fread.nomem");
+        return;
+    }
+    if (!file.seek(offset, SeekSet)) {
+        file.close();
+        releasePayloadIfIdle();
+        Serial.printf("[err] fread.seek=%u\n", (unsigned)offset);
+        return;
+    }
+    size_t got = 0;
+    while (got < len) {
+        const int n = file.read(g_payloadBuf + got, len - got);
+        if (n <= 0) break;
+        got += (size_t)n;
+    }
+    file.close();
+    if (got != len) {
+        releasePayloadIfIdle();
+        Serial.printf("[err] fread.read=%u/%u\n", (unsigned)got, (unsigned)len);
+        return;
+    }
+
+    const uint32_t crc = SyncProtocol::crc32(g_payloadBuf, len);
+    char header[SyncProtocol::kReadReplyBytes];
+    const size_t headerLen = SyncProtocol::formatReadHeader(
+        header, sizeof(header), path, offset, len, crc);
+    if (headerLen == 0) {
+        releasePayloadIfIdle();
+        Serial.println("[err] fread.reply");
+        return;
+    }
+    Serial.write((const uint8_t*)header, headerLen);
+    Serial.write(g_payloadBuf, len);
+    releasePayloadIfIdle();
 }
 
 void SerialCli::cmdLget() {
@@ -683,7 +876,7 @@ void SerialCli::cmdLapply(const char* args) {
     int entries = 0, applied = 0;
     if (!AppManager::instance().applyLoadoutOps((const char*)g_payloadBuf,
                                                 &entries, &applied)) {
-        // Malformed document, a rejected op, or a failed save — the stored
+        // Malformed document, a rejected op, or a failed save - the stored
         // manifest is untouched, so the menu still falls back cleanly.
         Serial.println("[err] lapply.reject");
         releasePayloadIfIdle();
@@ -859,7 +1052,7 @@ void SerialCli::cmdNet() {
 }
 
 // Mic pipeline diagnostic: acquire the shared capture service in the
-// CURRENT app context (whatever is running — that's the point: it can
+// CURRENT app context (whatever is running - that's the point: it can
 // reproduce a context-dependent open failure), read the post-gain peak for
 // ~300ms, release. Refuses politely if an app holds the mic.
 void SerialCli::cmdMic() {
@@ -876,7 +1069,7 @@ void SerialCli::cmdMic() {
         return;
     }
     const char* err = nullptr;
-    // The live stream's heap-diet config — this diagnostic exists to prove
+    // The live stream's heap-diet config - this diagnostic exists to prove
     // the portal context can open exactly this.
     if (!mic.acquire("cli", 16000, &err, 4)) {
         Serial.printf("[err] mic acquire failed: %s\n", err ? err : "?");
@@ -899,7 +1092,7 @@ void SerialCli::cmdMic() {
 }
 
 void SerialCli::cmdWifi(const char* arg) {
-    // `wifi <ssid>|<pass>` — '|' separates because SSIDs may contain spaces.
+    // `wifi <ssid>|<pass>` - '|' separates because SSIDs may contain spaces.
     // An omitted pass ("wifi MyNet|") saves an open network.
     const char* sep = strchr(arg, '|');
     if (sep == nullptr || sep == arg) {

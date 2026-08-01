@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
 // Copyright (c) 2023-2026 Dismo Industries LLC
 
-// lib/SyncProtocol/SyncProtocol.cpp — see SyncProtocol.h for the API and
+// lib/SyncProtocol/SyncProtocol.cpp - see SyncProtocol.h for the API and
 // README.md for the wire framing. Pure C++17, no Arduino.
 
 #include "SyncProtocol.h"
 
+#include <cstdio>
 #include <cstring>
 
 namespace SyncProtocol {
@@ -192,6 +193,79 @@ bool parsePathArg(const char* args, char* pathOut, size_t pathCap) {
     const char* p = args;
     if (!takeToken(p, pathOut, pathCap)) return false;
     return atEnd(p);
+}
+
+bool parseListArgs(const char* args, char* dirOut, size_t dirCap) {
+    return parsePathArg(args, dirOut, dirCap);
+}
+
+bool parseStatArgs(const char* args, char* pathOut, size_t pathCap) {
+    return parsePathArg(args, pathOut, pathCap);
+}
+
+bool parseReadArgs(const char* args, char* pathOut, size_t pathCap,
+                   uint32_t& offsetOut, uint32_t& lenOut) {
+    if (!args) return false;
+    const char* p = args;
+    if (!takeToken(p, pathOut, pathCap)) return false;
+    if (!takeU32(p, offsetOut)) return false;
+    if (!takeU32(p, lenOut)) return false;
+    return atEnd(p);
+}
+
+bool makeListConfinementProbe(const char* dir, char* pathOut, size_t pathCap) {
+    if (!dir || !pathOut || pathCap == 0) return false;
+    const size_t len = std::strlen(dir);
+    if (len == 0 || dir[len - 1] == '/') return false;
+    // "/_" makes a file-shaped child without changing or interpreting any
+    // directory byte. pathConfined() remains the sole security predicate.
+    if (len + 3 > pathCap) return false;
+    std::memcpy(pathOut, dir, len);
+    pathOut[len] = '/';
+    pathOut[len + 1] = '_';
+    pathOut[len + 2] = '\0';
+    return true;
+}
+
+bool readLengthAllowed(uint32_t len) {
+    return len > 0 && len <= kMaxChunkBytes;
+}
+
+size_t formatReadHeader(char* out, size_t cap, const char* path,
+                        uint32_t offset, uint32_t len, uint32_t crc) {
+    if (!out || cap == 0 || !path) return 0;
+    const int n = std::snprintf(
+        out, cap, "[cmd] fread.ok=%s off=%u len=%u chunk=%u crc=%08x\n",
+        path, (unsigned)offset, (unsigned)len, (unsigned)kMaxChunkBytes,
+        (unsigned)crc);
+    if (n < 0 || (size_t)n >= cap) {
+        out[0] = '\0';
+        return 0;
+    }
+    return (size_t)n;
+}
+
+bool admitListEntry(ListProgress& progress) {
+    if (progress.entries >= kMaxListEntries) {
+        progress.truncated = true;
+        return false;
+    }
+    progress.entries++;
+    return true;
+}
+
+size_t formatListSummary(char* out, size_t cap, const char* dir,
+                         const ListProgress& progress) {
+    if (!out || cap == 0 || !dir) return 0;
+    const int n = std::snprintf(
+        out, cap, "[cmd] flist.done=%s entries=%u truncated=%u max=%u\n",
+        dir, (unsigned)progress.entries, progress.truncated ? 1u : 0u,
+        (unsigned)kMaxListEntries);
+    if (n < 0 || (size_t)n >= cap) {
+        out[0] = '\0';
+        return 0;
+    }
+    return (size_t)n;
 }
 
 } // namespace SyncProtocol
