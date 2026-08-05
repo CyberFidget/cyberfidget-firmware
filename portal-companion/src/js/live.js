@@ -306,7 +306,7 @@ function handleText(str) {
     wantSession = false;
     const why = msg.reason || 'the device said no';
     const friendly = /busy/i.test(why)
-      ? 'Another phone is already listening to this device. One listener at a time.'
+      ? 'Someone else is already listening to this device. One listener at a time.'
       : 'The device could not start listening: ' + why;
     endSession(friendly, 'err');
   } else if (msg.t === 'stop') {
@@ -369,7 +369,7 @@ export async function startSession() {
   const locked = await keepawake.hold();
   $('wakeLockNote').textContent = locked
     ? 'This page is keeping your screen awake.'
-    : 'Your phone may need its screen timeout raised for long sessions.';
+    : 'You may need to raise your screen timeout for long sessions.';
 
   drawWave();
   sessionTimer = setInterval(() => {
@@ -460,7 +460,7 @@ async function toggleCaptions() {
   $('chipCaptionsText').textContent =
     dev === 'webgpu' ? 'captions - GPU' : dev === 'wasm' ? 'captions - CPU' : 'captions';
   feedAppend('', '');
-  toast('Speak near the device - captions may lag a few seconds on this phone.');
+  toast('Speak near the device - captions may lag a few seconds.');
 }
 
 function toggleHear() {
@@ -468,7 +468,7 @@ function toggleHear() {
   if (hearing && audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   playHead = 0;
   $('btnHear').textContent = hearing ? '\u{1F507} Mute' : '\u{1F508} Hear it';
-  if (hearing) toast('Use earbuds or another room - the device can hear this phone too.');
+  if (hearing) toast('Use earbuds or another room - the device can hear your speakers too.');
 }
 
 export function wire() {

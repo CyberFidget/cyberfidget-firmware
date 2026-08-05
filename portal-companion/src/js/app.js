@@ -78,7 +78,7 @@ async function refreshSetup() {
   const has = await engine.isDownloaded(pick.value);
   const bytes = await engine.downloadedBytes();
   $('engineStatus').textContent = has
-    ? 'ready (' + fmtBytes(bytes) + ' on this phone)'
+    ? 'ready (' + fmtBytes(bytes) + ' in your browser)'
     : 'not downloaded yet';
   $('btnGetModel').textContent = has ? 'Re-download' : 'Download';
   $('btnDropModel').hidden = !has;
@@ -162,7 +162,7 @@ async function downloadModel() {
 
 async function dropModel() {
   $('modelOverlayText').textContent =
-    'Remove the transcription download from this phone? Captions and note ' +
+    'Remove the transcription download from your browser? Captions and note ' +
     'transcription will need a re-download to work again.';
   $('modelCellWarn').hidden = true;
   const go = $('btnModelGo');

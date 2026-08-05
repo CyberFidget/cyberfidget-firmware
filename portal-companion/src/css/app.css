@@ -2,7 +2,8 @@
  * Copyright (c) 2023-2026 Dismo Industries LLC
  *
  * Companion components. Every color/font/radius comes from tokens.css.
- * Mobile-first: the primary surface is a phone held near the device.
+ * Mobile-first: the most common surface is a phone held near the device,
+ * but a laptop or desktop browser is equally valid - the layout scales up.
  */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }

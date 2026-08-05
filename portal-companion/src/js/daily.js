@@ -53,7 +53,7 @@ async function assemble() {
     }
   } catch {
     notice('dailyNotice',
-      'Could not check the device for transcripts - using what this phone has.', '');
+      'Could not check the device for transcripts - using what your browser has.', '');
   }
 
   if (parts.length === 0) {
@@ -85,7 +85,7 @@ async function summarize() {
   if (!navigator.onLine) {
     notice('dailyNotice',
       'Writing the note needs internet. In the portal\'s Settings, connect your ' +
-      'Cyber Fidget to your home WiFi, keep this phone on that WiFi too, then retry.', 'err');
+      'Cyber Fidget to your home WiFi, stay on that WiFi yourself too, then retry.', 'err');
     return;
   }
 
@@ -114,7 +114,7 @@ async function summarize() {
       // fetch network failure: phone has no route to the provider.
       notice('dailyNotice',
         'Could not reach ' + provLabel + '. If you are on the CyberFidget network, ' +
-        'switch the device to your home WiFi (portal Settings) so this phone keeps ' +
+        'switch the device to your home WiFi (portal Settings) so you keep ' +
         'internet, then retry.', 'err');
     } else {
       notice('dailyNotice', (e && e.message) ? e.message : 'Something went wrong.', 'err');

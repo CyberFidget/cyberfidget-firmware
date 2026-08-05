@@ -2,8 +2,8 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
      Copyright (c) 2023-2026 Dismo Industries LLC
 
-     Cyber Fidget phone companion - served by the device itself from the
-     memory card (/web/). Everything here runs on the user's phone and talks
+     Cyber Fidget companion - served by the device itself from the
+     memory card (/web/). Everything here runs in the user's browser and talks
      only to the device, except two explicit, user-consented flows: the
      one-time transcription download and the bring-your-own-account summary
      call. Keep it that way. -->
@@ -38,7 +38,7 @@
     <div class="btn-row">
       <button class="btn btn-primary grow" id="btnStartSession">Start live session</button>
     </div>
-    <p class="muted" id="listenHint" style="margin-top:10px">Your phone needs to be on the
+    <p class="muted" id="listenHint" style="margin-top:10px">You need to be on the
     CyberFidget network, or on the same home network as the device.</p>
   </div>
 
@@ -56,14 +56,15 @@
       <button class="btn btn-danger" id="btnStopSession">Stop</button>
     </div>
     <p class="muted" style="margin-top:10px">Keep this screen on for the whole
-    session - phones pause the connection when the screen locks. <span id="wakeLockNote"></span></p>
+    session - phones and tablets pause the connection when the screen locks. <span id="wakeLockNote"></span></p>
   </div>
 
   <div class="card" id="captionCard" hidden>
     <h2>Captions</h2>
     <div class="phosphor"><div class="caption-feed" id="captionFeed"></div></div>
     <p class="muted" style="margin-top:8px">Captions also appear on the device's
-    screen. They may lag a few seconds behind speech on this phone.</p>
+    screen. They may lag a few seconds behind speech, depending on how fast
+    your browser can transcribe.</p>
   </div>
 </main>
 
@@ -71,7 +72,7 @@
 <main class="view" id="viewNotes" hidden>
   <div class="card">
     <h2>Voice note transcripts</h2>
-    <p>Turn saved voice notes into text - right here on your phone. Transcripts
+    <p>Turn saved voice notes into text - right here in your browser. Transcripts
     are saved back to the device's memory card next to each note.</p>
     <div class="notice" id="notesNotice" hidden></div>
     <ul class="rowlist" id="notesList"><li class="empty">Loading notes from the device...</li></ul>
@@ -124,10 +125,10 @@
 <main class="view" id="viewSetup" hidden>
   <div class="card">
     <h2>Transcription</h2>
-    <p>Speech is turned into text right on this phone. That needs a one-time
-    download of the transcription pack; after that it works with no internet
-    at all.</p>
-    <p class="muted">Captions run on your phone's processor, so a smaller pack
+    <p>Speech is turned into text right here in your browser. That needs a
+    one-time download of the transcription pack; after that it works with no
+    internet at all.</p>
+    <p class="muted">Captions run on your own processor, so a smaller pack
     means faster, more responsive live captions. Pick <b>Fastest</b> for live
     captions; a more accurate pack is better for transcribing saved notes,
     where speed matters less.</p>
@@ -174,7 +175,7 @@
 
   <div class="card">
     <h2>Your data</h2>
-    <p>Sound and transcripts stay between the device and this phone. The only
+    <p>Sound and transcripts stay between the device and your browser. The only
     times anything leaves: the one-time transcription download, and a daily-note
     summary you approve - sent straight to your chosen provider, never through
     cyberfidget.com.</p>
@@ -195,7 +196,7 @@
   <div class="box">
     <h3>Before we listen</h3>
     <div class="consent-quote">Sound from your device streams over its WiFi to
-    this page and is turned into text right here on your phone. Nothing is
+    this page and is turned into text right here in your browser. Nothing is
     uploaded anywhere.</div>
     <p>Stopping the session, closing this page, or leaving the network ends the
     stream immediately.</p>
@@ -213,7 +214,7 @@
     <p id="modelOverlayText"></p>
     <div class="notice" id="modelCellWarn" hidden>You appear to be on mobile
     data - this download is best done on WiFi.</div>
-    <p class="muted">Downloads once and is kept on this phone. If your phone
+    <p class="muted">Downloads once and is kept by your browser. If your browser
     ever clears it, you can simply download it again.</p>
     <div class="btn-row">
       <button class="btn btn-primary grow" id="btnModelGo">Download</button>
@@ -227,8 +228,8 @@
   <div class="box">
     <h3>Send to your provider?</h3>
     <p id="summaryConsentText"></p>
-    <p class="muted">Your key, your account. The text goes straight from this
-    phone to the provider - cyberfidget.com is never involved. Nothing is
+    <p class="muted">Your key, your account. The text goes straight from your
+    browser to the provider - cyberfidget.com is never involved. Nothing is
     remembered about this choice; you'll be asked every time.</p>
     <div class="btn-row">
       <button class="btn btn-magenta grow" id="btnSummaryGo">Send it</button>
