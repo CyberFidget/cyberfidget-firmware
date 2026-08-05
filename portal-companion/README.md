@@ -29,6 +29,29 @@ Copy `dist/web/` onto the memory card as `/web/` (so the card has
 tab. Without the pack, `/web/` serves a small built-in page explaining how
 to get it.
 
+### You usually don't need all 32 MB
+
+The build is deliberately split so the common case is one small file:
+
+| File | Size | Needed for |
+|---|---|---|
+| `index.html` | ~50 KB | **Live listening** - self-contained (inlined CSS + JS), loads in a single request |
+| `engine.worker.js` | ~3 KB | captions / transcription (with `vendor/`) |
+| `vendor/` | ~32 MB | the on-phone speech runtime (transformers.js + onnxruntime-web) |
+| `pack-info.json` | ~120 B | build provenance (versions + timestamp) |
+
+Copying only `index.html` clears the "not on the memory card yet" page and
+gets live listening working. Add the rest when you want captions.
+
+### Firmware requirement
+
+The device must be running firmware that serves `.mjs` as `text/javascript`
+and `.wasm` as `application/wasm` (`webContentType()` in
+`lib/WebPortalApp/WebPortalApp.cpp`). Older firmware served both as
+`text/plain`, which browsers refuse to execute as modules - transcription
+fails with a MIME-type error even though the pack is correctly copied. That
+is the device's serving, not the pack, so recopying won't fix it; reflash.
+
 ## Layout
 
 ```

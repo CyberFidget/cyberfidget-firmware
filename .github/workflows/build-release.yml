@@ -91,10 +91,68 @@ jobs:
           echo "MERGED_PATH=$MERGED" >> "$GITHUB_ENV"
           echo "Merged firmware: $(stat -c%s "$MERGED") bytes"
 
+      # --- Phone companion SD pack (BEST EFFORT) ------------------------
+      # Not part of the firmware image: it's a web app the device serves off
+      # the memory card at /web/. Built here so releases ship a ready-to-copy
+      # pack instead of requiring users to install Node and build it.
+      #
+      # Deliberately runs AFTER the firmware is built and verified, and every
+      # step is continue-on-error: the companion is a nice-to-have with a
+      # fast-moving npm dependency tree, while firmware may need to ship
+      # urgently for a critical bug. A dead package link must never block a
+      # firmware release. If these steps fail the release still publishes,
+      # with the firmware binary and a loud warning about the missing pack.
+      - name: Set up Node
+        id: node
+        continue-on-error: true
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: portal-companion/package-lock.json
+
+      - name: Build phone companion SD pack
+        id: companion_build
+        continue-on-error: true
+        if: steps.node.outcome == 'success'
+        working-directory: portal-companion
+        run: |
+          npm ci
+          npm run build
+
+      - name: Package companion pack
+        id: companion_pack
+        continue-on-error: true
+        if: steps.companion_build.outcome == 'success'
+        run: |
+          PACK="portal-companion/dist/web"
+          if [ ! -f "$PACK/index.html" ]; then
+            echo "::error::companion pack missing $PACK/index.html"
+            exit 1
+          fi
+          # Zip the folder as `web` so it extracts straight onto the card root.
+          (cd portal-companion/dist && zip -qr "$GITHUB_WORKSPACE/companion-pack.zip" web)
+          # Also publish the shell alone: live listening needs only this ~50 KB
+          # file, so most people never need the 32 MB pack at all.
+          cp "$PACK/index.html" companion-index.html
+          ls -lh companion-pack.zip companion-index.html
+
+      - name: Flag missing companion pack
+        if: steps.companion_pack.outcome != 'success'
+        run: |
+          echo "::warning::Companion SD pack was NOT built - this release ships firmware only."
+          echo "::warning::Users needing the phone companion must build it from portal-companion/ or take it from an earlier release."
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: ${{ env.MERGED_PATH }}
+          # Companion assets are absent when the best-effort steps above fail;
+          # unmatched patterns must not fail the release.
+          fail_on_unmatched_files: false
+          files: |
+            ${{ env.MERGED_PATH }}
+            companion-pack.zip
+            companion-index.html
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}

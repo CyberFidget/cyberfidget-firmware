@@ -39,6 +39,49 @@ cd wasm
 
 Output: `wasm/build/cyberfidget.js` + `cyberfidget.wasm`
 
+### Phone companion (SD pack)
+
+The device serves a phone web app from the memory card at `/web/`. It is **not**
+part of the firmware image and is **not** built by `pio run` — it is built
+separately and copied to the card. If the portal shows "not on the memory card
+yet", this is what's missing:
+
+**You may not need to build it at all** — every tagged release attaches
+`companion-pack.zip` (the full pack) and `companion-index.html` (the shell
+alone) as downloads. Build from source only when you're changing the companion.
+
+Three equivalent ways to build it:
+
+```bash
+# 1. Directly
+cd portal-companion
+npm install     # once — fetches the vendored speech libraries
+npm run build   # -> dist/web/
+
+# 2. Through PlatformIO (installs deps on first run)
+pio run -t sdpack
+
+# 3. VS Code: Terminal -> Run Task -> "Companion: Build SD pack"
+#    .vscode/ is gitignored here, so add this task yourself if you want it:
+#    { "label": "Companion: Build SD pack", "type": "shell",
+#      "command": "npm run build",
+#      "options": { "cwd": "${workspaceFolder}/portal-companion" } }
+```
+
+`pio run -t sdpack` is a custom target (`scripts/build_companion.py`); it is
+registered on every build but only *runs* when you ask for it by name, so
+ordinary `pio run` / `-t upload` cycles are unaffected and still work on
+machines without Node.
+
+Copy `dist/web/` to the card as `/web/` (so the card has `/web/index.html`).
+**Live listening needs only the ~50 KB self-contained `index.html`**; the ~32 MB
+`vendor/` tree is required only for captions and note transcription. `dist/` is
+gitignored, so the pack is rebuilt rather than committed.
+
+See [portal-companion/README.md](portal-companion/README.md) for the design
+constraints (single-request page load, custody rules, the live-link protocol
+contract).
+
 ## Writing Apps
 
 Apps interact with the hardware through the **HAL API** — a set of abstraction headers that decouple app logic from the underlying ESP32 drivers:
@@ -83,6 +126,7 @@ include/          Board configuration, credentials
 wasm/             WASM emulator build infrastructure
   hal/            WASM HAL implementation
   shims/          ESP32/Arduino API shims for browser
+portal-companion/ Phone companion web app (built separately -> memory card /web/)
 scripts/          Build utilities
 ```
 
