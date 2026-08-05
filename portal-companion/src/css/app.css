@@ -7,6 +7,9 @@
  */
 * { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; }
+/* Flat page field, no horizon glow: the website's product space (cf-kit)
+   uses no page gradient anywhere, and a magenta bloom at the bottom of the
+   companion was the most visible difference between the two backgrounds. */
 body {
   background: var(--cf-bg-page);
   color: var(--cf-ink);
@@ -14,10 +17,6 @@ body {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  /* Synthwave horizon glow behind everything */
-  background-image:
-    radial-gradient(120% 60% at 50% 112%, rgba(255, 43, 184, 0.16), transparent 60%),
-    radial-gradient(100% 45% at 50% -18%, rgba(104, 225, 253, 0.10), transparent 60%);
 }
 a { color: var(--cf-cyan); }
 button { font-family: var(--cf-font-ui); }
@@ -80,48 +79,62 @@ body::after {
   border-top: 2px solid transparent;
 }
 .nav button .glyph { display: block; font-size: 1.7em; margin-bottom: 2px; }
+/* Active tab is magenta, matching the phone tab bar on the My Fidget
+   artboard (and the site nav's magenta active link). */
 .nav button.active {
-  color: var(--cf-cyan);
+  color: var(--cf-magenta);
   border-top-color: var(--cf-magenta);
-  text-shadow: 0 0 8px rgba(104, 225, 253, 0.5);
+  text-shadow: 0 0 8px rgba(255, 43, 184, 0.5);
 }
 
 /* ── Cards / sections ── */
 .card {
   background: var(--cf-bg-card);
   border: 1px solid var(--cf-bg-line);
-  border-radius: var(--cf-r-lg);
+  clip-path: var(--cf-notch);
   padding: 14px;
   margin-bottom: 12px;
   box-shadow: inset 0 1px 0 var(--cf-bevel-hi), 0 2px 8px var(--cf-bevel-lo);
 }
+/* Panel eyebrow = cf-kit's .cf-rail-title: a bordered cyan mono chip. The
+   magenta uppercase labels on the artboards annotate the component sheets;
+   the panel titles inside the product are cyan and boxed. */
 .card h2 {
-  font-family: var(--cf-font-display);
-  font-size: 0.78em; letter-spacing: 2px; text-transform: uppercase;
-  color: var(--cf-magenta-soft); margin-bottom: 10px;
+  display: inline-block;
+  font-family: var(--cf-font-mono);
+  font-size: 0.68em; font-weight: 700; letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--cf-cyan);
+  border: 1px solid rgba(104, 225, 253, 0.35);
+  padding: 3px 8px; margin-bottom: 12px;
 }
-.card p { color: var(--cf-ink-dim); font-size: 0.92em; line-height: 1.55; }
+.card p { color: var(--cf-ink-dim); font-size: 0.86em; line-height: 1.65; }
 .card p + p { margin-top: 8px; }
-.muted { color: var(--cf-ink-mute); font-size: 0.8em; line-height: 1.5; }
+.muted { color: var(--cf-ink-mute); font-size: 0.76em; line-height: 1.6; }
 
-/* ── Buttons ── */
+/* ── Buttons ──
+   Two shapes, per the artboards: filled CTAs are chamfered with a raised
+   bevel; ghost/danger row actions stay square outlines. Flat fills, not
+   gradients - cf-kit's .cf-btn is a solid neon block. */
 .btn {
-  display: inline-block; border-radius: var(--cf-r-md); cursor: pointer;
+  display: inline-block; cursor: pointer;
   border: 1px solid var(--cf-bg-line); background: var(--cf-bg-elev);
-  color: var(--cf-ink); padding: 10px 16px; font-size: 0.9em;
-  letter-spacing: 0.5px; transition: all 0.15s;
+  color: var(--cf-ink); padding: 10px 16px;
+  font-family: var(--cf-font-ui); font-size: 0.78em; font-weight: 700;
+  letter-spacing: 0.06em; text-transform: uppercase; transition: all 0.15s;
 }
 .btn:disabled { opacity: 0.45; cursor: default; }
 .btn-primary {
-  background: linear-gradient(180deg, var(--cf-cyan), var(--cf-cyan-deep));
-  border-color: var(--cf-cyan); color: var(--cf-bg-deep); font-weight: 600;
-  box-shadow: 0 0 14px rgba(104, 225, 253, 0.35);
+  background: var(--cf-cyan);
+  border-color: var(--cf-cyan); color: var(--cf-bg-deep);
+  clip-path: var(--cf-notch-btn); box-shadow: var(--cf-bevel-btn);
 }
 .btn-magenta {
-  background: linear-gradient(180deg, var(--cf-magenta), var(--cf-magenta-deep));
-  border-color: var(--cf-magenta); color: var(--cf-ink); font-weight: 600;
-  box-shadow: 0 0 14px rgba(255, 43, 184, 0.3);
+  background: var(--cf-magenta);
+  border-color: var(--cf-magenta); color: var(--cf-bg-deep);
+  clip-path: var(--cf-notch-btn); box-shadow: var(--cf-bevel-btn);
 }
+.btn-primary:hover, .btn-magenta:hover { filter: brightness(1.12); }
 .btn-ghost { background: none; }
 .btn-danger { border-color: var(--cf-red); color: var(--cf-red); background: none; }
 .btn-row { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
@@ -182,14 +195,14 @@ body::after {
 .field { margin-bottom: 12px; }
 .field label { display: block; font-size: 0.74em; letter-spacing: 1px; text-transform: uppercase; color: var(--cf-ink-mute); margin-bottom: 5px; }
 .field input, .field select, .field textarea {
-  width: 100%; background: var(--cf-bg-deep); color: var(--cf-ink);
-  border: 1px solid var(--cf-bg-line); border-radius: var(--cf-r-md);
-  padding: 10px 11px; font-size: 0.95em; font-family: var(--cf-font-mono);
+  width: 100%; background: var(--cf-bg-sunk); color: var(--cf-ink);
+  border: 1px solid var(--cf-bg-line);
+  padding: 10px 11px; font-size: 0.9em; font-family: var(--cf-font-mono);
 }
 .field input:focus, .field select:focus { outline: none; border-color: var(--cf-cyan); }
 
 /* ── Progress ── */
-.bar { height: 7px; background: var(--cf-bg-deep); border-radius: 4px; overflow: hidden; border: 1px solid var(--cf-bg-line); }
+.bar { height: 7px; background: var(--cf-bg-sunk); overflow: hidden; border: 1px solid var(--cf-bg-line); }
 .bar .fill { height: 100%; width: 0%; background: linear-gradient(90deg, var(--cf-cyan), var(--cf-magenta)); transition: width 0.2s; }
 
 /* ── Overlay / modal ── */
@@ -201,7 +214,7 @@ body::after {
 .overlay[hidden] { display: none; }
 .overlay .box {
   background: var(--cf-bg-card); border: 1px solid var(--cf-bg-line);
-  border-radius: var(--cf-r-lg); padding: 18px; max-width: 430px; width: 100%;
+  clip-path: var(--cf-notch); padding: 18px; max-width: 430px; width: 100%;
   max-height: 86vh; overflow-y: auto;
   box-shadow: 0 0 40px rgba(104, 225, 253, 0.12);
 }
@@ -216,19 +229,19 @@ body::after {
   color: var(--cf-ink); font-size: 0.92em; line-height: 1.5;
 }
 .preview-box {
-  background: var(--cf-bg-deep); border: 1px solid var(--cf-bg-line);
-  border-radius: var(--cf-r-md); padding: 10px; margin: 8px 0;
+  background: var(--cf-bg-sunk); border: 1px solid var(--cf-bg-line);
+  padding: 10px; margin: 8px 0;
   font-family: var(--cf-font-mono); font-size: 0.78em; line-height: 1.5;
   max-height: 34vh; overflow-y: auto; white-space: pre-wrap; overflow-wrap: anywhere;
   color: var(--cf-ink-dim);
 }
 
-/* ── Toast ── */
+/* ── Toast ── magenta hairline on an elevated fill, per cf-kit's .cf-toast */
 .toast {
   position: fixed; bottom: calc(64px + env(safe-area-inset-bottom)); left: 50%;
   transform: translateX(-50%); z-index: 600;
-  background: var(--cf-bg-elev); border: 1px solid var(--cf-bg-line);
-  border-radius: var(--cf-r-md); padding: 9px 16px; font-size: 0.85em;
+  background: var(--cf-bg-elev); border: 1px solid var(--cf-magenta);
+  padding: 9px 16px; font-size: 0.8em;
   opacity: 0; transition: opacity 0.3s; pointer-events: none; max-width: 88vw;
 }
 .toast.show { opacity: 1; }

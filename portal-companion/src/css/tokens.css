@@ -12,6 +12,11 @@
  * VT323) are ever shipped in the SD pack, only this file changes.
  */
 :root {
+  /* Native controls (select popups, checkboxes, scrollbars) render dark, the
+     same declaration the website's theme.css carries. Without it a phone on a
+     light system theme pops a white dropdown out of a dark surface. */
+  color-scheme: dark;
+
   /* Backgrounds, deepest to most elevated */
   --cf-bg-deep:   #08050f;
   --cf-bg-page:   #0e0820;
@@ -44,23 +49,40 @@
   --cf-oled-fg:   #b8f1ff;
   --cf-oled-glow: rgba(184, 241, 255, 0.4);
 
+  /* Sunk fill for inputs and troughs (cf-kit uses rgba(0,0,0,.35)) */
+  --cf-bg-sunk: rgba(0, 0, 0, 0.35);
+
   /* Bevels */
   --cf-bevel-hi: rgba(255, 255, 255, 0.08);
   --cf-bevel-lo: rgba(0, 0, 0, 0.5);
+  /* Raised bevel for filled CTAs — matches cf-kit's .cf-btn */
+  --cf-bevel-btn: inset 0 1px 0 rgba(255, 255, 255, 0.25),
+                  inset 0 -3px 0 rgba(0, 0, 0, 0.3);
 
-  /* Radii */
-  --cf-r-sm: 4px;
-  --cf-r-md: 8px;
-  --cf-r-lg: 14px;
+  /* Shape. Phase-B carries the device's 45-degree chamfer into the UI
+     instead of rounding corners, so radii are zero and panels/CTAs get a
+     clip-path notch. Chamfered: panels and filled CTAs. Square: inputs,
+     tabs, and bordered row actions. (Circles stay circles — status dots.) */
+  --cf-r-sm: 0;
+  --cf-r-md: 0;
+  --cf-r-lg: 0;
+  --cf-notch:     polygon(0 0, calc(100% - 12px) 0, 100% 12px, 100% 100%, 0 100%);
+  --cf-notch-btn: polygon(5px 0, 100% 0, 100% calc(100% - 5px),
+                          calc(100% - 5px) 100%, 0 100%, 0 5px);
 
   /* FX intensities */
   --cf-scanline:   0.04;
   --cf-grid-color: rgba(255, 43, 184, 0.32);
 
-  /* Type — guide stacks with reliable system tails */
+  /* Type — guide stacks with reliable system tails. Body is the MONO stack
+     on purpose: across the phase-B artboards every run of product prose,
+     metadata, and status text is set in Space Mono, and the display face is
+     reserved for headings, names, and controls. That display/mono duet is
+     what makes the website's product space recognisable, so the companion
+     inherits it rather than setting prose in the display face. */
   --cf-font-display: 'Chakra Petch', system-ui, sans-serif;
   --cf-font-ui:      'Chakra Petch', system-ui, sans-serif;
-  --cf-font-body:    'Chakra Petch', system-ui, sans-serif;
-  --cf-font-crt:     'VT323', 'Share Tech Mono', ui-monospace, Consolas, monospace;
   --cf-font-mono:    'Space Mono', 'JetBrains Mono', ui-monospace, Consolas, monospace;
+  --cf-font-body:    var(--cf-font-mono);
+  --cf-font-crt:     'VT323', 'Share Tech Mono', ui-monospace, Consolas, monospace;
 }

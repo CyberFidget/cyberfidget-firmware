@@ -128,7 +128,17 @@ wasm/             WASM emulator build infrastructure
   shims/          ESP32/Arduino API shims for browser
 portal-companion/ Phone companion web app (built separately -> memory card /web/)
 scripts/          Build utilities
+tools/            Standalone developer tools (see below)
 ```
+
+## Developer tools
+
+Each tool lives in its own folder under `tools/` with a README covering what it
+does and how to invoke it.
+
+| Tool | What it does |
+|---|---|
+| [`tools/portal-preview/`](tools/portal-preview/README.md) | Serves the device's web-portal pages in a desktop browser with fixture API data, so portal UI changes can be reviewed and screenshotted without a device. Rendering harness only - not a device simulator. |
 
 ## License
 

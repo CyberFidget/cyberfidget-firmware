@@ -9,272 +9,316 @@ const char PORTAL_PAGE_HTML[] PROGMEM = R"rawliteral(
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no">
-<title>CyberFidget</title>
+<title>Cyber Fidget - Portal</title>
 <style>
+/* Phase-B design language, device side. The tokens below are the website's
+   cf-kit tokens (cyberfidget_website/assets/css/cf-kit.css) with system
+   font tails: the device serves this page over a single SPI stream, so a
+   webfont or external stylesheet fetch is not allowed. Components below
+   reference these tokens only - a re-theme is a one-block swap.
+   Shape language: chamfered corners on panels and filled CTAs, square
+   corners on inputs and bordered row actions, no border radius. */
 :root {
-  --bg-primary: #0d1117;
-  --bg-secondary: #1a2332;
-  --bg-tertiary: #162030;
-  --text-primary: #e8eef5;
-  --text-secondary: #8b949e;
+  /* Native controls (select popups, checkboxes, scrollbars) render dark -
+     the same declaration the website's theme.css uses. Without it the
+     upload-folder select comes out light and breaks the surface. */
+  color-scheme: dark;
+  --bg-primary: #0e0820;
+  --bg-secondary: #15102a;
+  --bg-tertiary: #08050f;
+  --bg-elev: #1f1840;
+  --bg-sunk: rgba(0,0,0,0.35);
+  --text-primary: #f5ecff;
+  --text-secondary: #a89cc8;
+  --text-mute: #6b5e88;
   --accent: #68e1fd;
-  --accent-hover: #8aecff;
+  --accent-hover: #a5edff;
   --accent-dim: rgba(104,225,253,0.1);
-  --magenta: #ff6bce;
-  --danger: #ff4444;
-  --danger-hover: #ff6666;
-  --success: #3fb950;
-  --border: rgba(104,225,253,0.15);
-  --radius: 8px;
+  --magenta: #ff2bb8;
+  --magenta-soft: #ff6ed1;
+  --magenta-line: rgba(255,43,184,0.32);
+  --purple: #b16cff;
+  --danger: #ff5252;
+  --danger-hover: #ff7a7a;
+  --success: #4dffaf;
+  --warn: #ffd84a;
+  --border: rgba(245,236,255,0.08);
+  --border-cy: rgba(104,225,253,0.35);
+  --f-d: 'Chakra Petch',system-ui,sans-serif;
+  --f-m: ui-monospace,Consolas,monospace;
+  --notch: polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,0 100%);
+  --notch-b: polygon(4px 0,100% 0,100% calc(100% - 4px),calc(100% - 4px) 100%,0 100%,0 4px);
+  --bevel: inset 0 1px 0 rgba(255,255,255,0.22),inset 0 -3px 0 rgba(0,0,0,0.3);
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg-primary);color:var(--text-primary);min-height:100vh;display:flex;overflow:hidden}
+body{font-family:var(--f-d);background:var(--bg-primary);color:var(--text-primary);min-height:100vh;display:flex;overflow:hidden}
 a{color:var(--accent);text-decoration:none}
 
 /* Hamburger */
-.hamburger{display:none;position:fixed;top:10px;left:10px;z-index:301;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);width:40px;height:40px;cursor:pointer;font-size:1.4em;color:var(--accent);align-items:center;justify-content:center;line-height:1}
-.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:199}
+.hamburger{display:none;position:fixed;top:10px;left:10px;z-index:301;background:var(--bg-secondary);border:1px solid var(--border-cy);clip-path:var(--notch-b);width:40px;height:40px;cursor:pointer;font-size:1.4em;color:var(--accent);align-items:center;justify-content:center;line-height:1}
+.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(8,5,15,0.72);z-index:199}
 
-/* Sidebar */
+/* Sidebar - the global nav artboard, turned vertical. Active is magenta
+   (matching the site nav's magenta underline); cyan stays informational. */
 .sidebar{width:220px;background:var(--bg-tertiary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;height:100vh;z-index:200}
-.sidebar-brand{padding:20px 16px 16px;text-align:center;border-bottom:1px solid var(--border)}
+.sidebar-brand{padding:20px 16px 16px;text-align:center;border-bottom:1px solid var(--magenta-line)}
 .logo{position:relative;display:inline-block}
-.logo-shadow{position:absolute;top:2px;left:2px;font-family:'Arial Black',Impact,sans-serif;font-size:22px;font-weight:900;letter-spacing:3px;color:var(--magenta);opacity:0.7;white-space:nowrap}
-.logo-main{position:relative;font-family:'Arial Black',Impact,sans-serif;font-size:22px;font-weight:900;letter-spacing:3px;color:var(--accent);text-shadow:0 0 10px rgba(104,225,253,0.4),0 0 20px rgba(104,225,253,0.2);white-space:nowrap}
-.logo-sub{font-size:0.6em;color:var(--text-secondary);letter-spacing:2px;margin-top:4px}
+.logo-shadow{position:absolute;top:2px;left:2px;font-family:var(--f-d);font-size:22px;font-weight:700;letter-spacing:3px;color:var(--magenta);opacity:0.85;white-space:nowrap}
+.logo-main{position:relative;font-family:var(--f-d);font-size:22px;font-weight:700;letter-spacing:3px;color:var(--accent);text-shadow:0 0 12px rgba(104,225,253,0.45);white-space:nowrap}
+.logo-sub{font-family:var(--f-m);font-size:0.58em;color:var(--magenta-soft);letter-spacing:0.22em;text-transform:uppercase;margin-top:6px}
 .sidebar-nav{padding:8px 0;flex:1;overflow-y:auto}
-.nav-item{display:flex;align-items:center;padding:10px 16px;color:var(--text-secondary);cursor:pointer;border-left:3px solid transparent;transition:all 0.2s;font-size:0.9em}
+.nav-item{display:flex;align-items:center;padding:11px 16px;color:var(--text-secondary);cursor:pointer;border-left:3px solid transparent;transition:all 0.2s;font-size:0.82em;font-weight:600;letter-spacing:0.08em;text-transform:uppercase}
 .nav-item:hover{background:var(--accent-dim);color:var(--text-primary)}
-.nav-item.active{color:var(--accent);border-left-color:var(--accent);background:var(--accent-dim)}
-.nav-item .icon{margin-right:10px;font-size:1.1em}
-.nav-item .badge{margin-left:auto;font-size:0.7em;background:var(--bg-secondary);padding:2px 6px;border-radius:10px;color:var(--text-secondary)}
+.nav-item.active{color:var(--magenta);border-left-color:var(--magenta);background:rgba(255,43,184,0.09)}
+.nav-item .icon{margin-right:10px;font-size:1.1em;opacity:0.85}
+.nav-item .badge{margin-left:auto;font-family:var(--f-m);font-size:0.68em;font-weight:700;letter-spacing:0.06em;background:var(--warn);padding:1px 6px;color:var(--bg-tertiary)}
 
-/* Main */
+/* Main. column-reverse puts the status line ABOVE the title, which is the
+   artboard masthead order: cyan mono eyebrow over a display-face heading. */
 .main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;min-width:0}
-.page-header{padding:12px 20px;border-bottom:1px solid var(--border);background:var(--bg-secondary)}
-.page-header h1{font-size:1.15em;font-weight:600}
-.page-header .status{font-size:0.8em;color:var(--text-secondary);margin-top:2px}
+.page-header{padding:13px 20px 12px;border-bottom:1px solid var(--magenta-line);background:var(--bg-tertiary);display:flex;flex-direction:column-reverse;align-items:flex-start}
+.page-header h1{font-size:1.45em;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;line-height:1.1}
+.page-header .status{font-family:var(--f-m);font-size:0.66em;font-weight:700;color:var(--accent);letter-spacing:0.18em;text-transform:uppercase;margin-bottom:6px}
 .content{flex:1;overflow-y:auto;padding:16px 20px;padding-bottom:120px}
 
 /* Banner */
-.banner{background:rgba(104,225,253,0.08);border-bottom:1px solid var(--border);padding:8px 20px;font-size:0.82em;color:var(--text-secondary);display:none;align-items:center;gap:8px}
+.banner{background:rgba(104,225,253,0.08);border-bottom:1px solid var(--border-cy);padding:8px 20px;font-family:var(--f-m);font-size:0.76em;color:var(--text-secondary);display:none;align-items:center;gap:8px;line-height:1.5}
 .banner.show{display:flex}
-.banner .url{color:var(--accent);font-weight:600;font-family:monospace}
-.banner .close-banner{margin-left:auto;cursor:pointer;color:var(--text-secondary);padding:2px 6px}
+.banner .url{color:var(--accent);font-weight:700}
+.banner .close-banner{margin-left:auto;cursor:pointer;color:var(--text-mute);padding:2px 6px}
 
-/* Drop zone */
-.drop-zone{border:2px dashed var(--border);border-radius:var(--radius);padding:24px 16px;text-align:center;margin-bottom:16px;cursor:pointer;transition:all 0.2s;background:var(--accent-dim)}
+/* Drop zone. Dashed edges stay square - the artboards reserve the chamfer
+   for panels and filled CTAs, and pair dashed borders with sharp corners. */
+.drop-zone{border:1px dashed var(--border-cy);padding:24px 16px;text-align:center;margin-bottom:16px;cursor:pointer;transition:all 0.2s;background:var(--accent-dim)}
 .drop-zone:hover,.drop-zone.drag-over{border-color:var(--accent);background:rgba(104,225,253,0.08)}
-.drop-zone p{color:var(--text-secondary);margin-bottom:2px}
-.drop-zone .main-text{color:var(--accent);font-size:1em;font-weight:500}
-.drop-zone .hint{font-size:0.8em}
-.drop-zone .folder-sel{margin-top:8px;display:flex;align-items:center;justify-content:center;gap:8px;font-size:0.82em}
-.drop-zone .folder-sel select{background:var(--bg-secondary);color:var(--text-primary);border:1px solid var(--border);border-radius:var(--radius);padding:3px 8px;font-size:0.9em}
+.drop-zone p{color:var(--text-secondary);margin-bottom:3px}
+.drop-zone .main-text{color:var(--accent);font-size:0.92em;font-weight:700;letter-spacing:0.08em;text-transform:uppercase}
+.drop-zone .hint{font-family:var(--f-m);font-size:0.76em;color:var(--text-mute)}
+.drop-zone .folder-sel{margin-top:10px;display:flex;align-items:center;justify-content:center;gap:8px;font-family:var(--f-m);font-size:0.76em;color:var(--text-secondary)}
+.drop-zone .folder-sel select{background:var(--bg-sunk);color:var(--text-primary);border:1px solid var(--border);padding:4px 8px;font-family:var(--f-m);font-size:0.95em}
 input[type="file"]{display:none}
 
-/* Upload bar */
+/* Upload bar. Cyan-to-magenta is the phase-B progress fill (same gradient
+   the companion uses), so progress reads the same on every surface. */
 .upload-bar{display:none;margin-bottom:16px}
 .upload-bar.active{display:block}
-.upload-bar .bar{height:6px;background:var(--bg-tertiary);border-radius:3px;overflow:hidden}
-.upload-bar .fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--success));border-radius:3px;transition:width 0.15s}
-.upload-bar .info{display:flex;justify-content:space-between;font-size:0.8em;color:var(--text-secondary);margin-top:4px}
+.upload-bar .bar{height:6px;background:var(--bg-sunk);border:1px solid var(--border);overflow:hidden}
+.upload-bar .fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--magenta));transition:width 0.15s}
+.upload-bar .info{display:flex;justify-content:space-between;font-family:var(--f-m);font-size:0.76em;color:var(--text-secondary);margin-top:5px}
 
-/* Section headers */
-.section-hdr{font-size:0.82em;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.5px;margin:16px 0 8px;display:flex;align-items:center;gap:8px}
+/* Section headers = the artboard eyebrow: cyan mono, uppercase, wide track */
+.section-hdr{font-family:var(--f-m);font-size:0.7em;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.18em;margin:20px 0 10px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .section-hdr .spacer{flex:1}
-.section-hdr .action{font-size:0.9em;color:var(--accent);cursor:pointer;text-transform:none;padding:2px 8px}
-.section-hdr .action:hover{background:var(--accent-dim);border-radius:var(--radius)}
-.view-toggle{display:flex;gap:2px}
-.view-toggle .vt{padding:3px 10px;cursor:pointer;border-radius:var(--radius);font-size:0.82em;color:var(--text-secondary)}
-.view-toggle .vt.active{background:var(--accent-dim);color:var(--accent)}
+.section-hdr .action{font-family:var(--f-d);font-size:11px;font-weight:700;color:var(--accent);cursor:pointer;text-transform:uppercase;letter-spacing:0.06em;padding:4px 9px;border:1px solid var(--border-cy);white-space:nowrap}
+.section-hdr .action:hover{background:var(--accent);color:var(--bg-tertiary)}
+.view-toggle{display:inline-flex;border:1px solid var(--border)}
+.view-toggle .vt{padding:5px 12px;cursor:pointer;font-family:var(--f-d);font-size:11px;font-weight:600;letter-spacing:0.06em;color:var(--text-secondary);white-space:nowrap}
+.view-toggle .vt.active{background:var(--accent);color:var(--bg-tertiary)}
 
-/* File tree */
+/* File tree. Row hover borrows the artboard item-row treatment: elevated
+   background plus a left accent bar, instead of a tinted wash. */
 .file-tree{list-style:none}
-.file-tree li{display:flex;align-items:center;padding:7px 10px;border-radius:var(--radius);margin-bottom:1px;transition:background 0.15s;gap:8px}
-.file-tree li:hover{background:var(--accent-dim)}
-.file-tree .icon{flex-shrink:0;width:18px;text-align:center}
+.file-tree li{display:flex;align-items:center;padding:8px 10px;margin-bottom:1px;transition:background 0.15s;gap:8px;border-left:2px solid transparent}
+.file-tree li:hover{background:var(--bg-elev);border-left-color:var(--accent)}
+.file-tree .icon{flex-shrink:0;width:18px;text-align:center;color:var(--text-mute)}
 .file-tree .name{flex:1;font-size:0.88em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.file-tree .size{color:var(--text-secondary);font-size:0.78em;flex-shrink:0}
-.file-tree .acts{display:flex;gap:3px;flex-shrink:0;opacity:0;transition:opacity 0.15s}
+.file-tree .size{font-family:var(--f-m);color:var(--text-mute);font-size:0.74em;flex-shrink:0}
+.file-tree .acts{display:flex;gap:4px;flex-shrink:0;opacity:0;transition:opacity 0.15s}
 .file-tree li:hover .acts{opacity:1}
 .file-tree .sub{padding-left:20px}
-.folder-toggle{cursor:pointer;user-select:none;color:var(--accent);font-weight:600}
+.folder-toggle{cursor:pointer;user-select:none;color:var(--accent);font-weight:700}
 
-/* Search */
+/* Search. Inputs stay square with a sunk fill - matches .cf-explore-search */
 .search-row{margin-bottom:10px;display:none}
-.search-row input{width:100%;padding:8px 12px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:0.88em;outline:none}
+.search-row input{width:100%;padding:9px 12px;background:var(--bg-sunk);border:1px solid var(--border);color:var(--text-primary);font-family:var(--f-m);font-size:0.82em;outline:none}
+.search-row input::placeholder{color:var(--text-mute)}
 .search-row input:focus{border-color:var(--accent)}
 .search-row.show{display:block}
 
-/* Track table (flat view) */
+/* Track table (flat view). Column headers take the eyebrow treatment;
+   every metadata column is mono, the title stays in the display face. */
 .track-table{width:100%;border-collapse:collapse;display:none;font-size:0.85em}
 .track-table.show{display:table}
-.track-table th{text-align:left;color:var(--text-secondary);font-weight:500;font-size:0.8em;text-transform:uppercase;letter-spacing:0.3px;padding:8px 6px;border-bottom:1px solid var(--border);cursor:pointer;user-select:none;white-space:nowrap}
-.track-table th:hover{color:var(--accent)}
-.sort-arrow{font-size:0.7em;margin-left:2px;opacity:0.4}
-.track-table th .sort-arrow.asc,.track-table th .sort-arrow.desc{opacity:1;color:var(--accent)}
-.track-table td{padding:7px 6px;border-bottom:1px solid rgba(255,255,255,0.03);vertical-align:middle}
-.track-table tr:hover td{background:var(--accent-dim)}
-.track-table tr.playing td{background:rgba(104,225,253,0.12)}
-.track-table tr.playing td:first-child{box-shadow:inset 3px 0 0 var(--accent)}
-.pl-track.playing{background:var(--accent-dim) !important}
-.pl-track.playing .num{color:var(--accent);font-weight:600}
-.track-table .col-title{min-width:120px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.track-table .col-artist,.track-table .col-album{color:var(--text-secondary);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.track-table .col-size{color:var(--text-secondary);white-space:nowrap;text-align:right;width:70px}
+.track-table th{text-align:left;font-family:var(--f-m);color:var(--accent);font-weight:700;font-size:0.72em;text-transform:uppercase;letter-spacing:0.16em;padding:9px 6px;border-bottom:1px solid var(--border-cy);cursor:pointer;user-select:none;white-space:nowrap}
+.track-table th:hover{color:var(--accent-hover)}
+.sort-arrow{font-size:0.7em;margin-left:3px;opacity:0.4}
+.track-table th .sort-arrow.asc,.track-table th .sort-arrow.desc{opacity:1;color:var(--magenta)}
+.track-table td{padding:7px 6px;border-bottom:1px solid var(--border);vertical-align:middle}
+.track-table tr:hover td{background:var(--bg-elev)}
+.track-table tr.playing td{background:rgba(255,43,184,0.1)}
+.track-table tr.playing td:first-child{box-shadow:inset 3px 0 0 var(--magenta)}
+.pl-track.playing{background:rgba(255,43,184,0.1) !important}
+.pl-track.playing .num{color:var(--magenta);font-weight:700}
+.track-table .col-title{min-width:120px;max-width:280px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
+.track-table .col-artist,.track-table .col-album{font-family:var(--f-m);font-size:0.9em;color:var(--text-secondary);max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.track-table .col-size{font-family:var(--f-m);font-size:0.9em;color:var(--text-mute);white-space:nowrap;text-align:right;width:70px;font-variant-numeric:tabular-nums}
 .track-table .col-acts{width:100px;text-align:right}
 .track-table .col-acts .acts{display:flex;gap:3px;justify-content:flex-end;opacity:0;transition:opacity 0.15s}
 .track-table tr:hover .acts{opacity:1}
 
-/* Buttons */
-.btn{border:none;padding:5px 10px;border-radius:var(--radius);cursor:pointer;font-size:0.8em;transition:all 0.15s;white-space:nowrap}
-.btn-play{background:var(--accent-dim);color:var(--accent)}
-.btn-play:hover{background:var(--accent);color:var(--bg-primary)}
-.btn-add{background:rgba(63,185,80,0.1);color:var(--success)}
-.btn-add:hover{background:var(--success);color:var(--bg-primary)}
-.btn-move{background:rgba(136,132,216,0.1);color:#a8a4e6}
-.btn-move:hover{background:#7c78c8;color:#fff}
-.btn-del{background:rgba(255,68,68,0.1);color:var(--danger)}
+/* Buttons. Two shapes, per the artboards: bordered row actions (HIDE /
+   REMOVE) are square outlines, filled CTAs (SEND TO MY FIDGET / CONNECT)
+   are chamfered with an inset bevel. Cyan fill is the primary action here
+   because every portal CTA is a device-management verb, which is the
+   colour those verbs carry on the rail sheet. */
+.btn{background:none;border:1px solid var(--border);padding:6px 11px;cursor:pointer;font-family:var(--f-d);font-size:0.76em;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;color:var(--text-secondary);transition:all 0.15s;white-space:nowrap}
+.btn:hover{background:var(--bg-elev);color:var(--text-primary)}
+.btn-play{border-color:var(--border-cy);color:var(--accent)}
+.btn-play:hover{background:var(--accent);color:var(--bg-tertiary)}
+.btn-add{border-color:rgba(77,255,175,0.45);color:var(--success)}
+.btn-add:hover{background:var(--success);color:var(--bg-tertiary)}
+.btn-move{border-color:rgba(177,108,255,0.45);color:var(--purple)}
+.btn-move:hover{background:var(--purple);color:var(--bg-tertiary)}
+.btn-del{border-color:rgba(255,82,82,0.5);color:var(--danger)}
 .btn-del:hover{background:var(--danger);color:#fff}
-.btn-accent{background:var(--accent);color:var(--bg-primary);font-weight:500}
-.btn-accent:hover{background:var(--accent-hover)}
-.btn-sm{padding:3px 8px;font-size:0.75em}
+.btn-accent{background:var(--accent);border-color:var(--accent);color:var(--bg-tertiary);clip-path:var(--notch-b);box-shadow:var(--bevel)}
+.btn-accent:hover{background:var(--accent-hover);color:var(--bg-tertiary)}
+.btn-sm{padding:3px 8px;font-size:0.7em;letter-spacing:0.04em}
 
-/* Playlists */
+/* Playlists. A playlist is the artboard's section row (elevated bar,
+   display-face uppercase name, mono count) over a list of item rows. */
 .playlists{margin-top:16px}
-.pl-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);margin-bottom:8px;overflow:hidden}
-.pl-header{display:flex;align-items:center;padding:10px 12px;cursor:pointer;gap:8px}
-.pl-header .name{flex:1;font-weight:500;font-size:0.9em}
-.pl-header .count{color:var(--text-secondary);font-size:0.8em}
+.pl-card{background:var(--bg-secondary);border:1px solid var(--border);clip-path:var(--notch);margin-bottom:10px;overflow:hidden}
+.pl-header{display:flex;align-items:center;padding:11px 12px;cursor:pointer;gap:8px;background:var(--bg-elev)}
+.pl-header .name{flex:1;font-weight:700;font-size:0.86em;letter-spacing:0.06em;text-transform:uppercase}
+.pl-header .count{font-family:var(--f-m);color:var(--text-secondary);font-size:0.74em}
 .pl-tracks{border-top:1px solid var(--border);max-height:300px;overflow-y:auto}
-.pl-track{display:flex;align-items:center;padding:6px 12px;font-size:0.85em;border-bottom:1px solid rgba(255,255,255,0.03);gap:6px}
-.pl-track:hover{background:var(--accent-dim)}
-.pl-track .num{color:var(--text-secondary);width:24px;text-align:center;flex-shrink:0}
+.pl-track{display:flex;align-items:center;padding:7px 12px;font-size:0.85em;border-bottom:1px solid var(--border);gap:8px}
+.pl-track:hover{background:var(--bg-elev)}
+.pl-track .num{font-family:var(--f-m);color:var(--text-mute);font-size:0.86em;width:24px;text-align:center;flex-shrink:0}
 .pl-track .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .pl-track .rm{opacity:0;cursor:pointer;color:var(--danger);padding:2px 6px}
 .pl-track:hover .rm{opacity:1}
-.pl-actions{display:flex;gap:6px;padding:8px 12px;border-top:1px solid var(--border)}
+.pl-actions{display:flex;gap:8px;padding:9px 12px;border-top:1px solid var(--border)}
 
 /* Player bar */
-.player-bar{position:fixed;bottom:0;left:220px;right:0;background:var(--bg-secondary);border-top:1px solid var(--border);display:none;flex-direction:column;padding:10px 16px 12px;z-index:100}
+.player-bar{position:fixed;bottom:0;left:220px;right:0;background:var(--bg-secondary);border-top:1px solid var(--magenta-line);display:none;flex-direction:column;padding:10px 16px 12px;z-index:100}
 .player-bar.show{display:flex}
 .player-top{display:flex;align-items:center;gap:12px;margin-bottom:8px}
 .player-controls{display:flex;gap:6px;align-items:center;flex-shrink:0}
-.player-controls button{background:none;border:none;color:var(--text-primary);font-size:1.3em;cursor:pointer;padding:4px 6px;border-radius:var(--radius)}
+.player-controls button{background:none;border:none;color:var(--text-primary);font-size:1.3em;cursor:pointer;padding:4px 6px}
 .player-controls button:hover{color:var(--accent);background:var(--accent-dim)}
 .player-info{flex:1;min-width:0;overflow:hidden}
-.player-info .title{font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:500}
-.player-info .artist{font-size:0.78em;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.player-info .title{font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700}
+.player-info .artist{font-family:var(--f-m);font-size:0.74em;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
 .player-bottom{display:flex;align-items:center;gap:10px}
-.player-bottom .time{font-size:0.75em;color:var(--text-secondary);min-width:38px;font-variant-numeric:tabular-nums}
+.player-bottom .time{font-family:var(--f-m);font-size:0.72em;color:var(--text-mute);min-width:40px;font-variant-numeric:tabular-nums}
 .player-bottom .time.right{text-align:right}
 .seek-wrap{flex:1;position:relative;height:28px;display:flex;align-items:center}
-.seek-track{width:100%;height:4px;background:var(--bg-tertiary);border-radius:2px;overflow:hidden;position:relative}
-.seek-fill{height:100%;background:var(--accent);border-radius:2px;width:0%;pointer-events:none}
-.seek-thumb{position:absolute;width:16px;height:16px;border-radius:50%;background:var(--accent);top:50%;transform:translate(-50%,-50%);left:0%;box-shadow:0 0 6px rgba(104,225,253,0.4);pointer-events:none}
+.seek-track{width:100%;height:4px;background:var(--bg-sunk);overflow:hidden;position:relative}
+.seek-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--magenta));width:0%;pointer-events:none}
+.seek-thumb{position:absolute;width:14px;height:14px;border-radius:50%;background:var(--accent);top:50%;transform:translate(-50%,-50%);left:0%;box-shadow:0 0 8px rgba(104,225,253,0.5);pointer-events:none}
 
 /* Playlist dropdown */
-.pl-dropdown{display:none;position:fixed;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);min-width:180px;max-height:240px;overflow-y:auto;z-index:250;box-shadow:0 8px 24px rgba(0,0,0,0.4)}
+.pl-dropdown{display:none;position:fixed;background:var(--bg-secondary);border:1px solid var(--border);clip-path:var(--notch);min-width:180px;max-height:240px;overflow-y:auto;z-index:250;box-shadow:0 8px 24px rgba(0,0,0,0.5)}
 .pl-dropdown.show{display:block}
-.pl-dropdown .dd-title{padding:8px 12px;font-size:0.78em;color:var(--text-secondary);text-transform:uppercase;letter-spacing:0.3px;border-bottom:1px solid var(--border)}
-.pl-dropdown .dd-item{padding:8px 12px;cursor:pointer;font-size:0.88em;transition:background 0.1s}
-.pl-dropdown .dd-item:hover{background:var(--accent-dim);color:var(--accent)}
+.pl-dropdown .dd-title{padding:9px 12px;font-family:var(--f-m);font-size:0.7em;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:0.18em;border-bottom:1px solid var(--border)}
+.pl-dropdown .dd-item{padding:8px 12px;cursor:pointer;font-size:0.86em;transition:background 0.1s}
+.pl-dropdown .dd-item:hover{background:var(--bg-elev);color:var(--accent)}
 .pl-dropdown .dd-item.new{color:var(--success);border-top:1px solid var(--border)}
 
 /* Modal */
-.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:300;justify-content:center;align-items:center}
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(8,5,15,0.86);z-index:300;justify-content:center;align-items:center}
 .modal-overlay.active{display:flex}
-.modal{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:20px;min-width:300px;max-width:90vw}
-.modal h3{margin-bottom:12px;font-size:1em}
-.modal input[type="text"],.modal select{width:100%;padding:8px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:0.9em;margin-bottom:12px}
-.modal .modal-err{display:none;color:var(--danger);font-size:0.8em;margin:-6px 0 10px}
+.modal{background:var(--bg-secondary);border:1px solid var(--border);clip-path:var(--notch);padding:20px;min-width:300px;max-width:90vw}
+.modal h3{margin-bottom:14px;font-size:0.95em;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent)}
+.modal input[type="text"],.modal select{width:100%;padding:9px 11px;background:var(--bg-sunk);border:1px solid var(--border);color:var(--text-primary);font-family:var(--f-m);font-size:0.86em;margin-bottom:12px;outline:none}
+.modal input[type="text"]:focus,.modal select:focus{border-color:var(--accent)}
+.modal .modal-err{display:none;font-family:var(--f-m);color:var(--danger);font-size:0.76em;margin:-6px 0 10px}
 .modal .modal-err.show{display:block}
 .modal .modal-actions{display:flex;gap:8px;justify-content:flex-end}
 
-/* Toast */
-.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg-secondary);border:1px solid var(--border);padding:8px 16px;border-radius:var(--radius);font-size:0.85em;z-index:400;opacity:0;transition:opacity 0.3s;pointer-events:none}
+/* Toast - elevated fill with a magenta hairline, matching .cf-toast */
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--bg-elev);border:1px solid var(--magenta);padding:9px 16px;font-size:0.82em;z-index:400;opacity:0;transition:opacity 0.3s;pointer-events:none}
 .toast.show{opacity:1}
 
 /* Empty */
-.empty{text-align:center;color:var(--text-secondary);padding:20px;font-size:0.9em}
+.empty{text-align:center;font-family:var(--f-m);color:var(--text-mute);padding:26px 20px;font-size:0.8em;line-height:1.6}
 
-/* WiFi Settings */
-.wifi-card{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px}
-.wifi-card h3{font-size:0.92em;margin-bottom:12px;color:var(--accent)}
-.wifi-card .info-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:0.88em}
-.wifi-card .info-row .label{color:var(--text-secondary)}
-.wifi-card .info-row .val{color:var(--text-primary);font-family:monospace}
+/* WiFi settings. Each card is the rail panel from the device-rail sheet:
+   chamfered panel, a bordered cyan mono eyebrow for the title, mono
+   key/value rows underneath. */
+.wifi-card{background:var(--bg-secondary);border:1px solid var(--border);clip-path:var(--notch);padding:16px;margin-bottom:14px}
+.wifi-card h3{display:inline-block;font-family:var(--f-m);font-size:0.68em;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:var(--accent);border:1px solid var(--border-cy);padding:3px 8px;margin-bottom:14px}
+.wifi-card .info-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:5px 0;font-family:var(--f-m);font-size:0.8em}
+.wifi-card .info-row .label{color:var(--text-mute)}
+.wifi-card .info-row .val{color:var(--text-primary);text-align:right;overflow-wrap:anywhere}
 .wifi-card .info-row .val.accent{color:var(--accent)}
 .network-list{list-style:none;margin:10px 0}
-.network-list li{display:flex;align-items:center;gap:10px;padding:8px 12px;border-radius:var(--radius);cursor:pointer;transition:background 0.15s;font-size:0.88em}
-.network-list li:hover{background:var(--accent-dim)}
-.network-list li.selected{background:var(--accent-dim);border:1px solid var(--accent)}
+.network-list li{display:flex;align-items:center;gap:10px;padding:9px 12px;cursor:pointer;transition:background 0.15s;font-size:0.86em;border-left:2px solid transparent}
+.network-list li:hover{background:var(--bg-elev)}
+.network-list li.selected{background:var(--bg-elev);border-left-color:var(--accent)}
 .network-list .ssid{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.network-list .signal{color:var(--text-secondary);font-size:0.82em;white-space:nowrap}
-.network-list .lock{font-size:0.8em;color:var(--text-secondary)}
-.wifi-input{width:100%;padding:8px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:0.9em;margin:8px 0}
+.network-list .signal{font-family:var(--f-m);color:var(--text-mute);font-size:0.78em;white-space:nowrap}
+.network-list .lock{font-size:0.8em;color:var(--text-mute)}
+.wifi-input{width:100%;padding:9px 11px;background:var(--bg-sunk);border:1px solid var(--border);color:var(--text-primary);font-family:var(--f-m);font-size:0.86em;margin:8px 0}
 .wifi-input:focus{border-color:var(--accent);outline:none}
 .wifi-actions{display:flex;gap:8px;margin-top:12px}
 .wifi-spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* Connection status bar */
-.conn-bar{padding:6px 20px;background:var(--bg-tertiary);border-bottom:1px solid var(--border);font-size:0.78em;color:var(--text-secondary);display:flex;gap:16px;flex-wrap:wrap}
-.conn-bar .tag{display:inline-flex;align-items:center;gap:4px}
-.conn-bar .dot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
-.conn-bar .dot.on{background:var(--success)}
-.conn-bar .dot.off{background:var(--text-secondary)}
+/* Connection status bar - the rail's status sub-line: mono, glowing dot */
+.conn-bar{padding:7px 20px;background:var(--bg-primary);border-bottom:1px solid var(--border);font-family:var(--f-m);font-size:0.72em;letter-spacing:0.04em;color:var(--text-secondary);display:flex;gap:16px;flex-wrap:wrap}
+.conn-bar .tag{display:inline-flex;align-items:center;gap:5px}
+.conn-bar .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.conn-bar .dot.on{background:var(--success);box-shadow:0 0 6px var(--success)}
+.conn-bar .dot.off{background:var(--text-mute)}
 
-/* Voice notes */
+/* Voice notes. Each note is the artboard item card: chamfered panel with a
+   category-coloured left bar, display-face name, mono meta line. */
 .vn-list{list-style:none}
-.vn-item{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:10px 12px;margin-bottom:8px}
+.vn-item{background:var(--bg-secondary);border:1px solid var(--border);border-left:2px solid var(--accent);clip-path:var(--notch);padding:11px 12px;margin-bottom:8px}
 .vn-top{display:flex;align-items:center;gap:8px}
 .vn-chk{flex-shrink:0;width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
-.vn-name{flex:1;font-weight:500;font-size:0.92em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.vn-acts{display:flex;gap:4px;flex-shrink:0}
+.vn-name{flex:1;font-weight:700;font-size:0.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.vn-acts{display:flex;gap:5px;flex-shrink:0}
 .vn-acts .btn{text-decoration:none}
-.vn-meta{color:var(--text-secondary);font-size:0.78em;margin:4px 0 2px;font-variant-numeric:tabular-nums}
-.vn-item audio{width:100%;margin-top:4px;display:block;height:36px}
-.vn-bulk{display:none;align-items:center;gap:10px;padding:8px 10px;margin-bottom:10px;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);font-size:0.85em;flex-wrap:wrap}
+.vn-meta{font-family:var(--f-m);color:var(--text-mute);font-size:0.74em;margin:5px 0 2px;font-variant-numeric:tabular-nums}
+.vn-item audio{width:100%;margin-top:6px;display:block;height:36px}
+.vn-bulk{display:none;align-items:center;gap:10px;padding:9px 11px;margin-bottom:10px;background:var(--bg-elev);border:1px solid var(--border);font-family:var(--f-m);font-size:0.78em;flex-wrap:wrap}
 .vn-bulk.show{display:flex}
 .vn-selall{display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-secondary)}
 .vn-selall input{width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
-.vn-bulk .count{color:var(--text-secondary)}
+.vn-bulk .count{color:var(--text-mute)}
 .vn-bulk .spacer{flex:1}
 .btn:disabled{opacity:0.4;cursor:default}
 
 /* Files browser tab */
 .fb-chk{flex-shrink:0;width:16px;height:16px;accent-color:var(--accent);cursor:pointer}
-.fb-path{display:flex;flex-wrap:wrap;align-items:center;gap:2px;font-size:0.85em;background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:7px 10px;margin-bottom:10px;color:var(--text-secondary);font-variant-numeric:tabular-nums}
-.fb-crumb{color:var(--accent);cursor:pointer;padding:1px 4px;border-radius:3px}
+.fb-path{display:flex;flex-wrap:wrap;align-items:center;gap:2px;font-family:var(--f-m);font-size:0.78em;background:var(--bg-sunk);border:1px solid var(--border);padding:8px 10px;margin-bottom:10px;color:var(--text-mute)}
+.fb-crumb{color:var(--accent);cursor:pointer;padding:1px 4px}
 .fb-crumb:hover{background:var(--accent-dim)}
 .fb-crumb.cur{color:var(--text-primary);cursor:default}
 .fb-crumb.cur:hover{background:none}
 .fb-sep{opacity:0.5;padding:0 1px}
-.fb-name{flex:1;font-weight:500;font-size:0.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
-.fb-folder{flex:1;font-weight:500;font-size:0.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;cursor:pointer;color:var(--accent)}
+.fb-name{flex:1;font-weight:600;font-size:0.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.fb-folder{flex:1;font-weight:700;font-size:0.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;cursor:pointer;color:var(--accent);letter-spacing:0.04em}
 .fb-folder:hover{text-decoration:underline}
-.fb-ico{flex-shrink:0;width:18px;text-align:center}
+.fb-ico{flex-shrink:0;width:18px;text-align:center;color:var(--text-mute)}
 
 /* Download overlay (bulk zip / individual + progress) */
-.dl-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.6);z-index:320;justify-content:center;align-items:center;padding:16px}
+.dl-overlay{display:none;position:fixed;inset:0;background:rgba(8,5,15,0.86);z-index:320;justify-content:center;align-items:center;padding:16px}
 .dl-overlay.show{display:flex}
-.dl-box{background:var(--bg-secondary);border:1px solid var(--border);border-radius:var(--radius);padding:20px;width:340px;max-width:92vw}
-.dl-box h3{font-size:1em;margin-bottom:6px}
-.dl-size{font-size:0.82em;color:var(--text-secondary);margin-bottom:14px}
+.dl-box{background:var(--bg-secondary);border:1px solid var(--border);clip-path:var(--notch);padding:20px;width:340px;max-width:92vw}
+.dl-box h3{font-size:0.95em;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent);margin-bottom:7px}
+.dl-size{font-family:var(--f-m);font-size:0.78em;color:var(--text-secondary);margin-bottom:14px}
 .dl-choice-btns{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
-.dl-choice-btns .btn{padding:10px}
+.dl-choice-btns .btn{padding:11px}
 .dl-cancel{width:100%;margin-top:4px}
-.dl-bar{height:8px;background:var(--bg-tertiary);border-radius:4px;overflow:hidden;margin:12px 0 8px}
-.dl-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--success));border-radius:4px;transition:width 0.15s}
-.dl-stat{font-size:0.85em;font-variant-numeric:tabular-nums}
-.dl-rate{font-size:0.78em;color:var(--accent);margin-top:2px;font-variant-numeric:tabular-nums}
-.dl-file{font-size:0.78em;color:var(--text-secondary);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.dl-warn{font-size:0.78em;color:var(--magenta);margin:12px 0 8px}
+.dl-bar{height:8px;background:var(--bg-sunk);border:1px solid var(--border);overflow:hidden;margin:12px 0 8px}
+.dl-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--magenta));transition:width 0.15s}
+.dl-stat{font-family:var(--f-m);font-size:0.82em;font-variant-numeric:tabular-nums}
+.dl-rate{font-family:var(--f-m);font-size:0.76em;color:var(--accent);margin-top:3px;font-variant-numeric:tabular-nums}
+.dl-file{font-family:var(--f-m);font-size:0.76em;color:var(--text-mute);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* Caution notice, styled like the rail sheet's yellow-bordered panel */
+.dl-warn{font-family:var(--f-m);font-size:0.74em;line-height:1.5;color:var(--warn);border:1px solid rgba(255,216,74,0.4);background:rgba(255,216,74,0.06);padding:7px 9px;margin:12px 0 10px}
 
 /* Mobile */
 @media(max-width:700px){
   .hamburger{display:flex}
+  /* The menu button is fixed at the viewport's top-left and draws above the
+     drawer, so the wordmark starts below it instead of under it. */
+  .sidebar-brand{padding-top:58px}
   .sidebar{position:fixed;left:-240px;transition:left 0.25s;height:100vh}
   .sidebar.open{left:0}
   .sidebar-overlay.open{display:block}
@@ -283,6 +327,12 @@ input[type="file"]{display:none}
   .player-bar{left:0}
   .content{padding:12px 14px;padding-bottom:130px}
   .track-table .col-album{display:none}
+  /* Phone masthead: the status eyebrow is a long live string, so it drops
+     its tracking here to stay on one or two tight lines beside the menu. */
+  .page-header{padding-top:9px}
+  .page-header h1{font-size:1.25em}
+  .page-header .status{font-size:0.6em;letter-spacing:0.09em}
+  .section-hdr{letter-spacing:0.1em}
 }
 @media(max-width:420px){
   .track-table .col-artist{display:none}
@@ -717,7 +767,8 @@ function filterTracks(){
 async function loadStatus(){
   try{
     const r=await fetch('/api/status');const s=await r.json();
-    $('statusBar').textContent=s.files+' files | '+fmt(s.usedBytes)+' used of '+fmt(s.totalBytes)+' | '+s.clients+' client(s)';
+    // Middot separators, matching the artboards' meta lines ("App · 28 KB").
+    $('statusBar').textContent=s.files+' files · '+fmt(s.usedBytes)+' of '+fmt(s.totalBytes)+' used · '+s.clients+' client(s)';
   }catch(e){}
 }
 
@@ -1231,8 +1282,9 @@ async function delPath(path,isDir){
 function moveFile(path){
   $('modalTitle').textContent='Move File';
   $('modalInput').style.display='none';
-  $('modalExtra').innerHTML='<p style="margin-bottom:8px;font-size:0.88em;color:var(--text-secondary)">Moving: '+esc(basename(path))+'</p>'+
-    '<select id="moveDest" style="width:100%;padding:8px 10px;background:var(--bg-tertiary);border:1px solid var(--border);border-radius:var(--radius);color:var(--text-primary);font-size:0.9em;margin-bottom:12px">'+
+  // No inline styling here: .modal select already carries the token styling.
+  $('modalExtra').innerHTML='<p style="margin-bottom:8px;font-family:var(--f-m);font-size:0.8em;color:var(--text-secondary)">Moving: '+esc(basename(path))+'</p>'+
+    '<select id="moveDest">'+
     allFolders.map(f=>'<option value="'+esc(f)+'">'+esc(f)+'</option>').join('')+'</select>';
   $('modalOk').textContent='Move';
   $('modalOverlay').classList.add('active');
