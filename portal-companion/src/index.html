@@ -184,11 +184,16 @@
   </div>
 </main>
 
+<!-- Transcripts, not "Notes": the portal's own Voice notes view lists the same
+     recordings, and two near-identical names for browsing vs transcribing them
+     was the sharpest edge of the portal/companion seam. -->
 <nav class="nav">
   <button data-view="Listen" class="active"><span class="glyph">&#9678;</span>Listen</button>
-  <button data-view="Notes"><span class="glyph">&#9636;</span>Notes</button>
+  <button data-view="Notes"><span class="glyph">&#9636;</span>Transcripts</button>
   <button data-view="Daily"><span class="glyph">&#9783;</span>Daily</button>
   <button data-view="Setup"><span class="glyph">&#9881;</span>Setup</button>
+  <!-- The way back. Without this the companion is a one-way door. -->
+  <a class="navout" href="/"><span class="glyph">&#9668;</span>Portal</a>
 </nav>
 
 <!-- ── Live-listening consent (shown before the first connection) ── -->

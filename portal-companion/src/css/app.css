@@ -79,6 +79,17 @@ body::after {
   border-top: 2px solid transparent;
 }
 .nav button .glyph { display: block; font-size: 1.7em; margin-bottom: 2px; }
+/* The route back to the portal, styled as a peer of the view tabs so crossing
+   between the two surfaces is an ordinary nav move, not an exit. */
+.nav .navout {
+  flex: 1; display: flex; flex-direction: column; align-items: center;
+  justify-content: flex-end;
+  padding: 9px 2px 7px; color: var(--cf-ink-mute); text-decoration: none;
+  font-family: var(--cf-font-ui); font-size: 0.66em; letter-spacing: 1px;
+  text-transform: uppercase; border-top: 2px solid transparent;
+}
+.nav .navout .glyph { display: block; font-size: 1.7em; margin-bottom: 2px; }
+.nav .navout:hover { color: var(--cf-cyan); }
 /* Active tab is magenta, matching the phone tab bar on the My Fidget
    artboard (and the site nav's magenta active link). */
 .nav button.active {
@@ -255,6 +266,51 @@ body::after {
 .notice.err { border-color: rgba(255, 82, 82, 0.4); background: rgba(255, 82, 82, 0.07); color: var(--cf-red); }
 .notice.ok { border-color: rgba(77, 255, 175, 0.35); background: rgba(77, 255, 175, 0.06); color: var(--cf-green); }
 
-@media (min-width: 760px) {
-  .view { max-width: 720px; margin: 0 auto; width: 100%; }
+/* ── Desktop shell ──
+   Above the breakpoint the companion adopts the portal's app shell instead of
+   staying a stretched phone layout: brand and status in a left column, the view
+   tabs stacked beneath them as a sidebar, content filling the rest. Same 700px
+   breakpoint as the portal, so the two surfaces change shape at the same width.
+   Grid on <body> gets there without moving any markup - the four <main> views
+   all claim the same grid area and [hidden] keeps three of them out. */
+@media (min-width: 700px) {
+  body {
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    grid-template-rows: auto 1fr;
+    grid-template-areas: "hdr view" "nav view";
+  }
+  .hdr {
+    grid-area: hdr;
+    flex-direction: column; align-items: flex-start; gap: 8px;
+    padding: 18px 16px 14px;
+    border-bottom: 1px solid var(--cf-magenta-line, rgba(255, 43, 184, 0.32));
+    border-right: 1px solid var(--cf-bg-line);
+  }
+  .hdr .spacer { display: none; }
+  .nav {
+    grid-area: nav;
+    flex-direction: column; justify-content: flex-start;
+    border-top: none; border-right: 1px solid var(--cf-bg-line);
+    padding-top: 8px;
+  }
+  /* Row-shaped items with the glyph inline, matching the portal's nav-item,
+     and the active marker moves to the leading edge like the portal's. */
+  .nav button, .nav .navout {
+    /* display:flex is required here, not just the flex-* properties: the base
+       rule leaves these as plain buttons, so alignment and gap are inert. */
+    display: flex;
+    flex: 0 0 auto; flex-direction: row; align-items: center;
+    justify-content: flex-start; gap: 10px;
+    padding: 11px 16px; font-size: 0.72em; text-align: left;
+    border-top: none; border-left: 3px solid transparent;
+  }
+  .nav button .glyph, .nav .navout .glyph {
+    display: inline; font-size: 1.15em; margin-bottom: 0;
+  }
+  .nav button.active { border-top-color: transparent; border-left-color: var(--cf-magenta); }
+  .nav .navout { margin-top: 10px; border-top: 1px solid var(--cf-bg-line); padding-top: 13px; }
+  .view { grid-area: view; padding: 20px 22px 24px; }
+  .view > .card { max-width: 720px; }
+  .toast { bottom: 24px; }
 }

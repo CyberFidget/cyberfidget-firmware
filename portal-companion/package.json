@@ -7,7 +7,8 @@
   "type": "module",
   "scripts": {
     "build": "node build_sdpack.mjs",
-    "verify": "node verify_shell_header.mjs"
+    "verify": "node verify_shell_header.mjs && node verify_tokens.mjs",
+    "verify:tokens": "node verify_tokens.mjs"
   },
   "devDependencies": {
     "@huggingface/transformers": "^3.4.0",

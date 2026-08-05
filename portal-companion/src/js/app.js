@@ -28,7 +28,25 @@ function showView(name) {
 }
 
 document.querySelectorAll('.nav button').forEach((b) => {
-  b.addEventListener('click', () => showView(b.dataset.view));
+  b.addEventListener('click', () => {
+    showView(b.dataset.view);
+    // Reflect the view in the URL so the portal can link straight to it and a
+    // reload keeps you where you were. replaceState, not a hash assignment, so
+    // this does not pile up history entries on every tab tap.
+    history.replaceState(null, '', '#' + b.dataset.view);
+  });
+});
+
+// Deep link: /web/#Notes opens that view directly, which is what lets the
+// portal's nav treat these as destinations rather than one opaque link.
+function viewFromHash() {
+  const want = decodeURIComponent(location.hash.replace('#', ''));
+  return VIEWS.find((v) => v.toLowerCase() === want.toLowerCase());
+}
+if (viewFromHash()) showView(viewFromHash());
+window.addEventListener('hashchange', () => {
+  const v = viewFromHash();
+  if (v) showView(v);
 });
 
 // ── Status chips ──

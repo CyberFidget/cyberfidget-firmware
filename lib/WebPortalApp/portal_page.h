@@ -72,6 +72,8 @@ a{color:var(--accent);text-decoration:none}
 .nav-item.active{color:var(--magenta);border-left-color:var(--magenta);background:rgba(255,43,184,0.09)}
 .nav-item .icon{margin-right:10px;font-size:1.1em;opacity:0.85}
 .nav-item .badge{margin-left:auto;font-family:var(--f-m);font-size:0.68em;font-weight:700;letter-spacing:0.06em;background:var(--warn);padding:1px 6px;color:var(--bg-tertiary)}
+/* Group label separating this device's pages from the phone companion's views */
+.nav-sep{font-family:var(--f-m);font-size:0.62em;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;color:var(--text-mute);padding:14px 16px 5px;border-top:1px solid var(--border);margin-top:8px}
 
 /* Main. column-reverse puts the status line ABOVE the title, which is the
    artboard masthead order: cyan mono eyebrow over a display-face heading. */
@@ -363,11 +365,20 @@ input[type="file"]{display:none}
     <div class="nav-item" data-page="files" onclick="showPage('files')">
       <span class="icon">&#9636;</span> Files
     </div>
-    <div class="nav-item" onclick="window.location.href='/web/'">
-      <span class="icon">&#9678;</span> Live listening
-    </div>
     <div class="nav-item" data-page="settings" onclick="showPage('settings')">
       <span class="icon">&#9881;</span> Settings
+    </div>
+    <!-- On your phone: the companion's own views, deep-linked so each is a real
+         destination in this nav rather than one opaque jump to another site. -->
+    <div class="nav-sep">On your phone</div>
+    <div class="nav-item" onclick="location.href='/web/#Listen'">
+      <span class="icon">&#9678;</span> Live listening
+    </div>
+    <div class="nav-item" onclick="location.href='/web/#Notes'">
+      <span class="icon">&#9636;</span> Transcripts
+    </div>
+    <div class="nav-item" onclick="location.href='/web/#Daily'">
+      <span class="icon">&#9783;</span> Daily note
     </div>
     <div class="nav-item" data-page="live" onclick="showPage('live')">
       <span class="icon">&#9733;</span> Live Playlist

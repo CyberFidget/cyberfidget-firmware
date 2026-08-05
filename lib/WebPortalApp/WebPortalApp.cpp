@@ -1420,6 +1420,14 @@ void WebPortalApp::handleStatus(AsyncWebServerRequest* req) {
             String((unsigned long)heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
     json += ",\"largest\":" +
             String((unsigned long)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) + "}";
+    // Is the captions payload on the card? The shell itself is in flash, so this
+    // is the only remaining card dependency, and it is the one thing the UI has
+    // to be able to explain. It cannot be probed over HTTP: a missing path under
+    // /web/ is a 404 with no way to distinguish "no card" from "no pack", and a
+    // 200 would be indistinguishable from success. One bounded exists() lookup,
+    // behind the same sdReady guard as the sizes above.
+    bool captions = sdReady && SD.exists("/web/vendor");
+    json += ",\"captions\":" + String(captions ? "true" : "false");
     json += "}";
     req->send(200, "application/json", json);
 }

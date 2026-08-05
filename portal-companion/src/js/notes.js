@@ -35,6 +35,21 @@ export async function loadNotes() {
     }
     notes = (data.items || []).slice().sort((a, b) => b.name.localeCompare(a.name));
 
+    // Live listening runs off the shell in the device's flash, so the memory
+    // card is only needed for turning speech into text. Say so plainly here
+    // instead of letting the first transcription attempt fail for no visible
+    // reason. The device reports this; it cannot be probed over HTTP, because a
+    // missing path under /web/ is an ordinary 404.
+    try {
+      const st = await device.getStatus();
+      if (st && st.captions === false) {
+        notice('notesNotice',
+          'Turning notes into text needs the speech pack on the memory card. ' +
+          'Live listening works without it. See the guide at docs.cyberfidget.com ' +
+          '(look for Phone companion) to add it.');
+      }
+    } catch { /* the notice is a courtesy; never block the list on it */ }
+
     sidecars = new Set();
     try {
       const browse = await device.getBrowse('/recordings');
