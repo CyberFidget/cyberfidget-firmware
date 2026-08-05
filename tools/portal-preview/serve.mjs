@@ -126,11 +126,29 @@ const [portal, fallback, shellGz] = await Promise.all([
   extractByteArray(resolve(LIB, 'companion_shell_gz.h')),
 ]);
 
+// The device serves the portal gzipped out of generated/portal_page_gz.h, which
+// is a build artifact. Prefer it when a build has produced one, so this harness
+// exercises the same bytes and the same headers the device does; fall back to the
+// raw literal (still the editable source) when it has not.
+let portalGz = null;
+try {
+  portalGz = await extractByteArray(resolve(HERE, '../../generated/portal_page_gz.h'));
+} catch { /* no build yet - serve the literal uncompressed */ }
+
 createServer((req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const path = url.pathname;
 
   if (path === '/' || path === '/index.html') {
+    if (portalGz) {
+      res.writeHead(200, {
+        'Content-Type': 'text/html; charset=utf-8',
+        'Content-Encoding': 'gzip',
+        'Content-Length': portalGz.length,
+        'Cache-Control': 'no-cache',
+      });
+      return res.end(portalGz);
+    }
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(portal);
   }
@@ -159,7 +177,9 @@ createServer((req, res) => {
   res.writeHead(404, { 'Content-Type': 'text/plain' });
   res.end('not found');
 }).listen(PORT, () => {
-  console.log(`[portal-preview] portal:   http://localhost:${PORT}/`);
+  console.log(`[portal-preview] portal:   http://localhost:${PORT}/  ` +
+              (portalGz ? `(gzipped from flash, ${portalGz.length} B)`
+                        : '(raw literal - no build artifact found)'));
   console.log(`[portal-preview] shell:    http://localhost:${PORT}/web/  ` +
               `(gzipped from flash, ${shellGz.length} B)`);
   console.log(`[portal-preview] fallback: http://localhost:${PORT}/fallback  (retired page)`);

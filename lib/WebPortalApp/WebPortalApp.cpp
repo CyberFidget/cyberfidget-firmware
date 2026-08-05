@@ -2,7 +2,12 @@
 // Copyright (c) 2023-2026 Dismo Industries LLC
 
 #include "WebPortalApp.h"
-#include "portal_page.h"
+// portal_page.h is the editable source for the portal, but it is NOT what gets
+// stored in the image: scripts/gzip_portal_page.py compresses it at build time
+// into generated/portal_page_gz.h, which is what ships and what is served. The
+// raw literal is not included here at all - including it would put both copies
+// in flash and defeat the point.
+#include "portal_page_gz.h"      // generated at build time from portal_page.h
 #include "companion_shell_gz.h"  // generated: gzipped companion shell in flash
 // companion_fallback_page.h is deliberately NOT included any more: with the
 // shell embedded in flash, /web/ always renders, so the "not on the memory card
@@ -769,11 +774,24 @@ void WebPortalApp::confirmExitAndRestart() {
 // Web server routes
 // ---------------------------------------------------------------------------
 void WebPortalApp::setupRoutes() {
-    // Main portal page
+    // Main portal page, gzipped in flash (~87 KB raw -> ~23 KB stored).
+    //
+    // sizeof() with no -1 here, unlike the old string-literal form: this is a
+    // uint8_t[] of exactly the compressed length, with no NUL terminator to skip.
+    //
+    // Captive-portal note: the OS probe requests (hotspot-detect.html,
+    // generate_204, ...) are answered by the redirect in onNotFound and are
+    // unaffected by this. By the time anything fetches "/", it is the captive
+    // sign-in browser -- a full WebKit/Chromium engine that advertises and
+    // handles gzip. If a quirky client ever turns up that does not, the tell
+    // would be a blank sign-in sheet, and the check is whether its request
+    // carried Accept-Encoding: gzip.
     server->on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
-        req->send(req->beginResponse(
-            200, "text/html", reinterpret_cast<const uint8_t*>(PORTAL_PAGE_HTML),
-            sizeof(PORTAL_PAGE_HTML) - 1));
+        AsyncWebServerResponse* resp = req->beginResponse(
+            200, "text/html", PORTAL_PAGE_GZ, sizeof(PORTAL_PAGE_GZ));
+        resp->addHeader("Content-Encoding", "gzip");
+        resp->addHeader("Cache-Control", "no-cache");
+        req->send(resp);
     });
 
     // Serve media files for audio playback
