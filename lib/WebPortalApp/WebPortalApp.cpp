@@ -3,7 +3,11 @@
 
 #include "WebPortalApp.h"
 #include "portal_page.h"
-#include "companion_fallback_page.h"
+#include "companion_shell_gz.h"  // generated: gzipped companion shell in flash
+// companion_fallback_page.h is deliberately NOT included any more: with the
+// shell embedded in flash, /web/ always renders, so the "not on the memory card
+// yet" page became unreachable. The file is kept because its wording is being
+// reused for an in-portal notice about the captions payload.
 #include "AudioManager.h"
 #include "MenuManager.h"
 #include "MicCapture.h"  // shared mic pipeline for the live caption stream
@@ -927,30 +931,73 @@ void WebPortalApp::setupRoutes() {
             // Map to an SD path; a directory request gets index.html.
             String path = u;
             if (path.endsWith("/")) path += "index.html";
-            if (wpPathSafe(path) && sdReady) {
+            if (!wpPathSafe(path)) {
+                req->send(404, "text/plain", "not found");
+                return;
+            }
+            // The shell (index.html) changes between SD-pack builds — revalidate
+            // so an update isn't shadowed by a stale copy. The vendor runtime
+            // (transformers.js + the multi-MB ort wasm) is immutable and loaded
+            // through the browser HTTP cache, so cache it hard — otherwise the
+            // big wasm re-downloads every visit.
+            const char* cache = path.endsWith(".html")
+                ? "no-cache"
+                : "public, max-age=31536000, immutable";
+
+            if (sdReady) {
+                // 1. Exact file on the card.
                 File f = SD.open(path);
                 bool isFile = f && !f.isDirectory();
                 if (f) f.close();
                 if (isFile) {
                     AsyncWebServerResponse* resp =
                         req->beginResponse(SD, path, webContentType(path));
-                    // The shell (index.html) changes between SD-pack builds —
-                    // revalidate so an update isn't shadowed by a stale copy.
-                    // The vendor runtime (transformers.js + the multi-MB ort
-                    // wasm) is immutable and loaded through the browser HTTP
-                    // cache, so cache it hard — otherwise the big wasm
-                    // re-downloads every visit.
-                    if (path.endsWith(".html")) {
-                        resp->addHeader("Cache-Control", "no-cache");
-                    } else {
-                        resp->addHeader("Cache-Control", "public, max-age=31536000, immutable");
-                    }
+                    resp->addHeader("Cache-Control", cache);
+                    req->send(resp);
+                    return;
+                }
+                // 2. Pre-compressed sibling. The SD pack ships the vendor tree
+                //    and the worker gzipped (32 MB -> 7.8 MB on the card, and
+                //    proportionally less WiFi transfer). Content-Type comes from
+                //    the REQUESTED path, not the .gz name, or the browser
+                //    refuses the module; Content-Length is the compressed
+                //    length, which beginResponse takes from the file itself.
+                //    A card written by an older pack has the plain files and is
+                //    served by branch 1, so this stays backward compatible.
+                String gzPath = path + ".gz";
+                File g = SD.open(gzPath);
+                bool gzIsFile = g && !g.isDirectory();
+                if (g) g.close();
+                if (gzIsFile) {
+                    AsyncWebServerResponse* resp =
+                        req->beginResponse(SD, gzPath, webContentType(path));
+                    resp->addHeader("Content-Encoding", "gzip");
+                    resp->addHeader("Cache-Control", cache);
                     req->send(resp);
                     return;
                 }
             }
-            // Pack missing / card absent — explain how to get it.
-            req->send(200, "text/html", COMPANION_FALLBACK_HTML);
+
+            // 3. The shell is embedded in the firmware image, gzipped, so live
+            //    listening works with an empty or absent memory card. A copy on
+            //    the card still wins (branch 1) so a newer pack can be dropped
+            //    in without reflashing.
+            if (path == "/web/index.html") {
+                AsyncWebServerResponse* resp = req->beginResponse(
+                    200, "text/html", COMPANION_SHELL_GZ, sizeof(COMPANION_SHELL_GZ));
+                resp->addHeader("Content-Encoding", "gzip");
+                resp->addHeader("Cache-Control", "no-cache");
+                req->send(resp);
+                return;
+            }
+
+            // 4. A genuinely missing sub-resource. This must NOT be the
+            //    fallback page: returning 200 + text/html for a missing module
+            //    or wasm makes the browser reject it on MIME grounds and hides
+            //    the real cause. The shell always loads now, so a
+            //    miss here means the captions payload is not on the card, which
+            //    the companion reports in-app.
+            req->send(404, "text/plain", "not found");
             return;
         }
         req->redirect("http://192.168.4.1/");

@@ -24,24 +24,43 @@ npm install          # once - pulls the vendored libraries
 npm run build        # -> dist/web/
 ```
 
-Copy `dist/web/` onto the memory card as `/web/` (so the card has
-`/web/index.html`), or upload the folder's files through the portal's Files
-tab. Without the pack, `/web/` serves a small built-in page explaining how
-to get it.
+The build also writes the shell into the firmware source tree as
+`lib/WebPortalApp/companion_shell_gz.h` (gzipped, tracked in git). That is why
+**live listening needs nothing on the memory card** - the device serves the shell
+out of its own flash. Copy `dist/web/` onto the card as `/web/` only when you
+want captions and transcription, or upload the files through the portal's Files
+tab.
 
-### You usually don't need all 32 MB
+### You usually don't need the card at all
 
-The build is deliberately split so the common case is one small file:
+The build is deliberately split so the common case needs nothing copied:
 
-| File | Size | Needed for |
+| File | Size on card | Needed for |
 |---|---|---|
-| `index.html` | ~50 KB | **Live listening** - self-contained (inlined CSS + JS), loads in a single request |
-| `engine.worker.js` | ~3 KB | captions / transcription (with `vendor/`) |
-| `vendor/` | ~32 MB | the on-phone speech runtime (transformers.js + onnxruntime-web) |
+| *(none)* | 0 | **Live listening** - the shell is in firmware |
+| `engine.worker.js.gz` | ~1 KB | captions / transcription (with `vendor/`) |
+| `vendor/` | ~7.8 MB gzipped | the on-phone speech runtime (transformers.js + onnxruntime-web) |
+| `index.html` | ~53 KB | optional - overrides the firmware's copy, so a newer pack works without reflashing |
 | `pack-info.json` | ~120 B | build provenance (versions + timestamp) |
 
-Copying only `index.html` clears the "not on the memory card yet" page and
-gets live listening working. Add the rest when you want captions.
+The on-demand files are stored **pre-compressed**. The device serves a
+`<name>.gz` sibling with `Content-Encoding: gzip` when the plain name is absent,
+and browsers decompress transparently - so the card holds 7.8 MB instead of 32 MB
+and WiFi transfers shrink proportionally. A card written by an older, uncompressed
+pack still works: the plain file is matched first.
+
+### Keeping the embedded shell in sync
+
+`companion_shell_gz.h` is generated but tracked, so that the firmware builds
+without a JS toolchain. It can therefore go stale:
+
+```bash
+npm run build     # regenerates dist/web/ AND the header
+npm run verify    # decompresses the header, compares to dist/web/index.html
+```
+
+In CI, `npm run build && git diff --exit-code ../lib/WebPortalApp/companion_shell_gz.h`
+additionally catches "edited src, forgot to regenerate".
 
 ### Firmware requirement
 

@@ -32,6 +32,29 @@ async function extractLiteral(headerPath) {
   return src.slice(open + 'R"rawliteral('.length, close);
 }
 
+// Pull the 0x.. byte array out of a generated header. Used for the gzipped
+// companion shell so this harness can serve the SAME bytes the firmware does -
+// a corrupt gzip stream then shows up here instead of as a blank page on
+// hardware. (What this canNOT check is how ESPAsyncWebServer sets
+// Content-Length for a PROGMEM buffer; that still needs a device.)
+async function extractByteArray(headerPath) {
+  const src = await readFile(headerPath, 'utf8');
+  const open = src.indexOf('{', src.indexOf('PROGMEM'));
+  const close = src.lastIndexOf('}');
+  if (open < 0 || close < 0) {
+    throw new Error(`no byte array found in ${headerPath}`);
+  }
+  const bytes = src.slice(open + 1, close)
+    .split(',')
+    .map((t) => t.trim())
+    .filter((t) => t.length)
+    .map((t) => Number.parseInt(t, 16));
+  if (bytes.some((b) => !Number.isInteger(b) || b < 0 || b > 255)) {
+    throw new Error(`malformed byte in ${headerPath}`);
+  }
+  return Buffer.from(bytes);
+}
+
 // ── Fixtures. Field names mirror what the portal's JS reads. ────────────
 const FIXTURES = {
   '/api/status': {
@@ -97,9 +120,10 @@ const json = (res, body) => {
   res.end(JSON.stringify(body));
 };
 
-const [portal, fallback] = await Promise.all([
+const [portal, fallback, shellGz] = await Promise.all([
   extractLiteral(resolve(LIB, 'portal_page.h')),
   extractLiteral(resolve(LIB, 'companion_fallback_page.h')),
+  extractByteArray(resolve(LIB, 'companion_shell_gz.h')),
 ]);
 
 createServer((req, res) => {
@@ -110,8 +134,20 @@ createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(portal);
   }
-  // The fallback page is what /web/ serves when the card has no companion.
-  if (path === '/web/' || path === '/web' || path === '/fallback') {
+  // /web/ serves the gzipped shell out of the firmware image, exactly as the
+  // device does when the card has no copy of its own.
+  if (path === '/web/' || path === '/web' || path === '/web/index.html') {
+    res.writeHead(200, {
+      'Content-Type': 'text/html; charset=utf-8',
+      'Content-Encoding': 'gzip',
+      'Content-Length': shellGz.length,
+      'Cache-Control': 'no-cache',
+    });
+    return res.end(shellGz);
+  }
+  // The old not-on-the-card page. Unreachable on the device now; kept here so
+  // its wording can still be reviewed while it is reused for a captions notice.
+  if (path === '/fallback') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fallback);
   }
@@ -124,6 +160,8 @@ createServer((req, res) => {
   res.end('not found');
 }).listen(PORT, () => {
   console.log(`[portal-preview] portal:   http://localhost:${PORT}/`);
-  console.log(`[portal-preview] fallback: http://localhost:${PORT}/web/`);
+  console.log(`[portal-preview] shell:    http://localhost:${PORT}/web/  ` +
+              `(gzipped from flash, ${shellGz.length} B)`);
+  console.log(`[portal-preview] fallback: http://localhost:${PORT}/fallback  (retired page)`);
   console.log(`[portal-preview] fixtures only - no device, no writes`);
 });

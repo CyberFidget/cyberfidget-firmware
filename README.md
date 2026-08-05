@@ -41,10 +41,20 @@ Output: `wasm/build/cyberfidget.js` + `cyberfidget.wasm`
 
 ### Phone companion (SD pack)
 
-The device serves a phone web app from the memory card at `/web/`. It is **not**
-part of the firmware image and is **not** built by `pio run` — it is built
-separately and copied to the card. If the portal shows "not on the memory card
-yet", this is what's missing:
+The device serves a phone web app at `/web/`. The **shell** ships inside the
+firmware image, gzipped (`lib/WebPortalApp/companion_shell_gz.h`, ~18 KB), so
+live listening works with an empty or absent memory card and needs nothing
+copied anywhere. Only **captions and transcription** need the memory card: the
+on-phone speech runtime is ~7.8 MB gzipped and is built separately.
+
+`companion_shell_gz.h` is a **generated file that is tracked in git**, so the
+firmware still builds with no JS toolchain installed. Regenerate it with
+`npm run build` in `portal-companion/` after changing anything under
+`portal-companion/src/`, and check it with `npm run verify` (or in CI:
+`npm run build && git diff --exit-code ../lib/WebPortalApp/companion_shell_gz.h`).
+
+A copy of `index.html` on the card still wins over the embedded one, so a newer
+pack can be dropped in without reflashing.
 
 **You may not need to build it at all** — every tagged release attaches
 `companion-pack.zip` (the full pack) and `companion-index.html` (the shell

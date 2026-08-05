@@ -6,8 +6,8 @@
 //   npm install          (once - pulls esbuild + the vendored libraries)
 //   node build_sdpack.mjs
 //
-// CRITICAL design constraint (learned on hardware, see firmware L-017 /
-// L-016): the device's async web server serves the SD card over a single
+// CRITICAL design constraint (learned on hardware): the device's async web
+// server serves the SD card over a single
 // SPI stream and WEDGES under concurrent reads. A browser loading a
 // multi-file page fires the CSS + JS-module graph in parallel and hangs the
 // server. So the shell is bundled into ONE self-contained index.html
@@ -23,13 +23,47 @@
 // time so multi-megabyte binaries never live in git.
 
 import { build } from 'esbuild';
-import { cpSync, mkdirSync, rmSync, existsSync, readdirSync, copyFileSync, writeFileSync, readFileSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { cpSync, mkdirSync, rmSync, existsSync, readdirSync, copyFileSync, writeFileSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { gzipSync, gunzipSync } from 'node:zlib';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const src = join(root, 'src');
 const out = join(root, 'dist', 'web');
+// The gzipped shell is embedded in the firmware image so live listening works
+// with no memory card at all. Written into lib/ next to the other page headers.
+const shellHeader = join(root, '..', 'lib', 'WebPortalApp', 'companion_shell_gz.h');
+
+// Node's gzip writes MTIME as 0 and a fixed OS byte, so the same input always
+// produces the same bytes. That is what lets the generated header be a tracked
+// file that does not churn on every build (and lets CI detect drift with a
+// plain `git diff --exit-code` on it).
+const gz = (buf) => gzipSync(buf, { level: 9 });
+
+// Emit a byte array as a C header. Not a string literal: the gzip stream
+// contains NULs, so it has to be uint8_t[] with an explicit sizeof().
+function writeByteHeader(path, symbol, bytes, note) {
+  const lines = [];
+  for (let i = 0; i < bytes.length; i += 16) {
+    lines.push('  ' + [...bytes.subarray(i, i + 16)]
+      .map((b) => '0x' + b.toString(16).padStart(2, '0')).join(','));
+  }
+  writeFileSync(path,
+    '// SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception\n' +
+    '// Copyright (c) 2023-2026 Dismo Industries LLC\n' +
+    '//\n' +
+    '// GENERATED FILE - DO NOT EDIT.\n' +
+    '// Regenerate with:  cd portal-companion && npm run build\n' +
+    '//\n' +
+    `// ${note}\n` +
+    '//\n' +
+    '// Tracked in git on purpose: the firmware must build without a JS\n' +
+    '// toolchain installed. The cost of that choice is drift, so CI rebuilds\n' +
+    '// the pack and fails if this file changes.\n' +
+    '\n#pragma once\n\n#include <stdint.h>\n\n' +
+    `const uint8_t ${symbol}[] PROGMEM = {\n${lines.join(',\n')}\n};\n`);
+}
 
 function findPkg(name) {
   const candidates = [
@@ -115,8 +149,33 @@ if (leftover.length) {
 writeFileSync(join(out, 'index.html'), html);
 console.log(`[sdpack] wrote self-contained index.html (${(html.length / 1024).toFixed(1)} KB, single request)`);
 
-writeFileSync(join(out, 'engine.worker.js'), workerJs);
-console.log(`[sdpack] wrote engine.worker.js (${(workerJs.length / 1024).toFixed(1)} KB, on-demand)`);
+// --- 4b. Embed the gzipped shell in the firmware image ---
+// Raw, the shell costs ~1.6 points of app0 flash; gzipped it costs ~0.5, which
+// is cheap enough to make live listening work on a device with an empty or
+// absent memory card - no "not on the memory card yet" dead end for anyone who
+// never wants captions. Browsers decompress Content-Encoding: gzip natively.
+const shellRaw = Buffer.from(html, 'utf8');
+const shellGz = gz(shellRaw);
+// Round-trip assert: a corrupt embedded shell would only show up as a blank
+// page on hardware, which is an expensive way to find an encoder bug.
+if (!gunzipSync(shellGz).equals(shellRaw)) {
+  console.error('[sdpack] FAILED: gzipped shell does not round-trip');
+  process.exit(1);
+}
+writeByteHeader(shellHeader, 'COMPANION_SHELL_GZ', shellGz,
+  `Gzipped companion shell (${shellRaw.length} B raw -> ${shellGz.length} B). Served for ` +
+  '/web/index.html when the memory card has no copy of its own.');
+console.log(`[sdpack] embedded shell -> ${relative(join(root, '..'), shellHeader)} ` +
+            `(${(shellRaw.length / 1024).toFixed(1)} KB -> ${(shellGz.length / 1024).toFixed(1)} KB gzipped)`);
+
+// --- 4c. On-demand files go on the card pre-compressed ---
+// Same header, applied to what stays on the card. The firmware serves a
+// `<name>.gz` sibling when the plain name is missing, so a card written by an
+// older pack (uncompressed) keeps working.
+const workerGz = gz(Buffer.from(workerJs, 'utf8'));
+writeFileSync(join(out, 'engine.worker.js.gz'), workerGz);
+console.log(`[sdpack] wrote engine.worker.js.gz (${(workerJs.length / 1024).toFixed(1)} KB -> ` +
+            `${(workerGz.length / 1024).toFixed(1)} KB, on-demand)`);
 
 // --- 5. Vendor the on-demand transcription library ---
 const tf = findPkg('@huggingface/transformers');
@@ -126,7 +185,20 @@ if (!tf) {
 }
 const vendor = join(out, 'vendor');
 mkdirSync(vendor, { recursive: true });
-copyFileSync(join(tf, 'dist', 'transformers.min.js'), join(vendor, 'transformers.min.js'));
+
+// Vendor payload goes on the card gzipped, not alongside an uncompressed twin:
+// the point is to shrink the card footprint (and the WiFi transfer time), so
+// only the .gz is written. Licence text stays plain - it is small and someone
+// may want to read it off the card directly.
+let vendorRaw = 0, vendorGz = 0;
+function copyGz(from, toGz) {
+  const buf = readFileSync(from);
+  const out = gz(buf);
+  writeFileSync(toGz, out);
+  vendorRaw += buf.length;
+  vendorGz += out.length;
+}
+copyGz(join(tf, 'dist', 'transformers.min.js'), join(vendor, 'transformers.min.js.gz'));
 if (existsSync(join(tf, 'LICENSE'))) {
   copyFileSync(join(tf, 'LICENSE'), join(vendor, 'transformers.LICENSE.txt'));
 }
@@ -143,7 +215,7 @@ mkdirSync(ortOut, { recursive: true });
 let ortFiles = 0;
 for (const f of readdirSync(join(ort, 'dist'))) {
   if (/^ort-.*\.(wasm|mjs)$/.test(f)) {
-    copyFileSync(join(ort, 'dist', f), join(ortOut, f));
+    copyGz(join(ort, 'dist', f), join(ortOut, f + '.gz'));
     ortFiles++;
   }
 }
@@ -159,8 +231,12 @@ writeFileSync(join(out, 'pack-info.json'), JSON.stringify({
   onnxruntimeWeb: ortVersion,
 }, null, 2));
 
+console.log(`[sdpack] vendor payload gzipped: ${(vendorRaw / 1048576).toFixed(2)} MB -> ` +
+            `${(vendorGz / 1048576).toFixed(2)} MB on the card`);
+
 console.log('[sdpack] done ->', out);
-console.log('[sdpack] live listening needs only index.html; captions also need engine.worker.js + vendor/');
+console.log('[sdpack] live listening needs NO card files - the shell is in firmware.');
+console.log('[sdpack] captions need engine.worker.js.gz + vendor/ on the card.');
 
 // esbuild's background service can leave node with a non-zero exit on Windows
 // even on success; the work above is complete, so exit clean explicitly.

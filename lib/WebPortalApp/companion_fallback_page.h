@@ -3,10 +3,18 @@
 
 // lib/WebPortalApp/companion_fallback_page.h
 //
-// Served for any /web/* request when the companion pack is not on the
-// memory card (no card, or /web/index.html missing). The real companion
-// lives on the card (portal-companion/ -> SD pack) so its megabytes stay
-// out of the firmware image; this page only explains how to get it.
+// CURRENTLY UNUSED - nothing includes this.
+//
+// It was served for any /web/* request when the companion pack was not on the
+// memory card. Now that the gzipped shell is embedded in the firmware image
+// (companion_shell_gz.h), /web/ always renders and this page is unreachable:
+// live listening no longer needs anything on the card, and a missing captions
+// payload returns a real 404 rather than a page that explains itself.
+//
+// Kept rather than deleted because this wording is being reused for an in-portal
+// notice covering the one case that survives - the captions and transcription
+// payload, which does still live on the card. Delete it once that notice ships
+// and the copy has a home.
 //
 // Visually this is the phase-B rail panel (see the "NO DEVICE ·
 // VISITOR (TEASER)" state on the Device rail artboard): chamfered card,

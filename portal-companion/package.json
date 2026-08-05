@@ -6,7 +6,8 @@
   "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "build": "node build_sdpack.mjs"
+    "build": "node build_sdpack.mjs",
+    "verify": "node verify_shell_header.mjs"
   },
   "devDependencies": {
     "@huggingface/transformers": "^3.4.0",
