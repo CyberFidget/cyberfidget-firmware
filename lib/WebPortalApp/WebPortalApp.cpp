@@ -1427,6 +1427,10 @@ void WebPortalApp::handleStatus(AsyncWebServerRequest* req) {
     json += ",\"totalBytes\":" + String((unsigned long)totalBytes);
     json += ",\"usedBytes\":" + String((unsigned long)usedBytes);
     json += ",\"clients\":" + String(WiFi.softAPgetStationNum());
+    // Firmware version. Both device documents show it in the shared kit's
+    // sidebar footer, so "what is this thing running" is answerable without a
+    // serial cable; it is also what the companion's Your data segment reports.
+    json += ",\"version\":\"" + String(getFirmwareVersionString()) + "\"";
     // Live caption link health: dropped counts make the contract's
     // backpressure behavior observable from a test or a curious user.
     json += ",\"live\":{\"connected\":" + String(liveClientId != 0 ? "true" : "false");

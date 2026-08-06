@@ -147,6 +147,16 @@ async function saveNoteToDevice() {
   }
 }
 
+// Daily note nests under Notes rather than holding a destination of its own: it
+// is made FROM those transcripts, so it lives with them. Entering it resets the
+// flow (gather -> preview -> send with consent) to its first step, because the
+// day and the transcripts behind it may both have moved on since last time.
+export function refresh() {
+  $('assembledCard').hidden = true;
+  $('dailyResultCard').hidden = true;
+  notice('dailyNotice', '');
+}
+
 export function wire() {
   $('dailyDate').value = todayISO();
   $('btnAssemble').onclick = assemble;

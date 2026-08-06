@@ -62,6 +62,34 @@ npm run verify    # decompresses the header, compares to dist/web/index.html
 In CI, `npm run build && git diff --exit-code ../lib/WebPortalApp/companion_shell_gz.h`
 additionally catches "edited src, forgot to regenerate".
 
+### The shared kit - one navigation across two documents
+
+The device serves **two** documents: the portal at `/` (a PROGMEM literal in
+`lib/WebPortalApp/portal_page.h`, hand-authored so the firmware builds with no
+JS toolchain) and this companion at `/web/`. The user is meant to experience one
+app spanning both - five destinations, same order, same treatment - so the
+navigation, the audio player, the gate panel and the bulk-download flow have a
+single source in `src/shared/` and are **generated into both**:
+
+```bash
+npm run chrome:sync    # src/shared/ -> kit.gen.{css,js} + portal_page.h markers
+npm run verify:chrome  # re-derives and fails if any copy has drifted
+```
+
+`npm run build` runs the sync first, and `npm run verify` runs all three checks.
+Inside `portal_page.h` the generated blocks sit between `/* CF-KIT-CSS:BEGIN */`
+and `/* CF-KIT-JS:BEGIN */` marker pairs; everything outside them is still the
+editable source, so `scripts/gzip_portal_page.py` is unaffected.
+
+**Edit `src/shared/`, never the generated copies.** An edit to the portal's copy
+of the tab bar looks completely fine in the portal - the seam only reopens for a
+user crossing between the two documents, which is the one thing nobody does
+while working on a single surface. That is what `verify:chrome` is for.
+
+The kit declares its own `--k-*` colour literals rather than either document's
+token names (it has to be byte-identical in both). `verify:tokens` checks all
+three spellings agree, so the anti-drift mechanism cannot itself drift.
+
 ### Firmware requirement
 
 The device must be running firmware that serves `.mjs` as `text/javascript`
@@ -75,20 +103,28 @@ is the device's serving, not the pack, so recopying won't fix it; reflash.
 
 ```
 src/                  app source (plain ES modules - no bundler)
-  index.html          shell + views (Listen / Notes / Daily / Setup)
+  index.html          shell + views (Listen / Notes / Daily / Settings)
+  shared/             THE SHARED KIT - generated into this document AND the portal
+    chrome.css        shell, tab bar, sidebar, seg control, gate, player, overlay
+    chrome.js         the five destinations, nav render, player, bulk download
+    icons.mjs         the five 9x9 nav bitmaps -> precomputed box-shadow rules
   css/tokens.css      Cyber Fidget design tokens (single visual source of truth)
   css/app.css         components built on the tokens
   js/live.js          live session: socket client, waveform, captions
   js/engine.js        on-phone speech-to-text (vendored transformers.js)
-  js/notes.js         stored-note transcription + sidecars
+  js/notes.js         Notes: recordings + transcripts merged, one row each
   js/daily.js         daily-note summaries (BYOK, direct-to-provider)
   js/providers.js     Anthropic / OpenAI / Google direct calls + key custody
   js/device.js        device endpoint client
   js/db.js            IndexedDB (transcripts, model cache, settings)
-  js/ui.js            toast/overlay/notice helpers
+  js/ui.js            toast/overlay/notice/ask helpers
   js/keepawake.js     screen keep-awake (degrades honestly on http)
   sw.js               offline-shell worker (secure contexts only)
 build_sdpack.mjs      assembles dist/web/ and vendors the libraries
+sync_chrome.mjs       writes the shared kit into both device documents
+verify_chrome.mjs     fails if either copy of the kit has drifted
+verify_tokens.mjs     fails if portal / companion / kit colours disagree
+verify_shell_header.mjs  fails if the embedded shell is stale
 ```
 
 ## Design constraints worth knowing

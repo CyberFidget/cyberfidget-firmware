@@ -33,6 +33,59 @@ export function askOverlay(overlayId, okId, cancelId) {
   });
 }
 
+// Ask the user something in the surface's own language rather than the
+// browser's. Two shapes share one overlay:
+//   askConfirm(...)          -> Promise<boolean>
+//   askText(..., {value})    -> Promise<string|null>   (null = cancelled)
+// `validate` returns an error string to block OK and show it inline, or '' to
+// allow - so a bad name is caught as it is typed instead of after a round trip.
+export function ask({ title, body, okLabel, danger, value, validate }) {
+  return new Promise((resolve) => {
+    const overlay = $('askOverlay');
+    const input = $('askInput');
+    const err = $('askErr');
+    const ok = $('askGo');
+    const cancel = $('askNo');
+    const wantsText = value !== undefined;
+
+    $('askTitle').textContent = title;
+    $('askBody').textContent = body || '';
+    $('askBody').hidden = !body;
+    $('askField').hidden = !wantsText;
+    ok.textContent = okLabel || 'OK';
+    ok.className = 'btn grow ' + (danger ? 'btn-danger' : 'btn-primary');
+    err.hidden = true;
+    ok.disabled = false;
+    input.value = wantsText ? value : '';
+
+    const check = () => {
+      if (!wantsText || !validate) return true;
+      const msg = validate(input.value);
+      err.textContent = msg || '';
+      err.hidden = !msg;
+      ok.disabled = !!msg;
+      return !msg;
+    };
+    const done = (answer) => {
+      overlay.hidden = true;
+      ok.onclick = null;
+      cancel.onclick = null;
+      input.oninput = null;
+      input.onkeydown = null;
+      resolve(answer);
+    };
+    input.oninput = check;
+    input.onkeydown = (e) => { if (e.key === 'Enter' && check()) ok.click(); };
+    ok.onclick = () => {
+      if (!check()) return;
+      done(wantsText ? input.value.trim() : true);
+    };
+    cancel.onclick = () => done(wantsText ? null : false);
+    overlay.hidden = false;
+    if (wantsText) { input.focus(); input.select(); }
+  });
+}
+
 // Notices: small inline status panels. kind: '' | 'err' | 'ok'
 export function notice(id, text, kind = '') {
   const el = $(id);

@@ -2,17 +2,23 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
      Copyright (c) 2023-2026 Dismo Industries LLC
 
-     Cyber Fidget companion - served by the device itself from the
-     memory card (/web/). Everything here runs in the user's browser and talks
-     only to the device, except two explicit, user-consented flows: the
-     one-time transcription download and the bring-your-own-account summary
-     call. Keep it that way. -->
+     Cyber Fidget companion - served by the device itself at /web/. Everything
+     here runs in the user's browser and talks only to the device, except two
+     explicit, user-consented flows: the one-time transcription download and the
+     bring-your-own-account summary call. Keep it that way.
+
+     This is one of the device's two documents. The navigation, the audio player,
+     the gate panel and the bulk-download flow come from the shared kit
+     (src/shared/, generated into both this file and the portal's page header),
+     so a user crossing between the two surfaces cannot tell where the seam is.
+     Three of the five destinations render here or there; the rest are links. -->
 <html lang="en">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
 <meta name="theme-color" content="#0e0820">
-<title>Cyber Fidget Companion</title>
+<title>Cyber Fidget</title>
+<link rel="stylesheet" href="css/kit.gen.css">
 <link rel="stylesheet" href="css/tokens.css">
 <link rel="stylesheet" href="css/app.css">
 <link rel="manifest" href="manifest.webmanifest">
@@ -21,17 +27,20 @@
 </head>
 <body>
 
-<header class="hdr">
-  <div class="logo"><b>CYBER FIDGET</b><span>Companion</span></div>
-  <div class="spacer"></div>
-  <div class="chip" id="chipDevice"><span class="dot"></span><span id="chipDeviceText">device...</span></div>
-  <div class="chip" id="chipNet"><span class="dot"></span><span id="chipNetText">internet?</span></div>
-</header>
+<!-- The sidebar, phone masthead and tab bar are built by the shared kit on load
+     (CFK.nav in app.js). No markup for them here on purpose - two hand-written
+     copies is how the two surfaces drifted apart before. -->
+<div class="k-main">
+  <div class="page-header">
+    <h1 id="pageTitle">Live listening</h1>
+    <div class="status" id="pageStatus"></div>
+  </div>
 
 <!-- ── LISTEN ── -->
 <main class="view" id="viewListen">
+  <!-- No panel title: the page masthead above already says "Live listening",
+       and the artboards never repeat the destination name inside its own card. -->
   <div class="card" id="listenIntro">
-    <h2>Live listening</h2>
     <p>Hear what your Cyber Fidget hears, watch it as a waveform, and (after
     a one-time download) turn speech into captions that appear right on the
     device's screen.</p>
@@ -46,48 +55,61 @@
     <h2>Session</h2>
     <div class="phosphor"><canvas id="wave" width="640" height="220"></canvas></div>
     <div class="session-strip">
-      <span class="chip on" id="chipSession"><span class="dot"></span><span id="chipSessionText">connecting...</span></span>
-      <span class="chip" id="chipCaptions" hidden><span class="dot"></span><span id="chipCaptionsText">captions off</span></span>
+      <span class="k-chip gn" id="chipSession"><span class="k-dot"></span><span id="chipSessionText">connecting...</span></span>
+      <span class="k-chip cy" id="chipCaptions" hidden><span class="k-dot cy"></span><span id="chipCaptionsText">captions off</span></span>
     </div>
     <div class="notice" id="sessionNotice" hidden></div>
     <div class="btn-row">
-      <button class="btn" id="btnHear">&#128264; Hear it</button>
-      <button class="btn btn-magenta" id="btnCaptions">Start captions</button>
-      <button class="btn btn-danger" id="btnStopSession">Stop</button>
+      <button class="btn btn-ghost grow" id="btnHear"><span class="k-spk"></span> Hear it</button>
+      <button class="btn btn-ghost" id="btnCaptions">Start captions</button>
+      <!-- Not a danger button. Red is reserved for actions that destroy a file
+           on the card with no undo; ending a live stream discards nothing. -->
+      <button class="btn grow" id="btnStopSession">Stop</button>
     </div>
-    <p class="muted" style="margin-top:10px">Keep this screen on for the whole
-    session - phones and tablets pause the connection when the screen locks. <span id="wakeLockNote"></span></p>
+    <p class="muted" style="margin-top:10px">Keep this page open for the whole
+    session - phones pause the connection when the screen locks. <span id="wakeLockNote"></span></p>
   </div>
+
+  <!-- Captions need the transcription pack. When it is absent the button above
+       disappears and this gate takes the captions card's place. -->
+  <div id="listenGate"></div>
 
   <div class="card" id="captionCard" hidden>
     <h2>Captions</h2>
     <div class="phosphor"><div class="caption-feed" id="captionFeed"></div></div>
-    <p class="muted" style="margin-top:8px">Captions also appear on the device's
+    <p class="muted" style="margin-top:8px">Captions also appear on your Fidget's
     screen. They may lag a few seconds behind speech, depending on how fast
     your browser can transcribe.</p>
   </div>
 </main>
 
-<!-- ── NOTES ── -->
+<!-- ── NOTES ──
+     The merged view. Browsing recordings used to live in the portal and
+     transcribing them used to live here, as two lists of the same files. Now a
+     transcript is a property of a recording's row, not a second place to visit,
+     and Daily note nests here because it is made from these transcripts. -->
 <main class="view" id="viewNotes" hidden>
-  <div class="card">
-    <h2>Voice note transcripts</h2>
-    <p>Turn saved voice notes into text - right here in your browser. Transcripts
-    are saved back to the device's memory card next to each note.</p>
-    <div class="notice" id="notesNotice" hidden></div>
-    <ul class="rowlist" id="notesList"><li class="empty">Loading notes from the device...</li></ul>
+  <div class="card entry-card" id="dailyEntry">
+    <span class="stamp">Daily note</span>
+    <span class="muted" style="flex:1;min-width:0">Turn one day's transcripts into a tidy note.</span>
+    <a href="#notes/daily" id="dailyOpen">Open &gt;</a>
   </div>
-  <div class="card" id="transcriptCard" hidden>
-    <h2 id="transcriptTitle">Transcript</h2>
-    <div class="phosphor"><div class="terminal" id="transcriptView"></div></div>
-    <div class="btn-row">
-      <button class="btn" id="btnSaveSidecar">Save to device</button>
-      <button class="btn btn-ghost" id="btnCloseTranscript">Close</button>
-    </div>
+
+  <div id="notesGate"></div>
+
+  <div class="bulk" id="notesBulk" hidden>
+    <label class="selall"><span class="ck" id="notesSelAll" role="checkbox" tabindex="0"></span> Select all</label>
+    <span class="count" id="notesCount">0 selected</span>
+    <span class="spacer"></span>
+    <button class="rowact" id="notesDownload" disabled>Download</button>
+    <button class="rowact red" id="notesDelete" disabled>Delete</button>
   </div>
+
+  <div class="notice" id="notesNotice" hidden></div>
+  <ul class="rowlist" id="notesList"><li class="empty">Loading notes from the device...</li></ul>
 </main>
 
-<!-- ── DAILY NOTE ── -->
+<!-- ── DAILY NOTE (nested under Notes) ── -->
 <main class="view" id="viewDaily" hidden>
   <div class="card">
     <h2>Daily note</h2>
@@ -100,6 +122,7 @@
     </div>
     <div class="btn-row">
       <button class="btn btn-primary grow" id="btnAssemble">Gather transcripts</button>
+      <button class="btn btn-ghost" id="btnBackToNotes">Back to notes</button>
     </div>
   </div>
   <div class="card" id="assembledCard" hidden>
@@ -121,80 +144,86 @@
   </div>
 </main>
 
-<!-- ── SETUP ── -->
-<main class="view" id="viewSetup" hidden>
-  <div class="card">
-    <h2>Transcription</h2>
-    <p>Speech is turned into text right here in your browser. That needs a
-    one-time download of the transcription pack; after that it works with no
-    internet at all.</p>
-    <p class="muted">Captions run on your own processor, so a smaller pack
-    means faster, more responsive live captions. Pick <b>Fastest</b> for live
-    captions; a more accurate pack is better for transcribing saved notes,
-    where speed matters less.</p>
-    <div class="kv"><span class="k">Status</span><span class="v" id="engineStatus">checking...</span></div>
-    <div class="field">
-      <label for="modelPick">Transcription pack</label>
-      <select id="modelPick"></select>
-    </div>
-    <div class="bar" id="modelBar" hidden><div class="fill" id="modelFill"></div></div>
-    <div class="notice" id="engineNotice" hidden></div>
-    <div class="btn-row">
-      <button class="btn btn-primary" id="btnGetModel">Download</button>
-      <button class="btn btn-danger" id="btnDropModel" hidden>Remove download</button>
+<!-- ── SETTINGS ──
+     One destination, three segments. Network renders in the portal document, so
+     that segment is a plain link; the two here are local. Identical control on
+     both sides, so switching across the seam looks like switching within it. -->
+<main class="view" id="viewSettings" hidden>
+  <div class="seg-row">
+    <div class="k-seg">
+      <a class="k-sg" href="/#settings">Network</a>
+      <span class="k-sg" id="segTranscription">Transcription</span>
+      <span class="k-sg" id="segData">Your data</span>
     </div>
   </div>
 
-  <div class="card">
-    <h2>Summary generator</h2>
-    <p>Daily notes are written by a provider you choose, using <b>your own
-    account and key</b>. The key is stored only in this browser, only for this
-    device's pages - it is never uploaded anywhere.</p>
-    <div class="field">
-      <label for="provPick">Provider</label>
-      <select id="provPick">
-        <option value="anthropic">Anthropic (Claude)</option>
-        <option value="openai">OpenAI</option>
-        <option value="gemini">Google (Gemini)</option>
-      </select>
+  <div id="segPaneTranscription">
+    <div class="card">
+      <h2>Transcription</h2>
+      <p>Speech is turned into text right here in your browser. That needs a
+      one-time download of the transcription pack; after that it works with no
+      internet at all.</p>
+      <p class="muted">Captions run on your own processor, so a smaller pack
+      means faster, more responsive live captions. Pick <b>Fastest</b> for live
+      captions; a more accurate pack is better for transcribing saved notes,
+      where speed matters less.</p>
+      <div class="kv"><span class="k">Status</span><span class="v" id="engineStatus">checking...</span></div>
+      <div class="field">
+        <label for="modelPick">Transcription pack</label>
+        <select id="modelPick"></select>
+      </div>
+      <div class="bar" id="modelBar" hidden><div class="fill" id="modelFill"></div></div>
+      <div class="notice" id="engineNotice" hidden></div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btnGetModel">Download</button>
+        <button class="btn btn-danger" id="btnDropModel" hidden>Remove download</button>
+      </div>
     </div>
-    <div class="field">
-      <label for="provKey">Your key</label>
-      <input type="password" id="provKey" placeholder="paste your key" autocomplete="off">
+
+    <div class="card">
+      <h2>Summary generator</h2>
+      <p>Daily notes are written by a provider you choose, using <b>your own
+      account and key</b>. The key is stored only in this browser, only for this
+      device's pages - it is never uploaded anywhere.</p>
+      <div class="field">
+        <label for="provPick">Provider</label>
+        <select id="provPick">
+          <option value="anthropic">Anthropic (Claude)</option>
+          <option value="openai">OpenAI</option>
+          <option value="gemini">Google (Gemini)</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="provKey">Your key</label>
+        <input type="password" id="provKey" placeholder="paste your key" autocomplete="off">
+      </div>
+      <p class="muted" id="provKeyHelp"></p>
+      <div class="field">
+        <label for="provModel">Model</label>
+        <select id="provModel"></select>
+      </div>
+      <div class="btn-row">
+        <button class="btn btn-primary" id="btnSaveProvider">Save</button>
+      </div>
+      <div class="notice" id="provNotice" hidden></div>
     </div>
-    <p class="muted" id="provKeyHelp"></p>
-    <div class="field">
-      <label for="provModel">Model</label>
-      <select id="provModel"></select>
-    </div>
-    <div class="btn-row">
-      <button class="btn btn-primary" id="btnSaveProvider">Save</button>
-    </div>
-    <div class="notice" id="provNotice" hidden></div>
   </div>
 
-  <div class="card">
-    <h2>Your data</h2>
-    <p>Sound and transcripts stay between the device and your browser. The only
-    times anything leaves: the one-time transcription download, and a daily-note
-    summary you approve - sent straight to your chosen provider, never through
-    cyberfidget.com.</p>
-    <div class="kv"><span class="k">Device</span><span class="v" id="aboutDevice">-</span></div>
-    <div class="kv"><span class="k">Companion</span><span class="v" id="aboutVersion">-</span></div>
+  <div id="segPaneData" hidden>
+    <div class="card">
+      <h2>Your data</h2>
+      <p>Sound and transcripts stay between the device and your browser. The only
+      times anything leaves: the one-time transcription download, and a daily-note
+      summary you approve - sent straight to your chosen provider, never through
+      cyberfidget.com.</p>
+      <div class="kv"><span class="k">Device</span><span class="v" id="aboutDevice">-</span></div>
+      <div class="kv"><span class="k">Your Fidget</span><span class="v" id="aboutFirmware">-</span></div>
+      <div class="kv"><span class="k">Companion</span><span class="v" id="aboutVersion">-</span></div>
+    </div>
   </div>
 </main>
 
-<!-- Transcripts, not "Notes": the portal's own Voice notes view lists the same
-     recordings, and two near-identical names for browsing vs transcribing them
-     was the sharpest edge of the portal/companion seam. -->
-<nav class="nav">
-  <button data-view="Listen" class="active"><span class="glyph">&#9678;</span>Listen</button>
-  <button data-view="Notes"><span class="glyph">&#9636;</span>Transcripts</button>
-  <button data-view="Daily"><span class="glyph">&#9783;</span>Daily</button>
-  <button data-view="Setup"><span class="glyph">&#9881;</span>Setup</button>
-  <!-- The way back. Without this the companion is a one-way door. -->
-  <a class="navout" href="/"><span class="glyph">&#9668;</span>Portal</a>
-</nav>
+</div>
 
 <!-- ── Live-listening consent (shown before the first connection) ── -->
 <div class="overlay" id="consentOverlay" hidden>
@@ -228,6 +257,26 @@
   </div>
 </div>
 
+<!-- ── Ask: confirm, or confirm-with-a-name ──
+     The portal's voice page used a styled modal for renaming and deleting. That
+     page merged into this document, and browser prompt()/confirm() would have
+     been a downgrade on the way across - so the pattern came too. -->
+<div class="overlay" id="askOverlay" hidden>
+  <div class="box">
+    <h3 id="askTitle">Are you sure?</h3>
+    <p id="askBody"></p>
+    <div class="field" id="askField" hidden>
+      <label for="askInput">Name</label>
+      <input type="text" id="askInput" maxlength="48" autocomplete="off">
+    </div>
+    <div class="notice err" id="askErr" hidden></div>
+    <div class="btn-row">
+      <button class="btn btn-primary grow" id="askGo">OK</button>
+      <button class="btn btn-ghost" id="askNo">Cancel</button>
+    </div>
+  </div>
+</div>
+
 <!-- ── Per-action summary consent ── -->
 <div class="overlay" id="summaryOverlay" hidden>
   <div class="box">
@@ -245,6 +294,7 @@
 
 <div class="toast" id="toast"></div>
 
+<script src="js/kit.gen.js"></script>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

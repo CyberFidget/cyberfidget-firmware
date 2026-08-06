@@ -27,6 +27,22 @@ export async function fetchBytes(path) {
   return r.arrayBuffer();
 }
 
+// Delete a file on the card. The Notes view owns this now: browsing and deleting
+// recordings used to live in the portal, and moved here when the two lists of
+// the same files merged into one destination.
+export async function deletePath(path) {
+  const r = await fetch('/api/delete?path=' + encodeURIComponent(path), { method: 'POST' });
+  if (!r.ok) throw new Error(`the device could not delete it (${r.status})`);
+}
+
+// Rename (the device's move, within one folder). It carries a recording's
+// transcript sidecar along by itself - see handleMove in WebPortalApp.cpp.
+export async function move(from, to) {
+  const r = await fetch('/api/move?from=' + encodeURIComponent(from) +
+                        '&to=' + encodeURIComponent(to), { method: 'POST' });
+  if (!r.ok) throw new Error(`the device could not rename it (${r.status})`);
+}
+
 export async function mkdir(path) {
   // Best-effort: the device reports failure for an already-existing folder,
   // which is fine - the follow-up write is the real test.

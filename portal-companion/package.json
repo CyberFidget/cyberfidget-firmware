@@ -6,9 +6,11 @@
   "license": "GPL-3.0-or-later",
   "type": "module",
   "scripts": {
-    "build": "node build_sdpack.mjs",
-    "verify": "node verify_shell_header.mjs && node verify_tokens.mjs",
-    "verify:tokens": "node verify_tokens.mjs"
+    "build": "node sync_chrome.mjs && node build_sdpack.mjs",
+    "chrome:sync": "node sync_chrome.mjs",
+    "verify": "node verify_chrome.mjs && node verify_shell_header.mjs && node verify_tokens.mjs",
+    "verify:tokens": "node verify_tokens.mjs",
+    "verify:chrome": "node verify_chrome.mjs"
   },
   "devDependencies": {
     "@huggingface/transformers": "^3.4.0",
