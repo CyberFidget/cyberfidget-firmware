@@ -131,6 +131,13 @@ body{display:flex;min-height:100vh;overflow:hidden}
 .page-header h1{font-family:var(--k-fd);font-size:1.45em;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;line-height:1.1;color:var(--k-ink);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .page-header .status{font-family:var(--k-fm);font-size:0.7em;color:var(--k-dim);letter-spacing:0.04em;flex:none;white-space:nowrap}
 
+/* ── Panel title. Display face, uppercase, ink - drawn plain, not as the
+      bordered cyan mono eyebrow an earlier pass used. Both documents' selectors
+      are listed together so the two cannot diverge again; each carries one dead
+      selector for the other's class name, which is a few bytes against a
+      treatment that has already drifted once. ── */
+.card h2,.wifi-card h3{display:block;font-family:var(--k-fd);font-size:0.95em;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--k-ink);border:none;padding:0;margin:0 0 11px}
+
 /* ── Pixel icons. Rules below are generated from shared/icons.mjs. ── */
 .k-px{position:relative;display:inline-block;width:18px;height:18px;flex:none}
 .k-px::before{content:'';position:absolute;left:0;top:0;width:2px;height:2px}
@@ -409,7 +416,7 @@ input[type="file"]{display:none}
    chamfered panel, a bordered cyan mono eyebrow for the title, mono
    key/value rows underneath. */
 .wifi-card{background:var(--bg-secondary);border:1px solid var(--border);clip-path:var(--notch);padding:16px;margin-bottom:14px}
-.wifi-card h3{display:inline-block;font-family:var(--f-m);font-size:0.68em;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:var(--accent);border:1px solid var(--border-cy);padding:3px 8px;margin-bottom:14px}
+/* .wifi-card h3 is the shared kit's panel title - see CF-KIT-CSS. */
 .wifi-card .info-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:5px 0;font-family:var(--f-m);font-size:0.8em}
 .wifi-card .info-row .label{color:var(--text-mute)}
 .wifi-card .info-row .val{color:var(--text-primary);text-align:right;overflow-wrap:anywhere}
