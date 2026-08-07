@@ -51,37 +51,224 @@ const char PORTAL_PAGE_HTML[] PROGMEM = R"rawliteral(
   --bevel: inset 0 1px 0 rgba(255,255,255,0.22),inset 0 -3px 0 rgba(0,0,0,0.3);
 }
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:var(--f-d);background:var(--bg-primary);color:var(--text-primary);min-height:100vh;display:flex;overflow:hidden}
+body{font-family:var(--f-d);background:var(--bg-primary);color:var(--text-primary)}
 a{color:var(--accent);text-decoration:none}
 
-/* Hamburger */
-.hamburger{display:none;position:fixed;top:10px;left:10px;z-index:301;background:var(--bg-secondary);border:1px solid var(--border-cy);clip-path:var(--notch-b);width:40px;height:40px;cursor:pointer;font-size:1.4em;color:var(--accent);align-items:center;justify-content:center;line-height:1}
-.sidebar-overlay{display:none;position:fixed;inset:0;background:rgba(8,5,15,0.72);z-index:199}
+/* CF-KIT-CSS:BEGIN - GENERATED from portal-companion/src/shared/. Do not edit
+   between these markers: the same block is generated into the companion, and
+   `npm run verify` fails if the two copies differ. To change the navigation,
+   the player, the gate panel or the download overlay, edit
+   portal-companion/src/shared/ and run:  cd portal-companion && npm run chrome:sync */
+/* SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
+   Copyright (c) 2023-2026 Dismo Industries LLC
 
-/* Sidebar - the global nav artboard, turned vertical. Active is magenta
-   (matching the site nav's magenta underline); cyan stays informational. */
-.sidebar{width:220px;background:var(--bg-tertiary);border-right:1px solid var(--border);display:flex;flex-direction:column;flex-shrink:0;height:100vh;z-index:200}
-.sidebar-brand{padding:20px 16px 16px;text-align:center;border-bottom:1px solid var(--magenta-line)}
-.logo{position:relative;display:inline-block}
-.logo-shadow{position:absolute;top:2px;left:2px;font-family:var(--f-d);font-size:22px;font-weight:700;letter-spacing:3px;color:var(--magenta);opacity:0.85;white-space:nowrap}
-.logo-main{position:relative;font-family:var(--f-d);font-size:22px;font-weight:700;letter-spacing:3px;color:var(--accent);text-shadow:0 0 12px rgba(104,225,253,0.45);white-space:nowrap}
-.logo-sub{font-family:var(--f-m);font-size:0.58em;color:var(--magenta-soft);letter-spacing:0.22em;text-transform:uppercase;margin-top:6px}
-.sidebar-nav{padding:8px 0;flex:1;overflow-y:auto}
-.nav-item{display:flex;align-items:center;padding:11px 16px;color:var(--text-secondary);cursor:pointer;border-left:3px solid transparent;transition:all 0.2s;font-size:0.82em;font-weight:600;letter-spacing:0.08em;text-transform:uppercase}
-.nav-item:hover{background:var(--accent-dim);color:var(--text-primary)}
-.nav-item.active{color:var(--magenta);border-left-color:var(--magenta);background:rgba(255,43,184,0.09)}
-.nav-item .icon{margin-right:10px;font-size:1.1em;opacity:0.85}
-.nav-item .badge{margin-left:auto;font-family:var(--f-m);font-size:0.68em;font-weight:700;letter-spacing:0.06em;background:var(--warn);padding:1px 6px;color:var(--bg-tertiary)}
-/* Group label separating this device's pages from the phone companion's views */
-.nav-sep{font-family:var(--f-m);font-size:0.62em;font-weight:700;letter-spacing:0.18em;text-transform:uppercase;color:var(--text-mute);padding:14px 16px 5px;border-top:1px solid var(--border);margin-top:8px}
+   THE SHARED KIT - stylesheet half.
 
-/* Main. column-reverse puts the status line ABOVE the title, which is the
-   artboard masthead order: cyan mono eyebrow over a display-face heading. */
-.main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;min-width:0}
-.page-header{padding:13px 20px 12px;border-bottom:1px solid var(--magenta-line);background:var(--bg-tertiary);display:flex;flex-direction:column-reverse;align-items:flex-start}
-.page-header h1{font-size:1.45em;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;line-height:1.1}
-.page-header .status{font-family:var(--f-m);font-size:0.66em;font-weight:700;color:var(--accent);letter-spacing:0.18em;text-transform:uppercase;margin-bottom:6px}
+   The device serves two documents (the portal at / and the companion at /web/)
+   and the user is meant to experience one app spanning both. Everything that
+   must look and behave identically on each side lives here, in ONE source, and
+   is generated into both by sync_chrome.mjs. verify_chrome.mjs fails the build
+   if either copy drifts. See DEVICE-SURFACES-HANDOFF.md decision 4.
+
+   Colours are literal phase-B values under --k-* rather than either document's
+   token names, because the two documents name their tokens differently and this
+   block has to be byte-identical in both. verify_tokens.mjs checks all three
+   spellings agree.
+
+   Shape language, carried from the artboards: chamfers not radii, panels take a
+   14px top-right notch, filled CTAs take a 5px top-left/bottom-right notch,
+   inputs and bordered row actions stay square. Every glyph is CSS geometry -
+   nothing here depends on a font, so system-face substitution cannot break it. */
+
+:root{
+--k-deep:#08050f;--k-page:#0e0820;--k-card:#15102a;--k-elev:#1f1840;
+--k-ink:#f5ecff;--k-dim:#a89cc8;--k-mute:#6b5e88;--k-faint:#3a3055;
+--k-cy:#68e1fd;--k-mg:#ff2bb8;--k-gn:#4dffaf;--k-yl:#ffd84a;--k-rd:#ff5252;
+--k-line:rgba(245,236,255,0.08);--k-sunk:rgba(0,0,0,0.35);
+--k-cy-line:rgba(104,225,253,0.4);--k-mg-line:rgba(255,43,184,0.25);
+--k-oled:#0a0a0a;--k-oled-fg:#b8f1ff;
+--k-fd:'Chakra Petch',system-ui,sans-serif;--k-fm:ui-monospace,Consolas,monospace;
+--k-notch:polygon(0 0,calc(100% - 14px) 0,100% 14px,100% 100%,0 100%);
+--k-notch-b:polygon(5px 0,100% 0,100% calc(100% - 5px),calc(100% - 5px) 100%,0 100%,0 5px);
+--k-bevel:inset 0 1px 0 rgba(255,255,255,0.22),inset 0 -3px 0 rgba(0,0,0,0.3);
+}
+
+/* ── Shell ──────────────────────────────────────────────────────────────
+   Desktop: sidebar + main column, each its own scroll context. Phone: fixed
+   masthead and tab bar with the main column inset between them. Neither
+   document scrolls its body, so the tab bar cannot drift off-screen. */
+body{display:flex;min-height:100vh;overflow:hidden}
+.k-main{flex:1;display:flex;flex-direction:column;height:100vh;overflow:hidden;min-width:0}
+.k-mast,.k-tabs{display:none}
+
+/* ── Sidebar (desktop) ── */
+.k-sb{width:220px;flex:none;background:var(--k-deep);border-right:1px solid var(--k-line);display:flex;flex-direction:column;height:100vh}
+.k-sb-brand{padding:20px 14px 16px;border-bottom:1px solid rgba(255,43,184,0.22);text-align:center}
+.k-logo{font-family:var(--k-fd);font-size:17px;font-weight:700;letter-spacing:0.13em;color:var(--k-ink);text-shadow:2px 2px 0 rgba(255,43,184,0.5);white-space:nowrap}
+.k-logo-sub{font-family:var(--k-fm);font-size:9px;letter-spacing:0.3em;color:var(--k-cy);margin-top:5px;text-transform:uppercase}
+.k-sb-nav{padding:10px 0;flex:1;overflow-y:auto}
+.k-nv{display:flex;align-items:center;gap:11px;height:42px;padding:0 15px;font-family:var(--k-fd);font-size:11.5px;font-weight:600;letter-spacing:0.1em;text-transform:uppercase;color:var(--k-dim);border-left:3px solid transparent;cursor:pointer;text-decoration:none}
+.k-nv:hover{color:var(--k-ink);background:rgba(104,225,253,0.05)}
+.k-nv.on{color:var(--k-mg);border-left-color:var(--k-mg);background:rgba(255,43,184,0.08)}
+.k-sb-foot{padding:13px 15px;border-top:1px solid var(--k-line);display:flex;flex-direction:column;gap:7px;font-family:var(--k-fm);font-size:9.5px;color:var(--k-dim)}
+.k-sb-foot .k-kv{display:flex;align-items:center;gap:7px}
+.k-sb-foot .k-ver{color:var(--k-mute)}
+
+/* ── Phone masthead + tab bar ── */
+.k-mast{align-items:center;gap:8px;padding:11px 14px;border-bottom:1px solid rgba(255,43,184,0.2);background:var(--k-deep);position:fixed;top:0;left:0;right:0;height:46px;z-index:120}
+.k-mast .k-logo{font-size:12px}
+.k-mast .k-sp{flex:1}
+.k-tabs{grid-template-columns:repeat(5,1fr);background:rgba(8,5,15,0.97);border-top:1px solid var(--k-mg-line);padding:7px 0 max(10px,env(safe-area-inset-bottom));position:fixed;bottom:0;left:0;right:0;z-index:120}
+.k-tab{display:flex;flex-direction:column;align-items:center;gap:4px;padding-top:5px;min-height:44px;color:var(--k-mute);cursor:pointer;text-decoration:none}
+.k-tab.on{color:var(--k-mg)}
+.k-tab .k-lb{font-family:var(--k-fd);font-size:9px;font-weight:600;letter-spacing:0.08em;text-transform:uppercase}
+
+/* ── Page masthead: display-face title on the left, mono status on the right,
+      sharing one baseline - the artboards' .ph1 (phone) and .mh (desktop).
+      The title is the growing cell and takes the ellipsis; the status is short
+      and fixed, so neither depends on how wide the substituted face renders. ── */
+.page-header{padding:13px 20px 12px;border-bottom:1px solid var(--k-mg-line);background:var(--k-deep);display:flex;align-items:baseline;justify-content:space-between;gap:12px;flex-shrink:0}
+.page-header h1{font-family:var(--k-fd);font-size:1.45em;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;line-height:1.1;color:var(--k-ink);min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.page-header .status{font-family:var(--k-fm);font-size:0.7em;color:var(--k-dim);letter-spacing:0.04em;flex:none;white-space:nowrap}
+
+/* ── Panel title. Display face, uppercase, ink - drawn plain, not as the
+      bordered cyan mono eyebrow an earlier pass used. Both documents' selectors
+      are listed together so the two cannot diverge again; each carries one dead
+      selector for the other's class name, which is a few bytes against a
+      treatment that has already drifted once. ── */
+.card h2,.wifi-card h3{display:block;font-family:var(--k-fd);font-size:0.95em;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--k-ink);border:none;padding:0;margin:0 0 11px}
+
+/* ── Pixel icons. Rules below are generated from shared/icons.mjs. ── */
+.k-px{position:relative;display:inline-block;width:18px;height:18px;flex:none}
+.k-px::before{content:'';position:absolute;left:0;top:0;width:2px;height:2px}
+
+/* ── Segmented control (Explore tab-group treatment, cyan-filled active) ── */
+.k-seg{display:inline-flex;border:1px solid var(--k-cy-line);align-self:flex-start;max-width:100%;overflow:hidden}
+.k-sg{padding:8px 13px;font-family:var(--k-fd);font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--k-dim);cursor:pointer;border-right:1px solid rgba(104,225,253,0.25);text-decoration:none;white-space:nowrap}
+.k-sg:last-child{border-right:none}
+.k-sg.on{background:var(--k-cy);color:var(--k-deep)}
+
+/* ── Gate panel. Yellow is notice, never error: nothing is broken, something
+      simply is not set up. One per affected view; the affordances that need
+      what is missing disappear rather than sitting greyed out. ── */
+.k-gate{border:1px solid var(--k-yl);background:rgba(255,216,74,0.05);padding:12px;display:flex;flex-direction:column;gap:8px;margin-bottom:14px}
+.k-gate .k-g1{font-size:11px;color:var(--k-yl);line-height:1.5}
+.k-gate .k-g2{font-family:var(--k-fm);font-size:10px;color:var(--k-dim);line-height:1.6}
+.k-gate .k-go{align-self:flex-start;background:var(--k-elev);border:1px solid var(--k-line);color:var(--k-ink);font-family:var(--k-fd);font-size:10.5px;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;padding:9px 14px;cursor:pointer;text-decoration:none}
+.k-gate .k-go:hover{background:var(--k-card);color:var(--k-ink)}
+
+/* ── Chips + status dots ── */
+.k-chip{display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border:1px solid var(--k-line);font-family:var(--k-fm);font-size:9.5px;letter-spacing:0.08em;color:var(--k-dim);text-transform:uppercase;white-space:nowrap}
+.k-chip.cy{border-color:rgba(104,225,253,0.5);color:var(--k-cy)}
+.k-chip.gn{border-color:rgba(77,255,175,0.5);color:var(--k-gn)}
+.k-chip.yl{border-color:var(--k-yl);color:var(--k-yl)}
+.k-dot{width:7px;height:7px;border-radius:50%;flex:none;background:var(--k-gn);box-shadow:0 0 6px var(--k-gn)}
+.k-dot.cy{background:var(--k-cy);box-shadow:0 0 6px var(--k-cy)}
+.k-dot.off{background:var(--k-faint);box-shadow:none}
+
+/* ── Signal bars. Four CSS blocks, tinted by strength class - this is what
+      replaces the emoji that could not be tinted. ── */
+.k-sig{display:inline-flex;align-items:flex-end;gap:1.5px;height:11px;vertical-align:-1px}
+.k-sig i{width:3px;background:var(--k-faint)}
+.k-sig i:nth-child(1){height:3px}.k-sig i:nth-child(2){height:6px}
+.k-sig i:nth-child(3){height:9px}.k-sig i:nth-child(4){height:11px}
+.k-sig.s1 i:nth-child(-n+1),.k-sig.s2 i:nth-child(-n+2),.k-sig.s3 i:nth-child(-n+3),.k-sig.s4 i{background:var(--k-cy)}
+
+/* ── Glyphs. CSS borders and blocks in currentColor: no font, no emoji,
+      nothing for a substitution to take away. ── */
+/* inline-block on every one of these is load-bearing: width/height do not apply
+   to an inline box, so an inline triangle renders as a bordered rectangle. */
+.k-tri-r,.k-tri-l,.k-bar,.k-pause,.k-spk{display:inline-block;vertical-align:middle}
+.k-tri-r{width:0;height:0;border-left:9px solid currentcolor;border-top:6px solid transparent;border-bottom:6px solid transparent}
+.k-tri-l{width:0;height:0;border-right:9px solid currentcolor;border-top:6px solid transparent;border-bottom:6px solid transparent}
+.k-tri-r.sm{border-left-width:7px;border-top-width:5px;border-bottom-width:5px}
+.k-tri-l.sm{border-right-width:7px;border-top-width:5px;border-bottom-width:5px}
+.k-bar{width:2.5px;height:12px;background:currentcolor}
+.k-pause{width:11px;height:13px;border-left:4px solid currentcolor;border-right:4px solid currentcolor}
+.k-pause.sm{width:8px;height:10px;border-left-width:3px;border-right-width:3px}
+.k-skip{display:inline-flex;align-items:center;gap:1.5px}
+.k-spk{width:0;height:0;border-right:8px solid currentcolor;border-top:6px solid transparent;border-bottom:6px solid transparent;position:relative}
+.k-spk::after{content:'';position:absolute;left:0;top:-3px;width:4px;height:6px;background:currentcolor}
+.k-eq{display:inline-flex;align-items:flex-end;gap:2px;height:12px}
+.k-eq i{width:3px;background:var(--k-cy);animation:k-eqb 1s ease-in-out infinite}
+.k-eq i:nth-child(1){height:6px}
+.k-eq i:nth-child(2){height:11px;animation-delay:0.25s}
+.k-eq i:nth-child(3){height:8px;animation-delay:0.5s}
+@keyframes k-eqb{0%,100%{transform:scaleY(0.5)}50%{transform:scaleY(1)}}
+
+/* ── The audio player. One component, three sizes, one geometry - it replaces
+      every native <audio controls> on both surfaces. Only the main action
+      carries a fill, the chamfer and the bevel; secondary transport stays
+      bordered and square, which is the CTA/ghost split the site already uses.
+      The single state change between playing and paused is the main glyph. ── */
+.k-pbtn{width:38px;height:38px;border:1px solid rgba(104,225,253,0.45);color:var(--k-cy);display:flex;align-items:center;justify-content:center;background:none;cursor:pointer;flex:none;padding:0}
+.k-pbtn:hover{background:rgba(104,225,253,0.1)}
+.k-pbtn.main{width:46px;height:46px;background:var(--k-cy);color:var(--k-deep);border:none;clip-path:var(--k-notch-b);box-shadow:var(--k-bevel)}
+.k-pbtn.main:hover{background:#a5edff}
+.k-pbtn.sm{width:28px;height:28px}
+.k-player{background:var(--k-elev);border-top:1px solid var(--k-mg-line);display:none;align-items:center;gap:16px;padding:13px 22px;position:fixed;bottom:0;left:220px;right:0;z-index:110;height:76px}
+.k-player.on{display:flex}
+.k-ptit{font-family:var(--k-fd);font-size:13px;font-weight:700;color:var(--k-ink);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.k-part{font-family:var(--k-fm);font-size:9.5px;color:var(--k-mute);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.k-time{font-family:var(--k-fm);font-size:10px;color:var(--k-dim);flex:none;font-variant-numeric:tabular-nums}
+.k-seek{flex:1;min-width:60px;height:16px;display:flex;align-items:center;cursor:pointer}
+.k-seek .k-tr{position:relative;height:6px;width:100%;background:var(--k-sunk);border:1px solid var(--k-line);box-shadow:inset 0 2px 4px rgba(0,0,0,0.5)}
+.k-seek .k-fl{position:absolute;left:0;top:0;bottom:0;background:var(--k-cy);box-shadow:0 0 8px rgba(104,225,253,0.5)}
+.k-seek .k-th{position:absolute;top:50%;transform:translate(-50%,-50%);width:9px;height:13px;background:var(--k-ink)}
+.k-seek.thin{height:10px}.k-seek.thin .k-tr{height:4px}.k-seek.thin .k-th{width:7px;height:10px}
+.k-prow{display:flex;align-items:center;gap:10px}
+
+/* ── Download overlay: the chooser and the byte-progress readout shared by the
+      portal's Files browser and the companion's Notes. ── */
+.k-dl{display:none;position:fixed;inset:0;background:rgba(8,5,15,0.86);z-index:320;justify-content:center;align-items:center;padding:16px}
+.k-dl.on{display:flex}
+.k-dl-box{background:var(--k-card);border:1px solid var(--k-line);clip-path:var(--k-notch);padding:20px;width:340px;max-width:92vw}
+.k-dl-box h3{font-family:var(--k-fd);font-size:0.95em;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--k-cy);margin:0 0 7px}
+.k-dl-size{font-family:var(--k-fm);font-size:0.78em;color:var(--k-dim);margin-bottom:14px;line-height:1.5}
+.k-dl-btns{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
+.k-dl-b{background:none;border:1px solid var(--k-line);color:var(--k-dim);font-family:var(--k-fd);font-size:0.76em;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;padding:11px;cursor:pointer;width:100%}
+.k-dl-b:hover{background:var(--k-elev);color:var(--k-ink)}
+.k-dl-b.pri{background:var(--k-cy);border-color:var(--k-cy);color:var(--k-deep);clip-path:var(--k-notch-b);box-shadow:var(--k-bevel)}
+.k-dl-b.pri:hover{background:#a5edff}
+.k-dl-b:disabled{opacity:0.4;cursor:default}
+.k-dl-bar{height:8px;background:var(--k-sunk);border:1px solid var(--k-line);overflow:hidden;margin:12px 0 8px}
+.k-dl-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--k-cy),var(--k-mg));transition:width 0.15s}
+.k-dl-stat{font-family:var(--k-fm);font-size:0.82em;font-variant-numeric:tabular-nums}
+.k-dl-rate{font-family:var(--k-fm);font-size:0.76em;color:var(--k-cy);margin-top:3px;font-variant-numeric:tabular-nums}
+.k-dl-file{font-family:var(--k-fm);font-size:0.76em;color:var(--k-mute);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.k-dl-warn{font-family:var(--k-fm);font-size:0.74em;line-height:1.5;color:var(--k-yl);border:1px solid rgba(255,216,74,0.4);background:rgba(255,216,74,0.06);padding:7px 9px;margin:12px 0 10px}
+
+/* ── Phone. The drawer and its menu button are gone; the tab bar IS the
+      navigation, on both documents, at the same breakpoint. ── */
+@media(max-width:699px){
+  .k-sb{display:none}
+  .k-mast{display:flex}
+  .k-tabs{display:grid}
+  .k-main{padding-top:46px;padding-bottom:66px}
+  .page-header{padding:11px 14px 10px}
+  .page-header h1{font-size:1.25em}
+  .page-header .status{font-size:0.62em}
+  .k-player{left:0;height:52px;padding:7px 14px;gap:12px;bottom:66px}
+  .k-player .k-ptit{font-size:11.5px}
+  .k-mast .k-chip{padding:3px 7px;font-size:9px}
+}
+@media(max-width:380px){
+  .k-mast .k-chip .k-lbl{display:none}
+}
+
+/* Pixel icons, expanded from shared/icons.mjs. */
+.k-px-media::before{box-shadow:8px 0px,10px 0px,8px 2px,12px 2px,8px 4px,14px 4px,8px 6px,14px 6px,8px 8px,4px 10px,6px 10px,8px 10px,2px 12px,4px 12px,6px 12px,8px 12px,10px 12px,2px 14px,4px 14px,6px 14px,8px 14px,10px 14px,4px 16px,6px 16px,8px 16px}
+.k-px-notes::before{box-shadow:6px 0px,8px 0px,10px 0px,6px 2px,8px 2px,10px 2px,6px 4px,8px 4px,10px 4px,6px 6px,8px 6px,10px 6px,6px 8px,8px 8px,10px 8px,2px 10px,14px 10px,4px 12px,6px 12px,8px 12px,10px 12px,12px 12px,8px 14px,4px 16px,6px 16px,8px 16px,10px 16px,12px 16px}
+.k-px-listen::before{box-shadow:8px 0px,8px 2px,4px 4px,8px 4px,12px 4px,0px 6px,4px 6px,8px 6px,12px 6px,16px 6px,0px 8px,4px 8px,8px 8px,12px 8px,16px 8px,0px 10px,4px 10px,8px 10px,12px 10px,16px 10px,4px 12px,8px 12px,12px 12px,8px 14px,8px 16px}
+.k-px-files::before{box-shadow:0px 2px,2px 2px,4px 2px,0px 4px,6px 4px,8px 4px,10px 4px,12px 4px,14px 4px,16px 4px,0px 6px,16px 6px,0px 8px,16px 8px,0px 10px,16px 10px,0px 12px,16px 12px,0px 14px,2px 14px,4px 14px,6px 14px,8px 14px,10px 14px,12px 14px,14px 14px,16px 14px}
+.k-px-settings::before{box-shadow:4px 0px,6px 0px,0px 2px,2px 2px,4px 2px,6px 2px,8px 2px,10px 2px,12px 2px,14px 2px,16px 2px,4px 4px,6px 4px,12px 6px,14px 6px,0px 8px,2px 8px,4px 8px,6px 8px,8px 8px,10px 8px,12px 8px,14px 8px,16px 8px,12px 10px,14px 10px,6px 12px,8px 12px,0px 14px,2px 14px,4px 14px,6px 14px,8px 14px,10px 14px,12px 14px,14px 14px,16px 14px,6px 16px,8px 16px}
+/* CF-KIT-CSS:END */
+
+/* The page masthead (.page-header) is the shared kit's - see CF-KIT-CSS. */
 .content{flex:1;overflow-y:auto;padding:16px 20px;padding-bottom:120px}
+/* Settings is one destination with three segments; only Network renders in this
+   document, so the other two are ordinary links into the companion. */
+.seg-row{margin-bottom:16px}
 
 /* Banner */
 .banner{background:rgba(104,225,253,0.08);border-bottom:1px solid var(--border-cy);padding:8px 20px;font-family:var(--f-m);font-size:0.76em;color:var(--text-secondary);display:none;align-items:center;gap:8px;line-height:1.5}
@@ -176,6 +363,9 @@ input[type="file"]{display:none}
 .btn-accent{background:var(--accent);border-color:var(--accent);color:var(--bg-tertiary);clip-path:var(--notch-b);box-shadow:var(--bevel)}
 .btn-accent:hover{background:var(--accent-hover);color:var(--bg-tertiary)}
 .btn-sm{padding:3px 8px;font-size:0.7em;letter-spacing:0.04em}
+/* Square glyph action, the artboard's row-action shape. Fixed box so a font
+   substitution cannot change how wide a row's action cluster is. */
+.btn-ico{width:26px;height:26px;padding:0;display:inline-flex;align-items:center;justify-content:center;font-size:0.95em;line-height:1}
 
 /* Playlists. A playlist is the artboard's section row (elevated bar,
    display-face uppercase name, mono count) over a list of item rows. */
@@ -193,23 +383,8 @@ input[type="file"]{display:none}
 .pl-track:hover .rm{opacity:1}
 .pl-actions{display:flex;gap:8px;padding:9px 12px;border-top:1px solid var(--border)}
 
-/* Player bar */
-.player-bar{position:fixed;bottom:0;left:220px;right:0;background:var(--bg-secondary);border-top:1px solid var(--magenta-line);display:none;flex-direction:column;padding:10px 16px 12px;z-index:100}
-.player-bar.show{display:flex}
-.player-top{display:flex;align-items:center;gap:12px;margin-bottom:8px}
-.player-controls{display:flex;gap:6px;align-items:center;flex-shrink:0}
-.player-controls button{background:none;border:none;color:var(--text-primary);font-size:1.3em;cursor:pointer;padding:4px 6px}
-.player-controls button:hover{color:var(--accent);background:var(--accent-dim)}
-.player-info{flex:1;min-width:0;overflow:hidden}
-.player-info .title{font-size:0.9em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-weight:700}
-.player-info .artist{font-family:var(--f-m);font-size:0.74em;color:var(--text-secondary);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
-.player-bottom{display:flex;align-items:center;gap:10px}
-.player-bottom .time{font-family:var(--f-m);font-size:0.72em;color:var(--text-mute);min-width:40px;font-variant-numeric:tabular-nums}
-.player-bottom .time.right{text-align:right}
-.seek-wrap{flex:1;position:relative;height:28px;display:flex;align-items:center}
-.seek-track{width:100%;height:4px;background:var(--bg-sunk);overflow:hidden;position:relative}
-.seek-fill{height:100%;background:linear-gradient(90deg,var(--accent),var(--magenta));width:0%;pointer-events:none}
-.seek-thumb{position:absolute;width:14px;height:14px;border-radius:50%;background:var(--accent);top:50%;transform:translate(-50%,-50%);left:0%;box-shadow:0 0 8px rgba(104,225,253,0.5);pointer-events:none}
+/* The player bar is the shared kit's component (.k-player) - see CF-KIT-CSS
+   above. It is the same geometry the companion uses, at three sizes. */
 
 /* Playlist dropdown */
 .pl-dropdown{display:none;position:fixed;background:var(--bg-secondary);border:1px solid var(--border);clip-path:var(--notch);min-width:180px;max-height:240px;overflow-y:auto;z-index:250;box-shadow:0 8px 24px rgba(0,0,0,0.5)}
@@ -241,7 +416,7 @@ input[type="file"]{display:none}
    chamfered panel, a bordered cyan mono eyebrow for the title, mono
    key/value rows underneath. */
 .wifi-card{background:var(--bg-secondary);border:1px solid var(--border);clip-path:var(--notch);padding:16px;margin-bottom:14px}
-.wifi-card h3{display:inline-block;font-family:var(--f-m);font-size:0.68em;font-weight:700;letter-spacing:0.2em;text-transform:uppercase;color:var(--accent);border:1px solid var(--border-cy);padding:3px 8px;margin-bottom:14px}
+/* .wifi-card h3 is the shared kit's panel title - see CF-KIT-CSS. */
 .wifi-card .info-row{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:5px 0;font-family:var(--f-m);font-size:0.8em}
 .wifi-card .info-row .label{color:var(--text-mute)}
 .wifi-card .info-row .val{color:var(--text-primary);text-align:right;overflow-wrap:anywhere}
@@ -251,23 +426,23 @@ input[type="file"]{display:none}
 .network-list li:hover{background:var(--bg-elev)}
 .network-list li.selected{background:var(--bg-elev);border-left-color:var(--accent)}
 .network-list .ssid{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.network-list .signal{font-family:var(--f-m);color:var(--text-mute);font-size:0.78em;white-space:nowrap}
-.network-list .lock{font-size:0.8em;color:var(--text-mute)}
+/* Strength is the kit's four CSS bars and "locked" is a text chip. Both used to
+   be emoji, which render in fixed multi-colour and cannot be tinted - the one
+   live instance of that defect class the design brief called out. */
+.network-list .lock{font-family:var(--f-m);font-size:0.62em;font-weight:700;letter-spacing:0.1em;text-transform:uppercase;color:var(--text-mute);border:1px solid var(--border);padding:2px 6px;white-space:nowrap}
 .wifi-input{width:100%;padding:9px 11px;background:var(--bg-sunk);border:1px solid var(--border);color:var(--text-primary);font-family:var(--f-m);font-size:0.86em;margin:8px 0}
 .wifi-input:focus{border-color:var(--accent);outline:none}
 .wifi-actions{display:flex;gap:8px;margin-top:12px}
 .wifi-spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
-/* Connection status bar - the rail's status sub-line: mono, glowing dot */
-.conn-bar{padding:7px 20px;background:var(--bg-primary);border-bottom:1px solid var(--border);font-family:var(--f-m);font-size:0.72em;letter-spacing:0.04em;color:var(--text-secondary);display:flex;gap:16px;flex-wrap:wrap}
-.conn-bar .tag{display:inline-flex;align-items:center;gap:5px}
-.conn-bar .dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
-.conn-bar .dot.on{background:var(--success);box-shadow:0 0 6px var(--success)}
-.conn-bar .dot.off{background:var(--text-mute)}
+/* The connection facts (its own network, home WiFi, firmware version) moved into
+   the shared kit's sidebar footer on desktop and its masthead chips on a phone,
+   so both device documents state them in the same place.
 
-/* Voice notes. Each note is the artboard item card: chamfered panel with a
-   category-coloured left bar, display-face name, mono meta line. */
+   Item rows. Named for Voice notes, where they started; that page has retired
+   into the companion's merged Notes view, but the Files browser renders the same
+   shape, so the styles and their names stay. */
 .vn-list{list-style:none}
 .vn-item{background:var(--bg-secondary);border:1px solid var(--border);border-left:2px solid var(--accent);clip-path:var(--notch);padding:11px 12px;margin-bottom:8px}
 .vn-top{display:flex;align-items:center;gap:8px}
@@ -276,7 +451,6 @@ input[type="file"]{display:none}
 .vn-acts{display:flex;gap:5px;flex-shrink:0}
 .vn-acts .btn{text-decoration:none}
 .vn-meta{font-family:var(--f-m);color:var(--text-mute);font-size:0.74em;margin:5px 0 2px;font-variant-numeric:tabular-nums}
-.vn-item audio{width:100%;margin-top:6px;display:block;height:36px}
 .vn-bulk{display:none;align-items:center;gap:10px;padding:9px 11px;margin-bottom:10px;background:var(--bg-elev);border:1px solid var(--border);font-family:var(--f-m);font-size:0.78em;flex-wrap:wrap}
 .vn-bulk.show{display:flex}
 .vn-selall{display:flex;align-items:center;gap:6px;cursor:pointer;color:var(--text-secondary)}
@@ -298,104 +472,48 @@ input[type="file"]{display:none}
 .fb-folder:hover{text-decoration:underline}
 .fb-ico{flex-shrink:0;width:18px;text-align:center;color:var(--text-mute)}
 
-/* Download overlay (bulk zip / individual + progress) */
-.dl-overlay{display:none;position:fixed;inset:0;background:rgba(8,5,15,0.86);z-index:320;justify-content:center;align-items:center;padding:16px}
-.dl-overlay.show{display:flex}
-.dl-box{background:var(--bg-secondary);border:1px solid var(--border);clip-path:var(--notch);padding:20px;width:340px;max-width:92vw}
-.dl-box h3{font-size:0.95em;font-weight:700;letter-spacing:0.08em;text-transform:uppercase;color:var(--accent);margin-bottom:7px}
-.dl-size{font-family:var(--f-m);font-size:0.78em;color:var(--text-secondary);margin-bottom:14px}
-.dl-choice-btns{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
-.dl-choice-btns .btn{padding:11px}
-.dl-cancel{width:100%;margin-top:4px}
-.dl-bar{height:8px;background:var(--bg-sunk);border:1px solid var(--border);overflow:hidden;margin:12px 0 8px}
-.dl-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--magenta));transition:width 0.15s}
-.dl-stat{font-family:var(--f-m);font-size:0.82em;font-variant-numeric:tabular-nums}
-.dl-rate{font-family:var(--f-m);font-size:0.76em;color:var(--accent);margin-top:3px;font-variant-numeric:tabular-nums}
-.dl-file{font-family:var(--f-m);font-size:0.76em;color:var(--text-mute);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-/* Caution notice, styled like the rail sheet's yellow-bordered panel */
-.dl-warn{font-family:var(--f-m);font-size:0.74em;line-height:1.5;color:var(--warn);border:1px solid rgba(255,216,74,0.4);background:rgba(255,216,74,0.06);padding:7px 9px;margin:12px 0 10px}
+/* The bulk download chooser is the shared kit's overlay (.k-dl) - the Files
+   browser and the companion's Notes both drive the same code now. */
 
-/* Mobile */
-@media(max-width:700px){
-  .hamburger{display:flex}
-  /* The menu button is fixed at the viewport's top-left and draws above the
-     drawer, so the wordmark starts below it instead of under it. */
-  .sidebar-brand{padding-top:58px}
-  .sidebar{position:fixed;left:-240px;transition:left 0.25s;height:100vh}
-  .sidebar.open{left:0}
-  .sidebar-overlay.open{display:block}
-  .main{width:100vw}
-  .page-header{padding-left:56px}
-  .player-bar{left:0}
-  .content{padding:12px 14px;padding-bottom:130px}
-  .track-table .col-album{display:none}
-  /* Phone masthead: the status eyebrow is a long live string, so it drops
-     its tracking here to stay on one or two tight lines beside the menu. */
-  .page-header{padding-top:9px}
-  .page-header h1{font-size:1.25em}
-  .page-header .status{font-size:0.6em;letter-spacing:0.09em}
+/* Phone. The menu button and the slide-out drawer are gone; the kit's bottom
+   tab bar is the navigation on both device documents. */
+@media(max-width:699px){
+  .content{padding:12px 14px;padding-bottom:24px}
   .section-hdr{letter-spacing:0.1em}
-}
-@media(max-width:420px){
-  .track-table .col-artist{display:none}
-  .player-top{gap:8px}
+  /* The track table becomes rows, which is the phone pattern every phase-B
+     artboard uses: name in the display face over a mono meta line. Restyling
+     the table beats a second render path - one source of truth for sorting,
+     filtering and the now-playing highlight. */
+  .track-table,.track-table tbody{display:block}
+  .track-table thead{display:none}
+  .track-table tr{display:flex;flex-wrap:wrap;align-items:center;padding:9px 0;border-bottom:1px solid var(--border)}
+  .track-table td{border:none;padding:0}
+  .track-table .col-title{flex:1 1 100%;min-width:0;max-width:none;order:1;font-size:1.02em}
+  .track-table .col-artist{order:2;color:var(--text-mute)}
+  .track-table .col-artist::after{content:' \00b7 '}
+  .track-table .col-size{order:3;text-align:left;width:auto;flex:1;color:var(--text-mute)}
+  .track-table .col-album{display:none}
+  .track-table .col-acts{order:4;width:auto;flex:none}
+  /* Row actions are always visible on a phone - there is no hover to reveal
+     them, and the artboard's phone rows carry their action inline. */
+  .track-table .col-acts .acts{opacity:1}
+  .track-table tr.playing td{background:none}
+  .track-table tr.playing td:first-child{box-shadow:none;color:var(--accent)}
+  .track-table tr.playing{background:rgba(255,43,184,0.08)}
 }
 </style>
 </head>
 <body>
 
-<div class="hamburger" id="hamburger" onclick="toggleSidebar()">&#9776;</div>
-<div class="sidebar-overlay" id="sidebarOverlay" onclick="toggleSidebar()"></div>
-
-<div class="sidebar" id="sidebar">
-  <div class="sidebar-brand">
-    <div class="logo">
-      <div class="logo-shadow">CYBER FIDGET</div>
-      <div class="logo-main">CYBER FIDGET</div>
-    </div>
-    <div class="logo-sub">WEB PORTAL</div>
-  </div>
-  <div class="sidebar-nav">
-    <div class="nav-item active" data-page="media" onclick="showPage('media')">
-      <span class="icon">&#9835;</span> Media
-    </div>
-    <div class="nav-item" data-page="voice" onclick="showPage('voice')">
-      <span class="icon">&#9679;</span> Voice notes
-    </div>
-    <div class="nav-item" data-page="files" onclick="showPage('files')">
-      <span class="icon">&#9636;</span> Files
-    </div>
-    <div class="nav-item" data-page="settings" onclick="showPage('settings')">
-      <span class="icon">&#9881;</span> Settings
-    </div>
-    <!-- On your phone: the companion's own views, deep-linked so each is a real
-         destination in this nav rather than one opaque jump to another site. -->
-    <div class="nav-sep">On your phone</div>
-    <div class="nav-item" onclick="location.href='/web/#Listen'">
-      <span class="icon">&#9678;</span> Live listening
-    </div>
-    <div class="nav-item" onclick="location.href='/web/#Notes'">
-      <span class="icon">&#9636;</span> Transcripts
-    </div>
-    <div class="nav-item" onclick="location.href='/web/#Daily'">
-      <span class="icon">&#9783;</span> Daily note
-    </div>
-    <div class="nav-item" data-page="live" onclick="showPage('live')">
-      <span class="icon">&#9733;</span> Live Playlist
-      <span class="badge">Soon</span>
-    </div>
-  </div>
-</div>
-
-<div class="main">
+<!-- The navigation - sidebar on a laptop, bottom tab bar on a phone, plus the
+     phone masthead - is built by the shared kit on load (CFK.nav below), from
+     the same source the companion uses. There is no markup for it here on
+     purpose: two hand-written copies is exactly how the two surfaces drifted
+     apart in the first place. -->
+<div class="k-main">
   <div class="page-header">
-    <h1 id="pageTitle">Media Manager</h1>
-    <div class="status" id="statusBar">Loading...</div>
-  </div>
-
-  <div class="conn-bar" id="connBar">
-    <span class="tag"><span class="dot on"></span> AP: <span id="connAP">192.168.4.1</span></span>
-    <span class="tag" id="connSTATag" style="display:none"><span class="dot" id="connSTADot"></span> WiFi: <span id="connSTA">-</span></span>
+    <h1 id="pageTitle">Media</h1>
+    <div class="status" id="statusBar"></div>
   </div>
 
   <div class="banner" id="captiveBanner">
@@ -406,8 +524,8 @@ input[type="file"]{display:none}
 
   <div class="content" id="mediaPage">
     <div class="drop-zone" id="dropZone">
-      <p class="main-text">Drop MP3 files here or tap to browse</p>
-      <p class="hint">Supports multiple files</p>
+      <p class="main-text">+ Add music</p>
+      <p class="hint">Tap to browse, or drop files</p>
       <div class="folder-sel" onclick="event.stopPropagation()">
         Upload to: <select id="uploadDir" onclick="event.stopPropagation()"><option value="/media">/media (root)</option></select>
       </div>
@@ -454,21 +572,11 @@ input[type="file"]{display:none}
     <div class="playlists" id="playlistList"></div>
   </div>
 
-  <div class="content" id="voicePage" style="display:none">
-    <div class="section-hdr">
-      Voice notes
-      <span class="spacer"></span>
-      <span class="action" onclick="loadVoiceNotes()">Refresh</span>
-    </div>
-    <div class="vn-bulk" id="vnBulk">
-      <label class="vn-selall"><input type="checkbox" id="vnSelAll" onclick="vnToggleAll(this)"> Select all</label>
-      <span class="count" id="vnBulkCount">0 selected</span>
-      <span class="spacer"></span>
-      <button class="btn btn-play btn-sm" id="vnDlBtn" onclick="vnDownloadSelected()" disabled>Download</button>
-      <button class="btn btn-del btn-sm" id="vnDelBtn" onclick="vnDeleteSelected()" disabled>Delete</button>
-    </div>
-    <ul class="vn-list" id="vnList"><li class="empty">Loading...</li></ul>
-  </div>
+  <!-- Voice notes used to be a page here. It listed the same recordings the
+       companion's Transcripts view listed, which was the sharpest edge of the
+       seam between the two surfaces. It has retired into one Notes destination
+       on /web/, where the transcription engine already lives; showPage('voice')
+       and any saved #voice link redirect there. -->
 
   <div class="content" id="filesPage" style="display:none">
     <div class="section-hdr">
@@ -498,6 +606,18 @@ input[type="file"]{display:none}
   </div>
 
   <div class="content" id="settingsPage" style="display:none">
+    <!-- One Settings destination, three segments. Network renders here; the
+         other two live in the companion document and are plain links, styled
+         identically, because the segmented control is the same component on
+         both sides and the crossing is meant to be invisible. -->
+    <div class="seg-row">
+      <div class="k-seg">
+        <span class="k-sg on">Network</span>
+        <a class="k-sg" href="/web/#settings/transcription">Transcription</a>
+        <a class="k-sg" href="/web/#settings/data">Your data</a>
+      </div>
+    </div>
+
     <div class="wifi-card" id="wifiStatusCard">
       <h3>WiFi Connection</h3>
       <div id="wifiStatusContent">
@@ -507,10 +627,12 @@ input[type="file"]{display:none}
 
     <div class="wifi-card">
       <h3>Available Networks</h3>
-      <div style="display:flex;gap:8px;margin-bottom:8px">
-        <button class="btn btn-accent" onclick="scanWifi()" id="scanBtn">Scan for Networks</button>
-      </div>
       <ul class="network-list" id="networkList"></ul>
+      <!-- A ghost button, not a filled CTA: scanning is a repeatable utility
+           action, and the artboard reserves the cyan fill for the primary one. -->
+      <div style="display:flex;gap:8px;margin-top:8px">
+        <button class="btn btn-play" onclick="scanWifi()" id="scanBtn">Scan again</button>
+      </div>
       <div id="wifiConnectForm" style="display:none">
         <div style="font-size:0.85em;margin-bottom:4px;color:var(--text-secondary)">Connecting to: <strong id="selectedSSID" style="color:var(--text-primary)"></strong></div>
         <input type="password" class="wifi-input" id="wifiPass" placeholder="Password (leave empty for open network)">
@@ -521,41 +643,23 @@ input[type="file"]{display:none}
       </div>
     </div>
 
+    <!-- "Its own network", not "access point"; "address", not "IP". The network
+         name CyberFidget is the one proper noun these surfaces use. -->
     <div class="wifi-card">
-      <h3>Access Point</h3>
-      <div class="info-row"><span class="label">SSID</span><span class="val">CyberFidget</span></div>
-      <div class="info-row"><span class="label">IP</span><span class="val accent" id="apIPDisplay">192.168.4.1</span></div>
+      <h3>Its own network</h3>
+      <div class="info-row"><span class="label">Name</span><span class="val">CyberFidget</span></div>
+      <div class="info-row"><span class="label">Address</span><span class="val accent" id="apIPDisplay">192.168.4.1</span></div>
       <div class="info-row"><span class="label">Status</span><span class="val" style="color:var(--success)">Always available</span></div>
     </div>
   </div>
-  <div class="content" id="livePage" style="display:none">
-    <div class="empty">Live collaborative playlist coming soon.</div>
-  </div>
+  <!-- The Live Playlist page was a nav entry and a one-line "coming soon"
+       placeholder. It is not one of the five destinations the design register
+       settles on, and it had no behaviour, so it has gone. -->
 </div>
 
-<div class="player-bar" id="playerBar">
-  <div class="player-top">
-    <div class="player-controls">
-      <button onclick="playerPrev()" title="Restart">&#9664;&#9664;</button>
-      <button id="btnPlay" onclick="playerToggle()" title="Play/Pause">&#9654;</button>
-      <button onclick="playerNext()" title="Next">&#9654;&#9654;</button>
-    </div>
-    <div class="player-info">
-      <div class="title" id="pTitle">-</div>
-      <div class="artist" id="pArtist">-</div>
-    </div>
-  </div>
-  <div class="player-bottom">
-    <span class="time" id="pCur">0:00</span>
-    <div class="seek-wrap" id="seekWrap">
-      <div class="seek-track">
-        <div class="seek-fill" id="seekFill"></div>
-      </div>
-      <div class="seek-thumb" id="seekThumb"></div>
-    </div>
-    <span class="time right" id="pDur">0:00</span>
-  </div>
-</div>
+<!-- Filled in by the shared kit's player: bar size here on a laptop, mini above
+     the tab bar on a phone. Replaces the native audio element on both surfaces. -->
+<div id="playerBar"></div>
 
 <div class="pl-dropdown" id="plDropdown"></div>
 
@@ -572,39 +676,593 @@ input[type="file"]{display:none}
   </div>
 </div>
 
-<div class="dl-overlay" id="dlOverlay">
-  <div class="dl-box">
-    <div id="dlChoice">
-      <h3 id="dlTitle">Download files</h3>
-      <div class="dl-size" id="dlSize">Total: 0 B</div>
-      <div class="dl-choice-btns">
-        <button class="btn btn-accent" id="dlZipBtn" onclick="dlStart('zip')">Bundle as one .zip</button>
-        <button class="btn" id="dlIndivBtn" onclick="dlStart('individual')">Individual files</button>
-      </div>
-      <button class="btn dl-cancel" onclick="dlClose()">Cancel</button>
-    </div>
-    <div id="dlProgress" style="display:none">
-      <h3 id="dlProgTitle">Downloading...</h3>
-      <div class="dl-bar"><div class="dl-fill" id="dlFill"></div></div>
-      <div class="dl-stat" id="dlStat">0 B / 0 B</div>
-      <div class="dl-rate" id="dlRate"></div>
-      <div class="dl-file" id="dlFile"></div>
-      <div class="dl-warn">Keep this page open until it finishes.</div>
-      <button class="btn dl-cancel" onclick="dlCancel()">Cancel</button>
-    </div>
-  </div>
-</div>
+<!-- The bulk download chooser is built on demand by the shared kit. -->
 
 <div class="toast" id="toast"></div>
 
 <audio id="audio" preload="none"></audio>
 
 <script>
+/* CF-KIT-JS:BEGIN - GENERATED from portal-companion/src/shared/. Do not edit
+   between these markers; see the CF-KIT-CSS note above. Regenerate with:
+   cd portal-companion && npm run chrome:sync */
+// SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
+// Copyright (c) 2023-2026 Dismo Industries LLC
+//
+// THE SHARED KIT - behaviour half.
+//
+// One source, generated into both device documents by sync_chrome.mjs;
+// verify_chrome.mjs fails if either copy drifts. See DEVICE-SURFACES-HANDOFF.md
+// decision 4.
+//
+// Deliberately a CLASSIC script, not a module: the portal is a hand-authored
+// PROGMEM literal with a plain <script>, and the companion's esbuild bundle can
+// reference a global just fine. Everything hangs off CFK so the two documents'
+// own top-level names cannot collide with it.
+//
+// The nav is built in JS rather than written as markup twice - that is what
+// makes "byte-identical in both documents" mechanically true instead of a
+// promise someone has to keep.
+
+var CFK = (function () {
+
+  // ── The five destinations, in the one order both documents use. ──────────
+  //
+  // `doc` is the document that RENDERS the destination. When it matches the
+  // host document the item gets a local handler; otherwise it is a plain <a>
+  // with no external-link marker and no transition copy, because crossing is
+  // just a page load on the device's own network and the user is not supposed
+  // to be able to tell.
+  //
+  // Settings is the one that spans both documents (Network here, Transcription
+  // and Your data on the companion). It is listed as `portal` because the tab
+  // always lands on Network - it renders where most entry points are and it
+  // answers "am I connected", which is the top settings question. Segments then
+  // link across.
+  var DEST = [
+    { id: 'media',    label: 'Media',    doc: 'portal',    href: '/#media' },
+    { id: 'notes',    label: 'Notes',    doc: 'companion', href: '/web/#notes' },
+    { id: 'listen',   label: 'Listen',   doc: 'companion', href: '/web/#listen' },
+    { id: 'files',    label: 'Files',    doc: 'portal',    href: '/#files' },
+    { id: 'settings', label: 'Settings', doc: 'portal',    href: '/#settings' },
+  ];
+
+  var host = 'portal';
+  var active = 'media';
+  var onLocal = null;
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text != null) n.textContent = text;
+    return n;
+  }
+
+  function icon(name) { return el('span', 'k-px k-px-' + name); }
+
+  function item(d, cls) {
+    var a = el('a', cls);
+    a.href = d.href;
+    a.dataset.dest = d.id;
+    if (d.doc === host) {
+      a.addEventListener('click', function (ev) {
+        ev.preventDefault();
+        if (onLocal) onLocal(d.id);
+      });
+    }
+    return a;
+  }
+
+  // ── Build the chrome. Both documents call this once, on load. ────────────
+  // `hostDoc` is 'portal' or 'companion'; `localHandler` is called with a
+  // destination id when the user picks one this document renders itself.
+  function nav(hostDoc, activeId, localHandler) {
+    host = hostDoc;
+    onLocal = localHandler;
+
+    var mast = el('div', 'k-mast');
+    var brand = el('div', 'k-logo', 'CYBER FIDGET');
+    mast.appendChild(brand);
+    mast.appendChild(el('span', 'k-sp'));
+    mast.appendChild(chip('mastDevice', 'k-chip gn', 'device'));
+    mast.appendChild(chip('mastNet', 'k-chip cy', 'network'));
+
+    var sb = el('aside', 'k-sb');
+    var sbBrand = el('div', 'k-sb-brand');
+    sbBrand.appendChild(el('div', 'k-logo', 'CYBER FIDGET'));
+    sbBrand.appendChild(el('div', 'k-logo-sub', 'Your Fidget'));
+    sb.appendChild(sbBrand);
+    var sbNav = el('nav', 'k-sb-nav');
+    var tabs = el('nav', 'k-tabs');
+
+    DEST.forEach(function (d) {
+      var nv = item(d, 'k-nv');
+      nv.appendChild(icon(d.id));
+      nv.appendChild(document.createTextNode(d.label));
+      sbNav.appendChild(nv);
+
+      var tab = item(d, 'k-tab');
+      tab.appendChild(icon(d.id));
+      tab.appendChild(el('span', 'k-lb', d.label));
+      tabs.appendChild(tab);
+    });
+
+    sb.appendChild(sbNav);
+    sb.appendChild(el('div', 'k-sb-foot'));
+
+    document.body.insertBefore(sb, document.body.firstChild);
+    document.body.insertBefore(mast, document.body.firstChild);
+    document.body.appendChild(tabs);
+    setActive(activeId);
+  }
+
+  function chip(id, cls, text) {
+    var c = el('span', cls);
+    c.id = id;
+    c.appendChild(el('span', 'k-dot' + (cls.indexOf('cy') >= 0 ? ' cy' : '')));
+    c.appendChild(el('span', 'k-lbl', text));
+    return c;
+  }
+
+  function setActive(id) {
+    active = id;
+    var all = document.querySelectorAll('.k-nv,.k-tab');
+    for (var i = 0; i < all.length; i++) {
+      all[i].classList.toggle('on', all[i].dataset.dest === id);
+    }
+  }
+
+  // ── Connection facts: the sidebar footer on desktop, the masthead chips on
+  //    a phone. Replaces the portal's old separate connection bar and the
+  //    companion's own header, so both surfaces state the same things. ──────
+  //    s: { apIp, ssid, staIp, version }
+  function conn(s) {
+    var foot = document.querySelector('.k-sb-foot');
+    if (foot) {
+      foot.innerHTML = '';
+      foot.appendChild(kv('k-dot', 'Its own network - ' + (s.apIp || '192.168.4.1')));
+      foot.appendChild(kv('k-dot cy', s.ssid ? 'Home WiFi - ' + s.ssid : 'No home WiFi'));
+      if (!s.ssid) foot.lastChild.firstChild.className = 'k-dot off';
+      if (s.version) {
+        var v = el('div', 'k-kv k-ver', 'version ' + s.version);
+        foot.appendChild(v);
+      }
+    }
+    var dev = document.getElementById('mastDevice');
+    var net = document.getElementById('mastNet');
+    if (dev) dev.lastChild.textContent = 'device';
+    if (net) {
+      net.lastChild.textContent = s.ssid || 'its own network';
+      net.firstChild.className = s.ssid ? 'k-dot cy' : 'k-dot off';
+    }
+  }
+
+  function kv(dotCls, text) {
+    var row = el('div', 'k-kv');
+    row.appendChild(el('span', dotCls));
+    row.appendChild(el('span', null, text));
+    return row;
+  }
+
+  // ── Signal strength as four CSS bars. The portal's WiFi list used a pair of
+  //    lock emoji and a raw dBm number; emoji render in fixed multi-colour and
+  //    cannot be tinted, which is the defect class the brief called out. ─────
+  function sig(rssi) {
+    var n = rssi > -50 ? 4 : rssi > -60 ? 3 : rssi > -70 ? 2 : 1;
+    return '<span class="k-sig s' + n + '"><i></i><i></i><i></i><i></i></span>';
+  }
+
+  // ── Gate panel (register decision 8). One treatment, reused wherever
+  //    something needs a part that is not installed. Yellow means notice:
+  //    the device is working exactly as shipped. ─────────────────────────────
+  //    o: { lead, body, action, href }
+  function gate(o) {
+    var g = el('div', 'k-gate');
+    g.appendChild(el('div', 'k-g1', o.lead));
+    g.appendChild(el('div', 'k-g2', o.body));
+    var b = el('a', 'k-go', o.action || 'Set it up >');
+    b.href = o.href;
+    g.appendChild(b);
+    return g;
+  }
+
+  // ── Formatting shared by both surfaces' lists and players ────────────────
+  function fmtBytes(b) {
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b / 1024).toFixed(1) + ' KB';
+    return (b / 1048576).toFixed(1) + ' MB';
+  }
+  function fmtTime(s) {
+    if (isNaN(s) || s < 0) return '0:00';
+    s = Math.floor(s);
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  function esc(s) {
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  // ── The audio player. Replaces every native <audio controls> on both
+  //    surfaces. `size` is 'bar' (76px, desktop media), 'mini' (52px, phone,
+  //    sits above the tab bar) or 'inline' (28px controls in an expanded row).
+  //    Returns a handle whose sync() the caller drives from timeupdate.
+  //
+  //    Only the main action carries the fill, the chamfer and the bevel; the
+  //    one state change between playing and paused is that glyph.
+  function player(mount, audio, size, opts) {
+    opts = opts || {};
+    var full = size !== 'inline';
+    mount.className = full ? 'k-player' : 'k-prow';
+    mount.innerHTML = '';
+
+    var main = el('button', full ? 'k-pbtn main' : 'k-pbtn sm');
+    main.type = 'button';
+    var glyph = el('span', 'k-tri-r' + (full ? '' : ' sm'));
+    main.appendChild(glyph);
+    main.addEventListener('click', function () {
+      if (audio.paused) audio.play(); else audio.pause();
+    });
+
+    var prev = null, next = null;
+    if (size === 'bar' && opts.onPrev) {
+      prev = el('button', 'k-pbtn');
+      prev.type = 'button';
+      var pg = el('span', 'k-skip');
+      pg.appendChild(el('span', 'k-bar'));
+      pg.appendChild(el('i', 'k-tri-l'));
+      prev.appendChild(pg);
+      prev.addEventListener('click', opts.onPrev);
+      mount.appendChild(prev);
+    }
+    mount.appendChild(main);
+    if (size === 'bar' && opts.onNext) {
+      next = el('button', 'k-pbtn');
+      next.type = 'button';
+      var ng = el('span', 'k-skip');
+      ng.appendChild(el('i', 'k-tri-r'));
+      ng.appendChild(el('span', 'k-bar'));
+      next.appendChild(ng);
+      next.addEventListener('click', opts.onNext);
+      mount.appendChild(next);
+    }
+
+    var info = null, title = null, artist = null;
+    if (full) {
+      info = el('div', null);
+      info.style.cssText = 'min-width:0;flex:1';
+      title = el('div', 'k-ptit', '-');
+      artist = el('div', 'k-part', '');
+      info.appendChild(title);
+      info.appendChild(artist);
+      mount.appendChild(info);
+    }
+
+    var cur = el('span', 'k-time', '0:00');
+    var dur = el('span', 'k-time', '0:00');
+    var seek = el('div', 'k-seek' + (full ? '' : ' thin'));
+    var tr = el('div', 'k-tr');
+    var fl = el('div', 'k-fl');
+    var th = el('div', 'k-th');
+    tr.appendChild(fl); tr.appendChild(th); seek.appendChild(tr);
+
+    // The mini player is 52px of phone width with a tab bar under it - a seek
+    // bar there would be a 4px target between two other targets, so it shows
+    // the timecode pair only and the bar/inline sizes carry the scrub.
+    if (size === 'mini') {
+      var t = el('span', 'k-time', '0:00 / 0:00');
+      mount.appendChild(t);
+      cur = t; dur = null;
+    } else {
+      mount.appendChild(cur);
+      mount.appendChild(seek);
+      mount.appendChild(dur);
+    }
+
+    function seekTo(ev) {
+      if (!audio.duration) return;
+      var r = tr.getBoundingClientRect();
+      var x = ((ev.touches ? ev.touches[0].clientX : ev.clientX) - r.left) / r.width;
+      audio.currentTime = Math.max(0, Math.min(1, x)) * audio.duration;
+    }
+    seek.addEventListener('click', seekTo);
+
+    function setGlyph() {
+      glyph.className = audio.paused
+        ? 'k-tri-r' + (full ? '' : ' sm')
+        : 'k-pause' + (full ? '' : ' sm');
+    }
+    function sync() {
+      setGlyph();
+      var d = audio.duration || 0;
+      var p = d ? (audio.currentTime / d) * 100 : 0;
+      fl.style.width = p + '%';
+      th.style.left = p + '%';
+      if (dur) {
+        cur.textContent = fmtTime(audio.currentTime);
+        dur.textContent = fmtTime(d);
+      } else {
+        cur.textContent = fmtTime(audio.currentTime) + ' / ' + fmtTime(d);
+      }
+    }
+    audio.addEventListener('timeupdate', sync);
+    audio.addEventListener('play', setGlyph);
+    audio.addEventListener('pause', setGlyph);
+    audio.addEventListener('loadedmetadata', sync);
+    sync();
+
+    return {
+      el: mount,
+      sync: sync,
+      show: function (on) { mount.classList.toggle('on', on !== false); },
+      setTrack: function (t, a) {
+        if (title) title.textContent = t || '-';
+        if (artist) artist.textContent = a && a !== '-' ? a : '';
+      },
+    };
+  }
+
+  // ── Bulk download. Lifted from the portal, where it grew for Voice notes and
+  //    the Files browser; the Notes merge moved one of those callers to the
+  //    other document, so it lives here now and both call the same code.
+  //
+  //    The device stays a dumb one-file-at-a-time server: all bundling happens
+  //    in the browser, transfers are strictly sequential (the async server
+  //    wedges on concurrent reads), and a beforeunload guard keeps the user on
+  //    the page while bytes are moving. iOS cannot do multi-file downloads, so
+  //    there it is the single .zip or nothing.
+  var dlItems = [], dlZipName = 'files.zip', dlTotal = 0;
+  var dlAbort = null, dlActive = false, dlStartMs = 0, dlBox = null;
+
+  var DL_CAP = { ios: 100 * 1048576, android: 200 * 1048576, desktop: 500 * 1048576 };
+
+  function dlDeviceClass() {
+    var ua = navigator.userAgent || '';
+    if (/iP(hone|ad|od)/.test(ua) ||
+        (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)) return 'ios';
+    if (/Android/.test(ua)) return 'android';
+    return 'desktop';
+  }
+
+  // Built on first use so a surface that never bulk-downloads pays no markup.
+  function dlEnsure() {
+    if (dlBox) return dlBox;
+    var o = el('div', 'k-dl');
+    o.innerHTML =
+      '<div class="k-dl-box">' +
+      '<div class="k-dl-choice">' +
+      '<h3 class="k-dl-title">Download files</h3>' +
+      '<div class="k-dl-size"></div>' +
+      '<div class="k-dl-btns">' +
+      '<button class="k-dl-b pri k-dl-zip">Bundle as one .zip</button>' +
+      '<button class="k-dl-b k-dl-indiv">Individual files</button>' +
+      '</div><button class="k-dl-b k-dl-cancel">Cancel</button></div>' +
+      '<div class="k-dl-prog" style="display:none">' +
+      '<h3 class="k-dl-ptitle">Downloading...</h3>' +
+      '<div class="k-dl-bar"><div class="k-dl-fill"></div></div>' +
+      '<div class="k-dl-stat">0 B / 0 B</div>' +
+      '<div class="k-dl-rate"></div><div class="k-dl-file"></div>' +
+      '<div class="k-dl-warn">Keep this page open until it finishes.</div>' +
+      '<button class="k-dl-b k-dl-stop">Cancel</button></div></div>';
+    document.body.appendChild(o);
+    dlBox = {
+      root: o,
+      q: function (c) { return o.querySelector('.' + c); },
+    };
+    dlBox.q('k-dl-zip').addEventListener('click', function () { dlStart('zip'); });
+    dlBox.q('k-dl-indiv').addEventListener('click', function () { dlStart('individual'); });
+    dlBox.q('k-dl-cancel').addEventListener('click', dlClose);
+    dlBox.q('k-dl-stop').addEventListener('click', function () { if (dlAbort) dlAbort.abort(); });
+    return dlBox;
+  }
+
+  var crcTab = null;
+  function crc32Update(crc, buf) {
+    if (!crcTab) {
+      crcTab = new Uint32Array(256);
+      for (var n = 0; n < 256; n++) {
+        var c = n;
+        for (var k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+        crcTab[n] = c >>> 0;
+      }
+    }
+    for (var i = 0; i < buf.length; i++) crc = (crcTab[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8)) >>> 0;
+    return crc >>> 0;
+  }
+  function zipLocal(nameBytes, crc, size) {
+    var h = new DataView(new ArrayBuffer(30));
+    h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(6, 0x0800, true);
+    h.setUint16(8, 0, true); h.setUint16(10, 0, true); h.setUint16(12, 0x21, true);
+    h.setUint32(14, crc, true); h.setUint32(18, size, true); h.setUint32(22, size, true);
+    h.setUint16(26, nameBytes.length, true); h.setUint16(28, 0, true);
+    return new Uint8Array(h.buffer);
+  }
+  function zipCentral(nameBytes, crc, size, offset) {
+    var h = new DataView(new ArrayBuffer(46));
+    h.setUint32(0, 0x02014b50, true); h.setUint16(4, 20, true); h.setUint16(6, 20, true);
+    h.setUint16(8, 0x0800, true); h.setUint16(10, 0, true); h.setUint16(12, 0, true);
+    h.setUint16(14, 0x21, true); h.setUint32(16, crc, true); h.setUint32(20, size, true);
+    h.setUint32(24, size, true); h.setUint16(28, nameBytes.length, true);
+    h.setUint16(30, 0, true); h.setUint16(32, 0, true); h.setUint16(34, 0, true);
+    h.setUint16(36, 0, true); h.setUint32(38, 0, true); h.setUint32(42, offset, true);
+    return new Uint8Array(h.buffer);
+  }
+  function zipEOCD(count, cdSize, cdOffset) {
+    var h = new DataView(new ArrayBuffer(22));
+    h.setUint32(0, 0x06054b50, true); h.setUint16(4, 0, true); h.setUint16(6, 0, true);
+    h.setUint16(8, count, true); h.setUint16(10, count, true); h.setUint32(12, cdSize, true);
+    h.setUint32(16, cdOffset, true); h.setUint16(20, 0, true);
+    return new Uint8Array(h.buffer);
+  }
+
+  async function dlFetchBytes(item, baseReceived) {
+    var resp = await fetch(item.url, { signal: dlAbort.signal });
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    var reader = resp.body.getReader();
+    var chunks = [], size = 0, crc = 0xFFFFFFFF;
+    for (;;) {
+      var r = await reader.read();
+      if (r.done) break;
+      chunks.push(r.value); size += r.value.length; crc = crc32Update(crc, r.value);
+      dlSetProgress(baseReceived + size);
+    }
+    var data = new Uint8Array(size), p = 0;
+    for (var i = 0; i < chunks.length; i++) { data.set(chunks[i], p); p += chunks[i].length; }
+    return { data: data, crc: (crc ^ 0xFFFFFFFF) >>> 0 };
+  }
+
+  async function dlZip() {
+    var enc = new TextEncoder();
+    var parts = [], central = [], offset = 0, received = 0;
+    for (var i = 0; i < dlItems.length; i++) {
+      dlSetFile(i, dlItems[i].name);
+      var nameBytes = enc.encode(dlItems[i].name);
+      var got = await dlFetchBytes(dlItems[i], received);
+      received += got.data.length;
+      var lh = zipLocal(nameBytes, got.crc, got.data.length);
+      parts.push(lh, nameBytes, got.data);
+      central.push({ nameBytes: nameBytes, crc: got.crc, size: got.data.length, offset: offset });
+      offset += lh.length + nameBytes.length + got.data.length;
+    }
+    var cdSize = 0;
+    for (var j = 0; j < central.length; j++) {
+      var e = central[j];
+      var ch = zipCentral(e.nameBytes, e.crc, e.size, e.offset);
+      parts.push(ch, e.nameBytes);
+      cdSize += ch.length + e.nameBytes.length;
+    }
+    parts.push(zipEOCD(central.length, cdSize, offset));
+    dlSave(new Blob(parts, { type: 'application/zip' }), dlZipName);
+  }
+
+  async function dlIndividual() {
+    var received = 0;
+    for (var i = 0; i < dlItems.length; i++) {
+      var it = dlItems[i];
+      dlSetFile(i, it.name);
+      var got = await dlFetchBytes(it, received);
+      received += got.data.length;
+      // Typed so iOS/Safari names it correctly rather than .txt.
+      dlSave(new Blob([got.data], { type: it.type || 'application/octet-stream' }), it.name);
+      await new Promise(function (r) { setTimeout(r, 250); });   // let the server release the socket
+    }
+  }
+
+  function dlSave(blob, filename) {
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+  }
+
+  function dlFmtEta(s) {
+    return s >= 60 ? (Math.floor(s / 60) + 'm ' + String(s % 60).padStart(2, '0') + 's') : (s + 's');
+  }
+  function dlSetProgress(received) {
+    var b = dlEnsure();
+    var pct = dlTotal > 0 ? Math.min(100, Math.round((received / dlTotal) * 100)) : 0;
+    b.q('k-dl-fill').style.width = pct + '%';
+    b.q('k-dl-stat').textContent = fmtBytes(received) + ' / ' + fmtBytes(dlTotal) + ' (' + pct + '%)';
+    var elapsed = (Date.now() - dlStartMs) / 1000;
+    if (elapsed > 0.4 && received > 0) {
+      var rate = received / elapsed;
+      var eta = rate > 0 ? Math.round(Math.max(0, dlTotal - received) / rate) : 0;
+      b.q('k-dl-rate').textContent = fmtBytes(rate) + '/s' +
+        (received < dlTotal ? '  -  ~' + dlFmtEta(eta) + ' left' : '');
+    }
+  }
+  function dlSetFile(i, name) {
+    dlEnsure().q('k-dl-file').textContent =
+      'File ' + (i + 1) + ' of ' + dlItems.length + ': ' + name;
+  }
+
+  // Open the chooser. items: [{url,name,bytes,type}]; label is the plural noun
+  // shown in the title ("voice notes" / "files").
+  function dlBegin(items, zipName, label) {
+    if (!items.length) return;
+    var b = dlEnsure();
+    dlItems = items; dlZipName = zipName;
+    dlTotal = items.reduce(function (s, it) { return s + (it.bytes || 0); }, 0);
+    var dev = dlDeviceClass(), cap = DL_CAP[dev] || DL_CAP.desktop;
+    var over = dlTotal > cap;
+    b.q('k-dl-title').textContent = 'Download ' + items.length + ' ' + label;
+    b.q('k-dl-size').textContent = 'Total: ' + fmtBytes(dlTotal) +
+      (over ? '  (too large to bundle on this device, ~' + fmtBytes(cap) + ' max)' : '');
+    b.q('k-dl-zip').disabled = over;
+    b.q('k-dl-indiv').style.display = dev === 'ios' ? 'none' : '';
+    if (dev === 'ios' && over) {
+      b.q('k-dl-size').textContent = 'Total: ' + fmtBytes(dlTotal) +
+        ' is too large to bundle here. Download files one at a time using the ' +
+        'Download button on each one.';
+    }
+    b.q('k-dl-choice').style.display = '';
+    b.q('k-dl-prog').style.display = 'none';
+    b.root.classList.add('on');
+  }
+
+  var dlToast = function () {};
+  async function dlStart(mode) {
+    var b = dlEnsure();
+    b.q('k-dl-choice').style.display = 'none';
+    b.q('k-dl-prog').style.display = '';
+    b.q('k-dl-ptitle').textContent = mode === 'zip' ? 'Building your .zip...' : 'Downloading...';
+    b.q('k-dl-fill').style.width = '0%';
+    b.q('k-dl-rate').textContent = '';
+    dlStartMs = Date.now();
+    dlSetProgress(0);
+    dlAbort = new AbortController();
+    dlActive = true;
+    try {
+      if (mode === 'zip') await dlZip(); else await dlIndividual();
+      dlToast(mode === 'zip' ? 'Bundle ready' : 'Downloads done');
+    } catch (e) {
+      if (e && e.name === 'AbortError') dlToast('Download cancelled');
+      else dlToast('Download failed' + (e && e.message ? ': ' + e.message : ''));
+    } finally {
+      dlActive = false;
+      dlClose();
+    }
+  }
+  function dlClose() {
+    var b = dlEnsure();
+    b.root.classList.remove('on');
+    b.q('k-dl-choice').style.display = '';
+    b.q('k-dl-prog').style.display = 'none';
+    b.q('k-dl-fill').style.width = '0%';
+    b.q('k-dl-rate').textContent = '';
+  }
+  window.addEventListener('beforeunload', function (e) {
+    if (dlActive) { e.preventDefault(); e.returnValue = ''; }
+  });
+
+  return {
+    DEST: DEST,
+    nav: nav,
+    setActive: setActive,
+    conn: conn,
+    sig: sig,
+    gate: gate,
+    player: player,
+    download: dlBegin,
+    onToast: function (fn) { dlToast = fn; },
+    fmtBytes: fmtBytes,
+    fmtTime: fmtTime,
+    esc: esc,
+  };
+})();
+/* CF-KIT-JS:END */
+</script>
+<script>
 // ─── State ───
 let files=[], playlists=[], queue=[], queueIdx=-1, currentView='table';
 let flatTracks=[], sortCol='title', sortAsc=true, searchQuery='';
 let allFolders=[]; // cached folder paths for move/upload
 let nowPlayingUrl='', playingSource=''; // 'tracks' or 'playlist'
+// What the kit shows in the sidebar footer / masthead chips. Two endpoints feed
+// it (status for the version, wifi/status for the networks), so it accumulates
+// here and is re-applied rather than each caller clearing the other's half.
+let deviceVersion='', connState={};
+let currentPage='media', mediaSummary='';
 const audio=document.getElementById('audio');
 const $=id=>document.getElementById(id);
 
@@ -616,22 +1274,33 @@ function stripExt(n){const i=n.lastIndexOf('.');return i>0?n.substring(0,i):n}
 function toast(msg){const t=$('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),2000)}
 function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
 
-// ─── Sidebar / Hamburger ───
-function toggleSidebar(){
-  $('sidebar').classList.toggle('open');
-  $('sidebarOverlay').classList.toggle('open');
-}
+// ─── Navigation ───
+// Three of the five destinations render in this document; Notes and Listen are
+// the companion's and the kit renders them as plain links. The menu button and
+// the slide-out drawer are gone - the tab bar is the phone navigation on both
+// documents now.
+const PAGES={media:'Media',files:'Files',settings:'Settings'};
 function showPage(p){
-  document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active',n.dataset.page===p));
+  // Voice notes retired into the companion's merged Notes view. Anything still
+  // pointing here - a bookmark, the old nav - lands where the notes actually are.
+  if(p==='voice'){location.href='/web/#notes';return}
+  if(!PAGES[p])p='media';
+  currentPage=p;
   $('mediaPage').style.display=p==='media'?'':'none';
-  $('voicePage').style.display=p==='voice'?'':'none';
   $('filesPage').style.display=p==='files'?'':'none';
   $('settingsPage').style.display=p==='settings'?'':'none';
-  $('livePage').style.display=p==='live'?'':'none';
-  $('pageTitle').textContent=p==='media'?'Media Manager':p==='voice'?'Voice Notes':p==='files'?'Files':p==='settings'?'Settings':'Live Playlist';
-  if(p==='voice')loadVoiceNotes();
+  $('pageTitle').textContent=PAGES[p];
+  showStatus();
+  CFK.setActive(p);
+  if(location.hash.slice(1)!==p)history.replaceState(null,'','#'+p);
   if(p==='files')loadBrowse(fbPath);
-  if(window.innerWidth<=700)toggleSidebar();
+}
+function showStatus(){
+  $('statusBar').textContent=currentPage==='media'?mediaSummary:'';
+}
+function pageFromHash(){
+  const h=(location.hash||'').replace('#','').split('/')[0].toLowerCase();
+  return h==='voice'?'voice':(PAGES[h]?h:'media');
 }
 
 // ─── View Toggle ───
@@ -756,10 +1425,14 @@ function applyTableSort(){
       '<td class="col-artist">'+esc(t.artist)+'</td>'+
       '<td class="col-album">'+esc(t.album)+'</td>'+
       '<td class="col-size">'+fmt(t.size)+'</td>'+
+      // Square glyph buttons, as the artboard draws them: play, add to a
+      // playlist, remove. All three stay on a phone - the artboard shows one,
+      // but dropping delete here would leave no way to remove a track from
+      // Media on a phone at all.
       '<td class="col-acts"><span class="acts">'+
-        '<button class="btn btn-play btn-sm" onclick="playTrack(\''+esc(t.path)+'\',\''+esc(t.title)+'\',\''+esc(t.artist)+'\',\'tracks\')">&#9654;</button>'+
-        '<button class="btn btn-add btn-sm" onclick="showAddToPl(event,\''+esc(t.path)+'\')">+PL</button>'+
-        '<button class="btn btn-del btn-sm" onclick="delPath(\''+esc(t.path)+'\')">Del</button>'+
+        '<button class="btn btn-play btn-ico" title="Play" onclick="playTrack(\''+esc(t.path)+'\',\''+esc(t.title)+'\',\''+esc(t.artist)+'\',\'tracks\')"><i class="k-tri-r sm"></i></button>'+
+        '<button class="btn btn-add btn-ico" title="Add to playlist" onclick="showAddToPl(event,\''+esc(t.path)+'\')">+</button>'+
+        '<button class="btn btn-del btn-ico" title="Delete" onclick="delPath(\''+esc(t.path)+'\')">&times;</button>'+
       '</span></td></tr>';
   }).join('');
   highlightPlaying();
@@ -778,9 +1451,19 @@ function filterTracks(){
 async function loadStatus(){
   try{
     const r=await fetch('/api/status');const s=await r.json();
-    // Middot separators, matching the artboards' meta lines ("App · 28 KB").
-    $('statusBar').textContent=s.files+' files · '+fmt(s.usedBytes)+' of '+fmt(s.totalBytes)+' used · '+s.clients+' client(s)';
+    // Short enough to sit on the title's baseline at 390px, which is where the
+    // artboards put it ("7 tracks · 24.0 MB"). Middot separator, matching every
+    // other meta line on both surfaces. It describes Media, so only Media shows
+    // it - a track count above the WiFi settings answers nothing.
+    mediaSummary=s.files+' track'+(s.files===1?'':'s')+' · '+fmt(s.usedBytes);
+    showStatus();
+    deviceVersion=s.version||'';
+    applyConn({});
   }catch(e){}
+}
+function applyConn(patch){
+  Object.assign(connState,patch);
+  CFK.conn({apIp:connState.apIp,ssid:connState.ssid,staIp:connState.staIp,version:deviceVersion});
 }
 
 // ─── Device clock ───
@@ -795,295 +1478,19 @@ async function setDeviceClock(){
   }catch(e){}
 }
 
-// ─── Voice Notes ───
-let voiceNotes=[];
-function fmtNoteDate(ts){
-  // "2026-06-09T14:23:11" -> "2026-06-09 14:23"; blank -> "No date"
-  if(!ts)return'No date';
-  return ts.replace('T',' ').slice(0,16);
-}
-function vnResetBulk(){
-  $('vnBulk').classList.remove('show');
-  $('vnSelAll').checked=false;$('vnSelAll').indeterminate=false;
-}
-async function loadVoiceNotes(){
-  const el=$('vnList');
-  vnResetBulk();
-  el.innerHTML='<li class="empty">Loading...</li>';
-  try{
-    const r=await fetch('/api/recordings');
-    const d=await r.json();
-    if(!d.sd){el.innerHTML='<li class="empty">Insert a memory card to see your voice notes.</li>';return}
-    voiceNotes=d.items||[];
-    renderVoiceNotes();
-  }catch(e){el.innerHTML='<li class="empty">Could not load voice notes.</li>'}
-}
-function renderVoiceNotes(){
-  const el=$('vnList');
-  // Newest first: REC_NNNN names are monotonic, so a reverse name sort works
-  // even when the clock was unset and timestamps are blank.
-  const list=voiceNotes.slice().sort((a,b)=>b.name.localeCompare(a.name));
-  if(!list.length){vnResetBulk();el.innerHTML='<li class="empty">No voice notes yet. Record one with the Voice Notes app on your Cyber Fidget, then tap Refresh.</li>';return}
-  el.innerHTML=list.map(n=>{
-    const url='/recordings/'+encodeURIComponent(n.name);
-    const meta=[fmtNoteDate(n.timestamp),fmtTime(n.duration),fmt(n.bytes)].join(' · ');
-    return '<li class="vn-item">'+
-      '<div class="vn-top">'+
-        '<input type="checkbox" class="vn-chk" data-name="'+esc(n.name)+'" onchange="vnSelChange()">'+
-        '<span class="vn-name" title="'+esc(n.name)+'">'+esc(stripExt(n.name))+'</span>'+
-        '<span class="vn-acts">'+
-          '<a class="btn btn-play btn-sm" href="'+url+'" download="'+esc(n.name)+'">Download</a>'+
-          '<button class="btn btn-move btn-sm" onclick="renameNote(\''+esc(n.name)+'\')">Rename</button>'+
-          '<button class="btn btn-del btn-sm" onclick="deleteNote(\''+esc(n.name)+'\')">Delete</button>'+
-        '</span>'+
-      '</div>'+
-      '<div class="vn-meta">'+esc(meta)+'</div>'+
-      '<audio controls preload="none" src="'+url+'"></audio>'+
-    '</li>';
-  }).join('');
-  $('vnBulk').classList.add('show');
-  vnSelChange();
-}
-
-// ─── Voice Notes: multi-select ───
-function vnSelectedNames(){return [...document.querySelectorAll('.vn-chk:checked')].map(c=>c.dataset.name)}
-function vnSelChange(){
-  const chks=[...document.querySelectorAll('.vn-chk')];
-  const sel=chks.filter(c=>c.checked).length;
-  $('vnBulkCount').textContent=sel+' selected';
-  $('vnDlBtn').disabled=sel===0;
-  $('vnDelBtn').disabled=sel===0;
-  const all=$('vnSelAll');
-  all.checked=chks.length>0&&sel===chks.length;
-  all.indeterminate=sel>0&&sel<chks.length;
-}
-function vnToggleAll(cb){
-  document.querySelectorAll('.vn-chk').forEach(c=>c.checked=cb.checked);
-  vnSelChange();
-}
-// ─── Bulk download (client-side zip OR individual WAVs, with progress) ───
-// The device stays a dumb one-file-at-a-time server (serveStatic); all bundling
-// happens here in the browser. iOS Safari can't do multi-file downloads (one per
-// user gesture + mis-named blobs), so on iOS we offer ONLY the single .zip; other
-// platforms can pick zip or individual WAVs. Both fetch sequentially (the server
-// wedges on concurrent streams — see the device notes) with a live byte progress
-// bar, and a beforeunload guard keeps the user on the page until it finishes.
-function dlDeviceClass(){
-  const ua=navigator.userAgent||'';
-  if(/iP(hone|ad|od)/.test(ua)||(navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1))return 'ios';
-  if(/Android/.test(ua))return 'android';
-  return 'desktop';
-}
-// Conservative per-device caps for the in-browser zip (it holds the selected
-// bytes + the assembled blob in memory). iOS is the tightest; tune after testing.
-const DL_CAP={ios:100*1048576,android:200*1048576,desktop:500*1048576};
-
-// A download job is a list of items: {url, name, bytes, type}. Voice notes and
-// the Files browser both feed this same serialized fetch->blob->zip path, so the
-// device only ever sees one transfer at a time (the async server wedges on
-// concurrency — see the device notes).
-let _dlItems=[],_dlZipName='files.zip',_dlTotal=0,_dlAbort=null,_dlActive=false,_dlStartMs=0;
-function dlFmtEta(s){return s>=60?(Math.floor(s/60)+'m '+String(s%60).padStart(2,'0')+'s'):(s+'s')}
-
-let _crcTab=null;
-function crc32Update(crc,buf){
-  if(!_crcTab){_crcTab=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=(c&1)?(0xEDB88320^(c>>>1)):(c>>>1);_crcTab[n]=c>>>0;}}
-  for(let i=0;i<buf.length;i++)crc=(_crcTab[(crc^buf[i])&0xFF]^(crc>>>8))>>>0;
-  return crc>>>0;
-}
-function zipLocal(nameBytes,crc,size){
-  const h=new DataView(new ArrayBuffer(30));
-  h.setUint32(0,0x04034b50,true);h.setUint16(4,20,true);h.setUint16(6,0x0800,true);h.setUint16(8,0,true);
-  h.setUint16(10,0,true);h.setUint16(12,0x21,true);h.setUint32(14,crc,true);
-  h.setUint32(18,size,true);h.setUint32(22,size,true);h.setUint16(26,nameBytes.length,true);h.setUint16(28,0,true);
-  return new Uint8Array(h.buffer);
-}
-function zipCentral(nameBytes,crc,size,offset){
-  const h=new DataView(new ArrayBuffer(46));
-  h.setUint32(0,0x02014b50,true);h.setUint16(4,20,true);h.setUint16(6,20,true);h.setUint16(8,0x0800,true);
-  h.setUint16(10,0,true);h.setUint16(12,0,true);h.setUint16(14,0x21,true);h.setUint32(16,crc,true);
-  h.setUint32(20,size,true);h.setUint32(24,size,true);h.setUint16(28,nameBytes.length,true);
-  h.setUint16(30,0,true);h.setUint16(32,0,true);h.setUint16(34,0,true);h.setUint16(36,0,true);
-  h.setUint32(38,0,true);h.setUint32(42,offset,true);
-  return new Uint8Array(h.buffer);
-}
-function zipEOCD(count,cdSize,cdOffset){
-  const h=new DataView(new ArrayBuffer(22));
-  h.setUint32(0,0x06054b50,true);h.setUint16(4,0,true);h.setUint16(6,0,true);
-  h.setUint16(8,count,true);h.setUint16(10,count,true);h.setUint32(12,cdSize,true);
-  h.setUint32(16,cdOffset,true);h.setUint16(20,0,true);
-  return new Uint8Array(h.buffer);
-}
-// Read one item as a Uint8Array, streaming so we can show byte progress + CRC it.
-async function dlFetchBytes(item,baseReceived){
-  const resp=await fetch(item.url,{signal:_dlAbort.signal});
-  if(!resp.ok)throw new Error('HTTP '+resp.status);
-  const reader=resp.body.getReader();
-  const chunks=[];let size=0;let crc=0xFFFFFFFF;
-  for(;;){
-    const r=await reader.read();
-    if(r.done)break;
-    chunks.push(r.value);size+=r.value.length;crc=crc32Update(crc,r.value);
-    dlSetProgress(baseReceived+size);
-  }
-  const data=new Uint8Array(size);let p=0;for(const c of chunks){data.set(c,p);p+=c.length;}
-  return {data,crc:(crc^0xFFFFFFFF)>>>0};
-}
-async function dlZip(){
-  const enc=new TextEncoder();
-  const parts=[],central=[];let offset=0,received=0;
-  for(let i=0;i<_dlItems.length;i++){
-    dlSetFile(i,_dlItems[i].name);
-    const nameBytes=enc.encode(_dlItems[i].name);
-    const {data,crc}=await dlFetchBytes(_dlItems[i],received);
-    received+=data.length;
-    const lh=zipLocal(nameBytes,crc,data.length);
-    parts.push(lh,nameBytes,data);
-    central.push({nameBytes,crc,size:data.length,offset});
-    offset+=lh.length+nameBytes.length+data.length;
-  }
-  let cdSize=0;for(const e of central){const ch=zipCentral(e.nameBytes,e.crc,e.size,e.offset);parts.push(ch,e.nameBytes);cdSize+=ch.length+e.nameBytes.length;}
-  parts.push(zipEOCD(central.length,cdSize,offset));
-  dlSave(new Blob(parts,{type:'application/zip'}),_dlZipName);
-}
-async function dlIndividual(){
-  let received=0;
-  for(let i=0;i<_dlItems.length;i++){
-    const it=_dlItems[i];
-    dlSetFile(i,it.name);
-    const {data}=await dlFetchBytes(it,received);
-    received+=data.length;
-    dlSave(new Blob([data],{type:it.type||'application/octet-stream'}),it.name);  // typed so iOS/Safari names it correctly, not .txt
-    await new Promise(r=>setTimeout(r,250));                                       // let the server release the socket
-  }
-}
-function dlSave(blob,filename){
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');a.href=url;a.download=filename;
-  document.body.appendChild(a);a.click();a.remove();
-  setTimeout(()=>URL.revokeObjectURL(url),4000);
-}
-function dlSetProgress(received){
-  const pct=_dlTotal>0?Math.min(100,Math.round(received/_dlTotal*100)):0;
-  $('dlFill').style.width=pct+'%';
-  $('dlStat').textContent=fmt(received)+' / '+fmt(_dlTotal)+' ('+pct+'%)';
-  const el=(Date.now()-_dlStartMs)/1000;
-  if(el>0.4&&received>0){
-    const rate=received/el;                          // bytes/sec
-    const eta=rate>0?Math.round(Math.max(0,_dlTotal-received)/rate):0;
-    $('dlRate').textContent=fmt(rate)+'/s'+(received<_dlTotal?'  ·  ~'+dlFmtEta(eta)+' left':'');
-  }
-}
-function dlSetFile(i,name){$('dlFile').textContent='File '+(i+1)+' of '+_dlItems.length+': '+stripExt(name)}
-
-// Open the download chooser for a set of items. label is the plural noun shown in
-// the title ("voice notes" / "files"); zipName is the bundle filename. Both Voice
-// notes and the Files browser call this.
-function dlBegin(items,zipName,label){
-  if(!items.length)return;
-  _dlItems=items;_dlZipName=zipName;
-  _dlTotal=items.reduce((s,it)=>s+(it.bytes||0),0);
-  const dev=dlDeviceClass(),cap=DL_CAP[dev]||DL_CAP.desktop;
-  const over=_dlTotal>cap;
-  $('dlTitle').textContent='Download '+items.length+' '+label;
-  $('dlSize').textContent='Total: '+fmt(_dlTotal)+(over?'  (too large to bundle on this device, ~'+fmt(cap)+' max)':'');
-  $('dlZipBtn').disabled=over;
-  $('dlIndivBtn').style.display=dev==='ios'?'none':'';   // iOS: zip only
-  if(dev==='ios'&&over){
-    $('dlSize').textContent='Total: '+fmt(_dlTotal)+' is too large to bundle here. Download files one at a time using the Download button on each one.';
-  }
-  $('dlChoice').style.display='';$('dlProgress').style.display='none';
-  $('dlOverlay').classList.add('show');
-}
-function vnDownloadSelected(){
-  const names=vnSelectedNames();
-  if(!names.length)return;
-  const items=names.map(n=>{
-    const it=voiceNotes.find(v=>v.name===n);
-    return {url:'/recordings/'+encodeURIComponent(n),name:n,bytes:(it?it.bytes:0)+44,type:'audio/wav'};
-  });
-  dlBegin(items,'voice-notes.zip','voice notes');
-}
-async function dlStart(mode){
-  $('dlChoice').style.display='none';$('dlProgress').style.display='';
-  $('dlProgTitle').textContent=mode==='zip'?'Building your .zip...':'Downloading...';
-  $('dlFill').style.width='0%';$('dlRate').textContent='';
-  _dlStartMs=Date.now();dlSetProgress(0);
-  _dlAbort=new AbortController();_dlActive=true;
-  try{
-    if(mode==='zip')await dlZip();else await dlIndividual();
-    toast(mode==='zip'?'Bundle ready':'Downloads done');
-  }catch(e){
-    if(e&&e.name==='AbortError')toast('Download cancelled');
-    else toast('Download failed'+(e&&e.message?': '+e.message:''));
-  }finally{
-    _dlActive=false;dlClose();
-  }
-}
-function dlCancel(){if(_dlAbort)_dlAbort.abort()}
-function dlClose(){
-  $('dlOverlay').classList.remove('show');
-  $('dlChoice').style.display='';$('dlProgress').style.display='none';
-  $('dlFill').style.width='0%';$('dlRate').textContent='';
-}
-// Keep the user on the page while a transfer is in flight (it lives in JS here).
-window.addEventListener('beforeunload',e=>{if(_dlActive){e.preventDefault();e.returnValue=''}});
-async function vnDeleteSelected(){
-  const names=vnSelectedNames();
-  if(!names.length)return;
-  if(!confirm('Delete '+names.length+' voice note'+(names.length>1?'s':'')+'?'))return;
-  let ok=0;
-  for(const n of names){
-    try{
-      const r=await fetch('/api/delete?path='+encodeURIComponent('/recordings/'+n),{method:'POST'});
-      if(r.ok)ok++;
-    }catch(e){}
-  }
-  toast('Deleted '+ok+' of '+names.length);
-  loadVoiceNotes();
-}
-async function deleteNote(name){
-  if(!confirm('Delete voice note "'+stripExt(name)+'"?'))return;
-  try{
-    const r=await fetch('/api/delete?path='+encodeURIComponent('/recordings/'+name),{method:'POST'});
-    if(!r.ok){alert('Delete failed: '+await r.text());return}
-    toast('Deleted '+stripExt(name));
-    loadVoiceNotes();
-  }catch(e){alert('Error: '+e)}
-}
-function renameNote(name){
-  $('modalTitle').textContent='Rename Voice Note';
-  $('modalInput').style.display='';
-  $('modalInput').value=stripExt(name);
-  $('modalInput').placeholder='Name...';
-  $('modalInput').maxLength=48;   // block over-typing rather than rejecting on confirm
-  $('modalExtra').innerHTML='';
-  $('modalOk').textContent='Rename';
-  // Live-validate characters as the user types (length is capped by maxLength).
-  modalValidator=(v)=>(/[\\\/:*?"<>|]/.test(stripExt((v||'').trim())))
-    ? 'Name cannot contain \\ / : * ? " < > |' : '';
-  modalShowErr('');
-  $('modalOverlay').classList.add('active');
-  $('modalInput').focus();
-  $('modalInput').select();
-  modalCallback=async(v)=>{
-    const base=stripExt((v||'').trim());
-    if(!base)return;
-    const to='/recordings/'+base+'.wav';
-    if(to==='/recordings/'+name)return;
-    try{
-      const r=await fetch('/api/move?from='+encodeURIComponent('/recordings/'+name)+'&to='+encodeURIComponent(to),{method:'POST'});
-      if(r.ok){toast('Renamed');loadVoiceNotes()}
-      else alert('Rename failed: '+await r.text());
-    }catch(e){alert('Error: '+e)}
-  };
-}
+// ─── Voice notes: retired from this document ───
+// Browsing recordings lived here and transcribing them lived in the companion:
+// two lists of the same files, which is most of what made the two surfaces read
+// as two sites. They are now one Notes destination on /web/, beside the engine
+// that turns them into text. The multi-select download and delete that grew here
+// went with them - into the shared kit, so the Files browser below and the
+// companion's Notes now run the same code (CFK.download).
 
 // ─── Files browser (raw card, nested folder navigation) ───
 // A power-user view of the whole SD card: navigate into one folder at a time
 // (NOT a flat dump of every file), see size + modified date, multi-select,
 // upload into the current folder, rename, and delete (files and whole folders).
-// Reuses the same serialized download/zip path as Voice notes (dlBegin).
+// Downloads go through the shared kit's serialized fetch -> zip path.
 let fbPath='/', fbEntries=[];
 function fbJoin(name){return (fbPath==='/'?'':fbPath)+'/'+name}
 function fbDate(mt){
@@ -1169,7 +1576,7 @@ function fbDownloadSelected(){
     const e=fbEntries.find(x=>fbJoin(x.name)===d.path);
     return {url:'/api/download?path='+encodeURIComponent(d.path),name:basename(d.path),bytes:e?e.size:0,type:'application/octet-stream'};
   });
-  dlBegin(items,'files.zip','files');
+  CFK.download(items,'files.zip','files');
 }
 async function fbDeleteSelected(){
   const sel=fbSelected();
@@ -1359,10 +1766,17 @@ $('modalInput').addEventListener('input',()=>{if(modalValidator)modalShowErr(mod
 $('modalInput').addEventListener('keydown',e=>{if(e.key==='Enter')modalConfirm()});
 
 // ─── Audio Player ───
+// The transport, seek bar and timecodes are the shared kit's component - the
+// same one the companion uses for its inline row players - so the native audio
+// element is gone from both surfaces. It renders as the 76px bar on a laptop and
+// the 52px mini above the tab bar on a phone; the kit decides which from width.
 let _fromQueue=false;
+const player=CFK.player($('playerBar'),audio,
+  window.matchMedia('(max-width:699px)').matches?'mini':'bar',
+  {onPrev:()=>playerPrev(),onNext:()=>playerNext()});
 function playTrack(url,fallbackTitle,fallbackArtist,source){
   audio.src=url;audio.play();
-  $('playerBar').classList.add('show');
+  player.show(true);
   nowPlayingUrl=url;
   if(source)playingSource=source;
   let title=fallbackTitle||stripExt(basename(url));
@@ -1370,9 +1784,7 @@ function playTrack(url,fallbackTitle,fallbackArtist,source){
   // Look up real ID3 metadata from flatTracks
   const found=flatTracks.find(t=>t.path===url);
   if(found){title=found.title||title;artist=found.artist||artist}
-  $('pTitle').textContent=title;
-  $('pArtist').textContent=artist!=='-'?artist:'';
-  $('btnPlay').innerHTML='&#10074;&#10074;';
+  player.setTrack(title,artist);
   // Build queue from all tracks (unless navigating within existing queue)
   if(!_fromQueue&&flatTracks.length){
     queue=flatTracks.map(t=>({url:t.path,title:t.title,artist:t.artist}));
@@ -1381,10 +1793,6 @@ function playTrack(url,fallbackTitle,fallbackArtist,source){
   }
   _fromQueue=false;
   highlightPlaying();
-}
-function playerToggle(){
-  if(audio.paused){audio.play();$('btnPlay').innerHTML='&#10074;&#10074;'}
-  else{audio.pause();$('btnPlay').innerHTML='&#9654;'}
 }
 function playerPrev(){
   if(queue.length&&queueIdx>0){queueIdx--;_fromQueue=true;const t=queue[queueIdx];playTrack(t.url,t.title,t.artist)}
@@ -1409,16 +1817,9 @@ function highlightPlaying(){
   }
 }
 
-// Seekbar (visual progress only — interactive scrubbing backlogged)
-const seekFill=$('seekFill'),seekThumb=$('seekThumb');
-audio.addEventListener('timeupdate',()=>{
-  if(!audio.duration)return;
-  $('pCur').textContent=fmtTime(audio.currentTime);
-  $('pDur').textContent='-'+fmtTime(audio.duration-audio.currentTime);
-  const p=audio.currentTime/audio.duration*100;
-  seekFill.style.width=p+'%';seekThumb.style.left=p+'%';
-});
-audio.addEventListener('ended',()=>{$('btnPlay').innerHTML='&#9654;';playerNext()});
+// Progress, scrubbing and the play/pause glyph are the kit player's job; all
+// that is left here is advancing the queue.
+audio.addEventListener('ended',playerNext);
 
 // ─── Playlists ───
 async function loadPlaylists(){
@@ -1556,36 +1957,26 @@ async function loadWifiStatus(){
   try{
     const r=await fetch('/api/wifi/status');
     const s=await r.json();
-    const tag=$('connSTATag'),dot=$('connSTADot'),sta=$('connSTA');
     const sc=$('wifiStatusContent');
-    $('connAP').textContent=s.ap_ip||'192.168.4.1';
     $('apIPDisplay').textContent=s.ap_ip||'192.168.4.1';
+    // The kit owns where these facts appear: sidebar footer on a laptop, the
+    // masthead chips on a phone. Same two lines on the companion.
+    applyConn({apIp:s.ap_ip,ssid:s.connected?s.ssid:'',staIp:s.ip});
     if(s.connected){
       const mdns=s.mdns||'';
-      tag.style.display='';dot.className='dot on';
-      sta.textContent=mdns?mdns+' ('+s.ip+')':s.ip;
-      sc.innerHTML='<div class="info-row"><span class="label">Status</span><span class="val" style="color:var(--success)">Connected</span></div>'+
-        '<div class="info-row"><span class="label">Network</span><span class="val">'+esc(s.ssid)+'</span></div>'+
-        '<div class="info-row"><span class="label">IP Address</span><span class="val accent">'+s.ip+'</span></div>'+
-        (mdns?'<div class="info-row"><span class="label">mDNS</span><span class="val accent">'+mdns+'</span></div>':'')+
-        '<div style="margin-top:12px"><button class="btn btn-del" onclick="forgetWifi()">Forget Network</button></div>';
+      // Same copy rule as the panel below: "address", never "IP"; the mDNS name
+      // is described by what it does rather than by the protocol that serves it.
+      sc.innerHTML='<div class="info-row"><span class="label">Status</span><span class="val" style="color:var(--success)">Connected &#183; '+esc(s.ssid)+'</span></div>'+
+        '<div class="info-row"><span class="label">Address</span><span class="val accent">'+s.ip+'</span></div>'+
+        (mdns?'<div class="info-row"><span class="label">Also reachable at</span><span class="val accent">'+mdns+'</span></div>':'')+
+        '<div style="margin-top:12px"><button class="btn btn-del" onclick="forgetWifi()">Forget network</button></div>';
     }else if(s.ssid&&s.status==='connecting'){
-      tag.style.display='';dot.className='dot off';
-      sta.textContent='Connecting to '+s.ssid+'...';
       sc.innerHTML='<div class="info-row"><span class="label">Status</span><span class="val"><span class="wifi-spinner"></span>Connecting to '+esc(s.ssid)+'...</span></div>';
       setTimeout(loadWifiStatus,2000);
     }else{
-      tag.style.display='none';
       sc.innerHTML='<div class="info-row"><span class="label">Status</span><span class="val">Not connected</span></div>';
     }
   }catch(e){}
-}
-
-function signalBars(rssi){
-  const n=rssi>-50?4:rssi>-60?3:rssi>-70?2:1;
-  let b='';
-  for(let i=1;i<=4;i++)b+='<span style="display:inline-block;width:3px;height:'+(4+i*3)+'px;background:'+(i<=n?'var(--accent)':'var(--border)')+';margin-right:1px;border-radius:1px;vertical-align:bottom"></span>';
-  return b;
 }
 
 async function scanWifi(){
@@ -1610,15 +2001,19 @@ async function scanWifi(){
     }
     const nets=Array.isArray(data)?data:[];
     if(!nets.length){$('networkList').innerHTML='<li class="empty" style="padding:12px">No networks found</li>';return}
+    // Strength is four CSS bars from the kit and "locked" is a text chip. Both
+    // were emoji, which are fixed multi-colour and cannot be tinted to match the
+    // surface - the defect class the design brief singled out, and this list was
+    // its last live instance.
     $('networkList').innerHTML=nets.map(n=>
       '<li onclick="selectNetwork(\''+esc(n.ssid)+'\')">'+
-      '<span class="lock">'+(n.secure?'&#128274;':'&#128275;')+'</span>'+
       '<span class="ssid">'+esc(n.ssid)+'</span>'+
-      '<span class="signal">'+signalBars(n.rssi)+' '+n.rssi+'</span>'+
+      (n.secure?'<span class="lock">Locked</span>':'')+
+      CFK.sig(n.rssi)+
       '</li>'
     ).join('');
   }catch(e){$('networkList').innerHTML='<li class="empty" style="padding:12px">Scan failed</li>'}
-  finally{btn.disabled=false;btn.textContent='Scan for Networks'}
+  finally{btn.disabled=false;btn.textContent='Scan again'}
 }
 
 function selectNetwork(ssid){
@@ -1686,6 +2081,12 @@ function detectCaptive(){
 }
 
 // ─── Init ───
+// The kit builds the navigation before anything else runs, so the tab bar and
+// the sidebar are up whether or not the device answers the API calls below.
+CFK.nav('portal',pageFromHash(),showPage);
+CFK.onToast(toast);
+window.addEventListener('hashchange',()=>showPage(pageFromHash()));
+showPage(pageFromHash());
 detectCaptive();
 $('searchRow').classList.add('show'); // table is default view
 setDeviceClock();   // stamp the device clock before the user records anything

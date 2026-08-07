@@ -9,14 +9,13 @@
 html, body { height: 100%; }
 /* Flat page field, no horizon glow: the website's product space (cf-kit)
    uses no page gradient anywhere, and a magenta bloom at the bottom of the
-   companion was the most visible difference between the two backgrounds. */
+   companion was the most visible difference between the two backgrounds.
+   The shell itself (sidebar / masthead / tab bar / main column) comes from the
+   shared kit, which also sets body's layout - so this only carries paint. */
 body {
   background: var(--cf-bg-page);
   color: var(--cf-ink);
   font-family: var(--cf-font-body);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
 }
 a { color: var(--cf-cyan); }
 button { font-family: var(--cf-font-ui); }
@@ -32,71 +31,14 @@ body::after {
   z-index: 999;
 }
 
-/* ── Header ── */
-.hdr {
-  padding: calc(10px + env(safe-area-inset-top)) 14px 8px;
-  display: flex; align-items: center; gap: 10px;
-  border-bottom: 1px solid var(--cf-bg-line);
-  background: var(--cf-bg-deep);
-}
-.hdr .logo { line-height: 1.05; }
-.hdr .logo b {
-  font-family: var(--cf-font-display);
-  font-size: 1.0em; letter-spacing: 2px; color: var(--cf-cyan);
-  text-shadow: 2px 2px 0 var(--cf-magenta-deep), 0 0 12px rgba(104, 225, 253, 0.35);
-}
-.hdr .logo span {
-  display: block; font-size: 0.62em; letter-spacing: 3px;
-  color: var(--cf-magenta-soft); text-transform: uppercase;
-}
-.hdr .spacer { flex: 1; }
-.chip {
-  font-family: var(--cf-font-mono); font-size: 0.66em;
-  border: 1px solid var(--cf-bg-line); border-radius: var(--cf-r-sm);
-  padding: 3px 8px; color: var(--cf-ink-dim); white-space: nowrap;
-}
-.chip .dot {
-  display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-  background: var(--cf-ink-faint); margin-right: 5px; vertical-align: 1px;
-}
-.chip.on { color: var(--cf-cyan-soft); border-color: rgba(104, 225, 253, 0.35); }
-.chip.on .dot { background: var(--cf-green); box-shadow: 0 0 6px var(--cf-green); }
-.chip.warn { color: var(--cf-yellow); border-color: rgba(255, 216, 74, 0.4); }
-.chip.warn .dot { background: var(--cf-yellow); }
+/* The header, the bottom tab bar and the desktop sidebar all came from this
+   file once. They are the shared kit's now (src/shared/chrome.css), generated
+   into this document and the portal's alike, because a user crossing between
+   the two is not supposed to be able to tell which one they are on.
 
-/* ── Views + bottom nav ── */
+   ── Views ── the scrolling content column inside the kit's shell. */
 .view { flex: 1; overflow-y: auto; padding: 16px 14px 18px; -webkit-overflow-scrolling: touch; }
 .view[hidden] { display: none; }
-.nav {
-  display: flex; border-top: 1px solid var(--cf-bg-line);
-  background: var(--cf-bg-deep);
-  padding-bottom: env(safe-area-inset-bottom);
-}
-.nav button {
-  flex: 1; background: none; border: none; cursor: pointer;
-  padding: 9px 2px 7px; color: var(--cf-ink-mute);
-  font-size: 0.66em; letter-spacing: 1px; text-transform: uppercase;
-  border-top: 2px solid transparent;
-}
-.nav button .glyph { display: block; font-size: 1.7em; margin-bottom: 2px; }
-/* The route back to the portal, styled as a peer of the view tabs so crossing
-   between the two surfaces is an ordinary nav move, not an exit. */
-.nav .navout {
-  flex: 1; display: flex; flex-direction: column; align-items: center;
-  justify-content: flex-end;
-  padding: 9px 2px 7px; color: var(--cf-ink-mute); text-decoration: none;
-  font-family: var(--cf-font-ui); font-size: 0.66em; letter-spacing: 1px;
-  text-transform: uppercase; border-top: 2px solid transparent;
-}
-.nav .navout .glyph { display: block; font-size: 1.7em; margin-bottom: 2px; }
-.nav .navout:hover { color: var(--cf-cyan); }
-/* Active tab is magenta, matching the phone tab bar on the My Fidget
-   artboard (and the site nav's magenta active link). */
-.nav button.active {
-  color: var(--cf-magenta);
-  border-top-color: var(--cf-magenta);
-  text-shadow: 0 0 8px rgba(255, 43, 184, 0.5);
-}
 
 /* ── Cards / sections ── */
 .card {
@@ -107,18 +49,8 @@ body::after {
   margin-bottom: 12px;
   box-shadow: inset 0 1px 0 var(--cf-bevel-hi), 0 2px 8px var(--cf-bevel-lo);
 }
-/* Panel eyebrow = cf-kit's .cf-rail-title: a bordered cyan mono chip. The
-   magenta uppercase labels on the artboards annotate the component sheets;
-   the panel titles inside the product are cyan and boxed. */
-.card h2 {
-  display: inline-block;
-  font-family: var(--cf-font-mono);
-  font-size: 0.68em; font-weight: 700; letter-spacing: 0.2em;
-  text-transform: uppercase;
-  color: var(--cf-cyan);
-  border: 1px solid rgba(104, 225, 253, 0.35);
-  padding: 3px 8px; margin-bottom: 12px;
-}
+/* .card h2 is the shared kit's panel title - it is the same component the
+   portal's cards use, so it lives in one place now. */
 .card p { color: var(--cf-ink-dim); font-size: 0.86em; line-height: 1.65; }
 .card p + p { margin-top: 8px; }
 .muted { color: var(--cf-ink-mute); font-size: 0.76em; line-height: 1.6; }
@@ -188,19 +120,82 @@ body::after {
 .kv .k { color: var(--cf-ink-mute); }
 .kv .v { color: var(--cf-ink); font-family: var(--cf-font-mono); font-size: 0.92em; text-align: right; overflow-wrap: anywhere; }
 
-/* ── Lists (notes / days) ── */
+/* ── The Notes list ──
+   One row per recording. Name in the display face over a mono meta line, then
+   play, then ONE right-hand slot carrying the transcript state: a bordered cyan
+   TRANSCRIBE action when there is none, a green TRANSCRIPT chip when the sidecar
+   already exists. Two states, one slot - so the row never grows a second column
+   that is empty half the time. */
 .rowlist { list-style: none; }
 .rowlist li {
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 8px; border-bottom: 1px solid var(--cf-bg-line); font-size: 0.9em;
+  padding: 10px 2px; border-bottom: 1px solid var(--cf-bg-line); font-size: 0.9em;
 }
-.rowlist .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rowlist .meta { color: var(--cf-ink-mute); font-size: 0.78em; font-family: var(--cf-font-mono); white-space: nowrap; }
-.rowlist .tag {
-  font-size: 0.68em; padding: 2px 7px; border-radius: var(--cf-r-sm);
-  border: 1px solid rgba(77, 255, 175, 0.4); color: var(--cf-green); white-space: nowrap;
+.rowlist li.open { flex-wrap: wrap; background: rgba(104, 225, 253, 0.03); }
+.rowlist .fx { flex: 1; min-width: 0; }
+.rowlist .name {
+  font-family: var(--cf-font-display); font-weight: 600;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.rowlist .meta {
+  color: var(--cf-ink-mute); font-size: 0.78em; font-family: var(--cf-font-mono);
+  white-space: nowrap; margin-top: 2px;
 }
 .empty { text-align: center; color: var(--cf-ink-mute); padding: 18px 8px; font-size: 0.88em; }
+
+/* Everything an expanded row adds: the inline player, the transcript on a
+   phosphor panel, then the row's own actions - indented past the checkbox so
+   the list's left edge stays a single line. */
+.note-detail { flex: 1 1 100%; display: flex; flex-direction: column; gap: 10px; padding: 4px 0 6px 26px; }
+.note-detail .terminal { font-size: 0.95em; max-height: 34vh; }
+.note-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+
+/* Bordered square row actions and the multi-select bar, both carried over from
+   the portal's retired Voice notes page - the one functional delta the merge
+   asked for. Delete is red because it destroys a file on the card with no undo. */
+.rowact {
+  border: 1px solid rgba(104, 225, 253, 0.4); color: var(--cf-cyan);
+  background: none; cursor: pointer;
+  font-family: var(--cf-font-ui); font-size: 0.62em; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  padding: 6px 9px; white-space: nowrap; flex: none;
+}
+.rowact:hover:not(:disabled) { background: rgba(104, 225, 253, 0.12); }
+.rowact:disabled { opacity: 0.35; cursor: default; }
+.rowact.red { border-color: rgba(255, 82, 82, 0.5); color: var(--cf-red); }
+.rowact.red:hover:not(:disabled) { background: rgba(255, 82, 82, 0.12); }
+.bulk {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 9px 2px; margin-bottom: 4px;
+  font-family: var(--cf-font-mono); font-size: 0.78em; color: var(--cf-ink-dim);
+}
+.bulk[hidden] { display: none; }
+.bulk .spacer { flex: 1; }
+.bulk .count { color: var(--cf-ink-mute); }
+.selall { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+/* A CSS checkbox: the native control cannot take the square, sunk, cyan-filled
+   treatment the rest of the surface uses. */
+.ck {
+  width: 16px; height: 16px; flex: none; cursor: pointer;
+  border: 1px solid var(--cf-ink-mute); background: var(--cf-bg-sunk);
+  display: inline-block;
+}
+.ck.on { background: var(--cf-cyan); box-shadow: inset 0 0 0 3px var(--cf-bg-card); }
+
+/* An entry card: a stamp, one line of why, and the door - all on one row.
+   [hidden] needs its own rule here because the card sets `display`, and a bare
+   `hidden` attribute loses to any display declaration. */
+.entry-card { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.entry-card[hidden] { display: none; }
+
+/* Entry card stamp - the bordered cyan mono chip, same as a panel eyebrow. */
+.stamp {
+  display: inline-block; flex: none;
+  font-family: var(--cf-font-mono); font-size: 0.62em; font-weight: 700;
+  letter-spacing: 0.2em; text-transform: uppercase; color: var(--cf-cyan);
+  border: 1px solid rgba(104, 225, 253, 0.45); padding: 4px 8px;
+}
+.seg-row { margin-bottom: 14px; }
 
 /* ── Forms ── */
 .field { margin-bottom: 12px; }
@@ -247,9 +242,11 @@ body::after {
   color: var(--cf-ink-dim);
 }
 
-/* ── Toast ── magenta hairline on an elevated fill, per cf-kit's .cf-toast */
+/* ── Toast ── magenta hairline on an elevated fill, per cf-kit's .cf-toast.
+   Clears the kit's tab bar on a phone; the desktop offset is in the media
+   query below, where there is no tab bar to clear. */
 .toast {
-  position: fixed; bottom: calc(64px + env(safe-area-inset-bottom)); left: 50%;
+  position: fixed; bottom: calc(76px + env(safe-area-inset-bottom)); left: 50%;
   transform: translateX(-50%); z-index: 600;
   background: var(--cf-bg-elev); border: 1px solid var(--cf-magenta);
   padding: 9px 16px; font-size: 0.8em;
@@ -266,51 +263,19 @@ body::after {
 .notice.err { border-color: rgba(255, 82, 82, 0.4); background: rgba(255, 82, 82, 0.07); color: var(--cf-red); }
 .notice.ok { border-color: rgba(77, 255, 175, 0.35); background: rgba(77, 255, 175, 0.06); color: var(--cf-green); }
 
-/* ── Desktop shell ──
-   Above the breakpoint the companion adopts the portal's app shell instead of
-   staying a stretched phone layout: brand and status in a left column, the view
-   tabs stacked beneath them as a sidebar, content filling the rest. Same 700px
-   breakpoint as the portal, so the two surfaces change shape at the same width.
-   Grid on <body> gets there without moving any markup - the four <main> views
-   all claim the same grid area and [hidden] keeps three of them out. */
+/* ── Desktop ──
+   The kit swaps the tab bar for the 220px sidebar at this width; all that is
+   left here is letting the content breathe. Cards hold a ~640px measure rather
+   than stretching to the window, and Listen's two panels sit side by side -
+   which is the whole desktop answer: the same cards, more room, no bespoke
+   layout to keep in step with the phone one.
+   Same 700px breakpoint as the portal, so both surfaces change shape together. */
 @media (min-width: 700px) {
-  body {
-    display: grid;
-    grid-template-columns: 220px 1fr;
-    grid-template-rows: auto 1fr;
-    grid-template-areas: "hdr view" "nav view";
-  }
-  .hdr {
-    grid-area: hdr;
-    flex-direction: column; align-items: flex-start; gap: 8px;
-    padding: 18px 16px 14px;
-    border-bottom: 1px solid var(--cf-magenta-line, rgba(255, 43, 184, 0.32));
-    border-right: 1px solid var(--cf-bg-line);
-  }
-  .hdr .spacer { display: none; }
-  .nav {
-    grid-area: nav;
-    flex-direction: column; justify-content: flex-start;
-    border-top: none; border-right: 1px solid var(--cf-bg-line);
-    padding-top: 8px;
-  }
-  /* Row-shaped items with the glyph inline, matching the portal's nav-item,
-     and the active marker moves to the leading edge like the portal's. */
-  .nav button, .nav .navout {
-    /* display:flex is required here, not just the flex-* properties: the base
-       rule leaves these as plain buttons, so alignment and gap are inert. */
-    display: flex;
-    flex: 0 0 auto; flex-direction: row; align-items: center;
-    justify-content: flex-start; gap: 10px;
-    padding: 11px 16px; font-size: 0.72em; text-align: left;
-    border-top: none; border-left: 3px solid transparent;
-  }
-  .nav button .glyph, .nav .navout .glyph {
-    display: inline; font-size: 1.15em; margin-bottom: 0;
-  }
-  .nav button.active { border-top-color: transparent; border-left-color: var(--cf-magenta); }
-  .nav .navout { margin-top: 10px; border-top: 1px solid var(--cf-bg-line); padding-top: 13px; }
-  .view { grid-area: view; padding: 20px 22px 24px; }
-  .view > .card { max-width: 720px; }
+  .view { padding: 20px 24px 28px; }
+  .view > .card, .view > .seg-row, .view > .rowlist,
+  .view > .bulk, .view > .notice { max-width: 640px; }
+  #viewListen { display: grid; grid-template-columns: 1.15fr 1fr; gap: 16px; align-items: start; }
+  #viewListen[hidden] { display: none; }
+  #viewListen > .card, #viewListen > div { max-width: none; margin-bottom: 0; }
   .toast { bottom: 24px; }
 }

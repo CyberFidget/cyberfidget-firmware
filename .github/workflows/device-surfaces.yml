@@ -1,0 +1,80 @@
+# Device-surfaces drift guard.
+#
+# The device serves two web documents - the portal at / and the phone companion
+# at /web/ - and the user is meant to experience one app spanning both. That only
+# stays true if the navigation, the audio player, the gate panel and the download
+# flow are literally the same code on each side. They have one source in
+# portal-companion/src/shared/, generated into both.
+#
+# The failure this exists to catch is quiet: editing the portal's copy of the tab
+# bar looks completely fine in the portal, and the seam only reopens for someone
+# crossing between the two documents - which is the one thing nobody does while
+# working on a single surface. Local `npm run verify` catches it; this makes sure
+# nobody has to remember.
+#
+# Deliberately NOT part of build-release.yml. The companion steps there are
+# continue-on-error on purpose, so a dead npm link can never block an urgent
+# firmware release. A gate and a release build want opposite failure behaviour,
+# so they get separate workflows.
+
+name: Device surfaces drift
+
+on:
+  pull_request:
+    paths:
+      - 'portal-companion/**'
+      - 'lib/WebPortalApp/portal_page.h'
+      - 'lib/WebPortalApp/companion_shell_gz.h'
+      - '.github/workflows/device-surfaces.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - 'portal-companion/**'
+      - 'lib/WebPortalApp/portal_page.h'
+      - 'lib/WebPortalApp/companion_shell_gz.h'
+      - '.github/workflows/device-surfaces.yml'
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: portal-companion/package-lock.json
+
+      - name: Install
+        working-directory: portal-companion
+        run: npm ci
+
+      # Regenerates the shared kit into both documents and rebuilds the pack.
+      - name: Build
+        working-directory: portal-companion
+        run: npm run build
+
+      # Compares what was just generated against what is committed: the kit in
+      # both documents, the embedded shell, and the colour roles across all three
+      # spellings.
+      - name: Verify
+        working-directory: portal-companion
+        run: npm run verify
+
+      # The checks above compare generated-to-generated. This one catches the
+      # other half: someone edited src/shared/ (or the companion source) and
+      # committed without regenerating, so the tracked headers are stale.
+      - name: Tracked generated files are up to date
+        run: |
+          if ! git diff --exit-code --stat -- \
+              lib/WebPortalApp/portal_page.h \
+              lib/WebPortalApp/companion_shell_gz.h; then
+            echo "::error::A tracked generated file is stale. Run: cd portal-companion && npm run build"
+            git --no-pager diff -- lib/WebPortalApp/portal_page.h \
+                                   lib/WebPortalApp/companion_shell_gz.h | head -80
+            exit 1
+          fi

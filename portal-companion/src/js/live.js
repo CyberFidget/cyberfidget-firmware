@@ -18,6 +18,7 @@ import { localNaiveEpochMs, todayISO } from './ui.js';
 import * as engine from './engine.js';
 import * as keepawake from './keepawake.js';
 import { transcriptPut } from './db.js';
+import { hasPack, renderGate, navigate } from './app.js';
 
 const SAMPLE_RATE = 16000;
 
@@ -67,7 +68,8 @@ function deviceHost() {
 
 function setSessionChip(text, ok = true) {
   const chip = $('chipSession');
-  chip.className = 'chip ' + (ok ? 'on' : 'warn');
+  chip.className = 'k-chip ' + (ok ? 'gn' : 'yl');
+  chip.firstChild.className = 'k-dot' + (ok ? '' : ' off');
   $('chipSessionText').textContent = text;
 }
 
@@ -376,7 +378,11 @@ export async function startSession() {
     if (!wantSession) return;
     const s = Math.floor((Date.now() - sessionStartMs) / 1000);
     if (sock && sock.readyState === 1) {
-      setSessionChip('live ' + Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'));
+      const clock = Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+      setSessionChip('listening');
+      // The running time belongs in the page masthead's status line, which is
+      // where the artboard puts it and where the portal puts its own eyebrow.
+      $('pageStatus').textContent = 'session ' + clock;
     }
   }, 1000);
 
@@ -398,10 +404,11 @@ export function endSession(message, kind) {
     audioCtx = null;
   }
   hearing = false;
-  $('btnHear').textContent = '\u{1F508} Hear it';
+  setHearLabel();
   $('btnCaptions').textContent = 'Start captions';
   $('chipCaptions').hidden = true;
 
+  $('pageStatus').textContent = '';
   if (message) {
     $('sessionCard').hidden = false;
     $('listenIntro').hidden = false;
@@ -423,8 +430,8 @@ async function toggleCaptions() {
   }
   const modelId = await engine.pickedModel();
   if (!(await engine.isDownloaded(modelId))) {
-    toast('Captions need the one-time transcription download - see Setup.');
-    document.querySelector('.nav button[data-view="Setup"]').click();
+    toast('Captions need the one-time transcription download.');
+    navigate('settings/transcription');
     return;
   }
   $('btnCaptions').disabled = true;
@@ -444,6 +451,7 @@ async function toggleCaptions() {
     return;
   }
   captionsOn = true;
+  $('captionCard').hidden = false;
   capChunks = [];
   capSamples = 0;
   lastInferSamples = 0;
@@ -451,9 +459,8 @@ async function toggleCaptions() {
   liveSource = 'live ' + new Date().toTimeString().slice(0, 5);
   $('btnCaptions').disabled = false;
   $('btnCaptions').textContent = 'Stop captions';
-  $('captionCard').hidden = false;
   $('chipCaptions').hidden = false;
-  $('chipCaptions').className = 'chip on';
+  $('chipCaptions').className = 'k-chip cy';
   // Show the ACTUAL backend the worker built on (GPU vs CPU) - if a phone
   // with WebGPU silently fell back to CPU, that explains slow captions.
   const dev = engine.backend();
@@ -463,11 +470,21 @@ async function toggleCaptions() {
   toast('Speak near the device - captions may lag a few seconds.');
 }
 
+// The speaker glyph is CSS geometry, not an emoji: emoji render in fixed
+// multi-colour and cannot be tinted to match the button they sit in.
+function setHearLabel() {
+  const b = $('btnHear');
+  b.innerHTML = '';
+  b.appendChild(Object.assign(document.createElement('span'),
+    { className: hearing ? 'k-pause sm' : 'k-spk' }));
+  b.append(hearing ? ' Mute' : ' Hear it');
+}
+
 function toggleHear() {
   hearing = !hearing;
   if (hearing && audioCtx && audioCtx.state === 'suspended') audioCtx.resume();
   playHead = 0;
-  $('btnHear').textContent = hearing ? '\u{1F507} Mute' : '\u{1F508} Hear it';
+  setHearLabel();
   if (hearing) toast('Use earbuds or another room - the device can hear your speakers too.');
 }
 
@@ -476,4 +493,17 @@ export function wire() {
   $('btnStopSession').onclick = () => endSession(null);
   $('btnHear').onclick = toggleHear;
   $('btnCaptions').onclick = toggleCaptions;
+  setHearLabel();
+
+  // Captions need the transcription pack; live listening does not. When the pack
+  // is missing the button is simply absent and one gate sits where the captions
+  // card would be - the session controls are untouched, because the session
+  // itself works perfectly without it.
+  if (!hasPack()) {
+    $('btnCaptions').hidden = true;
+    renderGate('listenGate',
+      'Captions need the transcription pack.',
+      'Live listening works without it. Add the pack to the memory card and ' +
+      "captions appear here and on your Fidget's screen.");
+  }
 }

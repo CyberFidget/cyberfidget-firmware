@@ -56,9 +56,15 @@ async function extractByteArray(headerPath) {
 }
 
 // ── Fixtures. Field names mirror what the portal's JS reads. ────────────
+// `captions` says whether the transcription pack is on the card. Start the
+// server with NOPACK=1 to flip it false and render the gated state from the
+// `State _ No transcription pack` artboard without hunting for a bare card.
+const NOPACK = process.env.NOPACK === '1';
+
 const FIXTURES = {
   '/api/status': {
     files: 12, usedBytes: 268435456, totalBytes: 31914983424, clients: 1,
+    version: '1.3.3+5f175fb', captions: !NOPACK, sd: true,
   },
   '/api/files': [
     { name: 'Albums', type: 'dir', children: [
@@ -115,6 +121,17 @@ const BROWSE = { sd: true, entries: [
   { name: 'settings.json', type: 'file', size: 1240 },
 ] };
 
+// The companion's Notes view reads this folder to learn which recordings already
+// have a transcript sidecar beside them - that is what decides whether a row
+// shows the TRANSCRIBE action or the green TRANSCRIPT chip, so the fixture needs
+// both kinds present to exercise the two states.
+const BROWSE_RECORDINGS = { sd: true, entries: [
+  { name: '2026-08-04_0912.wav', type: 'file', size: 1352000, mtime: 1786000364 },
+  { name: '2026-08-03_1744.wav', type: 'file', size: 258000, mtime: 1785908643 },
+  { name: '2026-08-03_1744.txt', type: 'file', size: 412, mtime: 1785908700 },
+  { name: '2026-08-01_2231.wav', type: 'file', size: 3894000, mtime: 1785774660 },
+] };
+
 const json = (res, body) => {
   res.writeHead(200, { 'Content-Type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -169,7 +186,18 @@ createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
     return res.end(fallback);
   }
-  if (path === '/api/browse') return json(res, BROWSE);
+  if (path === '/api/browse') {
+    return json(res, url.searchParams.get('path') === '/recordings'
+      ? BROWSE_RECORDINGS : BROWSE);
+  }
+  // A voice note's transcript sidecar, so an expanded Notes row has something
+  // to put on its phosphor panel.
+  if (path.startsWith('/recordings/') && path.endsWith('.txt')) {
+    res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8' });
+    return res.end('what if the six keys worked like a chorded keyboard - hold ' +
+                   'two for symbols. check if the debounce window is long enough ' +
+                   'for real chords.\n');
+  }
   if (path in FIXTURES) return json(res, FIXTURES[path]);
   // Writes and media streams are out of scope for a rendering harness.
   if (path.startsWith('/api/')) return json(res, { ok: true });
@@ -183,5 +211,7 @@ createServer((req, res) => {
   console.log(`[portal-preview] shell:    http://localhost:${PORT}/web/  ` +
               `(gzipped from flash, ${shellGz.length} B)`);
   console.log(`[portal-preview] fallback: http://localhost:${PORT}/fallback  (retired page)`);
+  console.log(`[portal-preview] transcription pack: ${NOPACK ? 'ABSENT (gated states)' : 'present'}` +
+              `${NOPACK ? '' : '  - set NOPACK=1 to preview the gates'}`);
   console.log(`[portal-preview] fixtures only - no device, no writes`);
 });
