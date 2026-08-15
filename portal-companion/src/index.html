@@ -17,6 +17,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
 <meta name="theme-color" content="#0e0820">
+<meta name="cf-shell" content="0.0.0+dev">
 <title>Cyber Fidget</title>
 <link rel="stylesheet" href="css/kit.gen.css">
 <link rel="stylesheet" href="css/tokens.css">
@@ -35,6 +36,7 @@
     <h1 id="pageTitle">Live listening</h1>
     <div class="status" id="pageStatus"></div>
   </div>
+  <div id="shellGate"></div>
 
 <!-- ── LISTEN ── -->
 <main class="view" id="viewListen">
@@ -219,6 +221,7 @@
       <div class="kv"><span class="k">Device</span><span class="v" id="aboutDevice">-</span></div>
       <div class="kv"><span class="k">Your Fidget</span><span class="v" id="aboutFirmware">-</span></div>
       <div class="kv"><span class="k">Companion</span><span class="v" id="aboutVersion">-</span></div>
+      <div class="kv" id="aboutCardShellRow" hidden><span class="k">On your card</span><span class="v" id="aboutCardShell">-</span></div>
     </div>
   </div>
 </main>

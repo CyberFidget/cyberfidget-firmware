@@ -26,6 +26,7 @@ import { build } from 'esbuild';
 import { cpSync, mkdirSync, rmSync, existsSync, readdirSync, copyFileSync, writeFileSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { gzipSync, gunzipSync } from 'node:zlib';
 import { lf } from './sync_chrome.mjs';
 
@@ -65,7 +66,7 @@ const readText = (path) => lf(readFileSync(path, 'utf8'));
 
 // Emit a byte array as a C header. Not a string literal: the gzip stream
 // contains NULs, so it has to be uint8_t[] with an explicit sizeof().
-function writeByteHeader(path, symbol, bytes, note) {
+function writeByteHeader(path, symbol, bytes, note, preArrayLines = []) {
   const lines = [];
   for (let i = 0; i < bytes.length; i += 16) {
     lines.push('  ' + [...bytes.subarray(i, i + 16)]
@@ -84,6 +85,7 @@ function writeByteHeader(path, symbol, bytes, note) {
     '// toolchain installed. The cost of that choice is drift, so CI rebuilds\n' +
     '// the pack and fails if this file changes.\n' +
     '\n#pragma once\n\n#include <stdint.h>\n\n' +
+    (preArrayLines.length ? preArrayLines.join('\n') + '\n\n' : '') +
     `const uint8_t ${symbol}[] PROGMEM = {\n${lines.join(',\n')}\n};\n`);
 }
 
@@ -174,6 +176,25 @@ html = html
   .replace(/<script type="module" src="js\/app\.js"><\/script>/,
            () => '<script type="module">\n' + js + '\n</script>');
 
+// Stamp the fully assembled shell. The digest is taken while the source
+// placeholder is still present, immediately before replacing that placeholder.
+const firmwareVersion = readFileSync(join(root, '..', 'version.txt'), 'utf8').trim();
+const shellDigest = createHash('sha256').update(html, 'utf8').digest('hex').slice(0, 8);
+const stamp = `${firmwareVersion}+${shellDigest}`;
+const unstampedHtml = html;
+html = html.replace(/<meta name="cf-shell" content="[^"]*">/,
+                    () => `<meta name="cf-shell" content="${stamp}">`);
+if (html === unstampedHtml) {
+  console.error('[sdpack] FAILED: shell stamp placeholder was not found');
+  process.exit(1);
+}
+
+const stampAt = html.indexOf('<meta name="cf-shell"');
+if (stampAt < 0 || stampAt > 1536) {
+  console.error(`[sdpack] FAILED: shell stamp must appear in the first 1536 bytes (found at ${stampAt})`);
+  process.exit(1);
+}
+
 // Guard against leftover same-origin sub-resource references in the page's
 // HEAD/links only (the bundled JS legitimately contains route strings like
 // "/web/..." - scope the check to <link>/<script src> tags).
@@ -200,10 +221,11 @@ if (!gunzipSync(shellGz).equals(shellRaw)) {
   process.exit(1);
 }
 writeByteHeader(shellHeader, 'COMPANION_SHELL_GZ', shellGz,
-  `Gzipped companion shell (${shellRaw.length} B raw -> ${shellGz.length} B). Served for ` +
-  '/web/index.html when the memory card has no copy of its own.');
+  `Gzipped companion shell ${stamp} (${shellRaw.length} B raw -> ${shellGz.length} B). Served for ` +
+  '/web/index.html when the memory card has no copy or carries an older version.',
+  [`#define COMPANION_SHELL_STAMP "${stamp}"`]);
 console.log(`[sdpack] embedded shell -> ${relative(join(root, '..'), shellHeader)} ` +
-            `(${(shellRaw.length / 1024).toFixed(1)} KB -> ${(shellGz.length / 1024).toFixed(1)} KB gzipped)`);
+            `(${(shellRaw.length / 1024).toFixed(1)} KB -> ${(shellGz.length / 1024).toFixed(1)} KB gzipped, stamp ${stamp})`);
 
 // --- 4c. On-demand files go on the card pre-compressed ---
 // Same header, applied to what stays on the card. The firmware serves a
@@ -264,6 +286,7 @@ console.log(`[sdpack] vendored onnxruntime-web ${ortVersion} (${ortFiles} runtim
 
 writeFileSync(join(out, 'pack-info.json'), JSON.stringify({
   built: new Date().toISOString(),
+  shell: stamp,
   transformers: tfVersion,
   onnxruntimeWeb: ortVersion,
 }, null, 2));

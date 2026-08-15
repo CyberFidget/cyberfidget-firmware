@@ -15,6 +15,7 @@
 #include "ButtonManager.h"
 #include "CaptionWrap.h"
 #include "LiveLinkProtocol.h"
+#include "ShellStamp.h"
 
 class WebPortalApp {
 public:
@@ -47,6 +48,9 @@ private:
     // SD state
     bool sdReady = false;
     int fileCount = 0;
+    bool cardShellPresent = false;              // card has a plain or compressed index copy
+    bool cardShellDeclined = false;             // ...and it predates the built-in copy
+    char cardShellStamp[ShellStamp::kMaxShellStampLen] = {0};  // its claim for the notice
 
     // WiFi STA state
     bool staConnected = false;

@@ -60,11 +60,21 @@ async function extractByteArray(headerPath) {
 // server with NOPACK=1 to flip it false and render the gated state from the
 // `State _ No transcription pack` artboard without hunting for a bare card.
 const NOPACK = process.env.NOPACK === '1';
+// Same trick for the other notice: STALECARD=1 reports a card copy of the
+// companion page that predates the built-in one, so the "showing its own
+// built-in companion" panel can be looked at without writing an old pack to
+// a real card.
+const STALECARD = process.env.STALECARD === '1';
 
 const FIXTURES = {
   '/api/status': {
     files: 12, usedBytes: 268435456, totalBytes: 31914983424, clients: 1,
     version: '1.3.3+5f175fb', captions: !NOPACK, sd: true,
+    shell: {
+      source: STALECARD ? 'flash' : 'card',
+      cardStamp: STALECARD ? '1.3.2+0ldca4d0' : '',
+      cardOlder: STALECARD,
+    },
   },
   '/api/files': [
     { name: 'Albums', type: 'dir', children: [

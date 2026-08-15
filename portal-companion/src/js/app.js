@@ -18,8 +18,6 @@ import * as engine from './engine.js';
 import * as providers from './providers.js';
 import * as device from './device.js';
 
-export const COMPANION_VERSION = '0.1.0';
-
 // ── Routing ──
 //
 // Routes are `#<destination>` or `#<destination>/<sub>`. Two of them nest:
@@ -121,16 +119,17 @@ export function hasPack() { return packPresent; }
 
 // One gate treatment, wherever something needs a part that is not installed.
 // Yellow is notice, never error: the device is working exactly as shipped.
-export function renderGate(containerId, lead, body) {
+export function renderGate(containerId, lead, body, show = !packPresent,
+                           action = 'Set it up >', href = '#settings/transcription') {
   const host = $(containerId);
   if (!host) return;
   host.innerHTML = '';
-  if (packPresent) return;
+  if (!show) return;
   host.appendChild(CFK.gate({
     lead,
     body,
-    action: 'Set it up >',
-    href: '#settings/transcription',
+    action,
+    href,
   }));
 }
 
@@ -139,6 +138,17 @@ async function refreshStatus() {
     const st = await device.getStatus();
     packPresent = st.captions !== false;
     $('aboutFirmware').textContent = st.version || '-';
+    const cardOlder = st.shell?.cardOlder === true;
+    $('aboutCardShellRow').hidden = !cardOlder;
+    $('aboutCardShell').textContent = st.shell?.cardStamp || '-';
+    renderGate(
+      'shellGate',
+      'Your Fidget is showing its own built-in companion.',
+      "The companion files on your memory card are older than the ones built into your Fidget, so it is showing the newer built-in copy. To use the card's copy instead, put a newer set of files on it.",
+      cardOlder,
+      'See versions >',
+      '#settings/data',
+    );
     applyConn({ version: st.version });
   } catch {
     // Unreachable device is the connection chips' story, not a gate's: keep the
@@ -189,7 +199,8 @@ async function refreshSetup() {
 }
 
 function refreshAbout() {
-  $('aboutVersion').textContent = COMPANION_VERSION;
+  $('aboutVersion').textContent =
+    document.querySelector('meta[name="cf-shell"]')?.content || '-';
 }
 
 function refreshProviderFields() {

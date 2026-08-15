@@ -403,9 +403,47 @@ void WebPortalApp::begin() {
     lastMdnsAttempt = 0;
     exitConfirmPending = false;
     teardownDone = false;
+    cardShellPresent = false;
+    cardShellDeclined = false;
+    cardShellStamp[0] = '\0';
 
     // Init SD
     initSD();
+
+    // Decide which index to serve once, on the loop task, before routes start.
+    // Request handlers consume only these cached values and never read the card.
+    if (sdReady) {
+        File shell = SD.open("/web/index.html");
+        cardShellPresent = shell && !shell.isDirectory();
+        if (cardShellPresent) {
+            char head[2048];
+            const size_t headLen = shell.read(
+                reinterpret_cast<uint8_t*>(head), sizeof(head));
+            ShellStamp::findShellStamp(head, headLen, cardShellStamp,
+                                       sizeof(cardShellStamp));
+        }
+        if (shell) shell.close();
+
+        // A compressed-only shell has no bounded plain-text head to inspect.
+        // Treat its absent stamp like any pre-stamp card copy so branch 2
+        // cannot bypass the same decision applied to the plain file.
+        //
+        // Whoever ships a pack that compresses the shell should read this
+        // first: it declines that copy unconditionally, and the notice then
+        // tells the user their card is older when all we actually know is
+        // that we could not read its version. The pack builder writes the
+        // shell uncompressed today, which is what keeps that honest. Change
+        // that and this path has to inflate the first block instead.
+        if (!cardShellPresent) {
+            File compressedShell = SD.open("/web/index.html.gz");
+            cardShellPresent = compressedShell && !compressedShell.isDirectory();
+            if (compressedShell) compressedShell.close();
+        }
+        if (cardShellPresent) {
+            cardShellDeclined = ShellStamp::cardShellIsOlder(
+                cardShellStamp, COMPANION_SHELL_STAMP);
+        }
+    }
 
     // Count files
     fileCount = 0;
@@ -962,7 +1000,7 @@ void WebPortalApp::setupRoutes() {
                 ? "no-cache"
                 : "public, max-age=31536000, immutable";
 
-            if (sdReady) {
+            if (sdReady && !(cardShellDeclined && path == "/web/index.html")) {
                 // 1. Exact file on the card.
                 File f = SD.open(path);
                 bool isFile = f && !f.isDirectory();
@@ -997,9 +1035,9 @@ void WebPortalApp::setupRoutes() {
             }
 
             // 3. The shell is embedded in the firmware image, gzipped, so live
-            //    listening works with an empty or absent memory card. A copy on
-            //    the card still wins (branch 1) so a newer pack can be dropped
-            //    in without reflashing.
+            //    listening works with an empty or absent memory card. A card
+            //    copy wins unless its numeric version predates this built-in
+            //    one, preserving the newer-pack drop-in path.
             if (path == "/web/index.html") {
                 AsyncWebServerResponse* resp = req->beginResponse(
                     200, "text/html", COMPANION_SHELL_GZ, sizeof(COMPANION_SHELL_GZ));
@@ -1450,6 +1488,12 @@ void WebPortalApp::handleStatus(AsyncWebServerRequest* req) {
     // behind the same sdReady guard as the sizes above.
     bool captions = sdReady && SD.exists("/web/vendor");
     json += ",\"captions\":" + String(captions ? "true" : "false");
+    // Shell identity was read and character-validated before the server began;
+    // reporting it here adds no card work and requires no JSON escaping.
+    const bool cardWins = cardShellPresent && !cardShellDeclined;
+    json += ",\"shell\":{\"source\":\"" + String(cardWins ? "card" : "flash") + "\"";
+    json += ",\"cardStamp\":\"" + String(cardShellStamp) + "\"";
+    json += ",\"cardOlder\":" + String(cardShellDeclined ? "true" : "false") + "}";
     json += "}";
     req->send(200, "application/json", json);
 }
