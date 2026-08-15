@@ -36,11 +36,22 @@ const out = join(root, 'dist', 'web');
 // with no memory card at all. Written into lib/ next to the other page headers.
 const shellHeader = join(root, '..', 'lib', 'WebPortalApp', 'companion_shell_gz.h');
 
-// Node's gzip writes MTIME as 0 and a fixed OS byte, so the same input always
-// produces the same bytes. That is what lets the generated header be a tracked
-// file that does not churn on every build (and lets CI detect drift with a
-// plain `git diff --exit-code` on it).
-const gz = (buf) => gzipSync(buf, { level: 9 });
+// Node's gzip writes MTIME as 0, but the OS byte (RFC 1952 header offset 9) is
+// NOT fixed - zlib stamps the platform it ran on, 0x0a from Windows and 0x03
+// from the Linux CI runner. Identical input, one byte of difference, and a
+// byte-for-byte drift gate that no amount of regenerating can satisfy. Stamp
+// 0xff ("unknown") instead: the field is advisory, every decompressor ignores
+// it, and the whole point of a tracked generated artifact is that it describes
+// its source and not the machine that happened to build it.
+//
+// This is what lets the generated header be a tracked file that does not churn
+// on every build (and lets CI detect drift with a plain `git diff --exit-code`).
+const GZIP_OS_UNKNOWN = 0xff;
+const gz = (buf) => {
+  const out = gzipSync(buf, { level: 9 });
+  out[9] = GZIP_OS_UNKNOWN;
+  return out;
+};
 
 // Every text input to the shell goes through here. The sources are checked out
 // CRLF on Windows (core.autocrlf=true) and LF on the Linux CI runner, so
