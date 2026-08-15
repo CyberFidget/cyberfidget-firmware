@@ -27,6 +27,7 @@ import { cpSync, mkdirSync, rmSync, existsSync, readdirSync, copyFileSync, write
 import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { gzipSync, gunzipSync } from 'node:zlib';
+import { lf } from './sync_chrome.mjs';
 
 const root = dirname(fileURLToPath(import.meta.url));
 const src = join(root, 'src');
@@ -40,6 +41,16 @@ const shellHeader = join(root, '..', 'lib', 'WebPortalApp', 'companion_shell_gz.
 // file that does not churn on every build (and lets CI detect drift with a
 // plain `git diff --exit-code` on it).
 const gz = (buf) => gzipSync(buf, { level: 9 });
+
+// Every text input to the shell goes through here. The sources are checked out
+// CRLF on Windows (core.autocrlf=true) and LF on the Linux CI runner, so
+// reading them raw makes the inlined HTML - and therefore the gzip stream and
+// every byte of the generated header - differ by platform, and the drift gate
+// can never pass from a Windows checkout. The bundled JS is immune (esbuild
+// minifies the newlines away) and the shared kit is immune (sync_chrome.mjs
+// normalises the same way, which is why portal_page.h never drifted); this is
+// the half that was missing.
+const readText = (path) => lf(readFileSync(path, 'utf8'));
 
 // Emit a byte array as a C header. Not a string literal: the gzip stream
 // contains NULs, so it has to be uint8_t[] with an explicit sizeof().
@@ -115,23 +126,25 @@ const workerJs = workerBundle.outputFiles[0].text;
 // PROGMEM literal too, so the two documents carry the same navigation, player,
 // gate and download code. Deliberately NOT part of the module bundle: the portal
 // has a plain <script> and the kit has to be valid in both.
-const kitJs = readFileSync(join(src, 'js', 'kit.gen.js'), 'utf8');
+const kitJs = readText(join(src, 'js', 'kit.gen.js'));
 
 // --- 2. Inline CSS ---
 // Kit first so the document's own components can override it, not the reverse.
-const css = readFileSync(join(src, 'css', 'kit.gen.css'), 'utf8') + '\n' +
-            readFileSync(join(src, 'css', 'tokens.css'), 'utf8') + '\n' +
-            readFileSync(join(src, 'css', 'app.css'), 'utf8');
+const css = readText(join(src, 'css', 'kit.gen.css')) + '\n' +
+            readText(join(src, 'css', 'tokens.css')) + '\n' +
+            readText(join(src, 'css', 'app.css'));
 
 // --- 3. Inline the icon as a data URI (no separate favicon request) ---
-const iconSvg = readFileSync(join(src, 'icons', 'icon.svg'), 'utf8');
+// Normalised before encoding: encodeURIComponent turns a stray CR into %0D,
+// so a CRLF checkout would cost three bytes a line instead of one.
+const iconSvg = readText(join(src, 'icons', 'icon.svg'));
 const iconData = 'data:image/svg+xml,' + encodeURIComponent(iconSvg);
 
 // --- 4. Stitch one self-contained index.html ---
 // Function-form replacements: the inlined CSS/JS contain `$` (the DOM helper)
 // which a string replacement would interpret as $&/$1/... - the () => form
 // inserts the value literally.
-let html = readFileSync(join(src, 'index.html'), 'utf8');
+let html = readText(join(src, 'index.html'));
 html = html
   // first stylesheet link -> the whole inline <style>; the rest -> removed
   .replace(/<link rel="stylesheet" href="css\/kit\.gen\.css">/, () => '<style>\n' + css + '\n</style>')
