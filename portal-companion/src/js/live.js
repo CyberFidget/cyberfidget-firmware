@@ -51,6 +51,7 @@ let capChunks = [];            // Float32Array chunks since the last commit
 let capSamples = 0;
 let inferBusy = false;
 let lastInferSamples = 0;
+let discardedSinceInferStart = 0;
 let liveLineStart = '';        // committed text shown in the feed
 let lastVoiceMs = 0;
 let backlogTimer = 0;
@@ -331,6 +332,7 @@ async function inferTick() {
 
   inferBusy = true;
   const samplesAtStart = capSamples;
+  discardedSinceInferStart = 0;
   lastInferSamples = capSamples;
   const pendingAtStart = pendingSeconds();
   const forceCommit = pendingAtStart >= COMMIT_MAX_S;
@@ -363,7 +365,7 @@ async function inferTick() {
         addLatencyBadge(badgeText);
         transcriptPut(todayISO(), liveSource, liveLineStart).catch(() => {});
       }
-      dropPending(samplesAtStart);   // keep audio that arrived mid-inference
+      dropPending(Math.max(0, samplesAtStart - discardedSinceInferStart));
       lastInferSamples = Math.max(0, lastInferSamples - samplesAtStart);
     } else if (text) {
       sendCaption(text, false);
@@ -409,8 +411,10 @@ function handleBinary(buf) {
       capChunks.shift();
       discardedAudioCount++;
       discardedAudioSeconds += discardedSamples / SAMPLE_RATE;
+      if (inferBusy) discardedSinceInferStart += discardedSamples;
       discarded = true;
     }
+    if (discarded) lastInferSamples = Math.min(lastInferSamples, capSamples);
     if (discarded && !discardEpisodeOpen) {
       discardEpisodeOpen = true;
       discardEpisodes++;
