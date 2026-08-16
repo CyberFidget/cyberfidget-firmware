@@ -52,6 +52,13 @@ let capSamples = 0;
 let inferBusy = false;
 let lastInferSamples = 0;
 let liveLineStart = '';        // committed text shown in the feed
+let lastVoiceMs = 0;
+let backlogTimer = 0;
+let maxBacklogSeconds = 0;
+let windowsTranscribed = 0;
+let inferenceTimesMs = [];
+let discardedAudioCount = 0;
+let discardedAudioSeconds = 0;
 const MAX_WINDOW_S = 10;       // inference window cap
 const COMMIT_MAX_S = 8;        // force a final by this much pending audio
 const MIN_COMMIT_S = 2;
@@ -78,6 +85,7 @@ function setSessionChip(text, ok = true) {
 function pushWavePeaks(f32) {
   // One peak per 10ms of audio keeps the scroll speed font-independent.
   const step = SAMPLE_RATE / 100;
+  let framePeak = 0;
   for (let i = 0; i + step <= f32.length; i += step) {
     let peak = 0;
     for (let j = i; j < i + step; j++) {
@@ -86,7 +94,9 @@ function pushWavePeaks(f32) {
     }
     wavePeaks[waveWrite % WAVE_POINTS] = peak;
     waveWrite++;
+    if (peak > framePeak) framePeak = peak;
   }
+  return framePeak;
 }
 
 function drawWave() {
@@ -158,9 +168,16 @@ function playFrame(f32) {
 
 function feedAppend(finalText, partialText) {
   const feed = $('captionFeed');
-  feed.textContent = '';
-  if (liveLineStart) {
-    feed.append(liveLineStart.trim() + ' ');
+  const oldPartial = feed.querySelector('.partial');
+  if (oldPartial) oldPartial.remove();
+  if (finalText) {
+    const line = document.createElement('div');
+    line.className = 'caption-line';
+    const text = document.createElement('span');
+    text.className = 'caption-line-text';
+    text.textContent = finalText.trim();
+    line.appendChild(text);
+    feed.appendChild(line);
   }
   if (partialText) {
     const span = document.createElement('span');
@@ -169,6 +186,21 @@ function feedAppend(finalText, partialText) {
     feed.appendChild(span);
   }
   feed.scrollTop = feed.scrollHeight;
+}
+
+function resetFeed() {
+  $('captionFeed').textContent = '';
+}
+
+function addLatencyBadge(badgeText) {
+  if (!badgeText) return;
+  const lines = $('captionFeed').querySelectorAll('.caption-line');
+  const line = lines[lines.length - 1];
+  if (!line) return;
+  const badge = document.createElement('span');
+  badge.className = 'caption-latency';
+  badge.textContent = badgeText;
+  line.appendChild(badge);
 }
 
 function sendCaption(text, isFinal) {
@@ -181,6 +213,47 @@ function sendCaption(text, isFinal) {
 
 function pendingSeconds() {
   return capSamples / SAMPLE_RATE;
+}
+
+function refreshBehindIndicator() {
+  const behind = $('captionBehind');
+  const seconds = pendingSeconds();
+  behind.hidden = !captionsOn || seconds <= 2;
+  if (!behind.hidden) behind.textContent = 'captions running ' + seconds.toFixed(1) + ' s behind';
+}
+
+function resetCaptionMetrics() {
+  lastVoiceMs = 0;
+  maxBacklogSeconds = 0;
+  windowsTranscribed = 0;
+  inferenceTimesMs = [];
+  discardedAudioCount = 0;
+  discardedAudioSeconds = 0;
+  clearInterval(backlogTimer);
+  backlogTimer = setInterval(refreshBehindIndicator, 1000);
+  $('captionBehind').hidden = true;
+}
+
+function emitCaptionSummary() {
+  const sorted = inferenceTimesMs.slice().sort((a, b) => a - b);
+  let medianMs = 0;
+  if (sorted.length) {
+    const mid = Math.floor(sorted.length / 2);
+    medianMs = sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+  }
+  console.info('Caption session summary: max backlog ' + maxBacklogSeconds.toFixed(1) +
+    ' s; windows transcribed ' + windowsTranscribed + '; median per-window inference ' +
+    Math.round(medianMs) + ' ms; discarded ' + discardedAudioCount + ' audio chunks totaling ' +
+    discardedAudioSeconds.toFixed(1) + ' s.');
+}
+
+function stopCaptionRun() {
+  if (!captionsOn) return;
+  captionsOn = false;
+  clearInterval(backlogTimer);
+  backlogTimer = 0;
+  $('captionBehind').hidden = true;
+  emitCaptionSummary();
 }
 
 function tailIsSilent() {
@@ -243,24 +316,43 @@ async function inferTick() {
   inferBusy = true;
   const samplesAtStart = capSamples;
   lastInferSamples = capSamples;
-  const commitAfter = pendingSeconds() >= COMMIT_MAX_S ||
-    (pendingSeconds() >= MIN_COMMIT_S && tailIsSilent());
+  const pendingAtStart = pendingSeconds();
+  const forceCommit = pendingAtStart >= COMMIT_MAX_S;
+  const tailSilent = pendingAtStart >= MIN_COMMIT_S && tailIsSilent();
+  const commitAfter = forceCommit || tailSilent;
   const window = takeWindow();
   try {
-    const text = await engine.transcribe(window, liveModelId);
+    const inferenceStart = performance.now();
+    let text;
+    try {
+      text = await engine.transcribe(window, liveModelId);
+    } finally {
+      windowsTranscribed++;
+      inferenceTimesMs.push(performance.now() - inferenceStart);
+    }
     if (!captionsOn) return;
     if (commitAfter) {
       if (text) {
         sendCaption(text, true);
         liveLineStart += (liveLineStart ? ' ' : '') + text;
-        feedAppend(liveLineStart, '');
+        feedAppend(text, '');
+        let badgeText = '';
+        if (tailSilent && lastVoiceMs > 0) {
+          const latency = performance.now() - lastVoiceMs;
+          if (latency > 0) badgeText = Math.round(latency) + ' ms';
+        } else if (forceCommit) {
+          badgeText = 'mid-speech';
+        }
+        addLatencyBadge(badgeText);
         transcriptPut(todayISO(), liveSource, liveLineStart).catch(() => {});
       }
       dropPending(samplesAtStart);   // keep audio that arrived mid-inference
       lastInferSamples = Math.max(0, lastInferSamples - samplesAtStart);
     } else if (text) {
       sendCaption(text, false);
-      feedAppend(liveLineStart, text);
+      // Committed lines are already in the feed as elements - render only
+      // the live partial, or every partial duplicates the whole transcript.
+      feedAppend('', text);
     }
   } catch (e) {
     notice('sessionNotice', 'Caption trouble: ' + (e && e.message ? e.message : e), 'err');
@@ -281,18 +373,23 @@ function handleBinary(buf) {
   const i16 = new Int16Array(buf);
   const f32 = new Float32Array(i16.length);
   for (let i = 0; i < i16.length; i++) f32[i] = i16[i] / 32768;
-  pushWavePeaks(f32);
+  const framePeak = pushWavePeaks(f32);
   playFrame(f32);
   if (captionsOn) {
+    if (framePeak > SILENCE_RMS) lastVoiceMs = performance.now();
     capChunks.push(f32);
     capSamples += f32.length;
+    maxBacklogSeconds = Math.max(maxBacklogSeconds, pendingSeconds());
     // Bound memory + lag if inference can't keep up with real time: drop the
     // oldest pending audio past MAX_PENDING_S - skipping a moment of speech
     // beats captions falling minutes behind.
     const cap = MAX_PENDING_S * SAMPLE_RATE;
     while (capSamples > cap && capChunks.length > 1) {
-      capSamples -= capChunks[0].length;
+      const discardedSamples = capChunks[0].length;
+      capSamples -= discardedSamples;
       capChunks.shift();
+      discardedAudioCount++;
+      discardedAudioSeconds += discardedSamples / SAMPLE_RATE;
     }
     inferTick();
   }
@@ -396,7 +493,7 @@ export async function startSession() {
 
 export function endSession(message, kind) {
   wantSession = false;
-  captionsOn = false;
+  stopCaptionRun();
   if (sock) {
     try { sock.close(); } catch { /* already closed */ }
     sock = null;
@@ -428,7 +525,7 @@ export function endSession(message, kind) {
 
 async function toggleCaptions() {
   if (captionsOn) {
-    captionsOn = false;
+    stopCaptionRun();
     $('btnCaptions').textContent = 'Start captions';
     $('chipCaptions').hidden = true;
     return;
@@ -462,6 +559,7 @@ async function toggleCaptions() {
   capSamples = 0;
   lastInferSamples = 0;
   liveLineStart = '';
+  resetCaptionMetrics();
   liveSource = 'live ' + new Date().toTimeString().slice(0, 5);
   $('btnCaptions').disabled = false;
   $('btnCaptions').textContent = 'Stop captions';
@@ -472,7 +570,7 @@ async function toggleCaptions() {
   const dev = engine.backend();
   $('chipCaptionsText').textContent =
     dev === 'webgpu' ? 'captions - GPU' : dev === 'wasm' ? 'captions - CPU' : 'captions';
-  feedAppend('', '');
+  resetFeed();
   toast('Speak near the device - captions may lag a few seconds.');
 }
 
