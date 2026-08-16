@@ -67,6 +67,9 @@ body::after {
   letter-spacing: 0.06em; text-transform: uppercase; transition: all 0.15s;
 }
 .btn:disabled { opacity: 0.45; cursor: default; }
+/* Same reason as .kv/.entry-card: .btn sets `display`, so a bare [hidden]
+   attribute would lose to it. */
+.btn[hidden] { display: none; }
 .btn-primary {
   background: var(--cf-cyan);
   border-color: var(--cf-cyan); color: var(--cf-bg-deep);
