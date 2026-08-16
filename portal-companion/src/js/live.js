@@ -59,6 +59,8 @@ let windowsTranscribed = 0;
 let inferenceTimesMs = [];
 let discardedAudioCount = 0;
 let discardedAudioSeconds = 0;
+let discardEpisodes = 0;
+let discardEpisodeOpen = false;
 const MAX_WINDOW_S = 10;       // inference window cap
 const COMMIT_MAX_S = 8;        // force a final by this much pending audio
 const MIN_COMMIT_S = 2;
@@ -192,6 +194,18 @@ function resetFeed() {
   $('captionFeed').textContent = '';
 }
 
+function feedAppendDiscard() {
+  const feed = $('captionFeed');
+  const line = document.createElement('div');
+  line.className = 'caption-line caption-discard';
+  const text = document.createElement('span');
+  text.className = 'caption-latency';
+  text.textContent = '[ ... some speech was skipped ... ]';
+  line.appendChild(text);
+  feed.insertBefore(line, feed.querySelector('.partial'));
+  feed.scrollTop = feed.scrollHeight;
+}
+
 function addLatencyBadge(badgeText) {
   if (!badgeText) return;
   const lines = $('captionFeed').querySelectorAll('.caption-line');
@@ -229,6 +243,8 @@ function resetCaptionMetrics() {
   inferenceTimesMs = [];
   discardedAudioCount = 0;
   discardedAudioSeconds = 0;
+  discardEpisodes = 0;
+  discardEpisodeOpen = false;
   clearInterval(backlogTimer);
   backlogTimer = setInterval(refreshBehindIndicator, 1000);
   $('captionBehind').hidden = true;
@@ -244,7 +260,7 @@ function emitCaptionSummary() {
   console.info('Caption session summary: max backlog ' + maxBacklogSeconds.toFixed(1) +
     ' s; windows transcribed ' + windowsTranscribed + '; median per-window inference ' +
     Math.round(medianMs) + ' ms; discarded ' + discardedAudioCount + ' audio chunks totaling ' +
-    discardedAudioSeconds.toFixed(1) + ' s.');
+    discardedAudioSeconds.toFixed(1) + ' s; discard episodes ' + discardEpisodes + '.');
 }
 
 function stopCaptionRun() {
@@ -332,6 +348,7 @@ async function inferTick() {
     }
     if (!captionsOn) return;
     if (commitAfter) {
+      discardEpisodeOpen = false;
       if (text) {
         sendCaption(text, true);
         liveLineStart += (liveLineStart ? ' ' : '') + text;
@@ -352,7 +369,8 @@ async function inferTick() {
       sendCaption(text, false);
       // Committed lines are already in the feed as elements - render only
       // the live partial, or every partial duplicates the whole transcript.
-      feedAppend('', text);
+      const partial = $('captionFeed').querySelector('.partial');
+      if (!partial || partial.textContent !== text.trim()) feedAppend('', text);
     }
   } catch (e) {
     notice('sessionNotice', 'Caption trouble: ' + (e && e.message ? e.message : e), 'err');
@@ -384,12 +402,19 @@ function handleBinary(buf) {
     // oldest pending audio past MAX_PENDING_S - skipping a moment of speech
     // beats captions falling minutes behind.
     const cap = MAX_PENDING_S * SAMPLE_RATE;
+    let discarded = false;
     while (capSamples > cap && capChunks.length > 1) {
       const discardedSamples = capChunks[0].length;
       capSamples -= discardedSamples;
       capChunks.shift();
       discardedAudioCount++;
       discardedAudioSeconds += discardedSamples / SAMPLE_RATE;
+      discarded = true;
+    }
+    if (discarded && !discardEpisodeOpen) {
+      discardEpisodeOpen = true;
+      discardEpisodes++;
+      feedAppendDiscard();
     }
     inferTick();
   }
