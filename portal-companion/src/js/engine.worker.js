@@ -69,7 +69,7 @@ async function buildPipeline(modelId, english, useGpu) {
   });
   activeModel = modelId;
   activeDevice = device;
-  await settingSet('engineReadyFor', modelId);
+  await settingSet('engineReadyFor:' + modelId, true);
 
   // Warm up: the FIRST real inference compiles graph/shaders and is slow. Run
   // one silent second now (under a "warming up" status) so the user's first
@@ -99,14 +99,15 @@ self.onmessage = async (e) => {
     }
     if (msg.type === 'transcribe') {
       const p = await getPipeline(msg.modelId, msg.english, msg.useGpu);
-      // english-only models (e.g. distil-small.en) REJECT `task`/`language`;
+      // English-only models reject `task`/`language`;
       // only multilingual models take them (to force English output).
       const opts = {};
       if (!msg.english) {
         opts.task = 'transcribe';
         opts.language = 'english';
       }
-      if (msg.longForm) {
+      // Only the Whisper-family pipelines support chunked long recordings.
+      if (msg.longForm && !msg.modelId.toLowerCase().includes('moonshine')) {
         opts.chunk_length_s = 30;
         opts.stride_length_s = 5;
       }

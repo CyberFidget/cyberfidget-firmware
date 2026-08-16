@@ -384,7 +384,7 @@ function wavToFloat32_16k(buf) {
 
 async function transcribe(n, btn) {
   const name = base(n.name);
-  const modelId = await engine.pickedModel();
+  const modelId = await engine.pickedModel('notes');
   if (!(await engine.isDownloaded(modelId))) {
     toast('Transcription needs the one-time download.');
     navigate('settings/transcription');
@@ -397,8 +397,8 @@ async function transcribe(n, btn) {
     const bytes = await device.fetchBytes(noteUrl(n.name));
     const audio = wavToFloat32_16k(bytes);
     btn.textContent = 'Working...';
-    await engine.load();
-    const text = (await engine.transcribe(audio)) || '(no speech found)';
+    await engine.load(modelId);
+    const text = (await engine.transcribe(audio, modelId)) || '(no speech found)';
 
     // Keep a copy on the phone, keyed by the note's recording date (today when
     // the note is undated) - this is what the Daily view gathers.

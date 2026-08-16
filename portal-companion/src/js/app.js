@@ -175,23 +175,30 @@ async function refreshConnection() {
 // ── Settings: Transcription segment ──
 
 async function refreshSetup() {
-  const pick = $('modelPick');
-  if (pick.options.length === 0) {
-    for (const m of engine.listModels()) {
+  function populate(pick, slot) {
+    if (pick.options.length !== 0) return;
+    for (const m of engine.listModels().filter((model) => model[slot])) {
       const opt = document.createElement('option');
       opt.value = m.id;
       opt.textContent = m.label;
       pick.appendChild(opt);
     }
   }
-  pick.value = await engine.pickedModel();
-  const has = await engine.isDownloaded(pick.value);
+  const livePick = $('modelPickLive');
+  const notesPick = $('modelPickNotes');
+  populate(livePick, 'live');
+  populate(notesPick, 'notes');
+  livePick.value = await engine.pickedModel('live');
+  notesPick.value = await engine.pickedModel('notes');
+  const liveReady = await engine.isDownloaded(livePick.value);
+  const notesReady = await engine.isDownloaded(notesPick.value);
   const bytes = await engine.downloadedBytes();
-  $('engineStatus').textContent = has
-    ? 'ready (' + fmtBytes(bytes) + ' in your browser)'
-    : 'not downloaded yet';
-  $('btnGetModel').textContent = has ? 'Re-download' : 'Download';
-  $('btnDropModel').hidden = !has;
+  const storage = bytes ? ' (' + fmtBytes(bytes) + ' in your browser)' : '';
+  $('engineStatus').textContent =
+    'Live captions: ' + (liveReady ? 'ready' : 'not downloaded') + '. ' +
+    'Saved notes: ' + (notesReady ? 'ready' : 'not downloaded') + '.' + storage;
+  $('btnGetModel').textContent = liveReady && notesReady ? 'Re-download' : 'Download';
+  $('btnDropModel').hidden = !liveReady && !notesReady;
 
   const prov = providers.getProvider();
   $('provPick').value = prov;
@@ -231,13 +238,22 @@ function refreshProviderFields() {
 }
 
 async function downloadModel() {
-  const id = $('modelPick').value;
-  await engine.pickModel(id);
-  const m = engine.listModels().find((x) => x.id === id);
+  const selections = [
+    { slot: 'live', name: 'live captions', id: $('modelPickLive').value },
+    { slot: 'notes', name: 'saved notes', id: $('modelPickNotes').value },
+  ];
+  await Promise.all(selections.map((x) => engine.pickModel(x.slot, x.id)));
+  const readiness = await Promise.all(selections.map((x) => engine.isDownloaded(x.id)));
+  let pending = selections.filter((x, i) => !readiness[i]);
+  if (pending.length === 0) pending = selections;
+  // The same selected model only needs one pipeline build and one download.
+  const downloads = pending.filter((x, i) => pending.findIndex((y) => y.id === x.id) === i);
 
   $('modelOverlayText').textContent =
-    'The transcription pack is about ' + m.sizeMB + ' MB and downloads once. ' +
-    'Best on WiFi.';
+    pending.map((x) => {
+      const m = engine.listModels().find((model) => model.id === x.id);
+      return 'The ' + x.name + ' pack is about ' + m.sizeMB + ' MB.';
+    }).join(' ') + ' Downloads once and is best on WiFi.';
   const conn = navigator.connection;
   $('modelCellWarn').hidden = !(conn && (conn.type === 'cellular' ||
     /2g|3g/.test(conn.effectiveType || '')));
@@ -248,17 +264,19 @@ async function downloadModel() {
   $('modelBar').hidden = false;
   notice('engineNotice', '');
   try {
-    await engine.load((p) => {
-      if (p.phase === 'preparing') {
-        $('modelFill').style.width = '100%';
-        $('engineStatus').textContent = 'Preparing the model (this can take a moment)...';
-      } else if (p.phase === 'warming') {
-        $('engineStatus').textContent = 'Warming up...';
-      } else {
-        $('modelFill').style.width = p.pct + '%';
-        $('engineStatus').textContent = 'Downloading... ' + p.pct + '%';
-      }
-    });
+    for (const item of downloads) {
+      await engine.load(item.id, (p) => {
+        if (p.phase === 'preparing') {
+          $('modelFill').style.width = '100%';
+          $('engineStatus').textContent = 'Preparing the ' + item.name + ' pack (this can take a moment)...';
+        } else if (p.phase === 'warming') {
+          $('engineStatus').textContent = 'Warming up the ' + item.name + ' pack...';
+        } else {
+          $('modelFill').style.width = p.pct + '%';
+          $('engineStatus').textContent = 'Downloading the ' + item.name + ' pack... ' + p.pct + '%';
+        }
+      });
+    }
     $('modelFill').style.width = '100%';
     toast('Transcription is ready - works offline from now on.');
   } catch (e) {
@@ -328,7 +346,10 @@ async function boot() {
   $('btnSaveProvider').onclick = saveProvider;
   $('btnGetModel').onclick = downloadModel;
   $('btnDropModel').onclick = dropModel;
-  $('modelPick').addEventListener('change', () => engine.pickModel($('modelPick').value).then(refreshSetup));
+  $('modelPickLive').addEventListener('change', () =>
+    engine.pickModel('live', $('modelPickLive').value).then(refreshSetup));
+  $('modelPickNotes').addEventListener('change', () =>
+    engine.pickModel('notes', $('modelPickNotes').value).then(refreshSetup));
 
   window.addEventListener('hashchange', () => go(parseHash(), false));
   go(parseHash(), false);

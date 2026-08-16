@@ -230,6 +230,11 @@ function dropPending(count) {
   }
 }
 
+// Pinned for the whole caption session at toggle time - re-reading the
+// setting mid-session could rebuild (and even download) a different pack
+// without passing the consent gate.
+let liveModelId = null;
+
 async function inferTick() {
   if (!captionsOn || inferBusy) return;
   if (capSamples - lastInferSamples < HOP_S * SAMPLE_RATE) return;
@@ -242,7 +247,7 @@ async function inferTick() {
     (pendingSeconds() >= MIN_COMMIT_S && tailIsSilent());
   const window = takeWindow();
   try {
-    const text = await engine.transcribe(window);
+    const text = await engine.transcribe(window, liveModelId);
     if (!captionsOn) return;
     if (commitAfter) {
       if (text) {
@@ -428,18 +433,19 @@ async function toggleCaptions() {
     $('chipCaptions').hidden = true;
     return;
   }
-  const modelId = await engine.pickedModel();
+  const modelId = await engine.pickedModel('live');
   if (!(await engine.isDownloaded(modelId))) {
     toast('Captions need the one-time transcription download.');
     navigate('settings/transcription');
     return;
   }
+  liveModelId = modelId;
   $('btnCaptions').disabled = true;
   $('btnCaptions').textContent = 'Loading...';
   try {
     // Even with the model cached, starting captions builds the inference
     // session + warms up; surface those phases so the button isn't a mystery.
-    await engine.load((p) => {
+    await engine.load(modelId, (p) => {
       if (p.phase === 'preparing') $('btnCaptions').textContent = 'Preparing...';
       else if (p.phase === 'warming') $('btnCaptions').textContent = 'Warming up...';
       else if (p.pct != null) $('btnCaptions').textContent = 'Loading ' + p.pct + '%';

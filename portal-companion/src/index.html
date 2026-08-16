@@ -162,17 +162,20 @@
   <div id="segPaneTranscription">
     <div class="card">
       <h2>Transcription</h2>
-      <p>Speech is turned into text right here in your browser. That needs a
-      one-time download of the transcription pack; after that it works with no
+      <p>Speech is turned into text right here in your browser. That needs
+      one-time downloads of your chosen transcription packs; after that it works with no
       internet at all.</p>
-      <p class="muted">Captions run on your own processor, so a smaller pack
-      means faster, more responsive live captions. Pick <b>Fastest</b> for live
-      captions; a more accurate pack is better for transcribing saved notes,
-      where speed matters less.</p>
+      <p class="muted">Live captions and saved notes can use different packs.
+      Keep the fastest pack for responsive captions, and choose accuracy or
+      language support separately for saved notes.</p>
       <div class="kv"><span class="k">Status</span><span class="v" id="engineStatus">checking...</span></div>
       <div class="field">
-        <label for="modelPick">Transcription pack</label>
-        <select id="modelPick"></select>
+        <label for="modelPickLive">Live captions pack</label>
+        <select id="modelPickLive"></select>
+      </div>
+      <div class="field">
+        <label for="modelPickNotes">Saved notes pack</label>
+        <select id="modelPickNotes"></select>
       </div>
       <div class="bar" id="modelBar" hidden><div class="fill" id="modelFill"></div></div>
       <div class="notice" id="engineNotice" hidden></div>

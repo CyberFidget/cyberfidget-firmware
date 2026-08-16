@@ -62,6 +62,25 @@ export async function settingSet(key, value) {
   return tx(db, 'settings', 'readwrite', (st) => st.put(value, key));
 }
 
+export async function settingDelete(key) {
+  const db = await open();
+  return tx(db, 'settings', 'readwrite', (st) => st.delete(key));
+}
+
+export async function settingsDeletePrefix(prefix) {
+  const db = await open();
+  return tx(db, 'settings', 'readwrite', (st) => {
+    const req = st.openCursor();
+    req.onsuccess = () => {
+      const cur = req.result;
+      if (!cur) return;
+      if (String(cur.key).startsWith(prefix)) cur.delete();
+      cur.continue();
+    };
+    return req;
+  });
+}
+
 export async function transcriptPut(date, source, text) {
   const db = await open();
   const rec = { id: `${date}|${source}`, date, source, text, when: Date.now() };
