@@ -47,6 +47,7 @@ include_directories(
     ${LIB_DIR}/RGBController
     ${LIB_DIR}/SliderPosition
     ${LIB_DIR}/BatteryManager
+    ${LIB_DIR}/UvloGuard
     ${LIB_DIR}/AppManager
     ${LIB_DIR}/AppDefs
     ${LIB_DIR}/MenuManager

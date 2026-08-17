@@ -6,6 +6,7 @@
 #include "globals.h"
 #include "HAL.h"
 #include "MenuManager.h"
+#include "AudioManager.h"
 
 PowerManager powermanager(HAL::buttonManager());
 
@@ -89,9 +90,9 @@ void PowerManager::onButtonBackPressed(const ButtonEvent& event)
     }
 }
 
-void PowerManager::deepSleep() {
+void PowerManager::deepSleep(bool force) {
     // Go to deep sleep
-    if(preventSleepWhileCharging){
+    if (!force && preventSleepWhileCharging) {
         if(batteryChangeRate < sleepChargingChangeThreshold){ // If discharging greater than 10% per hour, shut down
             instance->buttonManager.saveButtonCounters();
 
@@ -116,6 +117,26 @@ void PowerManager::deepSleep() {
             delay(3000);
             HAL::enterDeepSleep();
         }
+}
+
+void PowerManager::shutdownForEmptyBattery() {
+    buttonManager.saveButtonCounters();
+
+    display.clear();
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.setFont(ArialMT_Plain_16);
+    display.drawString(64, 10, "Battery empty");
+    display.setFont(ArialMT_Plain_10);
+    display.drawString(64, 38, "Recharge me!");
+    display.display();
+
+    HAL::setRgbLedsOff();
+    HAL::showRgbLeds();
+    HAL::audioManager().stopSequence();
+
+    delay(1500);
+    ESP_LOGI(TAG_MAIN, "Runtime battery guard entering hard shutdown");
+    HAL::enterDeepSleep(true);
 }
 
 // Global functions for the app system

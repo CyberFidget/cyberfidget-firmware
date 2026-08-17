@@ -94,6 +94,18 @@ void AppManager::loop() {
         millis_APP_TASK_200MS = millis_NOW;
     }
 
+    if (HAL::consumeRuntimeBatteryShutdownRequest()) {
+        powerManager.shutdownForEmptyBattery();
+        return;
+    }
+
+#ifdef CF_TEST_CLI
+    if (SerialCli::instance().consumeSleepRequest()) {
+        powerManager.deepSleep(true);
+        return;
+    }
+#endif
+
     if ((millis_NOW - millis_APP_LASTINTERACTION) >= TASK_LASTINTERACT) {
         powerManager.deepSleep();
     }

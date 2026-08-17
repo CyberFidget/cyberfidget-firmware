@@ -33,6 +33,7 @@ scopes which directories run for each test environment.
 | Env                  | Runs                          | Invoke |
 |----------------------|-------------------------------|--------|
 | `test_core`          | `test/test_core_*/`           | `pio test -e test_core` |
+| `test_power`         | `test/test_power_*/`          | `pio test -e test_power` |
 | `test_breakout`      | `test/test_breakout_*/`       | `pio test -e test_breakout` |
 | `test_voicerecorder` | `test/test_voicerecorder_*/`  | `pio test -e test_voicerecorder` |
 | `test_loadout`       | `test/test_loadout_*/`        | `pio test -e test_loadout` |
@@ -54,6 +55,7 @@ migrate to per-app `extra_configs` per **N-012** (planning repo).
 ```
 pio test                       # everything
 pio test -e test_core          # just core tests
+pio test -e test_power         # power-management logic tests
 pio test -e test_breakout      # just BreakoutGame tests
 ```
 

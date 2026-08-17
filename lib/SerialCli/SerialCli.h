@@ -45,6 +45,12 @@ public:
 
     void poll();
 
+#ifdef CF_TEST_CLI
+    // Consumed by AppManager::loop so the display teardown never runs inside
+    // command dispatch.
+    bool consumeSleepRequest();
+#endif
+
     // Buffer size is exposed for testing and for callers that want to reason
     // about the maximum acceptable command length. Anything longer triggers
     // an `[err] line too long` and the buffer resets at the next newline.
@@ -93,12 +99,14 @@ private:
     void cmdNet();
     void cmdWifi(const char* arg);
     void cmdMic();
+    void cmdSleep();
     // Serial button injection (T-191). tap auto-releases after a delay.
     void cmdBtn(const char* args);
     void pollPendingTapReleases();
     static constexpr int kMaxInjectButtons = 6;
     static constexpr unsigned long kTapReleaseMs = 120;
     unsigned long tapReleaseDueMs[kMaxInjectButtons] = {0};
+    bool sleepRequested = false;
 #endif
 
     char   buffer[kBufferSize] = {0};

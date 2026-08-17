@@ -30,7 +30,10 @@ public:
     void unregisterShutdownCallback();
 
     // Call for Deep Sleep
-    void deepSleep();
+    void deepSleep(bool force = false);
+
+    // Show the empty-battery message and enter no-wake deep sleep.
+    void shutdownForEmptyBattery();
 
 private:
     // The function to display the shutdown screen

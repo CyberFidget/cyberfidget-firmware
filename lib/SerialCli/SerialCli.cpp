@@ -314,6 +314,7 @@ void SerialCli::dispatch(const char* line) {
     if (ieq(line, "app"))  { cmdApp();  return; }
     if (ieq(line, "net"))  { cmdNet();  return; }
     if (ieq(line, "mic"))  { cmdMic();  return; }
+    if (ieq(line, "sleep")) { cmdSleep(); return; }
     if (verbWithArg(line, "launch", &arg)) { cmdLaunch(arg); return; }
     if (verbWithArg(line, "wifi", &arg))   { cmdWifi(arg);   return; }
     if (ieq(line, "wasmstat")) { WasmFsApp::statCli(); return; }
@@ -365,6 +366,17 @@ void SerialCli::pollPendingTapReleases() {
         }
     }
 }
+
+void SerialCli::cmdSleep() {
+    sleepRequested = true;
+    Serial.println("[cmd] sleep=requested");
+}
+
+bool SerialCli::consumeSleepRequest() {
+    if (!sleepRequested) return false;
+    sleepRequested = false;
+    return true;
+}
 #endif
 
 void SerialCli::cmdVersion() {
@@ -388,6 +400,14 @@ void SerialCli::cmdInfo() {
                   static_cast<uint8_t>((mac >>  8) & 0xFF),
                   static_cast<uint8_t>((mac >>  0) & 0xFF));
     Serial.printf("[cmd] info.uptime_ms=%lu\n", static_cast<unsigned long>(millis()));
+    const bool batteryPlausible = batteryVoltage >= 2.0f && batteryVoltage <= 4.6f;
+    const long batteryMv = batteryPlausible
+        ? (long)(batteryVoltage * 1000.0f + 0.5f)
+        : -1L;
+    Serial.printf("[cmd] info.battery.voltage_mv=%ld\n", batteryMv);
+    Serial.printf("[cmd] info.battery.soc=%.2f\n", batteryVoltagePercentage);
+    Serial.printf("[cmd] info.battery.crate=%.2f\n", batteryChangeRate);
+    Serial.printf("[cmd] info.wake.cause=%s\n", HAL::bootWakeupCauseName());
 }
 
 void SerialCli::cmdHelp() {
@@ -397,6 +417,7 @@ void SerialCli::cmdHelp() {
                    "lget,lapply <len> <crc>,syncinfo");
 #ifdef CF_TEST_CLI
     Serial.println("[cmd] help.test=apps,launch <name|index>,app,net,mic,wifi <ssid>|<pass>");
+    Serial.println("[cmd] help.test.sleep=sleep");
 #endif
 }
 

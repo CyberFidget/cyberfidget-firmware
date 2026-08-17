@@ -94,7 +94,9 @@ namespace HAL
 
     // If you want to set wake pins, deep sleep, etc. directly from AppManager
     void configureWakeupPins();
-    void enterDeepSleep();
+    void enterDeepSleep(bool hardShutdown = false);
+    bool consumeRuntimeBatteryShutdownRequest();
+    const char* bootWakeupCauseName();
 
     // Additional helper calls for controlling certain pins, turning hardware on/off, etc.
     void setOledPower(bool on);
@@ -105,6 +107,7 @@ namespace HAL
     void printWakeupReason();
     void setRgbLed(int index, uint8_t r, uint8_t g, uint8_t b, uint8_t w);
     void setRgbLedsOff();
+    void showRgbLeds();
     Adafruit_NeoPixel& strip();
 
     // Display-related methods

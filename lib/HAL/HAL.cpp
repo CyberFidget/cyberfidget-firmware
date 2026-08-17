@@ -19,6 +19,7 @@
 #include "BatteryManager.h"
 #include "RGBController.h"
 #include "SliderPosition.h"
+#include "UvloLogic.h"
 
 #include "SparkFun_LIS2DH12.h"
 #include "ButtonManager.h"
@@ -93,18 +94,95 @@ namespace {
     static SPARKFUN_LIS2DH12 s_accel;
     static BatteryManager s_batteryManager;
 
+    static esp_sleep_wakeup_cause_t s_bootWakeupCause = ESP_SLEEP_WAKEUP_UNDEFINED;
+
     // RGBW LEDs
     static Adafruit_NeoPixel s_rgbStrip(RGB_COUNT, 0, NEO_GRBW + NEO_KHZ800);
 
     // Real display
     static SSD1306Wire s_realDisplay(0x3C, SDA, SCL);
     static DisplayProxy s_displayProxy(s_realDisplay);
+
+    bool plausibleVcell(float volts)
+    {
+        // NaN fails both ordered comparisons.
+        return volts >= 2.0f && volts <= 4.6f;
+    }
+
+    int32_t vcellToMillivolts(float volts)
+    {
+        return (int32_t)(volts * 1000.0f + 0.5f);
+    }
+
+    void timerWakeBatteryCheck(uint32_t startedAtMs)
+    {
+        Serial.begin(921600);
+        Wire.begin(SDA, SCL);
+
+        SFE_MAX1704X fastGauge(MAX1704X_MAX17048);
+        bool gaugeReady = fastGauge.begin(Wire);
+        float vcell = gaugeReady ? fastGauge.getVoltage() : 0.0f;
+        bool plausible = gaugeReady && plausibleVcell(vcell);
+
+        if (!plausible) {
+            delay(10);
+            if (!gaugeReady) gaugeReady = fastGauge.begin(Wire);
+            vcell = gaugeReady ? fastGauge.getVoltage() : 0.0f;
+            plausible = gaugeReady && plausibleVcell(vcell);
+        }
+
+        const int32_t vcellMv = plausible ? vcellToMillivolts(vcell) : -1;
+
+        // Hibernate can self-clear after a cell-voltage change, so every
+        // timer-wake re-entry writes the hibernate setting again.
+        fastGauge.enableHibernate();
+        Wire.end();
+        pinMode(SDA, INPUT);
+        pinMode(SCL, INPUT);
+
+        const UvloLogic::SleepDecision decision =
+            UvloLogic::decideSleep(vcellMv, plausible);
+
+        if (decision == UvloLogic::SleepDecision::Shutdown) {
+            // No wake sources: only a physical power cycle (or the serial
+            // reset line) ends this state. Domain power-down is deliberately
+            // NOT configured: bench measurement showed the shutdown floor
+            // already equals the normal deep-sleep floor without it, so it
+            // buys nothing here. (Floor current at low cell voltage is set
+            // by the 3.3V regulator entering dropout, not by sleep config.)
+            esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+            gpio_deep_sleep_hold_en();
+            Serial.printf(
+                "[uvlo] wake=timer vcell_mv=%ld threshold_mv=%d verdict=shutdown time_ms=%lu fw=%s\n",
+                (long)vcellMv, CF_UVLO_SLEEP_THRESHOLD_MV,
+                (unsigned long)(millis() - startedAtMs), FW_VERSION_FULL_STRING);
+            Serial.flush();
+            esp_deep_sleep_start();
+            for (;;) {}
+        }
+
+        esp_sleep_enable_timer_wakeup(UvloLogic::checkIntervalUs());
+        gpio_deep_sleep_hold_en();
+        Serial.printf(
+            "[uvlo] wake=timer vcell_mv=%ld threshold_mv=%d verdict=resleep time_ms=%lu fw=%s\n",
+            (long)vcellMv, CF_UVLO_SLEEP_THRESHOLD_MV,
+            (unsigned long)(millis() - startedAtMs), FW_VERSION_FULL_STRING);
+        Serial.flush();
+        esp_deep_sleep_start();
+        for (;;) {}
+    }
 }
 
 namespace HAL
 {
     void initHardware()
     {
+        const uint32_t startedAtMs = millis();
+        s_bootWakeupCause = esp_sleep_get_wakeup_cause();
+        if (s_bootWakeupCause == ESP_SLEEP_WAKEUP_TIMER) {
+            timerWakeBatteryCheck(startedAtMs);
+        }
+
         // Release GPIO holds latched across the previous deep sleep before
         // any pinMode/digitalWrite tries to drive a held pin. See L-008.
         gpio_hold_dis((gpio_num_t)POWER_PIN_OLED);
@@ -199,7 +277,7 @@ namespace HAL
         esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, LOW);
     }
 
-    void enterDeepSleep()
+    void enterDeepSleep(bool hardShutdown)
     {
         // Put I2C-attached peripherals into their lowest-power modes
         // before tearing down the bus.
@@ -218,6 +296,15 @@ namespace HAL
         // diodes don't forward-bias from the I2C lines. See L-007.
         digitalWrite(POWER_PIN_OLED, HIGH);
         gpio_hold_en((gpio_num_t)POWER_PIN_OLED);
+
+        if (hardShutdown) {
+            // No wake sources; see the timer-wake shutdown path for why no
+            // domain power-down is configured here.
+            esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+        } else {
+            esp_sleep_enable_timer_wakeup(UvloLogic::checkIntervalUs());
+        }
+
         gpio_deep_sleep_hold_en();
 
         esp_deep_sleep_start();
@@ -265,6 +352,29 @@ namespace HAL
         setColorsOff();
     }
 
+    void showRgbLeds()
+    {
+        s_rgbStrip.show();
+    }
+
+    bool consumeRuntimeBatteryShutdownRequest()
+    {
+        return s_batteryManager.consumeRuntimeShutdownRequest();
+    }
+
+    const char* bootWakeupCauseName()
+    {
+        switch (s_bootWakeupCause) {
+          case ESP_SLEEP_WAKEUP_EXT0:     return "ext0";
+          case ESP_SLEEP_WAKEUP_EXT1:     return "ext1";
+          case ESP_SLEEP_WAKEUP_TIMER:    return "timer";
+          case ESP_SLEEP_WAKEUP_TOUCHPAD: return "touchpad";
+          case ESP_SLEEP_WAKEUP_ULP:      return "ulp";
+          case ESP_SLEEP_WAKEUP_UNDEFINED: return "power_on";
+          default:                        return "other";
+        }
+    }
+
     void chargingEnable()
     {
         pinMode(CHRG_ENA, OUTPUT);
@@ -295,7 +405,7 @@ namespace HAL
     }
 
     void printWakeupReason() {
-        esp_sleep_wakeup_cause_t wakeup_reason = esp_sleep_get_wakeup_cause();
+        esp_sleep_wakeup_cause_t wakeup_reason = s_bootWakeupCause;
 
         switch (wakeup_reason) {
           case ESP_SLEEP_WAKEUP_EXT0:

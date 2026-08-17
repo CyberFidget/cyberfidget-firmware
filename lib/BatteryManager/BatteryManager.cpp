@@ -65,6 +65,17 @@ void BatteryManager::update() {
     batteryVoltage = lipo.getVoltage();
     batteryChangeRate = lipo.getChangeRate();
 
+    const bool voltagePlausible =
+        batteryVoltage >= 2.0f && batteryVoltage <= 4.6f;
+    const int32_t voltageMv = voltagePlausible
+        ? (int32_t)(batteryVoltage * 1000.0f + 0.5f)
+        : -1;
+    if (runtimeGuard.feed(voltageMv, millis(), voltagePlausible)) {
+        // The main app loop consumes this request because shutdown touches
+        // the display, LEDs, and audio state.
+        runtimeShutdownRequested = true;
+    }
+
     // Manage LiPo charger based on SOC and change rate
     // Requires Jumper on R64 to be soldered
     // RED LED on front stays on when charging is blocked
@@ -75,6 +86,12 @@ void BatteryManager::update() {
         HAL::chargingEnable();
       }
     }
+}
+
+bool BatteryManager::consumeRuntimeShutdownRequest() {
+    if (!runtimeShutdownRequested) return false;
+    runtimeShutdownRequested = false;
+    return true;
 }
 
 void BatteryManager::prepareForDeepSleep() {

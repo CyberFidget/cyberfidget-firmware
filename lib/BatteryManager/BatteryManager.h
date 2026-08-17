@@ -6,6 +6,7 @@
 
 #include <Arduino.h>
 #include <SparkFun_MAX1704x_Fuel_Gauge_Arduino_Library.h>
+#include "UvloLogic.h"
 
 class BatteryManager {
 public:
@@ -14,8 +15,11 @@ public:
     void update();
     void debug();
     void prepareForDeepSleep();
+    bool consumeRuntimeShutdownRequest();
 private:
     SFE_MAX1704X lipo;
+    UvloLogic::RuntimeDebounce runtimeGuard;
+    volatile bool runtimeShutdownRequested = false;
 };
 
 extern BatteryManager batteryManager;
