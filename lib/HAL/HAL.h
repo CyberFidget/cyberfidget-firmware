@@ -108,6 +108,11 @@ namespace HAL
     void setRgbLed(int index, uint8_t r, uint8_t g, uint8_t b, uint8_t w);
     void setRgbLedsOff();
     void showRgbLeds();
+
+    // Silence all audio output (raw tones and tone sequences). For shutdown
+    // paths that must not leave a note sounding; callers stay decoupled from
+    // the AudioManager type.
+    void stopAudio();
     Adafruit_NeoPixel& strip();
 
     // Display-related methods

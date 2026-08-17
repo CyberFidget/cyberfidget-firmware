@@ -148,8 +148,11 @@ namespace {
             // reset line) ends this state. Domain power-down is deliberately
             // NOT configured: bench measurement showed the shutdown floor
             // already equals the normal deep-sleep floor without it, so it
-            // buys nothing here. (Floor current at low cell voltage is set
-            // by the 3.3V regulator entering dropout, not by sleep config.)
+            // buys nothing here. (A separate bench observation - floor
+            // current rising ~5x below ~3.3V cell voltage - is independent
+            // of sleep config; regulator quiescent current is ruled out by
+            // its datasheet curve, and the leading suspect is the attached
+            // USB serial bridge back-feeding the sagging 3.3V rail.)
             esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
             gpio_deep_sleep_hold_en();
             Serial.printf(
@@ -355,6 +358,14 @@ namespace HAL
     void showRgbLeds()
     {
         s_rgbStrip.show();
+    }
+
+    void stopAudio()
+    {
+        // Sequence first so a step transition cannot restart a tone between
+        // the two calls; stopTone covers a raw playTone with no sequence.
+        s_audioManager.stopSequence();
+        s_audioManager.stopTone();
     }
 
     bool consumeRuntimeBatteryShutdownRequest()

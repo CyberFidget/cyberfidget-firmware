@@ -6,7 +6,6 @@
 #include "globals.h"
 #include "HAL.h"
 #include "MenuManager.h"
-#include "AudioManager.h"
 
 PowerManager powermanager(HAL::buttonManager());
 
@@ -132,7 +131,7 @@ void PowerManager::shutdownForEmptyBattery() {
 
     HAL::setRgbLedsOff();
     HAL::showRgbLeds();
-    HAL::audioManager().stopSequence();
+    HAL::stopAudio();
 
     delay(1500);
     ESP_LOGI(TAG_MAIN, "Runtime battery guard entering hard shutdown");
