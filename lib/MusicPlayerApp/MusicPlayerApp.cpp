@@ -4,10 +4,10 @@
 #include "MusicPlayerApp.h"
 #include "AudioManager.h"
 #include "RGBController.h"
+#include "SDManager.h"
 #include "WebPortalApp.h"
 #include "globals.h"        // millis_APP_LASTINTERACTION (sleep prevention)
 #include <SD.h>
-#include <SPI.h>
 #include <esp_a2dp_api.h>  // esp_a2d_source_disconnect() — the correct API for source mode
 #include <esp_avrc_api.h>  // ESP_AVRC_PT_CMD_* — AVRCP passthrough key codes
 
@@ -74,12 +74,6 @@ using namespace audio_tools;
   #define MPLAYER_LOG(msg) ((void)0)
   #define MPLAYER_LOGF(fmt, ...) ((void)0)
 #endif
-
-// SD Card SPI Pins
-static const int PIN_SD_CLK  = 5;
-static const int PIN_SD_MISO = 21;
-static const int PIN_SD_MOSI = 19;
-static const int PIN_SD_CS   = 8;
 
 static const char* MEDIA_DIR = "/media";
 static const char* CACHE_PATH = "/music.idx";
@@ -193,6 +187,8 @@ void MusicPlayerApp::end() {
     setColorsOff();       // Turn off LEDs on app exit
     stopPlayback();
     destroyAudioPipeline();
+    SDManager::release();
+    sdAvailable = false;
 
     if (scannerActive) {
         btScanner.end();
@@ -411,9 +407,7 @@ void MusicPlayerApp::update() {
 // SD Card Init
 // =========================================================================
 void MusicPlayerApp::initSD() {
-    if (sdAvailable) return;  // Already initialized from a previous session
-    SPI.begin(PIN_SD_CLK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
-    sdAvailable = SD.begin(PIN_SD_CS);
+    sdAvailable = SDManager::mount();
     if (!sdAvailable) {
         MPLAYER_LOG("SD init failed");
         return;
@@ -602,7 +596,7 @@ void MusicPlayerApp::createAudioPipeline() {
     if (!pA2dpStream && !pI2sVolume) return;
 
     if (sdAvailable && !pSourceSD) {
-        pSourceSD = new AudioSourceIdxSD(MEDIA_DIR, "mp3", PIN_SD_CS);
+        pSourceSD = new AudioSourceIdxSD(MEDIA_DIR, "mp3", SDManager::kPinCs);
     }
 
     if (pSourceSD) {

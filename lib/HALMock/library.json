@@ -1,0 +1,6 @@
+{
+    "name": "HALMock",
+    "version": "1.0.0",
+    "description": "Native-test-only mocks (HAL globals, Arduino GPIO recorder, SPI/SD stubs). The platforms guard keeps the LDF from resolving device or wasm builds' Arduino.h/SD.h/SPI.h includes to these shims.",
+    "platforms": ["native"]
+}

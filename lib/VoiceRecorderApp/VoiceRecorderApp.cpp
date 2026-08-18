@@ -27,12 +27,12 @@
 
 #include "VoiceRecorderApp.h"
 
-#include <SPI.h>
 #include <esp_heap_caps.h>
 #include <sys/time.h>
 
 #include "AudioManager.h"
 #include "RGBController.h"
+#include "SDManager.h"
 #include "globals.h"
 
 static const char* TAG_VREC = "VoiceRec";
@@ -41,12 +41,6 @@ static const char* TAG_VREC = "VoiceRec";
 extern const uint8_t ArialMT_Plain_10[];
 extern const uint8_t ArialMT_Plain_16[];
 extern const uint8_t ArialMT_Plain_24[];
-
-// --- SD wiring (same SPI map MusicPlayerApp uses) ---
-static const int PIN_SD_CLK  = 5;
-static const int PIN_SD_MISO = 21;
-static const int PIN_SD_MOSI = 19;
-static const int PIN_SD_CS   = 8;
 
 // --- Recording constants ---
 static const uint64_t      REC_RESERVE_BYTES    = 262144;     // auto-stop floor; sized to swallow a full ring drain
@@ -429,6 +423,8 @@ void VoiceRecorderApp::end() {
     }
 
     setColorsOff();
+    SDManager::release();
+    sdMounted = false;
 }
 
 // =========================================================================
@@ -599,19 +595,8 @@ void VoiceRecorderApp::toggleQuality() {
 // SD lifecycle
 // =========================================================================
 bool VoiceRecorderApp::mountSD() {
-    if (SD.cardType() != CARD_NONE) {
-        // Someone (MusicPlayerApp keeps its mount) already mounted it;
-        // probe in case the card was yanked while mounted.
-        File root = SD.open("/");
-        if (root) {
-            root.close();
-            sdMounted = true;
-            return true;
-        }
-        SD.end();
-    }
-    SPI.begin(PIN_SD_CLK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
-    sdMounted = SD.begin(PIN_SD_CS);
+    SDManager::release();
+    sdMounted = SDManager::mount();
     return sdMounted;
 }
 

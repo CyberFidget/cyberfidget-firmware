@@ -18,9 +18,9 @@
 #include "MicCapture.h"  // shared mic pipeline for the live caption stream
 #include "globals.h"
 #include "RecNaming.h"   // shared index.csv row parser (lib/VoiceRecorderApp)
+#include "SDManager.h"
 
 #include <SD.h>
-#include <SPI.h>
 #include <WiFi.h>
 #include <esp_bt.h>
 #include <esp_bt_main.h>
@@ -47,11 +47,6 @@ extern const uint8_t ArialMT_Plain_16[];
 // ---------------------------------------------------------------------------
 // Constants
 // ---------------------------------------------------------------------------
-static const int PIN_SD_CLK  = 5;
-static const int PIN_SD_MISO = 21;
-static const int PIN_SD_MOSI = 19;
-static const int PIN_SD_CS   = 8;
-
 static const char* MEDIA_DIR      = "/media";
 static const char* PLAYLIST_DIR   = "/media/playlists";
 static const char* CACHE_PATH     = "/music.idx";
@@ -542,6 +537,9 @@ void WebPortalApp::teardown() {
 
     HAL::audioManager().reclaimI2S();
 
+    SDManager::release();
+    sdReady = false;
+
     // Unregister callbacks
     buttonManager.unregisterCallback(button_SelectIndex);
     buttonManager.unregisterCallback(button_EnterIndex);
@@ -686,8 +684,7 @@ void WebPortalApp::onButtonUp(const ButtonEvent& event) {
 // SD helpers
 // ---------------------------------------------------------------------------
 void WebPortalApp::initSD() {
-    SPI.begin(PIN_SD_CLK, PIN_SD_MISO, PIN_SD_MOSI, PIN_SD_CS);
-    sdReady = SD.begin(PIN_SD_CS);
+    sdReady = SDManager::mount();
     if (!sdReady) {
         WP_LOG("SD init failed");
         return;

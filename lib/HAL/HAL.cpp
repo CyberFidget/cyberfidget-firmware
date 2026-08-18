@@ -18,6 +18,7 @@
 #include "AudioManager.h"
 #include "BatteryManager.h"
 #include "RGBController.h"
+#include "SDManager.h"
 #include "SliderPosition.h"
 #include "UvloLogic.h"
 
@@ -308,6 +309,7 @@ namespace HAL
             esp_sleep_enable_timer_wakeup(UvloLogic::checkIntervalUs());
         }
 
+        SDManager::releaseForSleep();
         gpio_deep_sleep_hold_en();
 
         esp_deep_sleep_start();

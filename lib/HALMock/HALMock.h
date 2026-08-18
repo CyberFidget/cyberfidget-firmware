@@ -29,6 +29,7 @@
 #define HAL_MOCK_H
 
 #include <stdint.h>
+#include <stddef.h>
 
 namespace HALMock {
 
@@ -53,6 +54,34 @@ unsigned long mockMillis();
 void mockAdvanceMs(unsigned long ms);
 void mockResetMillis();
 
+enum class CallType {
+    PinMode,
+    DigitalWrite,
+    SpiBegin,
+    SpiEnd,
+    SdBegin,
+    SdEnd,
+    DeepSleepHoldEnable
+};
+
+struct Call {
+    CallType type;
+    int pin;
+    int value;
+    int arg2;
+    int arg3;
+};
+
+void resetHardware();
+void recordCall(CallType type, int pin = -1, int value = 0,
+                int arg2 = 0, int arg3 = 0);
+size_t callCount();
+const Call& callAt(size_t index);
+int pinModeState(int pin);
+int pinValueState(int pin);
+void setCardPresent(bool present);
+bool cardPresent();
+
 // Helper for unit tests of float comparisons that should match exactly.
 inline bool approxEqual(float a, float b, float eps) {
     float d = a - b;
@@ -61,5 +90,7 @@ inline bool approxEqual(float a, float b, float eps) {
 }
 
 } // namespace HALMock
+
+void gpio_deep_sleep_hold_en();
 
 #endif // HAL_MOCK_H
