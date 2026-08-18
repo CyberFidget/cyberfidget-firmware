@@ -7,12 +7,13 @@
 #include <stddef.h>
 
 // Line-buffered Serial command processor for USB UART. The always-on verbs
-// are identification (`version`, `info`, `help`) and the sync-transport
-// family (below); builds with -DCF_TEST_CLI=1 (the `local_test` env) add
-// device-control verbs for test automation: `apps`, `launch <name|index>`,
-// `app`, `net`, `wifi <ssid>|<pass>`. Release and remote builds never
-// compile the device-control verbs in, so normal use can't trigger a
-// surprise app switch.
+// are identification (`version`, `info`, `help`), bench observation/control
+// (`mark <id>`, `reboot`, `battery`), display observation (`menutree`,
+// `screencap`, `screenstream`), and the sync-transport family (below). Builds
+// with -DCF_TEST_CLI=1 (the `local_test` env) add device-control verbs for
+// test automation: `apps`, `app`, `launch`, `net`, `mic`, `wifi`, `wasmstat`,
+// `btn`, `sleep`, `rail`, `gauge`, and `uvlo`. Release and remote builds never
+// compile those device-control verbs in.
 //
 // Sync-transport family (always compiled - the browser drives these over
 // USB to install or recover apps/assets and edit the loadout; every file
@@ -69,6 +70,9 @@ private:
     void cmdVersion();
     void cmdInfo();
     void cmdHelp();
+    void cmdMark(const char* arg);
+    void cmdReboot();
+    void cmdBattery();
 
     // Sync-transport verbs (always compiled). Session state for an
     // in-progress `fwrite` lives in file-scope statics in the .cpp so this
@@ -100,6 +104,9 @@ private:
     void cmdWifi(const char* arg);
     void cmdMic();
     void cmdSleep();
+    void cmdRail(const char* args);
+    void cmdGauge(const char* args);
+    void cmdUvlo(const char* args);
     // Serial button injection (T-191). tap auto-releases after a delay.
     void cmdBtn(const char* args);
     void pollPendingTapReleases();

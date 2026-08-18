@@ -75,6 +75,51 @@ void test_check_interval_converts_to_64_bit_microseconds(void) {
                   "interval conversion must not truncate to 32 bits");
 }
 
+void test_parse_millivolts_accepts_valid_decimal(void) {
+    int32_t mv = -1;
+    TEST_ASSERT_TRUE(UvloLogic::parseMillivolts("3300", mv));
+    TEST_ASSERT_EQUAL_INT32(3300, mv);
+}
+
+void test_parse_millivolts_rejects_invalid_inputs(void) {
+    int32_t mv = -1;
+    TEST_ASSERT_FALSE(UvloLogic::parseMillivolts("x3300", mv));
+    TEST_ASSERT_FALSE(UvloLogic::parseMillivolts("", mv));
+    TEST_ASSERT_FALSE(UvloLogic::parseMillivolts("99999", mv));
+    TEST_ASSERT_FALSE(UvloLogic::parseMillivolts("abc", mv));
+    TEST_ASSERT_FALSE(UvloLogic::parseMillivolts("-1", mv));
+}
+
+void test_simulate_path_matches_threshold_decisions(void) {
+    const int32_t samples[] = {
+        CF_UVLO_SLEEP_THRESHOLD_MV - 1,
+        CF_UVLO_SLEEP_THRESHOLD_MV,
+        CF_UVLO_RUNTIME_THRESHOLD_MV - 1,
+        CF_UVLO_RUNTIME_THRESHOLD_MV
+    };
+
+    for (size_t i = 0; i < sizeof(samples) / sizeof(samples[0]); ++i) {
+        const int32_t mv = samples[i];
+        const bool plausible = mv >= 2000 && mv <= 4600;
+        const UvloLogic::SleepDecision expectedSleep =
+            plausible && mv < CF_UVLO_SLEEP_THRESHOLD_MV
+                ? UvloLogic::SleepDecision::Shutdown
+                : UvloLogic::SleepDecision::Resleep;
+        TEST_ASSERT_EQUAL_INT(
+            (int)expectedSleep,
+            (int)UvloLogic::decideSleep(mv, plausible));
+
+        UvloLogic::RuntimeDebounce runtime;
+        const uint32_t t0 = 1;
+        TEST_ASSERT_FALSE(runtime.feed(mv, t0, plausible));
+        const bool expectedRuntime =
+            plausible && mv < CF_UVLO_RUNTIME_THRESHOLD_MV;
+        TEST_ASSERT_EQUAL_INT(
+            expectedRuntime ? 1 : 0,
+            runtime.feed(mv, t0 + CF_UVLO_RUNTIME_DEBOUNCE_MS, plausible) ? 1 : 0);
+    }
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -87,5 +132,8 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_runtime_recovery_mid_window_restarts_debounce);
     RUN_TEST(test_runtime_implausible_sample_resets_debounce);
     RUN_TEST(test_check_interval_converts_to_64_bit_microseconds);
+    RUN_TEST(test_parse_millivolts_accepts_valid_decimal);
+    RUN_TEST(test_parse_millivolts_rejects_invalid_inputs);
+    RUN_TEST(test_simulate_path_matches_threshold_decisions);
     return UNITY_END();
 }

@@ -319,7 +319,36 @@ namespace HAL
 
     void setOledPower(bool on)
     {
+        gpio_hold_dis((gpio_num_t)POWER_PIN_OLED);
         digitalWrite(POWER_PIN_OLED, on ? HIGH : LOW);
+    }
+
+    void setAuxPower(bool on)
+    {
+        digitalWrite(POWER_PIN_AUX, on ? HIGH : LOW);
+    }
+
+    void oledRailOffForBench()
+    {
+        s_realDisplay.displayOff();
+        Wire.end();
+        pinMode(SDA, INPUT);
+        pinMode(SCL, INPUT);
+        gpio_hold_dis((gpio_num_t)POWER_PIN_OLED);
+        digitalWrite(POWER_PIN_OLED, LOW);
+    }
+
+    void oledRailOnForBench()
+    {
+        gpio_hold_dis((gpio_num_t)POWER_PIN_OLED);
+        digitalWrite(OLED_RESET, LOW);
+        digitalWrite(POWER_PIN_OLED, HIGH);
+        delay(200);
+        digitalWrite(OLED_RESET, HIGH);
+        delay(10);
+        Wire.begin(SDA, SCL);
+        s_realDisplay.init();
+        s_realDisplay.setFont(ArialMT_Plain_10);
     }
 
     DisplayProxy& displayProxy() {
@@ -371,6 +400,31 @@ namespace HAL
     bool consumeRuntimeBatteryShutdownRequest()
     {
         return s_batteryManager.consumeRuntimeShutdownRequest();
+    }
+
+    bool gaugeHibernateForce()
+    {
+        return s_batteryManager.gaugeHibernateForce();
+    }
+
+    bool gaugeHibernateAuto()
+    {
+        return s_batteryManager.gaugeHibernateAuto();
+    }
+
+    bool gaugeIsHibernating()
+    {
+        return s_batteryManager.gaugeIsHibernating();
+    }
+
+    bool gaugeSetAlertMin(float volts)
+    {
+        return s_batteryManager.gaugeSetAlertMin(volts);
+    }
+
+    float gaugeGetAlertMin()
+    {
+        return s_batteryManager.gaugeGetAlertMin();
     }
 
     const char* bootWakeupCauseName()

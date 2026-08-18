@@ -30,6 +30,7 @@
 #include "HAL.h"             // HAL::buttonManager()
 #include "WasmFsApp.h"       // wasmstat (T-183)
 #include "WasmHostImports.h"  // kDeviceHalAbi (REQ-063)
+#include "UvloLogic.h"
 #endif
 
 #ifdef CF_TEST_CLI
@@ -86,6 +87,11 @@ bool verbWithArg(const char* line, const char* verb, const char** arg) {
     if (*p == '\0') return false;
     *arg = p;
     return true;
+}
+
+bool twoArgsEqual(const char* args, const char* first, const char* second) {
+    const char* rest = nullptr;
+    return verbWithArg(args, first, &rest) && ieq(rest, second);
 }
 
 // =========================================================================
@@ -293,6 +299,10 @@ void SerialCli::dispatch(const char* line) {
     if (ieq(line, "version")) { cmdVersion(); return; }
     if (ieq(line, "info"))    { cmdInfo();    return; }
     if (ieq(line, "help"))    { cmdHelp();    return; }
+    if (ieq(line, "mark"))    { Serial.println("[err] mark.usage=mark <id>"); return; }
+    if (verbWithArg(line, "mark", &arg)) { cmdMark(arg); return; }
+    if (ieq(line, "reboot"))  { cmdReboot();  return; }
+    if (ieq(line, "battery")) { cmdBattery(); return; }
 
     // Sync-transport family (always compiled).
     if (ieq(line, "fwcommit")) { cmdFwcommit(); return; }
@@ -319,6 +329,12 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "wifi", &arg))   { cmdWifi(arg);   return; }
     if (ieq(line, "wasmstat")) { WasmFsApp::statCli(); return; }
     if (verbWithArg(line, "btn", &arg))    { cmdBtn(arg);    return; }
+    if (ieq(line, "rail"))                  { cmdRail("");    return; }
+    if (verbWithArg(line, "rail", &arg))   { cmdRail(arg);  return; }
+    if (ieq(line, "gauge"))                 { cmdGauge("");   return; }
+    if (verbWithArg(line, "gauge", &arg))  { cmdGauge(arg); return; }
+    if (ieq(line, "uvlo"))                  { cmdUvlo("");    return; }
+    if (verbWithArg(line, "uvlo", &arg))   { cmdUvlo(arg);  return; }
 #endif
     Serial.printf("[err] unknown command: %s\n", line);
 }
@@ -377,10 +393,111 @@ bool SerialCli::consumeSleepRequest() {
     sleepRequested = false;
     return true;
 }
+
+void SerialCli::cmdRail(const char* args) {
+    if (twoArgsEqual(args, "aux", "on")) {
+        HAL::setAuxPower(true);
+        Serial.println("[cmd] rail.aux=on");
+        return;
+    }
+    if (twoArgsEqual(args, "aux", "off")) {
+        HAL::setAuxPower(false);
+        Serial.println("[cmd] rail.aux=off");
+        return;
+    }
+    if (twoArgsEqual(args, "oled", "off")) {
+        HAL::oledRailOffForBench();
+        Serial.println("[cmd] rail.oled=off note=i2c-down-until-reboot");
+        return;
+    }
+    if (twoArgsEqual(args, "oled", "on")) {
+        HAL::oledRailOnForBench();
+        Serial.println("[cmd] rail.oled=on note=display-reinit-best-effort");
+        return;
+    }
+    Serial.println("[err] rail.usage=rail <oled|aux> <on|off>");
+}
+
+void SerialCli::cmdGauge(const char* args) {
+    if (twoArgsEqual(args, "hibrt", "force")) {
+        HAL::gaugeHibernateForce();
+        Serial.printf("[cmd] gauge.hibrt=force hibernating=%d\n",
+                      HAL::gaugeIsHibernating() ? 1 : 0);
+        return;
+    }
+    if (twoArgsEqual(args, "hibrt", "auto")) {
+        HAL::gaugeHibernateAuto();
+        Serial.printf("[cmd] gauge.hibrt=auto hibernating=%d\n",
+                      HAL::gaugeIsHibernating() ? 1 : 0);
+        return;
+    }
+
+    const char* valueArg = nullptr;
+    if (verbWithArg(args, "alert-min", &valueArg)) {
+        char* end = nullptr;
+        const float volts = strtof(valueArg, &end);
+        if (end != valueArg && *end == '\0' && volts >= 0.0f && volts <= 5.1f) {
+            HAL::gaugeSetAlertMin(volts);
+            Serial.printf("[cmd] gauge.alert_min_v=%.2f\n",
+                          HAL::gaugeGetAlertMin());
+            return;
+        }
+    }
+    Serial.println("[err] gauge.usage=gauge <hibrt force|hibrt auto|alert-min <V>>");
+}
+
+void SerialCli::cmdUvlo(const char* args) {
+    const char* mvArg = nullptr;
+    int32_t mv = 0;
+    if (!verbWithArg(args, "simulate", &mvArg) ||
+        !UvloLogic::parseMillivolts(mvArg, mv)) {
+        Serial.println("[err] uvlo.usage=uvlo simulate <mV>");
+        return;
+    }
+
+    const bool plausible = mv >= 2000 && mv <= 4600;
+    const UvloLogic::SleepDecision sleepDecision =
+        UvloLogic::decideSleep(mv, plausible);
+    UvloLogic::RuntimeDebounce runtime;
+    const uint32_t t0 = 1;
+    runtime.feed(mv, t0, plausible);
+    const bool runtimeTrip = runtime.feed(
+        mv, t0 + (uint32_t)CF_UVLO_RUNTIME_DEBOUNCE_MS, plausible);
+
+    Serial.printf(
+        "[cmd] uvlo.simulate=%ld plausible=%d sleep_verdict=%s "
+        "runtime_verdict=%s sleep_threshold_mv=%d runtime_threshold_mv=%d "
+        "debounce_ms=%d\n",
+        (long)mv, plausible ? 1 : 0,
+        sleepDecision == UvloLogic::SleepDecision::Shutdown ? "shutdown" : "resleep",
+        runtimeTrip ? "shutdown" : "ok", CF_UVLO_SLEEP_THRESHOLD_MV,
+        CF_UVLO_RUNTIME_THRESHOLD_MV, CF_UVLO_RUNTIME_DEBOUNCE_MS);
+}
 #endif
 
 void SerialCli::cmdVersion() {
     Serial.printf("[cmd] version=%s\n", getFirmwareVersionString());
+}
+
+void SerialCli::cmdMark(const char* arg) {
+    Serial.printf("[cmd] mark=%s uptime_ms=%lu\n", arg,
+                  static_cast<unsigned long>(millis()));
+}
+
+void SerialCli::cmdReboot() {
+    Serial.println("[cmd] reboot=now");
+    Serial.flush();
+    delay(50);
+    esp_restart();
+}
+
+void SerialCli::cmdBattery() {
+    const bool plausible = batteryVoltage >= 2.0f && batteryVoltage <= 4.6f;
+    const long batteryMv = plausible
+        ? (long)(batteryVoltage * 1000.0f + 0.5f)
+        : -1L;
+    Serial.printf("[cmd] battery.vcell_mv=%ld soc=%.2f crate=%.2f\n",
+                  batteryMv, batteryVoltagePercentage, batteryChangeRate);
 }
 
 void SerialCli::cmdInfo() {
@@ -411,13 +528,13 @@ void SerialCli::cmdInfo() {
 }
 
 void SerialCli::cmdHelp() {
-    Serial.println("[cmd] help=version,info,help,fwrite <path> <size> <crc>,"
-                   "fwdata <off> <len> <crc>,fwcommit,fwabort,fdelete <path>,"
-                   "flist <dir>,fstat <path>,fread <path> <off> <len>,"
-                   "lget,lapply <len> <crc>,syncinfo");
+    Serial.println("[cmd] help=version,info,help,mark <id>,reboot,battery,menutree,"
+                   "screencap,screenstream <off|on [fps]>");
+    Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"
+                   "fstat,fread,lget,lapply,syncinfo");
 #ifdef CF_TEST_CLI
-    Serial.println("[cmd] help.test=apps,launch <name|index>,app,net,mic,wifi <ssid>|<pass>");
-    Serial.println("[cmd] help.test.sleep=sleep");
+    Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,mic,"
+                   "wifi <ssid>|<pass>,wasmstat,btn,sleep,rail,gauge,uvlo");
 #endif
 }
 

@@ -101,6 +101,13 @@ namespace HAL
     // Additional helper calls for controlling certain pins, turning hardware on/off, etc.
     void setOledPower(bool on);
     void setAuxPower(bool on);
+    void oledRailOffForBench();
+    void oledRailOnForBench();
+    bool gaugeHibernateForce();
+    bool gaugeHibernateAuto();
+    bool gaugeIsHibernating();
+    bool gaugeSetAlertMin(float volts);
+    float gaugeGetAlertMin();
     void chargingEnable();
     void chargingDisable();
     void updateAccelerometer();

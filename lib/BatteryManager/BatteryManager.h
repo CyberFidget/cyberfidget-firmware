@@ -16,6 +16,11 @@ public:
     void debug();
     void prepareForDeepSleep();
     bool consumeRuntimeShutdownRequest();
+    bool gaugeHibernateForce();
+    bool gaugeHibernateAuto();
+    bool gaugeIsHibernating();
+    bool gaugeSetAlertMin(float volts);
+    float gaugeGetAlertMin();
 private:
     SFE_MAX1704X lipo;
     UvloLogic::RuntimeDebounce runtimeGuard;

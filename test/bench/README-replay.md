@@ -69,9 +69,10 @@ the ticket + AC they prove (e.g. `t183-ferried-app-runs.json`).
 
 ## Requires a test-CLI build
 
-`launch`, `btn`, `wasmstat` need a `-DCF_TEST_CLI=1` firmware
-(`pio run -e local_test`). `menutree`, `screencap`, `ferry`, `lapply`,
-`syncinfo`, `lget` are always compiled.
+`launch`, `btn`, `wasmstat`, `rail`, `gauge`, and `uvlo` need a
+`-DCF_TEST_CLI=1` firmware (`pio run -e local_test`). `mark`, `reboot`,
+`battery`, `menutree`, `screencap`, `ferry`, `lapply`, `syncinfo`, and `lget`
+are always compiled.
 
 Symptom of running a case against a non-test build: `launch`/`btn`
 steps fail with `[err] unknown command: ...` and `assert_wasmstat`

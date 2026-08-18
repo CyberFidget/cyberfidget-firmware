@@ -163,6 +163,13 @@ namespace HAL {
     float getAccelerometerZ()    { return accelZ; }
 
     void setOledPower(bool) {}
+    void oledRailOffForBench() {}
+    void oledRailOnForBench() {}
+    bool gaugeHibernateForce() { return false; }
+    bool gaugeHibernateAuto() { return false; }
+    bool gaugeIsHibernating() { return false; }
+    bool gaugeSetAlertMin(float) { return false; }
+    float gaugeGetAlertMin() { return 0.0f; }
 
     DisplayProxy& displayProxy() { return s_displayProxy; }
 

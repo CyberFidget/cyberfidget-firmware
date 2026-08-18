@@ -26,6 +26,20 @@
 
 namespace UvloLogic {
 
+inline bool parseMillivolts(const char* s, int32_t& out) {
+    if (s == nullptr || *s == '\0') return false;
+
+    int32_t value = 0;
+    for (const char* p = s; *p != '\0'; ++p) {
+        if (*p < '0' || *p > '9') return false;
+        const int32_t digit = *p - '0';
+        if (value > 999 || (value == 999 && digit > 9)) return false;
+        value = value * 10 + digit;
+    }
+    out = value;
+    return true;
+}
+
 enum class SleepDecision : uint8_t {
     Resleep,
     Shutdown

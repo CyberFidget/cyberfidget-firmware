@@ -94,6 +94,26 @@ bool BatteryManager::consumeRuntimeShutdownRequest() {
     return true;
 }
 
+bool BatteryManager::gaugeHibernateForce() {
+    return lipo.enableHibernate() == 0;
+}
+
+bool BatteryManager::gaugeHibernateAuto() {
+    return lipo.disableHibernate() == 0;
+}
+
+bool BatteryManager::gaugeIsHibernating() {
+    return lipo.isHibernating();
+}
+
+bool BatteryManager::gaugeSetAlertMin(float volts) {
+    return lipo.setVALRTMin(volts) == 0;
+}
+
+float BatteryManager::gaugeGetAlertMin() {
+    return (float)lipo.getVALRTMin() * 0.02f;
+}
+
 void BatteryManager::prepareForDeepSleep() {
     // Force the MAX17048 into hibernate (writes 0xFFFF to HIBRT).
     // Drops gauge supply current from ~23 µA to ~4 µA across sleep.
