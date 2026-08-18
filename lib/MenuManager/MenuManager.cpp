@@ -31,7 +31,6 @@ static const int HIGHLIGHT_WIDTH    = SCREEN_WIDTH - (HIGHLIGHT_X_OFFSET * 2); /
 
 // SCROLLING FIELDS
 static int scrollOffset = 0;   // how many pixels the entire list is shifted up
-static int oldScrollOffset = 0; // used if we want to animate from old→new
 static const int VISIBLE_COUNT = 4; // how many items can fit on screen at once
 
 // The transition duration in ms (tweak as you wish)
@@ -330,23 +329,33 @@ void MenuManager::registerBlobApp(const std::string &path,
 // Private method: move highlight up
 void MenuManager::moveHighlightUp()
 {
+    if (!currentItemList || currentItemList->empty()) return;
+
     if (currentIndex > 0)
     {
-        int oldIndex = currentIndex;
         currentIndex--;
-        updateScrollForCurrentIndex(oldIndex);
     }
+    else
+    {
+        currentIndex = (int)currentItemList->size() - 1;
+    }
+    updateScrollForCurrentIndex();
 }
 
 // Private method: move highlight down
 void MenuManager::moveHighlightDown()
 {
+    if (!currentItemList || currentItemList->empty()) return;
+
     if (currentIndex < (int)currentItemList->size() - 1)
     {
-        int oldIndex = currentIndex;
         currentIndex++;
-        updateScrollForCurrentIndex(oldIndex);
     }
+    else
+    {
+        currentIndex = 0;
+    }
+    updateScrollForCurrentIndex();
 }
 
 /**
@@ -355,15 +364,24 @@ void MenuManager::moveHighlightDown()
  *        the entire list via scrollOffset. Otherwise, it just animates
  *        the highlight if the item is still on screen.
  */
-void MenuManager::updateScrollForCurrentIndex(int oldIndex)
+void MenuManager::updateScrollForCurrentIndex()
 {
-    // We'll define how many items fit “fully” on screen:
-    // e.g. VISIBLE_COUNT=3 for 3 items (each 20 px tall => 60 px total).
-    // The highlight’s “row index” on screen is currentIndex - scrollOffsetInItems
-    // but we’re doing pixel-based “scrollOffset”. Let’s compute the item’s Y:
-    int itemY = currentIndex * MENU_ITEM_HEIGHT - scrollOffset;
-    int topY  = 0;
+    // Pixel top of the current item within the list
+    int itemTop = currentIndex * MENU_ITEM_HEIGHT;
+
+    // Screen-relative top of the bottom row
     int bottomY = SCREEN_HEIGHT - MENU_ITEM_HEIGHT;
+
+    // Adjust the desired scrollOffset based on the current item's top
+    int newScroll = scrollOffset;
+    if (itemTop < scrollOffset)
+    {
+        newScroll = itemTop;
+    }
+    else if (bottomY < itemTop - scrollOffset)
+    {
+        newScroll = itemTop - bottomY;
+    }
 
     // kill any old scroll animation
     auto it = tweensInt.find(&scrollOffset);
@@ -373,62 +391,27 @@ void MenuManager::updateScrollForCurrentIndex(int oldIndex)
         tweensInt.erase(it);
     }
 
-    if (itemY < topY) {
-        // We need to scroll upward so that the highlight is at or near top
-        // e.g. new scrollOffset = currentIndex * MENU_ITEM_HEIGHT
-        int newScroll = currentIndex * MENU_ITEM_HEIGHT;
-        // We'll animate scrollOffset from oldScrollOffset to newScroll
-        oldScrollOffset = scrollOffset;
-        insertTween(
-            new UITween(
-                &scrollOffset,
-                INDENT,
-                newScroll,   // endVal
-                250          // ms
-            )
-        );
+    if (newScroll != scrollOffset)
+    {
+        insertTween(new UITween(&scrollOffset, INDENT, newScroll, 250));
     }
-    else if (itemY > bottomY) {
-        // We need to scroll downward so highlight is near the bottom row
-        // e.g. new scrollOffset = currentIndex * MENU_ITEM_HEIGHT - bottomY
-        int newScroll = currentIndex * MENU_ITEM_HEIGHT - bottomY;
-        oldScrollOffset = scrollOffset;
-        insertTween(
-            new UITween(
-                &scrollOffset,
-                INDENT,
-                newScroll,
-                250
-            )
-        );
-    }
-    else {
-        // The item is fully within the visible area. 
-        // Animate the highlight’s Y only.
-        animateHighlight(oldIndex);
-    }
+
+    // Update the highlight position if needed based on the new scrollOffset
+    animateHighlight(itemTop - newScroll);
 }
 
-void MenuManager::animateHighlight(int oldIndex)
+void MenuManager::animateHighlight(int targetY)
 {
-    // 1) Force any existing highlight animation to jump to its partial position
+    // Snap any in-flight highlight animation at its current position
     finalizeHighlightAnimation(&highlightElement);
 
-    // 2) Now read the highlight’s current Y (it’s updated by the partial step above)
-    int curY = highlightElement.getY();
-
-    // 3) Compute the new target Y based on currentIndex
-    int newY = (currentIndex * MENU_ITEM_HEIGHT) - scrollOffset;
-
-    // 4) Insert a brand-new animation from curY to newY (over 200ms, for instance)
-    //    Because highlightElement’s .getY() is already curY, we only have to call
-    //    insertTween() with the new final Y.
+    // Animate to the target Y position
     insertTween(
         new UITween(
             &highlightElement,
-            INDENT,        // or BOUNCE, etc.
+            INDENT,
             highlightElement.getX(),
-            newY,
+            targetY,
             highlightElement.getWidth(),
             highlightElement.getHeight(),
             250
@@ -597,14 +580,24 @@ void MenuManager::crossSlideForward(const MenuItem &child)
     s.savedScrollOffset = scrollOffset;  // if you have vertical scrolling
     navigationStack.push_back(s);
 
-    // We want the child highlight at row 0 from the start:
-    highlightElement.setY(0); 
+    // 3) Cancel any current tweens
+    auto scrollTween = tweensInt.find(&scrollOffset);
+    if (scrollTween != tweensInt.end()) {
+        delete scrollTween->second;
+        tweensInt.erase(scrollTween);
+    }
+    finalizeHighlightAnimation(&highlightElement);
 
-    // 3) We start with old at x=0, new at x=+SCREEN_WIDTH (off right)
+    // 4) Reset scroll and currentIndex to ensure child is rendered at the top
+    currentIndex = 0;
+    scrollOffset = 0;
+    highlightElement.setY(0);
+
+    // 5) We start with old at x=0, new at x=+SCREEN_WIDTH (off right)
     oldMenuX = 0;
     newMenuX = SCREEN_WIDTH;
 
-    // 4) Animate old to -SCREEN_WIDTH, new to 0
+    // 6) Animate old to -SCREEN_WIDTH, new to 0
     insertTween(new UITween((int*)&oldMenuX,
                                   INDENT,
                                   -SCREEN_WIDTH,  // end
@@ -614,7 +607,7 @@ void MenuManager::crossSlideForward(const MenuItem &child)
                                   0,              // end
                                   crossSlideDuration)); // Set type to true
 
-    // 5) set crossSlideState
+    // 7) set crossSlideState
     crossSlideState = CROSS_SLIDE_FORWARD;
     ESP_LOGI(TAG_MAIN, "[crossSlideForward] crossSlideState = %d", crossSlideState);
 }

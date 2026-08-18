@@ -211,12 +211,12 @@ private:
     /**
      * @brief Helper to adjust scrollOffset if the highlight goes off-screen
      */
-    void updateScrollForCurrentIndex(int oldIndex);
+    void updateScrollForCurrentIndex();
 
     /**
-     * @brief Animate highlight from its current location to the newly selected item row.
+     * @brief Animate the highlight to the given screen-relative Y position
      */
-    void animateHighlight(int oldIndex);
+    void animateHighlight(int targetY);
 
     // ========== NAVIGATION ==========
 
