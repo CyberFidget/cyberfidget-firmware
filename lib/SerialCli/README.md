@@ -22,7 +22,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 
 | Always present | Requires `CF_TEST_CLI` |
 |---|---|
-| `version`, `info`, `help`, `mark`, `reboot`, `battery` | `apps`, `app`, `launch` |
+| `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary` | `apps`, `app`, `launch`, `soak` |
 | `menutree`, `screencap`, `screenstream` | `net`, `mic`, `wifi`, `wasmstat` |
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
 | `lget`, `lapply`, `syncinfo` | |
@@ -73,6 +73,20 @@ the reply is emitted, the UART is flushed, and the ESP32 restarts without an
 application teardown. `battery` reads the globals refreshed by
 `BatteryManager::update()` every 200 ms and performs no gauge transaction.
 
+### Battery diary
+
+```text
+diary -> [cmd] diary.stats=boot=<n> checkins=<n> on_s=<n> cycles=<n> vmin=<mv> vmax=<mv> written=<n> dropped=<n>
+         [cmd] diary.rec=<seq> ev=<name> t=<n> mv=<n> soc=<x.x> crate=<x.xx>  (up to eight)
+         [cmd] diary.done=<total_records>
+diary clear -> [cmd] diary.clear=ok
+bad argument -> [err] diary.usage=diary [clear]
+```
+
+The records and stats are also readable through `flist /apps/.diary` and
+`fread /apps/.diary/<file> ...`. Clearing keeps lifetime boot count and
+accumulated on-time while resetting the ring and other stats.
+
 ### Display observation
 
 ```text
@@ -121,6 +135,8 @@ app  -> [cmd] app.index=<index>
         [cmd] app.uptime_ms=<millis>
 launch <name|index> -> [cmd] launch.ok=<index>
 launch <blob-id>    -> [cmd] launch.ok=blob path=<path>
+soak <app>          -> [cmd] soak=<app>
+soak off            -> [cmd] soak=off
 net  -> [cmd] net.mode=<mode> ...
 mic  -> [cmd] mic.heap_free=... ... [cmd] mic.released=1
 wifi <ssid>|<pass> -> [cmd] wifi.saved=<ssid>
@@ -132,6 +148,11 @@ app or stages a manifest-backed WASM app. `net` reports fields applicable to the
 current Wi-Fi mode. `mic` runs a short capture diagnostic and releases it.
 `wifi` persists credentials for later portal use. `wasmstat` delegates its
 tagged runtime report to `WasmFsApp`.
+
+`soak` uses the same app resolution and launch path as `launch`, then keeps the
+idle interaction clock pinned in `AppManager`. It remains active until
+`soak off` or the runtime battery guard shuts the device down. Starting a soak
+adds a diary marker carrying the resolved app index.
 
 ### Button and sleep controls
 

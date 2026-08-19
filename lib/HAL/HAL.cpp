@@ -16,6 +16,7 @@
 #include <Adafruit_NeoPixel.h>
 
 #include "AudioManager.h"
+#include "BatteryDiary.h"
 #include "BatteryManager.h"
 #include "RGBController.h"
 #include "SDManager.h"
@@ -144,6 +145,10 @@ namespace {
         const UvloLogic::SleepDecision decision =
             UvloLogic::decideSleep(vcellMv, plausible);
 
+        // The common timer-wake path only touches RTC slow memory. A flash
+        // mount happens here only at the bounded ring's rare flush point.
+        BatteryDiary::onTimerCheckin(vcellMv);
+
         if (decision == UvloLogic::SleepDecision::Shutdown) {
             // No wake sources: only a physical power cycle (or the serial
             // reset line) ends this state. Domain power-down is deliberately
@@ -154,6 +159,7 @@ namespace {
             // of sleep config; regulator quiescent current is ruled out by
             // its datasheet curve, and the leading suspect is the attached
             // USB serial bridge back-feeding the sagging 3.3V rail.)
+            BatteryDiary::onTimerShutdown(vcellMv);
             esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
             gpio_deep_sleep_hold_en();
             Serial.printf(
@@ -165,6 +171,7 @@ namespace {
             for (;;) {}
         }
 
+        if (BatteryDiary::timerFlushDue()) BatteryDiary::flushTimerCheckins();
         esp_sleep_enable_timer_wakeup(UvloLogic::checkIntervalUs());
         gpio_deep_sleep_hold_en();
         Serial.printf(
@@ -283,6 +290,12 @@ namespace HAL
 
     void enterDeepSleep(bool hardShutdown)
     {
+        if (!hardShutdown) {
+            BatteryDiary::onSleepEnter(batteryVoltage,
+                                       batteryVoltagePercentage,
+                                       batteryChangeRate);
+        }
+
         // Put I2C-attached peripherals into their lowest-power modes
         // before tearing down the bus.
         s_batteryManager.prepareForDeepSleep();      // MAX17048 → hibernate (~23 µA → ~4 µA)

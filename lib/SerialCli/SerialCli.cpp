@@ -14,6 +14,7 @@
 #include "version.h"  // FW_GIT_DIRTY for the `info` command
 
 #include "AppManager.h"       // applyLoadoutOps (manifest apply + persist)
+#include "BatteryDiary.h"
 #include "AppDefs.h"          // load + builtin identity migration
 #include "LoadoutManifest.h"  // parse for the lget entry count
 #include "LoadoutStore.h"     // LittleFS mount + manifest read
@@ -303,6 +304,8 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "mark", &arg)) { cmdMark(arg); return; }
     if (ieq(line, "reboot"))  { cmdReboot();  return; }
     if (ieq(line, "battery")) { cmdBattery(); return; }
+    if (ieq(line, "diary"))   { cmdDiary(""); return; }
+    if (verbWithArg(line, "diary", &arg)) { cmdDiary(arg); return; }
 
     // Sync-transport family (always compiled).
     if (ieq(line, "fwcommit")) { cmdFwcommit(); return; }
@@ -326,6 +329,7 @@ void SerialCli::dispatch(const char* line) {
     if (ieq(line, "mic"))  { cmdMic();  return; }
     if (ieq(line, "sleep")) { cmdSleep(); return; }
     if (verbWithArg(line, "launch", &arg)) { cmdLaunch(arg); return; }
+    if (verbWithArg(line, "soak", &arg))   { cmdSoak(arg); return; }
     if (verbWithArg(line, "wifi", &arg))   { cmdWifi(arg);   return; }
     if (ieq(line, "wasmstat")) { WasmFsApp::statCli(); return; }
     if (verbWithArg(line, "btn", &arg))    { cmdBtn(arg);    return; }
@@ -500,6 +504,58 @@ void SerialCli::cmdBattery() {
                   batteryMv, batteryVoltagePercentage, batteryChangeRate);
 }
 
+void SerialCli::cmdDiary(const char* arg) {
+    if (arg[0] != '\0') {
+        if (!ieq(arg, "clear")) {
+            Serial.println("[err] diary.usage=diary [clear]");
+            return;
+        }
+        if (!BatteryDiary::clear()) {
+            Serial.println("[err] diary.fs=clear failed");
+            return;
+        }
+        Serial.println("[cmd] diary.clear=ok");
+        return;
+    }
+
+    BatteryDiary::Stats stats;
+    if (!BatteryDiary::getStats(&stats)) {
+        Serial.println("[err] diary.fs=unavailable");
+        return;
+    }
+    uint32_t vmin = (stats.min_vcell_mv == UINT32_MAX) ? 0 : stats.min_vcell_mv;
+    Serial.printf("[cmd] diary.stats=boot=%lu checkins=%lu on_s=%lu cycles=%lu "
+                  "vmin=%lu vmax=%lu written=%lu dropped=%lu\n",
+                  (unsigned long)stats.boot_count,
+                  (unsigned long)stats.checkin_count,
+                  (unsigned long)stats.cum_on_time_s,
+                  (unsigned long)stats.charge_cycle_count,
+                  (unsigned long)vmin,
+                  (unsigned long)stats.max_vcell_mv,
+                  (unsigned long)stats.records_written,
+                  (unsigned long)stats.records_dropped);
+
+    BatteryDiary::Record records[8];
+    uint32_t total = 0;
+    size_t count = BatteryDiary::readLastRecords(records, 8, &total);
+    for (size_t i = 0; i < count; ++i) {
+        const BatteryDiary::Record& record = records[i];
+        unsigned socWhole = record.soc_half_pct / 2U;
+        unsigned socTenth = (record.soc_half_pct & 1U) ? 5U : 0U;
+        int crate = (int)record.crate_qtr_pct_hr;
+        const char* sign = (crate < 0) ? "-" : "";
+        unsigned crateAbs = (unsigned)((crate < 0) ? -crate : crate);
+        Serial.printf("[cmd] diary.rec=%lu ev=%s t=%lu mv=%d soc=%u.%u "
+                      "crate=%s%u.%02u\n",
+                      (unsigned long)record.seq,
+                      BatteryDiary::eventName(record.event),
+                      (unsigned long)record.uptime_or_count,
+                      (int)record.vcell_mv, socWhole, socTenth, sign,
+                      crateAbs / 4U, (crateAbs % 4U) * 25U);
+    }
+    Serial.printf("[cmd] diary.done=%lu\n", (unsigned long)total);
+}
+
 void SerialCli::cmdInfo() {
     uint64_t mac = ESP.getEfuseMac();
     Serial.printf("[cmd] info.fw=%s\n",      getFirmwareVersionString());
@@ -529,12 +585,13 @@ void SerialCli::cmdInfo() {
 
 void SerialCli::cmdHelp() {
     Serial.println("[cmd] help=version,info,help,mark <id>,reboot,battery,menutree,"
-                   "screencap,screenstream <off|on [fps]>");
+                   "screencap,screenstream <off|on [fps]>,diary [clear]");
     Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"
                    "fstat,fread,lget,lapply,syncinfo");
 #ifdef CF_TEST_CLI
     Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,mic,"
-                   "wifi <ssid>|<pass>,wasmstat,btn,sleep,rail,gauge,uvlo");
+                   "wifi <ssid>|<pass>,wasmstat,btn,sleep,rail,gauge,uvlo,"
+                   "soak <app|off>");
 #endif
 }
 
@@ -1119,7 +1176,8 @@ void SerialCli::cmdApps() {
     }
 }
 
-void SerialCli::cmdLaunch(const char* arg) {
+bool SerialCli::launchResolved(const char* arg, const char* replyVerb,
+                               int* appIndex) {
     int target = -1;
     if (arg[0] >= '0' && arg[0] <= '9') {
         target = atoi(arg);
@@ -1146,22 +1204,57 @@ void SerialCli::cmdLaunch(const char* arg) {
                     bool abiSupported = WasmFsApp::pendingAbiSupported();
                     AppManager::instance().switchToApp(APP_WASM_HOST);
                     if (!abiSupported) {
-                        Serial.printf("[cmd] launch.error=abi_unsupported abi=%d abimax=%d\n",
-                                      abi, kDeviceHalAbi);
-                        return;
+                        if (ieq(replyVerb, "launch")) {
+                            Serial.printf("[cmd] launch.error=abi_unsupported abi=%d abimax=%d\n",
+                                          abi, kDeviceHalAbi);
+                        } else {
+                            Serial.printf("[err] soak.abi=unsupported abi=%d max=%d\n",
+                                          abi, kDeviceHalAbi);
+                        }
+                        return false;
                     }
-                    Serial.printf("[cmd] launch.ok=blob path=%s\n", e.blobPath.c_str());
-                    return;
+                    if (appIndex) *appIndex = APP_WASM_HOST;
+                    if (ieq(replyVerb, "launch"))
+                        Serial.printf("[cmd] launch.ok=blob path=%s\n", e.blobPath.c_str());
+                    else
+                        Serial.printf("[cmd] soak=%s\n", arg);
+                    return true;
                 }
             }
         }
     }
     if (target < 0) {
-        Serial.printf("[err] unknown app: %s (try `apps`)\n", arg);
-        return;
+        if (ieq(replyVerb, "launch"))
+            Serial.printf("[err] unknown app: %s (try `apps`)\n", arg);
+        else
+            Serial.printf("[err] soak.app=%s\n", arg);
+        return false;
     }
     AppManager::instance().switchToApp((AppIndex)target);
-    Serial.printf("[cmd] launch.ok=%d\n", target);
+    if (appIndex) *appIndex = target;
+    if (ieq(replyVerb, "launch"))
+        Serial.printf("[cmd] launch.ok=%d\n", target);
+    else
+        Serial.printf("[cmd] soak=%s\n", arg);
+    return true;
+}
+
+void SerialCli::cmdLaunch(const char* arg) {
+    int target = -1;
+    launchResolved(arg, "launch", &target);
+}
+
+void SerialCli::cmdSoak(const char* arg) {
+    if (ieq(arg, "off")) {
+        soaking = false;
+        Serial.println("[cmd] soak=off");
+        return;
+    }
+    int target = -1;
+    if (!launchResolved(arg, "soak", &target)) return;
+    soaking = true;
+    BatteryDiary::onFlushMarker((uint32_t)target, batteryVoltage,
+                                batteryVoltagePercentage, batteryChangeRate);
 }
 
 void SerialCli::cmdApp() {

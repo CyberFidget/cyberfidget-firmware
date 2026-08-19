@@ -2,6 +2,7 @@
 // Copyright (c) 2023-2026 Dismo Industries LLC
 
 #include "BatteryManager.h"
+#include "BatteryDiary.h"
 #include "globals.h"
 #include "HAL.h"
 
@@ -64,6 +65,8 @@ void BatteryManager::update() {
     batteryVoltagePercentage = lipo.getSOC();
     batteryVoltage = lipo.getVoltage();
     batteryChangeRate = lipo.getChangeRate();
+    BatteryDiary::onAwakeTick(batteryVoltage, batteryVoltagePercentage,
+                              batteryChangeRate);
 
     const bool voltagePlausible =
         batteryVoltage >= 2.0f && batteryVoltage <= 4.6f;

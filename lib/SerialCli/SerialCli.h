@@ -8,7 +8,7 @@
 
 // Line-buffered Serial command processor for USB UART. The always-on verbs
 // are identification (`version`, `info`, `help`), bench observation/control
-// (`mark <id>`, `reboot`, `battery`), display observation (`menutree`,
+// (`mark <id>`, `reboot`, `battery`, `diary`), display observation (`menutree`,
 // `screencap`, `screenstream`), and the sync-transport family (below). Builds
 // with -DCF_TEST_CLI=1 (the `local_test` env) add device-control verbs for
 // test automation: `apps`, `app`, `launch`, `net`, `mic`, `wifi`, `wasmstat`,
@@ -50,6 +50,7 @@ public:
     // Consumed by AppManager::loop so the display teardown never runs inside
     // command dispatch.
     bool consumeSleepRequest();
+    bool soakActive() const { return soaking; }
 #endif
 
     // Buffer size is exposed for testing and for callers that want to reason
@@ -73,6 +74,7 @@ private:
     void cmdMark(const char* arg);
     void cmdReboot();
     void cmdBattery();
+    void cmdDiary(const char* arg);
 
     // Sync-transport verbs (always compiled). Session state for an
     // in-progress `fwrite` lives in file-scope statics in the .cpp so this
@@ -99,6 +101,8 @@ private:
 #ifdef CF_TEST_CLI
     void cmdApps();
     void cmdLaunch(const char* arg);
+    void cmdSoak(const char* arg);
+    bool launchResolved(const char* arg, const char* replyVerb, int* appIndex);
     void cmdApp();
     void cmdNet();
     void cmdWifi(const char* arg);
@@ -114,6 +118,7 @@ private:
     static constexpr unsigned long kTapReleaseMs = 120;
     unsigned long tapReleaseDueMs[kMaxInjectButtons] = {0};
     bool sleepRequested = false;
+    bool soaking = false;
 #endif
 
     char   buffer[kBufferSize] = {0};

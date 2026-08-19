@@ -6,6 +6,7 @@
 #include "MenuManager.h"
 #include "globals.h"
 #include "PowerManager.h"
+#include "BatteryDiary.h"
 #include "AppDefs.h"
 #include "SerialCli.h"
 #include "LoadoutManifest.h"
@@ -36,6 +37,7 @@ void AppManager::setup() {
     // Mount the filesystem before the first menu build: MenuManager::begin
     // -> buildNestedMenu reads /loadout.json through LoadoutStore.
     LoadoutStore::begin();
+    BatteryDiary::begin(HAL::bootWakeupCauseName());
 
     ESP_LOGI(TAG_MAIN, "AppManager setup complete");
 
@@ -85,6 +87,12 @@ void AppManager::loop() {
     processButtonEvents();
     SerialCli::instance().poll();
 
+#ifdef CF_TEST_CLI
+    if (SerialCli::instance().soakActive()) {
+        millis_APP_LASTINTERACTION = millis_NOW;
+    }
+#endif
+
     if ((millis_NOW - millis_APP_TASK_20MS) >= TASK_20MS) {
         millis_APP_TASK_20MS = millis_NOW;
         runActiveApp();
@@ -95,6 +103,9 @@ void AppManager::loop() {
     }
 
     if (HAL::consumeRuntimeBatteryShutdownRequest()) {
+        BatteryDiary::onRuntimeShutdown(batteryVoltage,
+                                        batteryVoltagePercentage,
+                                        batteryChangeRate);
         powerManager.shutdownForEmptyBattery();
         return;
     }
