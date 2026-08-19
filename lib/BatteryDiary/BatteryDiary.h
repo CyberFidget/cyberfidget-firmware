@@ -13,7 +13,12 @@ constexpr size_t kRecordSize = 16;
 constexpr uint32_t kMaxRecords = 3072;
 constexpr uint32_t kRotationRecords = 1024;
 constexpr uint32_t kRtcCapacity = 384;
-constexpr uint32_t kRtcFlushThreshold = (kRtcCapacity * 3U) / 4U;
+// Flush daily, not at ring capacity: any USB plug or port-open can pulse EN
+// through the auto-reset circuit, and EN-low clears RTC memory - so the
+// buffer's loss bound must stay small. A flush wake costs ~2-3 uAh against a
+// ~250 uA sleep floor, so daily flushing is ~0.04% of standby drain. The
+// large ring remains useful as retry headroom when a flush mount fails.
+constexpr uint32_t kRtcFlushThreshold = 24;
 
 enum Event : uint8_t {
     BOOT = 1,

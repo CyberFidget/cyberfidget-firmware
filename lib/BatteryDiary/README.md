@@ -41,8 +41,14 @@ every five minutes. Hourly timer wakes append only the already-read voltage
 and the check-in count to a 384-record RTC ring (6144 bytes of records plus
 28 bytes of metadata). SOC and charge rate are zero on this fast path so it
 does not add more gauge transactions. A timer wake mounts LittleFS only when
-the RTC ring reaches 288 records or when a sleep-side shutdown verdict must be
-made durable.
+the RTC ring reaches 24 records (roughly daily at the hourly cadence) or when
+a sleep-side shutdown verdict must be made durable. The daily cadence exists
+because RTC memory does not survive an EN-line reset, and both plugging in
+USB and a host opening the serial port can pulse EN through the auto-reset
+circuit - so the un-flushed window is capped at about a day of check-ins. The
+timer-path mount never formats on failure; a failed mount leaves records in
+the RTC ring for the next attempt, and overflow drops are counted honestly in
+the stats block.
 
 Normal boots flush retained RTC records after `LoadoutStore` mounts LittleFS.
 Runtime shutdown records are appended and flushed before display teardown.

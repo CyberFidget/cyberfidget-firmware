@@ -275,7 +275,12 @@ bool appendDirect(Event event, uint32_t time_value, int16_t vcell_mv,
 }
 
 bool mountForTimerFlush() {
-    return LittleFS.begin(true) && ensureDirectory();
+    // No format-on-fail here: this runs unattended on a sleeping device, and
+    // a corrupted filesystem must not be reformatted hourly in the dark. On
+    // mount failure the records simply stay in the RTC ring and the flush
+    // retries at the next threshold crossing; overflow drops are counted in
+    // dropped_pending. The normal boot path keeps the house begin(true).
+    return LittleFS.begin(false) && ensureDirectory();
 }
 
 }  // namespace
