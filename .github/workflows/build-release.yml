@@ -134,10 +134,19 @@ jobs:
             # Releases come from the default branch. Without this, a dispatch
             # from any feature branch would push a release commit onto that
             # branch, tag its HEAD, and publish firmware built from it.
-            if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+            #
+            # Rehearsals are exempt on purpose: a dry run pushes and publishes
+            # nothing, and rehearsing a release-pipeline change from its own
+            # branch BEFORE merging is how two branding bugs were caught that
+            # no local build could reproduce. Blocking that would remove the
+            # safety net rather than add one.
+            if [ "$REF_NAME" != "$DEFAULT_BRANCH" ] && [ "$DRY_RUN" != "true" ]; then
               echo "::error::releases must be cut from $DEFAULT_BRANCH (this run selected '$REF_NAME')"
-              echo "Merge your work first, then dispatch from $DEFAULT_BRANCH."
+              echo "Merge your work first, then dispatch from $DEFAULT_BRANCH -- or tick dry_run to rehearse from here."
               exit 1
+            fi
+            if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+              echo "::warning::rehearsing from '$REF_NAME'. A real release must be cut from $DEFAULT_BRANCH."
             fi
 
             if [ "$CHANNEL" = "release" ]; then
