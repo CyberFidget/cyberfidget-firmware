@@ -64,9 +64,11 @@ on:
 permissions:
   contents: write
 
-# One release at a time. Two concurrent runs would race on version.txt.
+# One release at a time, repository-wide. Deliberately NOT keyed on the ref:
+# the tag namespace is global, so two dispatches from different branches would
+# otherwise be allowed to race each other for the same tag.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release
   cancel-in-progress: false
 
 env:
@@ -96,10 +98,12 @@ jobs:
         env:
           EVENT: ${{ github.event_name }}
           REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           IN_VERSION: ${{ inputs.version }}
           IN_CHANNEL: ${{ inputs.channel }}
           IN_ITERATION: ${{ inputs.iteration }}
           IN_DRY_RUN: ${{ inputs.dry_run }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
 
@@ -127,17 +131,43 @@ jobs:
               exit 1
             fi
 
+            # Releases come from the default branch. Without this, a dispatch
+            # from any feature branch would push a release commit onto that
+            # branch, tag its HEAD, and publish firmware built from it.
+            if [ "$REF_NAME" != "$DEFAULT_BRANCH" ]; then
+              echo "::error::releases must be cut from $DEFAULT_BRANCH (this run selected '$REF_NAME')"
+              echo "Merge your work first, then dispatch from $DEFAULT_BRANCH."
+              exit 1
+            fi
+
             if [ "$CHANNEL" = "release" ]; then
               TAG="v$VERSION"
             elif [ -n "$IN_ITERATION" ]; then
               TAG="v$VERSION-$CHANNEL$IN_ITERATION"
             else
-              # Auto-pick the next free iteration so rc2 never lands on rc1.
-              N=1
-              while git rev-parse -q --verify "refs/tags/v$VERSION-$CHANNEL$N" >/dev/null 2>&1; do
-                N=$((N + 1))
-              done
-              TAG="v$VERSION-$CHANNEL$N"
+              # Highest existing iteration + 1, NOT the first free slot. Filling
+              # a gap (rc1 and rc3 exist, rc2 was deleted) would publish an rc2
+              # that is newer than rc3, which reads as a rollback to anyone
+              # watching the releases page.
+              HIGHEST_N="$(git tag --list "v$VERSION-$CHANNEL*" \
+                            | sed "s/^v$VERSION-$CHANNEL//" \
+                            | grep -E '^[0-9]+$' \
+                            | sort -n | tail -n1 || true)"
+              TAG="v$VERSION-$CHANNEL$(( ${HIGHEST_N:-0} + 1 ))"
+            fi
+
+            # A prerelease for a version that already shipped as Stable is
+            # almost always a mistake -- v1.4.0-rc1 sorts BEFORE v1.4.0, so it
+            # would present as a downgrade.
+            if [ "$CHANNEL" != "release" ] \
+               && git rev-parse -q --verify "refs/tags/v$VERSION" >/dev/null 2>&1; then
+              if [ "${{ inputs.allow_downgrade }}" = "true" ]; then
+                echo "::warning::v$VERSION already shipped as Stable; cutting a prerelease for it on the override."
+              else
+                echo "::error::v$VERSION has already shipped as Stable; a $CHANNEL for it would read as a downgrade."
+                echo "Pick the next version, or re-run with allow_downgrade if this is deliberate."
+                exit 1
+              fi
             fi
 
             if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
@@ -145,17 +175,30 @@ jobs:
               exit 1
             fi
 
+            # A release can exist without its tag -- someone drafting notes in
+            # the UI creates exactly that. action-gh-release would find that
+            # draft by name and overwrite its body, assets, and prerelease flag.
+            if gh release view "$TAG" >/dev/null 2>&1; then
+              echo "::error::a GitHub release named $TAG already exists (possibly a draft)."
+              echo "Delete or rename it first; this workflow would otherwise overwrite it."
+              exit 1
+            fi
+
             # A misclick must not publish 1.2.0 over a shipped 1.4.2.
             #
-            # The comparison base is the highest already-RELEASED version, not
-            # version.txt: version.txt is pre-bumped to the upcoming target and
-            # then deliberately stays put across an rc1/rc2/rc3 series, so
-            # comparing against it would reject every legitimate RC. Equal is
-            # allowed (that is how rc1 is promoted to Stable); the exact-tag
-            # check above is what stops a true duplicate.
+            # Only STABLE tags count as "released". Prerelease tags are excluded
+            # deliberately: a stray v2.0.0-rc1 left behind by an abandoned
+            # release would otherwise register as 2.0.0 and block every
+            # legitimate 1.x release from then on.
+            #
+            # The base is the highest released version rather than version.txt,
+            # because version.txt is pre-bumped to the upcoming target and then
+            # stays put across an rc1/rc2/rc3 series -- comparing against it
+            # would reject every legitimate RC. Equality is allowed: that is how
+            # an RC series is promoted to Stable.
             HIGHEST="$(git tag --list 'v*' \
-                        | sed 's/^v//; s/-.*$//' \
-                        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+                        | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+                        | sed 's/^v//' \
                         | sort -V | tail -n1 || true)"
             if [ -n "$HIGHEST" ]; then
               LOWEST="$(printf '%s\n%s\n' "$VERSION" "$HIGHEST" | sort -V | head -n1)"
@@ -217,12 +260,20 @@ jobs:
       # Bump version.txt and close out the changelog (Path B only).
       # Done before the build so the built binary reports the release version.
       # ---------------------------------------------------------------------
+      # The changelog is stamped for Stable only, mirroring the post-release
+      # bump rule: an RC series iterates toward one Stable target, so the notes
+      # stay in [Unreleased] across rc1/rc2/rc3 and are closed out once, when
+      # Stable ships. Stamping at rc1 instead would empty [Unreleased], so rc2
+      # would abort for having no summary -- or, if fixes landed in between,
+      # produce a second [1.3.3] heading and a duplicate link reference.
+      # RC notes still read from [Unreleased]; nothing is lost by not stamping.
       - name: Bump version.txt and stamp the changelog
         if: github.event_name == 'workflow_dispatch'
         env:
           VERSION: ${{ steps.plan.outputs.version }}
           TAG: ${{ steps.plan.outputs.tag }}
           PREVIOUS: ${{ steps.plan.outputs.previous }}
+          CHANNEL: ${{ steps.plan.outputs.channel }}
         run: |
           set -euo pipefail
           git config user.name  "github-actions[bot]"
@@ -230,10 +281,15 @@ jobs:
 
           printf '%s\n' "$VERSION" > version.txt
 
-          # An empty [Unreleased] section fails here on purpose: a release with
-          # no human summary is a release nobody can read.
-          python scripts/release_notes.py stamp \
-            --version "$VERSION" --tag "$TAG" --previous-tag "$PREVIOUS"
+          # An empty [Unreleased] section fails on purpose, for every channel:
+          # a release with no human summary is a release nobody can read.
+          if [ "$CHANNEL" = "release" ]; then
+            python scripts/release_notes.py stamp \
+              --version "$VERSION" --tag "$TAG" --previous-tag "$PREVIOUS"
+          else
+            python scripts/release_notes.py extract > /dev/null
+            echo "$CHANNEL release: leaving [Unreleased] open for the Stable promotion."
+          fi
 
           if git diff --quiet -- version.txt CHANGELOG.md; then
             echo "version.txt and CHANGELOG.md already current, nothing to commit"
@@ -245,18 +301,37 @@ jobs:
       # After stamping, the summary sits under the version heading; on the tag
       # path no stamp ran, so it is still under [Unreleased]. The helper tries
       # both. Always leaves a readable file behind so body_path is never empty.
+      # Written to RUNNER_TEMP, never into the checkout. An untracked file in the
+      # workspace makes `git status --porcelain` non-empty, which generate_version.py
+      # reads as a dirty tree -- that is how a clean CI build came out branded
+      # "1.3.3+2578226.dirty". Release binaries must never be marked dirty.
       - name: Collect release summary
         env:
           VERSION: ${{ steps.plan.outputs.version }}
+          SUMMARY: ${{ runner.temp }}/release-summary.md
         run: |
           set -euo pipefail
-          python scripts/release_notes.py section --version "$VERSION" > release-summary.md
-          if [ ! -s release-summary.md ]; then
+          python scripts/release_notes.py section --version "$VERSION" > "$SUMMARY"
+          if [ ! -s "$SUMMARY" ]; then
             echo "::warning::No changelog summary found; release notes will be the commit list only."
-            printf '_No summary was recorded in CHANGELOG.md for this release._\n' > release-summary.md
+            printf '_No summary was recorded in CHANGELOG.md for this release._\n' > "$SUMMARY"
           fi
+          echo "SUMMARY_PATH=$SUMMARY" >> "$GITHUB_ENV"
           echo "--- release summary ---"
-          cat release-summary.md
+          cat "$SUMMARY"
+
+      # The build must start from a pristine tree, or the binary is branded
+      # .dirty and the version check below rejects it. Fail here instead, where
+      # the message says which file is responsible.
+      - name: Assert a clean tree before building
+        run: |
+          set -euo pipefail
+          if [ -n "$(git status --porcelain)" ]; then
+            echo "::error::working tree is not clean; a release binary would be branded .dirty"
+            git status --porcelain
+            exit 1
+          fi
+          echo "Working tree clean."
 
       # ---------------------------------------------------------------------
       # Build
@@ -264,14 +339,18 @@ jobs:
       - name: Install PlatformIO
         run: pip install "platformio==${PLATFORMIO_VERSION}" esptool
 
-      # GITHUB_REF_NAME is what scripts/generate_version.py reads to decide the
-      # build type and the prerelease suffix. On the tag path it is already the
-      # tag. On the dispatch path it would be the branch name, which would brand
-      # a release binary "ci-dev" with no -rc1 suffix, so point it at the tag we
-      # are about to create. Both paths then produce identical version strings.
+      # scripts/generate_version.py decides the build type and prerelease suffix
+      # from the tag. On the tag path GITHUB_REF_NAME already is the tag; on the
+      # dispatch path it is the branch, because the tag does not exist yet.
+      #
+      # Overriding GITHUB_REF_NAME here does NOT work: GitHub re-injects its own
+      # GITHUB_* defaults into the process environment, so the step-level value
+      # is silently discarded and the binary comes out branded "1.3.3 / ci-dev"
+      # while the run is cutting v1.3.3-rc2. CYBERFIDGET_RELEASE_TAG is ours and
+      # nothing stomps it. Both paths then produce identical version strings.
       - name: Build firmware
         env:
-          GITHUB_REF_NAME: ${{ steps.plan.outputs.tag }}
+          CYBERFIDGET_RELEASE_TAG: ${{ steps.plan.outputs.tag }}
         run: pio run -e local
 
       # Cheap insurance against shipping a binary that reports the wrong thing.
@@ -288,11 +367,20 @@ jobs:
 
           FULL="$(field FW_VERSION_FULL_STRING)"
           TYPE="$(field FW_BUILD_TYPE)"
+          DIRTY="$(sed -n 's/^#define FW_GIT_DIRTY \([0-9]*\)$/\1/p' "$HEADER")"
           EXPECTED_BASE="${TAG#v}"
 
-          echo "Embedded: $FULL (type=$TYPE)"
+          echo "Embedded: $FULL (type=$TYPE, dirty=$DIRTY)"
           echo "Expected base: $EXPECTED_BASE"
 
+          # Checked explicitly: the base comparison below stops at the first
+          # "+", so a ".dirty" suffix living in the build-metadata segment would
+          # otherwise sail straight through it.
+          if [ "$DIRTY" != "0" ]; then
+            echo "::error::built from a dirty tree; a release binary must be reproducible from a commit"
+            cat "$HEADER"
+            exit 1
+          fi
           if [ "${FULL%%+*}" != "$EXPECTED_BASE" ]; then
             echo "::error::embedded version '$FULL' does not match tag '$TAG'"
             cat "$HEADER"
@@ -386,18 +474,19 @@ jobs:
       # ---------------------------------------------------------------------
       # Publish. Nothing below this line runs on a dry run.
       # ---------------------------------------------------------------------
-      - name: Push version bump
-        if: github.event_name == 'workflow_dispatch' && steps.plan.outputs.dry_run != 'true'
-        run: git push origin "HEAD:${{ github.ref_name }}"
-
-      - name: Create and push tag
+      # Branch and tag go up in ONE atomic push. Pushed separately, a rejected
+      # branch push after a successful tag push (or the reverse) leaves the
+      # repository in a half-released state that the next run cannot recover
+      # from on its own. --atomic makes the server apply both refs or neither.
+      - name: Push release commit and tag
         if: github.event_name == 'workflow_dispatch' && steps.plan.outputs.dry_run != 'true'
         env:
           TAG: ${{ steps.plan.outputs.tag }}
+          BRANCH: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           git tag -a "$TAG" -m "$TAG"
-          git push origin "refs/tags/$TAG"
+          git push --atomic origin "HEAD:$BRANCH" "refs/tags/$TAG"
 
       - name: Create GitHub Release
         if: steps.plan.outputs.dry_run != 'true'
@@ -407,7 +496,7 @@ jobs:
           name: ${{ steps.plan.outputs.tag }}
           # The changelog summary heads the notes; GitHub appends the full
           # commit list since the previous release underneath it.
-          body_path: release-summary.md
+          body_path: ${{ env.SUMMARY_PATH }}
           generate_release_notes: true
           draft: false
           prerelease: ${{ steps.plan.outputs.prerelease }}

@@ -69,8 +69,16 @@ def run_compiler(check_only, selected_kind=None):
             skip_check(message)
             return
         raise RuntimeError(message)
+    # Tracked per asset kind, not globally: the sprite and mesh compilers
+    # resolve independently, so one being unreachable must not stop the other's
+    # assets from being checked. Skipping every mesh asset because the sprite
+    # compiler is missing would silently pass real mesh drift.
+    unavailable: set[str] = set()
+
     for asset_kind, cli, source, output in jobs:
         if selected_kind and asset_kind != selected_kind:
+            continue
+        if asset_kind in unavailable:
             continue
         command = [node, str(cli)]
         if check_only:
@@ -82,11 +90,12 @@ def run_compiler(check_only, selected_kind=None):
             str(output.relative_to(PROJECT_DIR)),
         ])
         completed = subprocess.run(command, cwd=PROJECT_DIR, check=False)
-        # Exit code 3 means the compiler module isn't reachable, which is not
+        # Exit code 3 means that compiler module isn't reachable, which is not
         # the same as drift. Only the pre-build check tolerates it.
         if completed.returncode == COMPILER_UNAVAILABLE and check_only:
+            unavailable.add(asset_kind)
             skip_check(f"the {asset_kind} compiler is not available on this machine")
-            return
+            continue
         if completed.returncode:
             raise RuntimeError(
                 f"{asset_kind} {'drift check' if check_only else 'regeneration'} failed for "
