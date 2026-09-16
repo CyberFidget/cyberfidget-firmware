@@ -3,16 +3,10 @@
     "version": "1.0.0",
     "dependencies": [
         {
-            "name": "BatteryManager"
-        },
-        {
             "name": "HAL"
         },
         {
-            "name": "globals"
-        },
-        {
-            "name": "SparkFun_MAX1704x_Fuel_Gauge_Arduino_Library"
+            "name": "Globals"
         }
     ]
 }

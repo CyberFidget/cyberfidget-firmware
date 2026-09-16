@@ -12,13 +12,10 @@
             "name": "ButtonManager"
         },
         {
-            "name": "BootAnimation"
+            "name": "Images"
         },
         {
-            "name": "images"
-        },
-        {
-            "name": "globals"
+            "name": "Globals"
         }
     ]
 }

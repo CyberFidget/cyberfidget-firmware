@@ -13,7 +13,8 @@
 #   3. WASM standalone version.h generation (skips if emcc absent — full
 #      WASM build remains in T-002 territory)
 #   4. Static checks on emitted code (HAL getters, banner call, WASM exports)
-#   5. CI workflow file sanity (tag-assertion step, workflow_dispatch trigger)
+#   5. CI workflow file sanity (tag/version agreement, workflow_dispatch
+#      trigger, tag-derived build branding, pinned toolchain)
 #
 # Out of scope (T-002, collaborator):
 #   - Flashing, serial CLI verification, BLE, App Builder UI, real CI runs.
@@ -86,16 +87,21 @@ done
 # and confirm FW_VERSION_PRERELEASE / FW_VERSION_STRING / FW_VERSION_FULL_STRING
 # all carry the suffix (semver item 9).
 H_pre="$TMP/v_prerelease.h"
+# The semver base comes from version.txt, not from the simulated tag -- only
+# the suffix is lifted off the ref. Read it rather than hardcoding it: these
+# assertions were pinned to 1.1.0 and went quietly red the moment version.txt
+# moved on, which is exactly the kind of silent rot this battery exists to catch.
+BASE_VER="$(tr -d '[:space:]' < "$REPO_ROOT/version.txt")"
 GITHUB_ACTIONS=true GITHUB_REF_NAME="v9.9.9-rc1" \
     python "$REPO_ROOT/scripts/generate_version.py" \
         --out "$H_pre" --repo-root "$REPO_ROOT" >/dev/null 2>&1
 if grep -q '#define FW_VERSION_PRERELEASE "rc1"' "$H_pre" && \
-   grep -qF 'FW_VERSION_STRING "1.1.0-rc1"' "$H_pre"; then
+   grep -qF "FW_VERSION_STRING \"$BASE_VER-rc1\"" "$H_pre"; then
     pass "CI tag with -rc1 suffix populates FW_VERSION_PRERELEASE and FW_VERSION_STRING"
 else
-    fail "prerelease suffix not propagated correctly (expected rc1 in macros)"
+    fail "prerelease suffix not propagated correctly (expected $BASE_VER-rc1 in macros)"
 fi
-if grep -qF 'FW_VERSION_FULL_STRING "1.1.0-rc1+' "$H_pre"; then
+if grep -qF "FW_VERSION_FULL_STRING \"$BASE_VER-rc1+" "$H_pre"; then
     pass "FW_VERSION_FULL_STRING includes prerelease suffix"
 else
     fail "FW_VERSION_FULL_STRING missing prerelease suffix"
@@ -110,6 +116,36 @@ if grep -q '#define FW_VERSION_PRERELEASE ""' "$H_rel"; then
     pass "release tag (no suffix) leaves FW_VERSION_PRERELEASE empty"
 else
     fail "release tag did not leave FW_VERSION_PRERELEASE empty"
+fi
+
+# 1h2. CYBERFIDGET_RELEASE_TAG wins over GITHUB_REF_NAME.
+# The one-shot release workflow builds before the tag exists, so at build time
+# GITHUB_REF_NAME is the branch. Overriding GITHUB_REF_NAME in a step's env:
+# block does NOT work -- GitHub re-injects its own GITHUB_* defaults and the
+# override is discarded, which shipped a binary branded "ci-dev" on a run that
+# was cutting v1.3.3-rc2. This variable is ours, so nothing stomps it.
+H_relref="$TMP/v_release_ref.h"
+GITHUB_ACTIONS=true GITHUB_REF_NAME="some-feature-branch" \
+CYBERFIDGET_RELEASE_TAG="v9.9.9-rc7" \
+    python "$REPO_ROOT/scripts/generate_version.py" \
+        --out "$H_relref" --repo-root "$REPO_ROOT" >/dev/null 2>&1
+if grep -q '#define FW_VERSION_PRERELEASE "rc7"' "$H_relref" && \
+   grep -q '#define FW_BUILD_TYPE "prerelease"' "$H_relref"; then
+    pass "CYBERFIDGET_RELEASE_TAG overrides a branch GITHUB_REF_NAME"
+else
+    fail "CYBERFIDGET_RELEASE_TAG did not override GITHUB_REF_NAME"
+fi
+
+# 1h3. Without it, a branch ref still classifies as ci-dev (no accidental promotion).
+H_branch="$TMP/v_branch.h"
+GITHUB_ACTIONS=true GITHUB_REF_NAME="some-feature-branch" \
+    python "$REPO_ROOT/scripts/generate_version.py" \
+        --out "$H_branch" --repo-root "$REPO_ROOT" >/dev/null 2>&1
+if grep -q '#define FW_BUILD_TYPE "ci-dev"' "$H_branch" && \
+   grep -q '#define FW_VERSION_PRERELEASE ""' "$H_branch"; then
+    pass "a branch ref with no release tag stays ci-dev"
+else
+    fail "branch ref did not classify as ci-dev"
 fi
 
 # 1b. Override env var → FW_BUILD_TYPE matches override
@@ -297,12 +333,52 @@ section "5. CI workflow file sanity"
 # ----------------------------------------------------------------------------
 
 WF=".github/workflows/build-release.yml"
-assert_grep 'Verify tag matches version.txt' "$WF" \
-    "build-release.yml has tag-assertion step"
+# Assert the behavior, not the step name: the tag/version.txt agreement check
+# moved into the "Resolve release" step when the one-shot release path landed,
+# and a test pinned to a step title fails on a rename that changed nothing.
+assert_grep 'does not match version.txt' "$WF" \
+    "build-release.yml asserts the tag agrees with version.txt"
 assert_grep 'workflow_dispatch:' "$WF" \
     "build-release.yml supports workflow_dispatch"
-assert_grep 'CYBERFIDGET_BUILD_TYPE_OVERRIDE' "$WF" \
-    "build-release.yml passes CYBERFIDGET_BUILD_TYPE_OVERRIDE to build"
+
+# The release build is branded from the tag it is about to create, via
+# CYBERFIDGET_RELEASE_TAG, so generate_version.py classifies a dispatched
+# release exactly as it classifies a tag push. It must NOT be GITHUB_REF_NAME:
+# GitHub re-injects its own GITHUB_* defaults, silently discarding a step-level
+# override, which branded a release binary "ci-dev". CYBERFIDGET_BUILD_TYPE_OVERRIDE
+# is not passed here on purpose either: forcing a build type would defeat the
+# embedded-version check below, which is the stronger guarantee. Both overrides
+# still work standalone and are covered in section 1.
+assert_grep 'CYBERFIDGET_RELEASE_TAG: ' "$WF" \
+    "build-release.yml brands the build from the release tag"
+if grep -qE '^\s+GITHUB_REF_NAME:' "$WF"; then
+    fail "build-release.yml tries to override GITHUB_REF_NAME (GitHub discards it)"
+else
+    pass "build-release.yml does not rely on overriding GITHUB_REF_NAME"
+fi
+assert_grep 'Verify embedded version matches the tag' "$WF" \
+    "build-release.yml verifies the built binary reports the tag"
+assert_grep 'platformio==' "$WF" \
+    "build-release.yml pins the PlatformIO version"
+
+# Guards added after an adversarial review of the release state machine. Each
+# one closes a way to publish something wrong; grep-level coverage here is a
+# tripwire against a future edit quietly dropping one.
+assert_grep 'releases must be cut from' "$WF" \
+    "build-release.yml refuses to release from a non-default branch"
+assert_grep 'gh release view' "$WF" \
+    "build-release.yml refuses to overwrite an existing release or draft"
+assert_grep 'push --atomic' "$WF" \
+    "build-release.yml pushes the release commit and tag atomically"
+assert_grep 'FW_GIT_DIRTY' "$WF" \
+    "build-release.yml rejects a binary built from a dirty tree"
+assert_grep 'Assert a clean tree before building' "$WF" \
+    "build-release.yml asserts a clean tree before building"
+if grep -qE '^concurrency:' -A2 "$WF" && grep -qE '^\s+group: release$' "$WF"; then
+    pass "build-release.yml serializes releases repository-wide, not per-ref"
+else
+    fail "build-release.yml concurrency group is not repository-wide"
+fi
 
 # ----------------------------------------------------------------------------
 echo ""

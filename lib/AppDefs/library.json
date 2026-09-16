@@ -2,29 +2,77 @@
     "name": "AppDefs",
     "version": "1.0.0",
     "dependencies": [
-        {"name": "LoadoutManifest"},
-        {"name": "PowerManager"},
-        {"name": "BootAnimation"},
-        {"name": "MenuManager"},
-        {"name": "Flashlight"},
-        {"name": "Booper"},
-        {"name": "MatrixScreensaver"},
-        {"name": "BreakoutGame"},
-        {"name": "DinoGame"},
-        {"name": "ClockDisplay"},
-        {"name": "SimonSaysGame"},
-        {"name": "SPHFluidGame"},
-        {"name": "ExampleScreens"},
-        {"name": "ReactionTimeGame"},
-        {"name": "SerialDisplay"},
-        {"name": "StratagemGame"},
-        {"name": "GraveyardScreensaver"},
-        {"name": "Ghosts"},
-        {"name": "Eye"},
-        {"name": "CyberFidgie"},
-        {"name": "Splooty"},
-        {"name": "Spaceship"},
-        {"name": "MusicPlayerApp"},
-        {"name": "WebPortalApp"}
+        {
+            "name": "LoadoutManifest"
+        },
+        {
+            "name": "PowerManager"
+        },
+        {
+            "name": "BootAnimation"
+        },
+        {
+            "name": "MenuManager"
+        },
+        {
+            "name": "Flashlight"
+        },
+        {
+            "name": "Booper"
+        },
+        {
+            "name": "MatrixScreensaver"
+        },
+        {
+            "name": "BreakoutGame"
+        },
+        {
+            "name": "DinoGame"
+        },
+        {
+            "name": "ClockDisplay"
+        },
+        {
+            "name": "SimonSaysGame"
+        },
+        {
+            "name": "SPHFluidGame"
+        },
+        {
+            "name": "ExampleScreens"
+        },
+        {
+            "name": "ReactionTimeGame"
+        },
+        {
+            "name": "SerialDisplay"
+        },
+        {
+            "name": "StratagemGame"
+        },
+        {
+            "name": "GraveyardScreensaver"
+        },
+        {
+            "name": "Ghosts"
+        },
+        {
+            "name": "Eye"
+        },
+        {
+            "name": "CyberFidgie"
+        },
+        {
+            "name": "Splooty"
+        },
+        {
+            "name": "Spaceship"
+        },
+        {
+            "name": "MusicPlayerApp"
+        },
+        {
+            "name": "WebPortalApp"
+        }
     ]
 }
