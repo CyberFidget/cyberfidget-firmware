@@ -2,11 +2,23 @@
     "name": "AppManager",
     "version": "1.0.0",
     "dependencies": [
-        {"name": "LoadoutManifest"},
-        {"name": "PowerManager"},
-        {"name": "HAL"},
-        {"name": "AppDefs"},
-        {"name": "MenuManager"},
-        {"name": "globals"}
+        {
+            "name": "LoadoutManifest"
+        },
+        {
+            "name": "PowerManager"
+        },
+        {
+            "name": "HAL"
+        },
+        {
+            "name": "AppDefs"
+        },
+        {
+            "name": "MenuManager"
+        },
+        {
+            "name": "Globals"
+        }
     ]
 }

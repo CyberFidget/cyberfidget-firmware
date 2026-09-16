@@ -1,18 +1,25 @@
 # =============================================================================
-# build-release.yml — Build firmware and attach binary to GitHub releases
+# build-release.yml -- cut a firmware release
 # =============================================================================
-# Trigger: Push a tag like v1.0, v2.3.1, etc.
+# Two ways in, both supported (see docs/reference/release-process.md):
 #
-# What it does:
-#   1. Builds firmware using PlatformIO (same as local build)
-#   2. merge_firmware.py runs automatically as a post-build script
-#   3. Attaches merged_firmware.bin to the GitHub release
+#   Path A -- push a tag (git tag v1.3.3 && git push origin v1.3.3)
+#             Builds that exact tag and publishes the release. Fastest route
+#             for an emergency hotfix.
 #
-# To create a release:
-#   git tag v1.0
-#   git push origin v1.0
-#   → Go to GitHub → Releases → Draft from tag → Publish
-#   → Or let this workflow create the release automatically
+#   Path B -- Actions > this workflow > "Run workflow"
+#             Does the whole ritual in one shot: bump version.txt, commit it,
+#             stamp CHANGELOG.md, create and push the tag, build, publish the
+#             release, and (for a Stable release) make the post-release bump
+#             so subsequent dev builds advertise the next version.
+#
+# Path B exists because doing it by hand is six commands with three chances to
+# forget one, and forgetting the post-release bump is silent until weeks later.
+#
+# Note on the tag push below: GitHub deliberately does NOT re-trigger workflows
+# for refs pushed with the default GITHUB_TOKEN, so Path B pushing a tag does
+# not kick off a duplicate Path A run. Do not "fix" this with a PAT without
+# adding a guard first.
 # =============================================================================
 
 name: Build & Release Firmware
@@ -23,52 +30,284 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      build_type:
-        description: 'Override build type label (e.g. ci-nightly, beta)'
+      version:
+        description: 'Release version, no leading v (e.g. 1.3.3)'
+        required: true
+        type: string
+      channel:
+        description: 'Release tier'
+        required: true
+        default: 'rc'
+        type: choice
+        options: [rc, beta, alpha, release]
+      iteration:
+        description: 'Iteration number for rc/beta/alpha. Blank = next free one'
         required: false
-        default: 'ci-nightly'
+        type: string
+      post_release_bump:
+        description: 'Post-release bump of version.txt (Stable releases only)'
+        required: true
+        default: 'patch'
+        type: choice
+        options: [patch, minor, major, skip]
+      dry_run:
+        description: 'Rehearse: build and show the plan, but push and publish nothing'
+        required: false
+        default: false
+        type: boolean
+      allow_downgrade:
+        description: 'Permit a version lower than the highest already-released one'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
 
+# One release at a time. Two concurrent runs would race on version.txt.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # Pinned deliberately. An unpinned `pip install platformio` is what broke
+  # every release build in 2026-09: 6.2.0 began resolving the dependencies
+  # declared by private libraries under lib/, which surfaced long-dormant
+  # junk entries. Bump this on purpose, with a build to prove it, never by
+  # drive-by. Keep it in step with what developers run locally.
+  PLATFORMIO_VERSION: '6.2.0'
+
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # full history so generate_version.py can extract commit metadata
+          fetch-depth: 0   # full history + tags: generate_version.py and the
+                           # iteration auto-pick both need them
 
-      - name: Verify tag matches version.txt
-        if: startsWith(github.ref, 'refs/tags/v')
+      # ---------------------------------------------------------------------
+      # Work out what we are releasing, before doing anything irreversible.
+      # ---------------------------------------------------------------------
+      - name: Resolve release
+        id: plan
+        env:
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          IN_VERSION: ${{ inputs.version }}
+          IN_CHANNEL: ${{ inputs.channel }}
+          IN_ITERATION: ${{ inputs.iteration }}
+          IN_DRY_RUN: ${{ inputs.dry_run }}
         run: |
-          TAG_VER="${GITHUB_REF_NAME#v}"
-          TAG_VER="${TAG_VER%%-*}"   # strip -rc1/-alpha/-beta suffixes
-          FILE_VER=$(tr -d '[:space:]' < version.txt)
-          if [ "$TAG_VER" != "$FILE_VER" ]; then
-            echo "::error::tag $GITHUB_REF_NAME (parsed '$TAG_VER') does not match version.txt '$FILE_VER'"
-            echo "Bump version.txt to match the tag, or retag to match version.txt."
-            exit 1
+          set -euo pipefail
+
+          if [ "$EVENT" = "push" ]; then
+            # Path A: the tag is the source of truth.
+            TAG="$REF_NAME"
+            VERSION="${TAG#v}"
+            VERSION="${VERSION%%-*}"
+            FILE_VER="$(tr -d '[:space:]' < version.txt)"
+            if [ "$VERSION" != "$FILE_VER" ]; then
+              echo "::error::tag $TAG (parsed '$VERSION') does not match version.txt '$FILE_VER'"
+              echo "Bump version.txt to match the tag, or retag to match version.txt."
+              exit 1
+            fi
+            CHANNEL="tag"
+            DRY_RUN="false"
+          else
+            # Path B: build the tag from the form inputs.
+            VERSION="$IN_VERSION"
+            CHANNEL="$IN_CHANNEL"
+            DRY_RUN="$IN_DRY_RUN"
+
+            if ! printf '%s' "$VERSION" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "::error::version must be MAJOR.MINOR.PATCH with no leading v (got '$VERSION')"
+              exit 1
+            fi
+
+            if [ "$CHANNEL" = "release" ]; then
+              TAG="v$VERSION"
+            elif [ -n "$IN_ITERATION" ]; then
+              TAG="v$VERSION-$CHANNEL$IN_ITERATION"
+            else
+              # Auto-pick the next free iteration so rc2 never lands on rc1.
+              N=1
+              while git rev-parse -q --verify "refs/tags/v$VERSION-$CHANNEL$N" >/dev/null 2>&1; do
+                N=$((N + 1))
+              done
+              TAG="v$VERSION-$CHANNEL$N"
+            fi
+
+            if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null 2>&1; then
+              echo "::error::tag $TAG already exists. Pick another iteration, or delete the tag first."
+              exit 1
+            fi
+
+            # A misclick must not publish 1.2.0 over a shipped 1.4.2.
+            #
+            # The comparison base is the highest already-RELEASED version, not
+            # version.txt: version.txt is pre-bumped to the upcoming target and
+            # then deliberately stays put across an rc1/rc2/rc3 series, so
+            # comparing against it would reject every legitimate RC. Equal is
+            # allowed (that is how rc1 is promoted to Stable); the exact-tag
+            # check above is what stops a true duplicate.
+            HIGHEST="$(git tag --list 'v*' \
+                        | sed 's/^v//; s/-.*$//' \
+                        | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
+                        | sort -V | tail -n1 || true)"
+            if [ -n "$HIGHEST" ]; then
+              LOWEST="$(printf '%s\n%s\n' "$VERSION" "$HIGHEST" | sort -V | head -n1)"
+              if [ "$VERSION" != "$HIGHEST" ] && [ "$LOWEST" = "$VERSION" ]; then
+                if [ "${{ inputs.allow_downgrade }}" = "true" ]; then
+                  echo "::warning::$VERSION is below the highest released version $HIGHEST; proceeding on the downgrade override."
+                else
+                  echo "::error::refusing to release $VERSION: it is lower than the highest released version $HIGHEST."
+                  echo "Re-run with allow_downgrade if this is deliberate."
+                  exit 1
+                fi
+              fi
+            fi
           fi
-          echo "Tag $GITHUB_REF_NAME matches version.txt $FILE_VER ✓"
+
+          # Prerelease for anything that is not a bare vX.Y.Z tag.
+          if printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            PRERELEASE="false"
+          else
+            PRERELEASE="true"
+          fi
+
+          # Previous release tag, for the changelog compare link.
+          PREVIOUS="$(git tag --list 'v*' --sort=-v:refname \
+                       | grep -vx "$TAG" | head -n1 || true)"
+
+          {
+            echo "tag=$TAG"
+            echo "version=$VERSION"
+            echo "channel=$CHANNEL"
+            echo "prerelease=$PRERELEASE"
+            echo "previous=$PREVIOUS"
+            echo "dry_run=$DRY_RUN"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "### Release plan"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Tag | \`$TAG\` |"
+            echo "| Version | \`$VERSION\` |"
+            echo "| Channel | \`$CHANNEL\` |"
+            echo "| Pre-release | \`$PRERELEASE\` |"
+            echo "| Previous release | \`${PREVIOUS:-none}\` |"
+            echo "| Dry run | \`$DRY_RUN\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::warning title=Dry run::Building only. No commit, tag, or release will be published."
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: Install PlatformIO
-        run: pip install platformio esptool
+      # ---------------------------------------------------------------------
+      # Bump version.txt and close out the changelog (Path B only).
+      # Done before the build so the built binary reports the release version.
+      # ---------------------------------------------------------------------
+      - name: Bump version.txt and stamp the changelog
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          TAG: ${{ steps.plan.outputs.tag }}
+          PREVIOUS: ${{ steps.plan.outputs.previous }}
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+          printf '%s\n' "$VERSION" > version.txt
+
+          # An empty [Unreleased] section fails here on purpose: a release with
+          # no human summary is a release nobody can read.
+          python scripts/release_notes.py stamp \
+            --version "$VERSION" --tag "$TAG" --previous-tag "$PREVIOUS"
+
+          if git diff --quiet -- version.txt CHANGELOG.md; then
+            echo "version.txt and CHANGELOG.md already current, nothing to commit"
+          else
+            git add version.txt CHANGELOG.md
+            git commit -m "chore(release): $TAG"
+          fi
+
+      # After stamping, the summary sits under the version heading; on the tag
+      # path no stamp ran, so it is still under [Unreleased]. The helper tries
+      # both. Always leaves a readable file behind so body_path is never empty.
+      - name: Collect release summary
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          python scripts/release_notes.py section --version "$VERSION" > release-summary.md
+          if [ ! -s release-summary.md ]; then
+            echo "::warning::No changelog summary found; release notes will be the commit list only."
+            printf '_No summary was recorded in CHANGELOG.md for this release._\n' > release-summary.md
+          fi
+          echo "--- release summary ---"
+          cat release-summary.md
+
+      # ---------------------------------------------------------------------
+      # Build
+      # ---------------------------------------------------------------------
+      - name: Install PlatformIO
+        run: pip install "platformio==${PLATFORMIO_VERSION}" esptool
+
+      # GITHUB_REF_NAME is what scripts/generate_version.py reads to decide the
+      # build type and the prerelease suffix. On the tag path it is already the
+      # tag. On the dispatch path it would be the branch name, which would brand
+      # a release binary "ci-dev" with no -rc1 suffix, so point it at the tag we
+      # are about to create. Both paths then produce identical version strings.
       - name: Build firmware
         env:
-          # workflow_dispatch invocations brand their builds via this var.
-          # Tag-triggered builds leave it empty so generate_version.py picks
-          # "release" / "prerelease" / "ci-dev" from GITHUB_REF_NAME.
-          CYBERFIDGET_BUILD_TYPE_OVERRIDE: ${{ inputs.build_type || '' }}
+          GITHUB_REF_NAME: ${{ steps.plan.outputs.tag }}
         run: pio run -e local
+
+      # Cheap insurance against shipping a binary that reports the wrong thing.
+      # The device's boot banner and `version` CLI report FW_VERSION_FULL_STRING
+      # verbatim, so if this does not match the tag, nothing downstream will.
+      - name: Verify embedded version matches the tag
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          VERSION: ${{ steps.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          HEADER="generated/version.h"
+          field() { sed -n "s/^#define $1 \"\\(.*\\)\"$/\\1/p" "$HEADER"; }
+
+          FULL="$(field FW_VERSION_FULL_STRING)"
+          TYPE="$(field FW_BUILD_TYPE)"
+          EXPECTED_BASE="${TAG#v}"
+
+          echo "Embedded: $FULL (type=$TYPE)"
+          echo "Expected base: $EXPECTED_BASE"
+
+          if [ "${FULL%%+*}" != "$EXPECTED_BASE" ]; then
+            echo "::error::embedded version '$FULL' does not match tag '$TAG'"
+            cat "$HEADER"
+            exit 1
+          fi
+          case "$TYPE" in
+            release|prerelease) ;;
+            *)
+              echo "::error::build type is '$TYPE'; a release build must be release or prerelease"
+              cat "$HEADER"
+              exit 1
+              ;;
+          esac
+          echo "FW_VERSION=$FULL" >> "$GITHUB_ENV"
+          echo "Embedded version \`$FULL\` (type \`$TYPE\`)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Merge firmware binary
         run: |
@@ -81,6 +320,7 @@ jobs:
 
       - name: Verify merged binary exists
         run: |
+          set -euo pipefail
           MERGED=".pio/build/local/merged_firmware.bin"
           if [ ! -f "$MERGED" ]; then
             echo "ERROR: merged_firmware.bin not found!"
@@ -143,9 +383,34 @@ jobs:
           echo "::warning::Companion SD pack was NOT built - this release ships firmware only."
           echo "::warning::Users needing the phone companion must build it from portal-companion/ or take it from an earlier release."
 
+      # ---------------------------------------------------------------------
+      # Publish. Nothing below this line runs on a dry run.
+      # ---------------------------------------------------------------------
+      - name: Push version bump
+        if: github.event_name == 'workflow_dispatch' && steps.plan.outputs.dry_run != 'true'
+        run: git push origin "HEAD:${{ github.ref_name }}"
+
+      - name: Create and push tag
+        if: github.event_name == 'workflow_dispatch' && steps.plan.outputs.dry_run != 'true'
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git tag -a "$TAG" -m "$TAG"
+          git push origin "refs/tags/$TAG"
+
       - name: Create GitHub Release
+        if: steps.plan.outputs.dry_run != 'true'
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.plan.outputs.tag }}
+          name: ${{ steps.plan.outputs.tag }}
+          # The changelog summary heads the notes; GitHub appends the full
+          # commit list since the previous release underneath it.
+          body_path: release-summary.md
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ steps.plan.outputs.prerelease }}
           # Companion assets are absent when the best-effort steps above fail;
           # unmatched patterns must not fail the release.
           fail_on_unmatched_files: false
@@ -153,6 +418,45 @@ jobs:
             ${{ env.MERGED_PATH }}
             companion-pack.zip
             companion-index.html
-          generate_release_notes: true
-          draft: false
-          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'beta') || contains(github.ref_name, 'alpha') }}
+
+      # ---------------------------------------------------------------------
+      # Post-release bump. Stable only: an RC series iterates toward a single
+      # Stable target, so version.txt stays put across rc1, rc2, rc3. After
+      # Stable ships, advancing it keeps dev builds from advertising a version
+      # that is already out.
+      # ---------------------------------------------------------------------
+      - name: Post-release bump
+        if: >-
+          github.event_name == 'workflow_dispatch'
+          && steps.plan.outputs.dry_run != 'true'
+          && steps.plan.outputs.channel == 'release'
+          && inputs.post_release_bump != 'skip'
+        env:
+          VERSION: ${{ steps.plan.outputs.version }}
+          BUMP: ${{ inputs.post_release_bump }}
+        run: |
+          set -euo pipefail
+          IFS=. read -r MAJOR MINOR PATCH <<< "$VERSION"
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+          esac
+          NEXT="$MAJOR.$MINOR.$PATCH"
+          printf '%s\n' "$NEXT" > version.txt
+          git add version.txt
+          git commit -m "chore: post-release bump to $NEXT"
+          git push origin "HEAD:${{ github.ref_name }}"
+          echo "Post-release bump: $VERSION -> $NEXT" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Summarize
+        if: always()
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+          DRY: ${{ steps.plan.outputs.dry_run }}
+        run: |
+          if [ "$DRY" = "true" ]; then
+            echo "Dry run complete for $TAG - nothing was published." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Released $TAG" >> "$GITHUB_STEP_SUMMARY"
+          fi

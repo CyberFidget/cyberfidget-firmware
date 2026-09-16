@@ -6,9 +6,6 @@
             "name": "AudioManager"
         },
         {
-            "name": "Booper"
-        },
-        {
             "name": "HAL"
         },
         {
@@ -21,7 +18,7 @@
             "name": "ButtonManager"
         },
         {
-            "name": "globals"
+            "name": "Globals"
         }
     ]
 }

@@ -2,10 +2,20 @@
     "name": "PowerManager",
     "version": "1.0.0",
     "dependencies": [
-        {"name": "HAL"},
-        {"name": "DisplayProxy"},
-        {"name": "MenuManager"},
-        {"name": "ButtonManager"},
-        {"name": "globals"}
+        {
+            "name": "HAL"
+        },
+        {
+            "name": "DisplayProxy"
+        },
+        {
+            "name": "MenuManager"
+        },
+        {
+            "name": "ButtonManager"
+        },
+        {
+            "name": "Globals"
+        }
     ]
 }

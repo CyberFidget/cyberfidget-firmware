@@ -2,11 +2,23 @@
     "name": "VoiceRecorderApp",
     "version": "1.0.0",
     "dependencies": [
-        {"name": "HAL"},
-        {"name": "MicCapture"},
-        {"name": "AppDefs"},
-        {"name": "ButtonManager"},
-        {"name": "MenuManager"},
-        {"name": "globals"}
+        {
+            "name": "HAL"
+        },
+        {
+            "name": "MicCapture"
+        },
+        {
+            "name": "AppDefs"
+        },
+        {
+            "name": "ButtonManager"
+        },
+        {
+            "name": "MenuManager"
+        },
+        {
+            "name": "Globals"
+        }
     ]
 }

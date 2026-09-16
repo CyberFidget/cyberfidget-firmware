@@ -6,49 +6,19 @@
             "name": "LoadoutManifest"
         },
         {
-            "name": "sstream"
-        },
-        {
-            "name": "UIElement"
-        },
-        {
             "name": "HAL"
-        },
-        {
-            "name": "math"
         },
         {
             "name": "AppDefs"
         },
         {
-            "name": "string"
-        },
-        {
-            "name": "algorithm"
-        },
-        {
-            "name": "MenuManager"
-        },
-        {
-            "name": "list"
-        },
-        {
             "name": "ButtonManager"
-        },
-        {
-            "name": "vector"
         },
         {
             "name": "AppManager"
         },
         {
-            "name": "globals"
-        },
-        {
-            "name": "UITween"
-        },
-        {
-            "name": "map"
+            "name": "Globals"
         }
     ]
 }
