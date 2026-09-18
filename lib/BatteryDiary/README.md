@@ -70,3 +70,15 @@ unqualified side can lose that partial side.
 `diary` prints stats, up to the last eight records, and a `diary.done` line.
 `diary clear` truncates the records and resets all stats except lifetime boot
 count and accumulated on-time.
+
+## Referenced outside the firmware
+
+The Cyber Fidget website links this file from two places: the prompt that
+asks whether to share a usage record, and the privacy statement's section
+on that record. Both describe this file's contents in plain language, so
+they go stale silently.
+
+If you change what is recorded here - the fields in a record, the events,
+the sampling cadence, or the stats block - re-read that privacy copy in
+the same change and update it to match. Adding a field the privacy page
+does not mention makes the page wrong the moment it ships.
