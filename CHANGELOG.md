@@ -33,6 +33,8 @@ with the version and date automatically.
 - The phone companion now ships ready to copy with every release, so you no
   longer have to build it yourself.
 - Files can be listed, inspected, and pulled off the device over USB.
+- The menu wraps around: pressing Up on the first item jumps to the last, and
+  Down on the last jumps back to the first.
 
 ### Changed
 
@@ -61,6 +63,9 @@ with the version and date automatically.
 - The remove-download button is hidden when there is nothing downloaded.
 - Live captions no longer duplicate partial text or lose their place when the
   backlog fills up.
+- The menu highlight no longer drifts out of step with the item that opens.
+  Navigating quickly could leave the highlight on the wrong row, or open an app
+  other than the one that looked selected.
 
 ### Removed
 
