@@ -6,9 +6,6 @@
             "name": "HAL"
         },
         {
-            "name": "math"
-        },
-        {
             "name": "DisplayProxy"
         },
         {
@@ -16,12 +13,6 @@
         },
         {
             "name": "ButtonManager"
-        },
-        {
-            "name": "vector"
-        },
-        {
-            "name": "SPHFluidGame"
         }
     ]
 }

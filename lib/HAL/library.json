@@ -2,14 +2,23 @@
     "name": "HAL",
     "version": "1.0.0",
     "dependencies": [
-        {"name": "SliderPosition"},
-        {"name": "AudioManager"},
-        {"name": "Adafruit_NeoPixel"},
-        {"name": "SparkFun_LIS2DH12"},
-        {"name": "BatteryManager"},
-        {"name": "DisplayProxy"},
-        {"name": "RGBController"},
-        {"name": "ButtonManager"},
-        {"name": "SSD1306Wire"}
+        {
+            "name": "SliderPosition"
+        },
+        {
+            "name": "AudioManager"
+        },
+        {
+            "name": "BatteryManager"
+        },
+        {
+            "name": "DisplayProxy"
+        },
+        {
+            "name": "RGBController"
+        },
+        {
+            "name": "ButtonManager"
+        }
     ]
 }

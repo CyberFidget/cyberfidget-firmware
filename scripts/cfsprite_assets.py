@@ -13,6 +13,8 @@ Import("env")  # type: ignore[name-defined]  # PlatformIO/SCons injects Import.
 
 
 PROJECT_DIR = Path(env.subst("$PROJECT_DIR"))  # type: ignore[name-defined]
+# Matches EXIT_COMPILER_UNAVAILABLE in tools/cf{sprite,mesh}_compile_cli.mjs.
+COMPILER_UNAVAILABLE = 3
 ASSET_KINDS = (
     (".cfsprite", PROJECT_DIR / "tools" / "cfsprite_compile_cli.mjs"),
     (".cfmesh", PROJECT_DIR / "tools" / "cfmesh_compile_cli.mjs"),
@@ -37,15 +39,46 @@ def asset_jobs():
     return jobs
 
 
+def skip_check(reason):
+    """Report a drift check that could not run, without failing the build.
+
+    The compilers live in the (proprietary) website repo, so a checkout without
+    that sibling -- a CI runner, a contributor clone -- cannot run the check at
+    all. Generated headers are committed, so such a build still compiles
+    known-good files; it just can't re-prove they match their sources. Failing
+    here would mean no release could ever be cut from CI. Regeneration targets
+    stay fatal, and the check stays enforced wherever the compiler is present.
+
+    Tracked for removal: see the planning ticket for giving CI the compiler.
+    """
+    print(f"cfsprite_assets: WARNING - asset drift check SKIPPED: {reason}")
+    print("cfsprite_assets: WARNING - committed headers were NOT re-verified "
+          "against their sources in this build.")
+    # Surfaces in the GitHub Actions UI when running there; harmless locally.
+    print(f"::warning title=Asset drift check skipped::{reason}")
+
+
 def run_compiler(check_only, selected_kind=None):
     jobs = asset_jobs()
     node = shutil.which("node")
     if not node:
         has_models = any(asset_kind == ".cfmesh" for asset_kind, _, _, _ in jobs)
         asset_kind = selected_kind or (".cfsprite and .cfmesh" if has_models else ".cfsprite")
-        raise RuntimeError(f"Node.js is required to compile {asset_kind} assets")
+        message = f"Node.js is required to compile {asset_kind} assets"
+        if check_only:
+            skip_check(message)
+            return
+        raise RuntimeError(message)
+    # Tracked per asset kind, not globally: the sprite and mesh compilers
+    # resolve independently, so one being unreachable must not stop the other's
+    # assets from being checked. Skipping every mesh asset because the sprite
+    # compiler is missing would silently pass real mesh drift.
+    unavailable: set[str] = set()
+
     for asset_kind, cli, source, output in jobs:
         if selected_kind and asset_kind != selected_kind:
+            continue
+        if asset_kind in unavailable:
             continue
         command = [node, str(cli)]
         if check_only:
@@ -57,6 +90,12 @@ def run_compiler(check_only, selected_kind=None):
             str(output.relative_to(PROJECT_DIR)),
         ])
         completed = subprocess.run(command, cwd=PROJECT_DIR, check=False)
+        # Exit code 3 means that compiler module isn't reachable, which is not
+        # the same as drift. Only the pre-build check tolerates it.
+        if completed.returncode == COMPILER_UNAVAILABLE and check_only:
+            unavailable.add(asset_kind)
+            skip_check(f"the {asset_kind} compiler is not available on this machine")
+            continue
         if completed.returncode:
             raise RuntimeError(
                 f"{asset_kind} {'drift check' if check_only else 'regeneration'} failed for "

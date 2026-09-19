@@ -44,6 +44,26 @@ PRERELEASE_TAG_RE = re.compile(r"^v\d+\.\d+\.\d+-(rc|alpha|beta).*$", re.IGNOREC
 TAG_SUFFIX_RE = re.compile(r"^v\d+\.\d+\.\d+-(.+)$")
 
 
+def release_ref() -> str:
+    """The tag this build should identify itself as.
+
+    A tag push sets GITHUB_REF_NAME to the tag, which is the normal case. The
+    one-shot release workflow, though, builds BEFORE creating the tag, so at
+    build time GITHUB_REF_NAME is the branch -- and a step-level `env:` block
+    cannot correct that, because GitHub re-injects its own GITHUB_* defaults
+    into the process environment and the override is silently discarded. That
+    produced a binary branded "1.3.3 / ci-dev" on a run that was cutting
+    v1.3.3-rc2, which the workflow's post-build check caught.
+
+    CYBERFIDGET_RELEASE_TAG is ours, so nothing stomps it. It takes precedence
+    when set; everything else is unchanged.
+    """
+    return (
+        os.environ.get("CYBERFIDGET_RELEASE_TAG")
+        or os.environ.get("GITHUB_REF_NAME", "")
+    )
+
+
 def find_project_root(start: str | Path) -> Path:
     """Walk up from start until version.txt is found; that's the firmware repo root."""
     p = Path(start).resolve()
@@ -116,7 +136,7 @@ def select_build_type(git_available: bool, dirty: int, override: str | None) -> 
     if override:
         return override
     in_ci = os.environ.get("GITHUB_ACTIONS") == "true"
-    ref = os.environ.get("GITHUB_REF_NAME", "")
+    ref = release_ref()
     if in_ci:
         if RELEASE_TAG_RE.match(ref):
             return "release"
@@ -281,7 +301,7 @@ def generate(
     # CI tag pushes carry a prerelease suffix (e.g. v1.2.0-rc1); propagate it
     # into the version string per semver item 9. Non-CI / non-tag refs leave
     # FW_VERSION_PRERELEASE empty.
-    ref = os.environ.get("GITHUB_REF_NAME", "")
+    ref = release_ref()
     prerelease = extract_prerelease_tag(ref) if in_ci else ""
     # Embedded timestamp is the *commit* date for clean builds — deterministic,
     # so re-running this script with no source changes yields a byte-identical

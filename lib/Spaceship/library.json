@@ -2,10 +2,20 @@
     "name": "Spaceship",
     "version": "1.0.0",
     "dependencies": [
-        {"name": "HAL"},
-        {"name": "ButtonManager"},
-        {"name": "MenuManager"},
-        {"name": "RGBController"},
-        {"name": "globals"}
+        {
+            "name": "HAL"
+        },
+        {
+            "name": "ButtonManager"
+        },
+        {
+            "name": "MenuManager"
+        },
+        {
+            "name": "RGBController"
+        },
+        {
+            "name": "Globals"
+        }
     ]
 }

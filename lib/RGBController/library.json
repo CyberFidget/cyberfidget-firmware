@@ -3,16 +3,10 @@
     "version": "1.0.0",
     "dependencies": [
         {
-            "name": "Adafruit_NeoPixel"
-        },
-        {
-            "name": "RGBController"
-        },
-        {
             "name": "HAL"
         },
         {
-            "name": "globals"
+            "name": "Globals"
         }
     ]
 }

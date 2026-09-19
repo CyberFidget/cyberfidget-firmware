@@ -6,13 +6,7 @@
             "name": "ButtonManager"
         },
         {
-            "name": "StratagemGame"
-        },
-        {
-            "name": "globals"
-        },
-        {
-            "name": "StratagemGameSprites"
+            "name": "Globals"
         },
         {
             "name": "AudioManager"

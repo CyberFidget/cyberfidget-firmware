@@ -6,6 +6,14 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+// Exit code reserved for "the compiler module isn't reachable here", as
+// opposed to 1, which means a real drift or compile failure.
+const EXIT_COMPILER_UNAVAILABLE = 3;
+// A private symbol, not a plain `exitCode` property: the compiler module is
+// third-party code from another repo, and an error it throws could carry an
+// `exitCode` of its own. Only a resolver failure raised HERE may claim
+// "unavailable" and be downgraded to a warning by the build hook.
+const COMPILER_UNAVAILABLE = Symbol('cfCompilerUnavailable');
 const ENV_NAME = 'CF_CFMESH_COMPILER';
 const repoRoot = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const fallbackCompiler = path.resolve(
@@ -36,10 +44,16 @@ async function resolveCompiler() {
   const configuredDetail = configuredPath
     ? `Configured ${ENV_NAME} path was not found: ${configuredPath}\n`
     : '';
-  throw new Error(
+  // Distinct from a drift failure: the compiler ships in the website repo, so
+  // a checkout without that sibling (CI, a contributor clone) can't run the
+  // check at all. The build hook downgrades this exit code to a warning;
+  // an explicit regen target still treats it as fatal.
+  const error = new Error(
     `${configuredDetail}Could not find the .cfmesh compiler at ${fallbackCompiler}.\n`
     + `Set ${ENV_NAME} to the compiler module path.`,
   );
+  error[COMPILER_UNAVAILABLE] = true;
+  throw error;
 }
 
 function parseArgs(argv) {
@@ -107,5 +121,5 @@ async function main() {
 
 main().catch((error) => {
   console.error(`cfmesh_compile_cli: ${error.message}`);
-  process.exitCode = 1;
+  process.exitCode = error?.[COMPILER_UNAVAILABLE] ? EXIT_COMPILER_UNAVAILABLE : 1;
 });
