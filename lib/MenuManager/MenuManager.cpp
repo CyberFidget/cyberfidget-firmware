@@ -526,7 +526,14 @@ void MenuManager::collectArrangeOrder(std::vector<LoadoutManifest::ArrangeItem>&
 void MenuManager::selectCurrentItem()
 {
     if (!currentItemList || currentItemList->empty()) return;
-    
+
+    // Mid-slide, currentIndex already refers to the destination menu while
+    // currentItemList still points at the one sliding away, so indexing it here
+    // reads an unrelated item -- or out of bounds, when the destination index
+    // exceeds the outgoing list's size. The category branch below has always
+    // been guarded; the leaf branch launches immediately and was not.
+    if (crossSlideState != CROSS_SLIDE_NONE) return;
+
     const MenuItem &mi = (*currentItemList)[currentIndex];
 
     // If it’s a sub-category, do NOT immediately switch.
@@ -622,6 +629,18 @@ void MenuManager::crossSlideBackward()
 
     MenuNavState s = navigationStack.back();
     navigationStack.pop_back();
+
+    // Cancel any current tweens, as crossSlideForward does. Both tween kinds
+    // write their target absolutely on every frame, so one still running from a
+    // just-pressed Up/Down would overwrite the restore below and leave the
+    // highlight on a different row than currentIndex -- Select would then launch
+    // an item other than the one that looks selected.
+    auto scrollTween = tweensInt.find(&scrollOffset);
+    if (scrollTween != tweensInt.end()) {
+        delete scrollTween->second;
+        tweensInt.erase(scrollTween);
+    }
+    finalizeHighlightAnimation(&highlightElement);
 
     newItemList = s.itemList;
     currentIndex = s.index;
@@ -765,10 +784,19 @@ void MenuManager::onButtonRightPressed(const ButtonEvent& event)
         // Same as above
     }    
 }
+// Navigation is ignored while a cross-slide runs, as goBack() already does.
+// Until handleCrossSlide() completes, currentIndex refers to the destination
+// menu while currentItemList still points at the one sliding away, so a press
+// moves the highlight against the wrong list's bounds -- and the tween it
+// starts outlives the transition, overwriting the reset that completion
+// performs. The highlight then rests a row or more away from currentIndex, so
+// the next press appears to move in the wrong direction and Select can launch
+// an item other than the highlighted one.
 void MenuManager::onButtonUpPressed(const ButtonEvent& event)
 {
     // Press
     if (event.eventType == ButtonEvent_Pressed){
+        if (instance().crossSlideState != CROSS_SLIDE_NONE) return;
         if (instance().moveMode) instance().moveItemUp();
         else                     instance().moveHighlightUp();
     }
@@ -777,6 +805,7 @@ void MenuManager::onButtonDownPressed(const ButtonEvent& event)
 {
     // Press
     if (event.eventType == ButtonEvent_Pressed){
+        if (instance().crossSlideState != CROSS_SLIDE_NONE) return;
         if (instance().moveMode) instance().moveItemDown();
         else                     instance().moveHighlightDown();
     }
