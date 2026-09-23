@@ -78,6 +78,9 @@ env:
   # junk entries. Bump this on purpose, with a build to prove it, never by
   # drive-by. Keep it in step with what developers run locally.
   PLATFORMIO_VERSION: '6.2.0'
+  # Board revisions supported by this release image.
+  HW_MIN_REV: '1.2'
+  HW_MAX_REV: '1.2'
 
 jobs:
   release:
@@ -406,8 +409,22 @@ jobs:
           echo "FW_VERSION=$FULL" >> "$GITHUB_ENV"
           echo "Embedded version \`$FULL\` (type \`$TYPE\`)" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Check app image and write release info
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          python scripts/release_image.py .pio/build/local/firmware.bin \
+            --info .pio/build/local/release-info.json \
+            --version "${TAG#v}" --hw-min-rev "$HW_MIN_REV" --hw-max-rev "$HW_MAX_REV"
+
       - name: Merge firmware binary
         run: |
+          # dio on purpose: PlatformIO writes dio into every image header
+          # it builds when platformio.ini asks for qio (the platform's
+          # _get_board_flash_mode maps qio/qout -> dio); the qio setting
+          # only selects the QIO-capable second-stage bootloader, which
+          # switches the flash to QIO itself. Matching dio here keeps the
+          # merged image identical to what a developer upload writes.
           python -m esptool --chip esp32 merge_bin \
             -o .pio/build/local/merged_firmware.bin \
             --flash_mode dio --flash_freq 80m --flash_size 8MB \
@@ -514,6 +531,8 @@ jobs:
           fail_on_unmatched_files: false
           files: |
             ${{ env.MERGED_PATH }}
+            .pio/build/local/firmware.bin
+            .pio/build/local/release-info.json
             companion-pack.zip
             companion-index.html
 

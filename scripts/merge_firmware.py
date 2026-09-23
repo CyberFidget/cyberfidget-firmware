@@ -29,7 +29,7 @@ def merge_bin(source, target, env):
 
     result = env.Execute(
         f"esptool --chip esp32 merge_bin -o {merged_output} "
-        f"--flash_mode dio --flash_freq 80m --flash_size 8MB "
+        f"--flash_mode dio --flash_freq 80m --flash_size 8MB "  # header mode PlatformIO writes for qio; see build-release.yml
         f"0x1000 {bootloader} 0x8000 {partitions} 0x10000 {firmware}"
     )
 
