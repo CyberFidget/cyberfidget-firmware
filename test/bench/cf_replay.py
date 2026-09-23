@@ -194,6 +194,53 @@ def run_case(case, port, outdir):
             elif do == "wait":
                 time.sleep(st.get("ms", 500) / 1000.0)
                 res.note("wait", "%dms" % st.get("ms", 500))
+            elif do == "command":
+                command = st["command"]
+                until = st.get("until")
+                if until:
+                    t.drain(0.1)
+                    t.send(command)
+                    out = ""
+                    end = time.time() + float(st.get("timeout_s", 25.0))
+                    while time.time() < end and until not in out:
+                        out += t.drain(0.2)
+                else:
+                    out = t.cmd(command, float(st.get("timeout_s", 0.9)))
+                print(out, end="" if out.endswith("\n") else "\n")
+                ok = all(token in out for token in st.get("contains", []))
+                if until:
+                    ok = ok and until in out
+                res.step("command", ok, out.strip())
+                if "probe_limits" in st and until and until in out:
+                    line = next((line for line in out.splitlines() if until in line), "")
+                    values = dict(re.findall(r"(\w+)=([^\s]+)", line))
+                    limits = st["probe_limits"]
+                    failed = []
+                    # The handshake trough happens between samples, so the
+                    # since-boot low-water mark is the conservative floor even
+                    # when it predates the probe.
+                    boot_min = int(values.get("heap_min_boot", 0))
+                    if boot_min > 0:
+                        values["heap_free_min"] = str(min(int(values.get("heap_free_min", 0)), boot_min))
+                    for key in ("heap_free_min", "largest_min", "stack_hw"):
+                        if int(values.get(key, 0)) < limits[key]:
+                            failed.append("%s<%d" % (key, limits[key]))
+                    if int(values.get("join_ms", 0)) > limits["join_ms"]:
+                        failed.append("join_ms>%d" % limits["join_ms"])
+                    if values.get("state") != "done":
+                        failed.append("whole_probe_limit_ms=%d" % limits["whole_ms"])
+                    if values.get("ok") != "1" or values.get("http") != "200":
+                        failed.append("authenticated_get!=200")
+                    pull = not failed
+                    res.step("gate.pull", pull,
+                             "limits=%s failures=%s" % (limits, failed or "none"))
+                    boot_failed = list(failed)
+                    join_tls = int(values.get("join_ms", 0)) + int(values.get("tls_ms", 0))
+                    if join_tls > limits["join_tls_ms"]:
+                        boot_failed.append("join_tls_ms=%d>%d" % (join_tls, limits["join_tls_ms"]))
+                    res.step("gate.boot", not boot_failed,
+                             "join_tls_ms=%d limit=%d failures=%s" %
+                             (join_tls, limits["join_tls_ms"], boot_failed or "none"))
             elif do == "btn":
                 out = t.cmd("btn %d %s" % (st["index"], st.get("action", "tap")), 0.5)
                 res.note("btn", out.strip().splitlines()[-1] if out.strip() else "")

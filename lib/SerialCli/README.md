@@ -23,7 +23,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 | Always present | Requires `CF_TEST_CLI` |
 |---|---|
 | `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary` | `apps`, `app`, `launch`, `soak` |
-| `menutree`, `screencap`, `screenstream` | `net`, `mic`, `wifi`, `wasmstat` |
+| `menutree`, `screencap`, `screenstream` | `net`, `heapstat`, `tlsprobe`, `tlsalloc`, `mic`, `wifi`, `wasmstat` |
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
 | `lget`, `lapply`, `syncinfo` | |
 
@@ -143,6 +143,10 @@ launch <blob-id>    -> [cmd] launch.ok=blob path=<path>
 soak <app>          -> [cmd] soak=<app>
 soak off            -> [cmd] soak=off
 net  -> [cmd] net.mode=<mode> ...
+heapstat -> [cmd] heapstat.free_int=<B> min_free_int=<B> largest_int=<B>
+tlsprobe [url] -> [cmd] tlsprobe.started=1
+                  [cmd] tlsprobe.ok=<0|1> state=<done|failed|timeout> err=<code> join_ms=<n> tls_ms=<n> get_ms=<n> http=<status> bytes=<n> heap_free_min=<B> largest_min=<B> heap_min_before=<B> heap_min_boot=<B> stack_size=<B> stack_hw=<B> url=<url>
+tlsalloc <psram|internal> -> [cmd] tlsalloc.ok=<mode> psram_free=<B>
 mic  -> [cmd] mic.heap_free=... ... [cmd] mic.released=1
 wifi <ssid>|<pass> -> [cmd] wifi.saved=<ssid>
 wasmstat -> [cmd] wasmstat....
@@ -153,6 +157,30 @@ app or stages a manifest-backed WASM app. `net` reports fields applicable to the
 current Wi-Fi mode. `mic` runs a short capture diagnostic and releases it.
 `wifi` persists credentials for later portal use. `wasmstat` delegates its
 tagged runtime report to `WasmFsApp`.
+
+`heapstat` only reads the internal heap counters. `tlsprobe` starts one plain
+task and reports the result later from the main loop. It reads `wificfg`
+credentials without changing them, uses STA only, verifies the host through
+the SDK certificate bundle, and turns Wi-Fi off before reporting. The default
+URL is `https://cyberfidget.com/update/firmware.php?list=1`; an override must
+be HTTPS and contain no whitespace. `tls_ms` measures the SDK connection open,
+including DNS, TCP, TLS handshake, and request headers; `get_ms` runs from
+connection open through the full response body. Internal free heap and largest block are
+sampled before join, after join, after handshake, and after GET. The probe
+allows 10 s for STA join and 20 s overall, with individual network calls
+limited to 4 s for task-watchdog coverage. It reports
+`tlsprobe.error=no-credentials`, `busy`, `radio-busy`, `invalid-url`, or
+`task-create` before starting when applicable. `stack_hw` is unused task
+stack in bytes; `heap_min_before` and `heap_min_boot` are the allocator's
+minimum since boot, read before and after the probe - the handshake trough
+falls between samples, so a lower `heap_min_boot` is the real floor. The 4 s
+call limit is per socket operation, so a slow DNS lookup plus a multi-read
+handshake can still approach the 5 s task watchdog.
+
+`tlsalloc psram` routes mbedTLS allocations to PSRAM (falling back to internal
+RAM); `tlsalloc internal` restores internal placement, the SDK default. It is
+refused while a probe runs. With the SDK default, a fresh-boot probe drives
+internal free RAM to about 2 KB; with PSRAM placement it stays above 40 KB.
 
 `soak` uses the same app resolution and launch path as `launch`, then keeps the
 idle interaction clock pinned in `AppManager`. It remains active until
