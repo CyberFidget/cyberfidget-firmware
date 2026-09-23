@@ -5,7 +5,6 @@
 #include <vector>
 #include <string>
 #include <cstring>
-#include <iostream>
 #include "esp_log.h"
 
 #include "LoadoutManifest.h"
@@ -13,9 +12,10 @@
 
 #include "AppManifest_Includes.h"
 
-// Print APP_COUNT value when the program starts
+// Print APP_COUNT value when the program starts. Uses the project log
+// (not std::cout) so the image does not link iostream.
 void printAppCount() {
-    std::cout << "APP_COUNT is " << APP_COUNT << std::endl;
+    ESP_LOGI("AppDefs", "APP_COUNT is %d", (int)APP_COUNT);
 }
 
 // This definition should only exist in ONE .cpp file

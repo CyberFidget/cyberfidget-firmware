@@ -13,8 +13,6 @@
 // Define a minimum valid epoch (here we assume any time after Sept 2020 is valid)
 #define MIN_VALID_EPOCH 1600000000UL
 
-extern const uint8_t ArialMT_Plain_24[];
-
 ClockDisplay clockDisplay;
 
 ClockDisplay* ClockDisplay::instance = nullptr;

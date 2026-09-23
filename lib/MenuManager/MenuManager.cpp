@@ -8,8 +8,8 @@
 #include "AppDefs.h"      // For AppIndex enum
 #include "WasmFsApp.h"    // T-183: stage a ferried wasm app before launch
 #include "StatusView.h"   // status bar across the top, Status item badge
+#include "CategoryPath.h" // splitCategoryPath (no <sstream>)
 
-#include <sstream>        // For path parsing
 #include <algorithm>  // for std::min/max if needed
 #include <string>
 
@@ -49,18 +49,7 @@ static int crossSlideDuration = 400;
 // Helper to parse path like "Tools/WiFi" => ["Tools","WiFi"]
 std::vector<std::string> MenuManager::parseCategoryPath(const std::string &path)
 {
-    std::vector<std::string> result;
-    if (path.empty()) {
-        return result; // no subcategories
-    }
-    std::stringstream ss(path);
-    std::string segment;
-    while (std::getline(ss, segment, '/')) {
-        if (!segment.empty()) {
-            result.push_back(segment);
-        }
-    }
-    return result;
+    return splitCategoryPath(path);
 }
 
 /**
