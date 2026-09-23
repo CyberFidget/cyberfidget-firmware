@@ -118,6 +118,8 @@ private:
     void cmdUvlo(const char* args);
     // Opens a sample ModalPrompt for bench screenshots; result arrives later.
     void cmdPrompt(const char* args);
+    // Menu status bar bench states (post / popup / clear / checkin / read).
+    void cmdStatus(const char* args);
     // Serial button injection (T-191). tap auto-releases after a delay.
     void cmdBtn(const char* args);
     void pollPendingTapReleases();

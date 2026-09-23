@@ -434,6 +434,14 @@ else
     fail "info prints a line after wake.cause: $LAST_INFO"
 fi
 
+# Same rule for the status read-back (test builds): status.count ends it.
+LAST_STATUS="$(awk '/^void printStatus\(/{f=1} f&&/\[cmd\] status\./{l=$0} f&&/^}/{print l; exit}' lib/SerialCli/SerialCli.cpp)"
+if echo "$LAST_STATUS" | grep -q 'status\.count='; then
+    pass "status prints its count line last"
+else
+    fail "status prints a line after count: $LAST_STATUS"
+fi
+
 # ----------------------------------------------------------------------------
 echo ""
 echo "=================================================="

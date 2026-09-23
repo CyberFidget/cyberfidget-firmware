@@ -34,6 +34,7 @@
 #include "WasmHostImports.h"  // kDeviceHalAbi (REQ-063)
 #include "UvloLogic.h"
 #include "ModalPrompt.h"     // prompt (sample modal for bench screenshots)
+#include "StatusView.h"      // status (menu status bar bench states)
 #endif
 
 #ifdef CF_TEST_CLI
@@ -577,6 +578,8 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "uvlo", &arg))   { cmdUvlo(arg);  return; }
     if (ieq(line, "prompt"))                { cmdPrompt("");  return; }
     if (verbWithArg(line, "prompt", &arg)) { cmdPrompt(arg); return; }
+    if (ieq(line, "status"))                { cmdStatus("");  return; }
+    if (verbWithArg(line, "status", &arg)) { cmdStatus(arg); return; }
 #endif
     Serial.printf("[err] unknown command: %s\n", line);
 }
@@ -786,6 +789,181 @@ void SerialCli::cmdPrompt(const char* args) {
     Serial.printf("[cmd] prompt.open=%lu timeout_ms=%lu\n",
                   (unsigned long)count, (unsigned long)timeoutMs);
 }
+
+// Menu status bar bench verbs: post / popup / clear every state and read the
+// service back, so each bar, badge and Status screen state can be shown and
+// screen-captured without any networking. Replies are single lines except
+// the read-back, which ends on its status.count line.
+namespace {
+// Copies the next space-separated word of *p (lowercased) into out and
+// advances *p past it and any following spaces.
+bool nextWord(const char** p, char* out, size_t len) {
+    const char* s = *p;
+    while (*s == ' ') ++s;
+    size_t n = 0;
+    while (s[n] && s[n] != ' ') ++n;
+    if (n == 0 || n >= len) return false;
+    for (size_t i = 0; i < n; ++i) {
+        char c = s[i];
+        out[i] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+    }
+    out[n] = '\0';
+    s += n;
+    while (*s == ' ') ++s;
+    *p = s;
+    return true;
+}
+
+// Parses "<kind> [late] [cached] [text...]".
+bool parseStatusEvent(const char* args, StatusKind* kind, uint8_t* flags,
+                      const char** text) {
+    const char* p = args;
+    char word[16];
+    if (!nextWord(&p, word, sizeof(word)) ||
+        !StatusService::kindFromName(word, kind)) return false;
+    *flags = 0;
+    for (;;) {
+        const char* q = p;
+        if (!nextWord(&q, word, sizeof(word))) break;
+        if (strcmp(word, "late") == 0)        *flags |= StatusFlag::Late;
+        else if (strcmp(word, "cached") == 0) *flags |= StatusFlag::Cached;
+        else break;
+        p = q;
+    }
+    *text = p;
+    return true;
+}
+
+void onStatusPopupResult(StatusKind kind, bool accepted, bool shown) {
+    if (!shown) return;  // the open reply already said it was routed
+    Serial.printf("[cmd] status.popup.result=%s kind=%s\n",
+                  accepted ? "accept" : "ignore", StatusService::kindName(kind));
+}
+
+void printStatus() {
+    StatusService& svc = StatusService::instance();
+    svc.expire((uint32_t)millis());
+    const uint32_t now = StatusView::nowSec();
+    const StatusEntry* cur = svc.current();
+    char age[8];
+    svc.ageLabel(now, age, sizeof(age));
+    Serial.printf("[cmd] status.bar=%s\n", cur ? cur->text : "-");
+    Serial.printf("[cmd] status.badge=%d\n", svc.badge() ? 1 : 0);
+    if (svc.hasCheckIn()) {
+        Serial.printf("[cmd] status.glyph=%s age=%s checkin_age_s=%lu cached=%d\n",
+                      StatusService::glyphName(svc.glyph(now)), age[0] ? age : "-",
+                      (unsigned long)svc.checkInAgeSec(now),
+                      svc.checkInCached() ? 1 : 0);
+    } else {
+        Serial.printf("[cmd] status.glyph=%s age=%s checkin_age_s=- cached=0\n",
+                      StatusService::glyphName(svc.glyph(now)), age[0] ? age : "-");
+    }
+    const StatusEntry* list[StatusService::kMaxEntries];
+    const int n = svc.pending(list, StatusService::kMaxEntries);
+    for (int i = 0; i < n; ++i) {
+        const StatusEntry* e = list[i];
+        Serial.printf("[cmd] status.item=%s pri=%u sticky=%d attn=%d late=%d "
+                      "cached=%d text=%s\n",
+                      StatusService::kindName(e->kind), (unsigned)e->priority,
+                      e->sticky ? 1 : 0, e->attention ? 1 : 0,
+                      e->late() ? 1 : 0, e->cached() ? 1 : 0, e->text);
+    }
+    // status.count is the reply terminator: new keys go above it.
+    Serial.printf("[cmd] status.count=%d\n", n);
+}
+}  // namespace
+
+void SerialCli::cmdStatus(const char* args) {
+    StatusService& svc = StatusService::instance();
+    const char* rest = nullptr;
+    StatusKind kind = StatusKind::Info;
+    uint8_t flags = 0;
+    const char* text = "";
+
+    if (*args == '\0') { printStatus(); return; }
+
+    if (verbWithArg(args, "post", &rest)) {
+        if (!parseStatusEvent(rest, &kind, &flags, &text)) {
+            Serial.println("[err] status.usage=status post <kind> [late] [cached] [text]");
+            return;
+        }
+        if (!svc.post(kind, text, StatusService::defaultPriority(kind), true,
+                      (uint32_t)millis(), flags)) {
+            Serial.printf("[err] status.post.refused=%s\n", StatusService::kindName(kind));
+            return;
+        }
+        Serial.printf("[cmd] status.post=%s badge=%d\n",
+                      StatusService::kindName(kind), svc.badge() ? 1 : 0);
+        return;
+    }
+
+    if (verbWithArg(args, "popup", &rest)) {
+        if (!parseStatusEvent(rest, &kind, &flags, &text)) {
+            Serial.println("[err] status.usage=status popup <kind> [late] [cached] [text]");
+            return;
+        }
+        const bool opened = StatusView::popup(kind, text, flags, nullptr,
+                                              onStatusPopupResult);
+        Serial.printf("[cmd] status.popup=%s open=%d%s\n",
+                      StatusService::kindName(kind), opened ? 1 : 0,
+                      opened ? "" : " routed=bar");
+        return;
+    }
+
+    if (ieq(args, "clear")) {
+        svc.clearAll();
+        Serial.println("[cmd] status.clear=all");
+        return;
+    }
+    if (verbWithArg(args, "clear", &rest)) {
+        char word[16];
+        const char* p = rest;
+        if (!nextWord(&p, word, sizeof(word)) || *p != '\0' ||
+            !StatusService::kindFromName(word, &kind)) {
+            Serial.println("[err] status.usage=status clear [kind]");
+            return;
+        }
+        const int removed = svc.clear(kind);
+        Serial.printf("[cmd] status.clear=%s removed=%d\n",
+                      StatusService::kindName(kind), removed);
+        return;
+    }
+
+    if (verbWithArg(args, "checkin", &rest)) {
+        char word[16];
+        const char* p = rest;
+        uint32_t ago = 0;
+        const char* end = nullptr;
+        bool ok = nextWord(&p, word, sizeof(word));
+        const bool never = ok && strcmp(word, "never") == 0;
+        if (ok && !never) {
+            ok = parseDecimal(word, &end, StatusView::kClockBaseSec, &ago) && *end == '\0';
+        }
+        bool cached = false;
+        if (ok && *p != '\0') {
+            ok = !never && nextWord(&p, word, sizeof(word)) &&
+                 strcmp(word, "cached") == 0 && *p == '\0';
+            cached = ok;
+        }
+        if (!ok) {
+            Serial.println("[err] status.usage=status checkin <never|seconds_ago> [cached]");
+            return;
+        }
+        if (never) {
+            svc.clearCheckIn();
+            Serial.println("[cmd] status.checkin=never glyph=never");
+            return;
+        }
+        const uint32_t now = StatusView::nowSec();
+        svc.setCheckIn(now - ago, cached);
+        Serial.printf("[cmd] status.checkin=%lu cached=%d glyph=%s\n",
+                      (unsigned long)ago, cached ? 1 : 0,
+                      StatusService::glyphName(svc.glyph(now)));
+        return;
+    }
+
+    Serial.println("[err] status.usage=status [post|popup|clear|checkin] ...");
+}
 #endif
 
 void SerialCli::cmdVersion() {
@@ -913,7 +1091,8 @@ void SerialCli::cmdHelp() {
     Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,heapstat,"
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"
                    "wifi <ssid>|<pass>,wasmstat,btn,sleep,rail,gauge,uvlo,"
-                   "soak <app|off>,prompt <n> [timeout_ms]");
+                   "soak <app|off>,prompt <n> [timeout_ms],"
+                   "status [post|popup|clear|checkin]");
 #endif
 }
 

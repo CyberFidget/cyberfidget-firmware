@@ -7,6 +7,7 @@
 #include "globals.h"      // If you have global for 'millis_NOW', etc.
 #include "AppDefs.h"      // For AppIndex enum
 #include "WasmFsApp.h"    // T-183: stage a ferried wasm app before launch
+#include "StatusView.h"   // status bar across the top, Status item badge
 
 #include <sstream>        // For path parsing
 #include <algorithm>  // for std::min/max if needed
@@ -20,9 +21,17 @@ static auto &buttonManager = HAL::buttonManager();
 static const int SCREEN_WIDTH  = 128; 
 static const int SCREEN_HEIGHT = 64;
 
+// The status bar (StatusView) owns the top rows of every menu screen; the
+// list lives in the area below it. Before the bar: 16 px rows from y=0,
+// text at row+2, 4 visible. Now: 13 px rows (ArialMT_Plain_10's own line
+// height; capitals on rows 3..9, descenders on 10..11, highlight border on
+// 0 and 12) from y=12, text at row+0, still 4 visible (12 + 4*13 = 64).
+static const int MENU_TOP         = StatusView::kBarHeight;
+static const int MENU_AREA_HEIGHT = SCREEN_HEIGHT - MENU_TOP;
+
 // Row spacing for text in the menu:
-static const int MENU_ITEM_HEIGHT = 16;
-static const int MENU_ITEM_Y_OFFSET = 2;
+static const int MENU_ITEM_HEIGHT = 13;
+static const int MENU_ITEM_Y_OFFSET = 0;
 
 // We’ll offset the highlight bar a bit from the left edge:
 static const int HIGHLIGHT_X_OFFSET = 4;
@@ -164,24 +173,36 @@ void drawOneMenu(std::vector<MenuItem>* items,
 {
     if (!items) return;
 
-    // Draw each item with horizontal offset
+    const bool badge = StatusService::instance().badge();
+
+    // Draw each item with horizontal offset. yPos is list-relative; the
+    // list area starts below the status bar (MENU_TOP). Rows scrolling up
+    // past it are painted over when the bar draws.
     for (int i = 0; i < (int)items->size(); i++)
     {
         int yPos = (i * MENU_ITEM_HEIGHT) - scrollOffset;
-        if (yPos >= -MENU_ITEM_HEIGHT && yPos < SCREEN_HEIGHT)
+        if (yPos >= -MENU_ITEM_HEIGHT && yPos < MENU_AREA_HEIGHT)
         {
             int drawX = 10 + menuX;
-            int drawY = yPos + 2; // offset
-            
+            int drawY = MENU_TOP + yPos + MENU_ITEM_Y_OFFSET;
+            const MenuItem &mi = (*items)[i];
+
             display.setTextAlignment(TEXT_ALIGN_LEFT);
             display.setFont(ArialMT_Plain_10);
-            display.drawString(drawX, drawY, (*items)[i].label.c_str());
+            display.drawString(drawX, drawY, mi.label.c_str());
+
+            // The Status item carries a dot while something needs attention.
+            if (badge && !mi.isCategory && mi.appIndex == APP_STATUS) {
+                const int w = display.getStringWidth(mi.label.c_str(),
+                                                     (uint16_t)mi.label.size());
+                display.fillCircle(drawX + w + 5, drawY + 6, 2);
+            }
         }
     }
 
     // Also draw highlight
     int hlX = highlight.getX() + menuX;
-    int hlY = highlight.getY();
+    int hlY = highlight.getY() + MENU_TOP;
     drawHighlightShape(hlX, 
                        hlY,
                        highlight.getWidth(),
@@ -369,8 +390,8 @@ void MenuManager::updateScrollForCurrentIndex()
     // Pixel top of the current item within the list
     int itemTop = currentIndex * MENU_ITEM_HEIGHT;
 
-    // Screen-relative top of the bottom row
-    int bottomY = SCREEN_HEIGHT - MENU_ITEM_HEIGHT;
+    // List-area-relative top of the bottom row (the area sits below the bar)
+    int bottomY = MENU_AREA_HEIGHT - MENU_ITEM_HEIGHT;
 
     // Adjust the desired scrollOffset based on the current item's top
     int newScroll = scrollOffset;
@@ -743,6 +764,9 @@ void MenuManager::drawMenu()
                         scrollOffset);
         }
     }
+
+    // The bar stays put during slides and covers rows scrolled up under it.
+    StatusView::drawBar();
 
     display.display();
 }
