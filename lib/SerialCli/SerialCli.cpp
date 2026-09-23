@@ -742,6 +742,15 @@ void SerialCli::cmdInfo() {
     Serial.printf("[cmd] info.battery.voltage_mv=%ld\n", batteryMv);
     Serial.printf("[cmd] info.battery.soc=%.2f\n", batteryVoltagePercentage);
     Serial.printf("[cmd] info.battery.crate=%.2f\n", batteryChangeRate);
+    const BoardInfo::Info& board = HAL::boardInfo();
+    Serial.printf("[cmd] info.board_rev=%u.%u\n",
+                  static_cast<unsigned>(board.major),
+                  static_cast<unsigned>(board.minor));
+    Serial.printf("[cmd] info.board=src=%s hil=%d eng=%d layout=%u\n",
+                  BoardInfo::sourceName(board.source),
+                  board.hil ? 1 : 0, board.engSample ? 1 : 0,
+                  static_cast<unsigned>(board.layoutVersion));
+    // info.wake.cause is the reply terminator: new keys go above it.
     Serial.printf("[cmd] info.wake.cause=%s\n", HAL::bootWakeupCauseName());
 }
 

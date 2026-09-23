@@ -12,11 +12,13 @@
 #include <esp_task_wdt.h>
 #include <esp_system.h>
 #include <driver/gpio.h>
+#include <esp_efuse.h>
 #include <SSD1306Wire.h>
 #include <Adafruit_NeoPixel.h>
 
 #include "AudioManager.h"
 #include "BatteryDiary.h"
+#include "BoardInfo.h"
 #include "BatteryManager.h"
 #include "RGBController.h"
 #include "SDManager.h"
@@ -97,6 +99,38 @@ namespace {
     static BatteryManager s_batteryManager;
 
     static esp_sleep_wakeup_cause_t s_bootWakeupCause = ESP_SLEEP_WAKEUP_UNDEFINED;
+
+    // Board identity from eFuse BLK3. Stays at the rev 1.2 defaults until
+    // readBoardInfo() runs, and forever on an unprogrammed board.
+    static BoardInfo::Info s_boardInfo = BoardInfo::defaults();
+
+    // Read the 32-byte user block exactly as the chip returns it (no coding
+    // scheme decode). Read-only: nothing here ever writes an eFuse. Any read
+    // error leaves the defaults in place.
+    void readBoardInfo()
+    {
+        uint8_t blk[32] = {0};
+        if (esp_efuse_read_block(EFUSE_BLK3, blk, 0, sizeof(blk) * 8) == ESP_OK) {
+            s_boardInfo = BoardInfo::parseBoardBlock(blk);
+        } else {
+            s_boardInfo = BoardInfo::defaults();
+            s_boardInfo.source = BoardInfo::Source::ReadError;
+        }
+    }
+
+    // Board-rev dispatch for the button input mode / pull configuration.
+    // Rev 1.x uses the fixed pull table above (only the bottom-right button,
+    // the deep-sleep wake pin, takes an internal pull-up). A future rev with
+    // different button hardware adds its case here.
+    void initButtonsForBoard()
+    {
+        switch (s_boardInfo.major) {
+            case 1:
+            default:
+                s_buttonManager.init();
+                break;
+        }
+    }
 
     // RGBW LEDs
     static Adafruit_NeoPixel s_rgbStrip(RGB_COUNT, 0, NEO_GRBW + NEO_KHZ800);
@@ -189,6 +223,7 @@ namespace HAL
     void initHardware()
     {
         const uint32_t startedAtMs = millis();
+        readBoardInfo();
         s_bootWakeupCause = esp_sleep_get_wakeup_cause();
         if (s_bootWakeupCause == ESP_SLEEP_WAKEUP_TIMER) {
             timerWakeBatteryCheck(startedAtMs);
@@ -232,7 +267,7 @@ namespace HAL
             while (1);
         }
 
-        s_buttonManager.init();
+        initButtonsForBoard();
         s_audioManager.init();
         s_batteryManager.init();
 
@@ -282,6 +317,7 @@ namespace HAL
     ButtonManager& buttonManager()      { return s_buttonManager; }
     SSD1306Wire& realDisplay()          { return s_realDisplay; }
     SPARKFUN_LIS2DH12& accelerometer()  { return s_accel; }
+    const BoardInfo::Info& boardInfo()  { return s_boardInfo; }
 
     void configureWakeupPins()
     {
