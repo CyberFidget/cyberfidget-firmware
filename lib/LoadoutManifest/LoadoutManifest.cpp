@@ -823,6 +823,9 @@ bool applyReplace(Loadout& loadout, const LoadoutEntry& entry) {
     int idx = findEntry(loadout, entry.id.c_str());
     if (idx < 0) return false; // replace never creates an entry
     LoadoutEntry& e = loadout.entries[(size_t)idx];
+    // Only a delivered blob app has a blob to swap; builtin (and any other
+    // kind, e.g. sprite packs) entries are refused.
+    if (e.format != "wasm" && e.format != "blob") return false;
     e.blobPath = entry.blobPath;
     e.version  = entry.version;
     e.abi      = entry.abi;
@@ -868,6 +871,79 @@ bool parseOpsMeta(const char* opsJson, OpsMeta& out) {
     return true;
 }
 
+bool collectOpBlobPaths(const char* opsJson, std::vector<std::string>& out) {
+    if (!opsJson) return false;
+    Cursor c{opsJson};
+    std::vector<std::string> paths;
+    skipWs(c);
+    if (*c.p != '{') return false;
+    c.p++;
+    skipWs(c);
+    if (*c.p == '}') { out.clear(); return true; }
+    while (true) {
+        skipWs(c);
+        std::string key;
+        if (!parseString(c, key)) return false;
+        skipWs(c);
+        if (*c.p != ':') return false;
+        c.p++;
+        skipWs(c);
+        if (key != "ops") {
+            if (!skipValue(c, 0)) return false;
+        } else {
+            if (*c.p != '[') return false;
+            c.p++;
+            skipWs(c);
+            if (*c.p == ']') {
+                c.p++;
+            } else {
+                while (true) {
+                    // One op object: only its `entry` matters here.
+                    skipWs(c);
+                    if (*c.p != '{') return false;
+                    c.p++;
+                    skipWs(c);
+                    if (*c.p == '}') {
+                        c.p++;
+                    } else {
+                        while (true) {
+                            skipWs(c);
+                            std::string opKey;
+                            if (!parseString(c, opKey)) return false;
+                            skipWs(c);
+                            if (*c.p != ':') return false;
+                            c.p++;
+                            skipWs(c);
+                            if (opKey == "entry") {
+                                LoadoutEntry entry;
+                                bool positionSeen;
+                                if (!parseEntry(c, entry, positionSeen)) return false;
+                                if (!entry.blobPath.empty()) paths.push_back(entry.blobPath);
+                            } else {
+                                if (!skipValue(c, 0)) return false;
+                            }
+                            skipWs(c);
+                            if (*c.p == ',') { c.p++; continue; }
+                            if (*c.p == '}') { c.p++; break; }
+                            return false;
+                        }
+                    }
+                    skipWs(c);
+                    if (*c.p == ',') { c.p++; continue; }
+                    if (*c.p == ']') { c.p++; break; }
+                    return false;
+                }
+            }
+        }
+        skipWs(c);
+        if (*c.p == ',') { c.p++; continue; }
+        if (*c.p == '}') { c.p++; break; }
+        return false;
+    }
+    out = std::move(paths);
+    return true;
+}
+
 std::string serializeAppliedRecord(const AppliedRecord& rec) {
     char crc[9];
     std::snprintf(crc, sizeof(crc), "%08x", (unsigned)rec.crcAfter);
@@ -883,7 +959,10 @@ std::string serializeAppliedRecord(const AppliedRecord& rec) {
     out += std::to_string(rec.ops);
     out += ",\"entries\":";
     out += std::to_string(rec.entries);
-    out += "}\n";
+    std::snprintf(crc, sizeof(crc), "%08x", (unsigned)rec.docCrc);
+    out += ",\"doc_crc\":\"";
+    out += crc;
+    out += "\"}\n";
     return out;
 }
 
@@ -915,6 +994,9 @@ bool parseAppliedRecord(const char* json, AppliedRecord& out) {
             } else if (key == "crc_after") {
                 std::string hex;
                 if (!parseString(c, hex) || !parseBaseHex(hex, rec.crcAfter)) return false;
+            } else if (key == "doc_crc") {
+                std::string hex;
+                if (!parseString(c, hex) || !parseBaseHex(hex, rec.docCrc)) return false;
             } else if (key == "at") {
                 if (!parseInt(c, v) || v < 0) return false;
                 rec.at = (uint32_t)v;

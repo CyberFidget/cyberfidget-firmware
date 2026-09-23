@@ -55,6 +55,12 @@ constexpr size_t kReadReplyBytes = 192;
 constexpr const char* kAppliedRecordPath = "/apps/.applied.json";
 constexpr const char* kAppliedRecordTemp = "/apps/.applied.json.part";
 
+/// `lapply` capability advertised as `[cmd] syncinfo.lapply=<value>`. A
+/// sender only sends `batch` / `base` / `replace` to a device reporting it
+/// (older firmware silently ignores `batch` and `base`). Bump the suffix
+/// for an incompatible change to the batch contract.
+constexpr const char* kLapplyCapability = "batch1";
+
 /// Directory the orphan-blob sweep after a batch apply walks (top level only).
 constexpr const char* kDeliveredBlobDir = "/apps";
 

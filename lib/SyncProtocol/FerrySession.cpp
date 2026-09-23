@@ -283,6 +283,25 @@ FerryReply FerrySession::applyManifest(const char* args, FerryByteSource& in) {
     const bool batchDoc = LoadoutManifest::parseOpsMeta(doc, meta) &&
                           (meta.hasBatch || meta.hasBase);
 
+    // The sender always pairs a batch id with the revision it was built
+    // against; a batch without a base could never be refused as stale.
+    if (batchDoc && meta.hasBatch && !meta.hasBase) {
+        releasePayloadIfIdle();
+        return setLine(false, "[err] lapply.usage=batch requires base");
+    }
+
+    // Every blob an add/replace points the menu at must be a path the file
+    // verbs could have written (same predicate), in any document.
+    std::vector<std::string> blobPaths;
+    if (LoadoutManifest::collectOpBlobPaths(doc, blobPaths)) {
+        for (const std::string& p : blobPaths) {
+            if (!pathConfined(p.c_str())) {
+                releasePayloadIfIdle();
+                return setLine(false, "[err] lapply.reject");
+            }
+        }
+    }
+
     if (batchDoc && meta.hasBatch) {
         // Idempotent retry: checked BEFORE `base`, because the batch itself
         // moved the manifest off the base it was built against.
@@ -303,14 +322,24 @@ FerryReply FerrySession::applyManifest(const char* args, FerryByteSource& in) {
         if (recLen > 0 && LoadoutManifest::parseAppliedRecord(rec, prior) &&
             prior.batch == meta.batch && prior.result == "applied") {
             releasePayloadIfIdle();
+            // Same id, same bytes: a retry. Same id, different bytes: the
+            // sender reused an id for a new document - refuse, change nothing.
+            if (prior.docCrc != crc) {
+                return setLine(false, "[err] lapply.batchreuse");
+            }
             return setFormat(true, "[cmd] lapply.ok=applied %d entries %d\n",
                              prior.ops, prior.entries);
         }
     }
 
+    // Whether a real manifest existed before this apply. When it did not,
+    // the apply starts from the compiled-in registry, and that rebuilt
+    // manifest must never be used to judge delivered blobs as orphans.
+    bool manifestBefore = false;
     if (batchDoc && meta.hasBase) {
         std::string current;
-        const uint32_t currentCrc = storage_.loadManifest(current)
+        manifestBefore = storage_.loadManifest(current);
+        const uint32_t currentCrc = manifestBefore
             ? crc32(current.data(), current.size()) : 0;
         if (currentCrc != meta.base) {
             releasePayloadIfIdle();
@@ -346,6 +375,7 @@ FerryReply FerrySession::applyManifest(const char* args, FerryByteSource& in) {
         record.at       = storage_.nowEpochSeconds();
         record.ops      = applied;
         record.entries  = entries;
+        record.docCrc   = crc;
         if (!writeAppliedRecord(LoadoutManifest::serializeAppliedRecord(record))) {
             // The manifest IS changed; only the record is missing. Report
             // the new manifest CRC so the sender can reconcile with `lget`
@@ -357,8 +387,11 @@ FerryReply FerrySession::applyManifest(const char* args, FerryByteSource& in) {
     }
 
     // Orphan sweep strictly after a successful apply, and never while a
-    // write session is active (its blob may not be in the manifest yet).
-    if (haveAfter && state_ == State::Idle) sweepOrphanBlobs(after);
+    // write session is active (its blob may not be in the manifest yet), and
+    // never when the manifest before the apply was absent or unreadable.
+    if (haveAfter && manifestBefore && meta.base != 0 && state_ == State::Idle) {
+        sweepOrphanBlobs(after);
+    }
 
     return setFormat(true, "[cmd] lapply.ok=applied %d entries %d\n",
                      applied, entries);

@@ -310,6 +310,43 @@ void test_ops_replace_unknown_or_blobless_rejected(void) {
     }
 }
 
+void test_ops_replace_only_on_delivered_blob_entries(void) {
+    const char* formats[] = { "builtin", "cfsprite", "" };
+    for (const char* f : formats) {
+        Loadout l = makeBaseline();
+        l.entries[0].format = f;
+        l.entries[0].blobPath = "/apps/APP_A.bin";
+        TEST_ASSERT_FALSE_MESSAGE(applyOps(l,
+            "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
+            "\"blobPath\":\"/apps/APP_A-00000001.wasm\"}}]}", nullptr), f);
+        TEST_ASSERT_EQUAL_STRING("/apps/APP_A.bin", l.entries[0].blobPath.c_str());
+    }
+    const char* ok[] = { "wasm", "blob" };
+    for (const char* f : ok) {
+        Loadout l = makeBaseline();
+        l.entries[0].format = f;
+        TEST_ASSERT_TRUE_MESSAGE(applyOps(l,
+            "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
+            "\"blobPath\":\"/apps/APP_A-00000001.wasm\"}}]}", nullptr), f);
+    }
+}
+
+void test_collect_op_blob_paths(void) {
+    std::vector<std::string> paths;
+    TEST_ASSERT_TRUE(collectOpBlobPaths(
+        "{\"batch\":\"b\",\"ops\":["
+        "{\"op\":\"add\",\"entry\":{\"id\":\"A\",\"blobPath\":\"/apps/a.wasm\"}},"
+        "{\"op\":\"hide\",\"id\":\"A\",\"hidden\":true},"
+        "{\"op\":\"add\",\"entry\":{\"id\":\"B\"}},"
+        "{\"entry\":{\"id\":\"C\",\"blobPath\":\"/x\"},\"op\":\"replace\"}]}", paths));
+    TEST_ASSERT_EQUAL_INT(2, (int)paths.size());
+    TEST_ASSERT_EQUAL_STRING("/apps/a.wasm", paths[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("/x", paths[1].c_str());
+    TEST_ASSERT_TRUE(collectOpBlobPaths("{}", paths));
+    TEST_ASSERT_EQUAL_INT(0, (int)paths.size());
+    TEST_ASSERT_FALSE(collectOpBlobPaths("{\"ops\":[", paths));
+}
+
 void test_applied_record_round_trip(void) {
     AppliedRecord rec;
     rec.batch = "b-\"q\"";
@@ -318,10 +355,12 @@ void test_applied_record_round_trip(void) {
     rec.at = 1790000000u;
     rec.ops = 3;
     rec.entries = 12;
+    rec.docCrc = 0x0000abcdu;
     const std::string json = serializeAppliedRecord(rec);
     TEST_ASSERT_EQUAL_STRING(
         "{\"batch\":\"b-\\\"q\\\"\",\"result\":\"applied\",\"crc_after\":\"00c0ffee\","
-        "\"at\":1790000000,\"ops\":3,\"entries\":12}\n", json.c_str());
+        "\"at\":1790000000,\"ops\":3,\"entries\":12,\"doc_crc\":\"0000abcd\"}\n",
+        json.c_str());
     AppliedRecord back;
     TEST_ASSERT_TRUE(parseAppliedRecord(json.c_str(), back));
     TEST_ASSERT_EQUAL_STRING(rec.batch.c_str(), back.batch.c_str());
@@ -330,6 +369,7 @@ void test_applied_record_round_trip(void) {
     TEST_ASSERT_EQUAL_UINT32(rec.at, back.at);
     TEST_ASSERT_EQUAL_INT(3, back.ops);
     TEST_ASSERT_EQUAL_INT(12, back.entries);
+    TEST_ASSERT_EQUAL_UINT32(0x0000abcdu, back.docCrc);
 
     AppliedRecord junk;
     TEST_ASSERT_FALSE(parseAppliedRecord("{\"result\":\"applied\"}", junk));
@@ -357,6 +397,8 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_ops_invalid_batch_or_base_rejects_document);
     RUN_TEST(test_ops_replace_swaps_blob_fields_only);
     RUN_TEST(test_ops_replace_unknown_or_blobless_rejected);
+    RUN_TEST(test_ops_replace_only_on_delivered_blob_entries);
+    RUN_TEST(test_collect_op_blob_paths);
     RUN_TEST(test_applied_record_round_trip);
     return UNITY_END();
 }

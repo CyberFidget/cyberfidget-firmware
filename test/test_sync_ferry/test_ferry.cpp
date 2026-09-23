@@ -735,7 +735,7 @@ void test_lapply_replace_unknown_id_refuses_document(void) {
     const uint32_t before = manifestCrc(fs);
     FerrySession s(fs);
     const std::string doc =
-        "{\"batch\":\"b-1\",\"ops\":["
+        "{\"batch\":\"b-1\",\"base\":\"" + hex8(before) + "\",\"ops\":["
         "{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true},"
         "{\"op\":\"replace\",\"entry\":{\"id\":\"APP_NOPE\","
         "\"blobPath\":\"/apps/APP_NOPE-00000000.wasm\"}}]}";
@@ -819,8 +819,8 @@ void test_lapply_batch_recorded_before_success_reply(void) {
     fs2.manifest = baseline();
     fs2.writeFileOk = false;
     FerrySession s2(fs2);
-    FerryReply r2 = lapply(s2, "{\"batch\":\"b-43\",\"ops\":"
-                               "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}");
+    FerryReply r2 = lapply(s2, "{\"batch\":\"b-43\",\"base\":\"" + hex8(manifestCrc(fs2)) +
+                               "\",\"ops\":[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}");
     TEST_ASSERT_FALSE(r2.ok);
 }
 
@@ -884,8 +884,8 @@ void test_lapply_failure_between_apply_and_record_is_consistent(void) {
     fs2.files[kAppliedRecordPath] = std::vector<uint8_t>{'o', 'l', 'd'};
     FerrySession s2(fs2);
     fs2.renameFailures = 2;
-    FerryReply r2 = lapply(s2, "{\"batch\":\"b-10\",\"ops\":"
-                               "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}");
+    FerryReply r2 = lapply(s2, "{\"batch\":\"b-10\",\"base\":\"" + hex8(manifestCrc(fs2)) +
+                               "\",\"ops\":[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}");
     TEST_ASSERT_FALSE(r2.ok);
     TEST_ASSERT_FALSE(fs2.has(kAppliedRecordTemp));
 }
@@ -904,8 +904,8 @@ void test_lapply_sweep_deletes_only_orphan_delivered_blobs(void) {
     fs.files["/assets/y-00000000.wasm"] = {1};         // other root: kept
     FerrySession s(fs);
     assertReply("[cmd] lapply.ok=applied 1 entries 2\n",
-                lapply(s, "{\"batch\":\"b-gc\",\"ops\":"
-                          "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}"));
+                lapply(s, "{\"batch\":\"b-gc\",\"base\":\"" + hex8(manifestCrc(fs)) +
+                          "\",\"ops\":[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}"));
     TEST_ASSERT_FALSE(fs.has("/apps/APP_B-89abcdef.wasm"));
     TEST_ASSERT_TRUE(fs.has("/apps/APP_B-0123abcd.wasm"));
     TEST_ASSERT_TRUE(fs.has("/apps/legacy.wasm"));
@@ -940,8 +940,8 @@ void test_lapply_sweep_skipped_during_write_session(void) {
     FerrySession s(fs);
     openHello(s);
     assertReply("[cmd] lapply.ok=applied 1 entries 2\n",
-                lapply(s, "{\"batch\":\"b-w\",\"ops\":"
-                          "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}"));
+                lapply(s, "{\"batch\":\"b-w\",\"base\":\"" + hex8(manifestCrc(fs)) +
+                          "\",\"ops\":[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}"));
     TEST_ASSERT_TRUE(fs.has("/apps/APP_E-00c0ffee.wasm"));
     TEST_ASSERT_EQUAL_INT(0, fs.listCalls);
     TEST_ASSERT_TRUE(s.active());
@@ -972,6 +972,105 @@ void test_applied_record_not_reachable_by_fwrite(void) {
     assertReply("[err] fwrite.path=/apps/.applied.json.part (confined to /apps/ or /assets/)\n",
                 s.open("/apps/.applied.json.part 5 c1446436"));
     TEST_ASSERT_FALSE(s.active());
+}
+
+void test_lapply_batch_id_reused_for_other_document_refused(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    FerrySession s(fs);
+    const std::string doc = "{\"batch\":\"b-1\",\"base\":\"" + hex8(manifestCrc(fs)) +
+        "\",\"ops\":[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}";
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n", lapply(s, doc));
+    LoadoutManifest::AppliedRecord rec;
+    TEST_ASSERT_TRUE(LoadoutManifest::parseAppliedRecord(
+        fs.content(kAppliedRecordPath).c_str(), rec));
+    TEST_ASSERT_EQUAL_UINT32(crcOf(doc), rec.docCrc);
+    const std::string recBefore = fs.content(kAppliedRecordPath);
+    const uint32_t after = manifestCrc(fs);
+
+    // Same id, different bytes (current base, so only the reuse can refuse it).
+    const std::string other = "{\"batch\":\"b-1\",\"base\":\"" + hex8(after) +
+        "\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_B\"}]}";
+    FerryReply r = lapply(s, other);
+    assertReply("[err] lapply.batchreuse\r\n", r);
+    TEST_ASSERT_FALSE(r.ok);
+    TEST_ASSERT_EQUAL_INT(1, fs.applyCalls);
+    TEST_ASSERT_EQUAL_UINT32(after, manifestCrc(fs));
+    TEST_ASSERT_EQUAL_STRING(recBefore.c_str(), fs.content(kAppliedRecordPath).c_str());
+    TEST_ASSERT_EQUAL_INT(0, fs.payloadLive);
+
+    // The original bytes are still a plain retry.
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n", lapply(s, doc));
+    TEST_ASSERT_EQUAL_INT(1, fs.applyCalls);
+}
+
+void test_lapply_batch_without_base_is_usage_error(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    fs.files["/apps/orphan-deadbeef.wasm"] = {1};
+    FerrySession s(fs);
+    FerryReply r = lapply(s, "{\"batch\":\"b-1\",\"ops\":"
+                             "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}");
+    assertReply("[err] lapply.usage=batch requires base\r\n", r);
+    TEST_ASSERT_FALSE(r.ok);
+    TEST_ASSERT_EQUAL_INT(0, fs.applyCalls);
+    TEST_ASSERT_FALSE(fs.manifest.entries[0].hidden);
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordPath));
+    TEST_ASSERT_TRUE(fs.has("/apps/orphan-deadbeef.wasm"));
+    TEST_ASSERT_EQUAL_INT(0, fs.payloadLive);
+}
+
+void test_lapply_sweep_skipped_when_manifest_was_absent(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();   // the registry rebuild: references no blobs
+    fs.manifestStored = false;
+    fs.files["/apps/APP_B-0123abcd.wasm"] = {1};
+    FerrySession s(fs);
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n",
+                lapply(s, "{\"batch\":\"b-0\",\"base\":\"00000000\",\"ops\":"
+                          "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}"));
+    TEST_ASSERT_TRUE(fs.has("/apps/APP_B-0123abcd.wasm"));
+    TEST_ASSERT_EQUAL_INT(0, fs.listCalls);
+    TEST_ASSERT_TRUE(fs.has(kAppliedRecordPath));
+}
+
+void test_lapply_replace_of_builtin_refused(void) {
+    FakeStorage fs;
+    fs.manifest = deliveredBaseline();
+    fs.manifest.entries[0].format = "builtin";
+    const uint32_t before = manifestCrc(fs);
+    FerrySession s(fs);
+    const std::string doc = "{\"batch\":\"b-1\",\"base\":\"" + hex8(before) +
+        "\",\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
+        "\"blobPath\":\"/apps/APP_A-00000000.wasm\"}}]}";
+    assertReply("[err] lapply.reject\r\n", lapply(s, doc));
+    TEST_ASSERT_EQUAL_UINT32(before, manifestCrc(fs));
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordPath));
+}
+
+void test_lapply_unconfined_blob_path_refused(void) {
+    const char* paths[] = {
+        "/loadout.json", "/apps/../x.wasm", "/sd/x-00000000.wasm",
+        "/apps/.applied.json", "apps/x.wasm",
+    };
+    for (const char* p : paths) {
+        FakeStorage fs;
+        fs.manifest = deliveredBaseline();
+        const uint32_t before = manifestCrc(fs);
+        FerrySession s(fs);
+        const std::string rep = "{\"batch\":\"b-1\",\"base\":\"" + hex8(before) +
+            "\",\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_B\","
+            "\"blobPath\":\"" + std::string(p) + "\"}}]}";
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("[err] lapply.reject\r\n",
+                                         text(lapply(s, rep)).c_str(), p);
+        // The same check applies to add, in a plain document too.
+        const std::string add = "{\"ops\":[{\"op\":\"add\",\"entry\":{\"id\":\"APP_E\","
+            "\"format\":\"wasm\",\"blobPath\":\"" + std::string(p) + "\"}}]}";
+        TEST_ASSERT_EQUAL_STRING_MESSAGE("[err] lapply.reject\r\n",
+                                         text(lapply(s, add)).c_str(), p);
+        TEST_ASSERT_EQUAL_INT(0, fs.applyCalls);
+        TEST_ASSERT_EQUAL_UINT32(before, manifestCrc(fs));
+    }
 }
 
 void setUp(void)    {}
@@ -1024,5 +1123,10 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_lapply_sweep_skipped_during_write_session);
     RUN_TEST(test_lapply_invalid_batch_or_base_rejected);
     RUN_TEST(test_applied_record_not_reachable_by_fwrite);
+    RUN_TEST(test_lapply_batch_id_reused_for_other_document_refused);
+    RUN_TEST(test_lapply_batch_without_base_is_usage_error);
+    RUN_TEST(test_lapply_sweep_skipped_when_manifest_was_absent);
+    RUN_TEST(test_lapply_replace_of_builtin_refused);
+    RUN_TEST(test_lapply_unconfined_blob_path_refused);
     return UNITY_END();
 }

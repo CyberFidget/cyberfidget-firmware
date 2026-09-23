@@ -426,6 +426,15 @@ else
     fail "syncinfo prints a line after fw: $LAST_SYNCINFO"
 fi
 
+# Senders gate batch documents on this capability line; it must exist and
+# (per the rule above) sit before the fw line.
+if awk '/^void SerialCli::cmdSyncinfo\(/{f=1} f&&/^}/{exit} f' lib/SerialCli/SerialCli.cpp | grep -q 'syncinfo\.lapply=%s' \
+   && grep -q 'kLapplyCapability = "batch1"' lib/SyncProtocol/SyncProtocol.h; then
+    pass "syncinfo advertises lapply=batch1"
+else
+    fail "syncinfo does not advertise the lapply batch capability"
+fi
+
 # Same rule for info: wake.cause is its terminator line.
 LAST_INFO="$(awk '/^void SerialCli::cmdInfo\(/{f=1} f&&/\[cmd\] info\./{l=$0} f&&/^}/{print l; exit}' lib/SerialCli/SerialCli.cpp)"
 if echo "$LAST_INFO" | grep -q 'info\.wake\.cause='; then

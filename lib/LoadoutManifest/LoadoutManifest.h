@@ -175,10 +175,18 @@ bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order);
  * Swap the delivered blob of an EXISTING entry: `entry.id` names the entry;
  * its blobPath, version, abi, name (the label) and signature are replaced
  * with the values in `entry`. Position, category, hidden flag and format
- * are kept. Fails (loadout untouched) on an empty/unknown id or an empty
- * blobPath (a replace always names the new blob).
+ * are kept. Fails (loadout untouched) on an empty/unknown id, an empty
+ * blobPath (a replace always names the new blob), or an existing entry
+ * that is not a delivered blob app (format other than "wasm" / "blob").
  */
 bool applyReplace(Loadout& loadout, const LoadoutEntry& entry);
+
+/**
+ * Collect the non-empty `blobPath` of every op entry (add / replace) in an
+ * ops document, so the transport can confine them before applying. Returns
+ * false on a malformed document (which applyOps rejects anyway).
+ */
+bool collectOpBlobPaths(const char* opsJson, std::vector<std::string>& out);
 
 /// Longest `batch` id an ops document may carry.
 constexpr size_t kMaxBatchIdLen = 40;
@@ -216,9 +224,13 @@ struct AppliedRecord {
     uint32_t    at = 0;         ///< wall-clock seconds, 0 = clock unknown
     int         ops = 0;
     int         entries = 0;
+    /// CRC-32 of the ops document bytes (the `lapply` header CRC). A batch
+    /// id is only a repeat when this matches too; 0 when absent.
+    uint32_t    docCrc = 0;
 };
 
-/// Serialize a record: {"batch","result","crc_after","at","ops","entries"}.
+/// Serialize a record: {"batch","result","crc_after","at","ops","entries",
+/// "doc_crc"}.
 std::string serializeAppliedRecord(const AppliedRecord& rec);
 
 /// Parse a record. False on malformed JSON or a missing batch/result.

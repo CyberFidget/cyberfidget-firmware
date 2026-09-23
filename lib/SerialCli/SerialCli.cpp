@@ -1484,6 +1484,7 @@ void SerialCli::cmdSyncinfo() {
     // the fw line and would otherwise take a trailing line as the reply to
     // their next command.
     Serial.printf("[cmd] syncinfo.id=%s\n", id);
+    Serial.printf("[cmd] syncinfo.lapply=%s\n", SyncProtocol::kLapplyCapability);
     Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
 }
 

@@ -109,11 +109,29 @@ exactly as before.
 * `replace` (`applyReplace`): `{ "op": "replace", "entry": { ...full
   entry... } }` swaps an EXISTING entry's `blobPath`, `version`, `abi`,
   `name` and `signature` (a signature belongs to the blob it signed),
-  keeping its position, category, hidden flag and format. An unknown id or an empty `blobPath` rejects the document.
-  `add` of an installed id stays rejected.
+  keeping its position, category, hidden flag and format. An unknown id,
+  an empty `blobPath`, or an existing entry whose `format` is not `wasm` /
+  `blob` (builtin and sprite entries) rejects the document. `add` of an
+  installed id stays rejected.
+* `collectOpBlobPaths` lists every `add` / `replace` entry's `blobPath` so
+  the transport can refuse a document pointing outside its confined write
+  roots (same check as the file verbs).
 * `serializeAppliedRecord` / `parseAppliedRecord` read and write the
   applied-batch record (`{"batch","result","crc_after","at","ops",
-  "entries"}`) the transport keeps at `/apps/.applied.json`.
+  "entries","doc_crc"}`) the transport keeps at `/apps/.applied.json`.
+  `doc_crc` (the document's CRC-32) tells a retry of the same batch from a
+  different document that reuses its id.
+* The transport only sends these to firmware that advertises
+  `syncinfo.lapply=batch1`, requires `base` with every `batch`, and skips
+  the orphan sweep when there was no stored manifest before the apply.
+
+A menu already on screen is not rebuilt when the manifest changes (it is
+rebuilt on menu entry), so after a `replace` its item keeps pointing at the
+old blob file; once the sweep has deleted that file, launching from the
+stale menu fails until the menu is re-entered. Contract rule for senders:
+blobs for a batch are uploaded only after the previous batch's reply; the
+sweep after a batch may delete any delivered blob the manifest does not
+reference.
 
 Delivered app blobs are named `/apps/<id>-<hash8>.wasm` (hash8 = the first
 8 lowercase hex digits of the blob's SHA-256). Because the name changes

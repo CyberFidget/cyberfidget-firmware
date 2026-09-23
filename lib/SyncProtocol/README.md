@@ -118,7 +118,7 @@ The CRC in each `fread.ok` header covers only that returned chunk.
 ```
 lget                              -> [cmd] lget.present=<0|1> entries=<n> schema=<n> len=<n> crc=<hex>
                                      <len raw bytes of manifest JSON follow (omitted when present=0)>
-lapply <len> <crc32>              -> [cmd] lapply.ok=applied <n> entries <n>   (or [err] lapply.reject / .crc / .stale / .record)
+lapply <len> <crc32>              -> [cmd] lapply.ok=applied <n> entries <n>   (or [err] lapply.reject / .crc / .usage / .stale / .batchreuse / .record)
   <len raw bytes of ops JSON follow the line>
 ```
 
@@ -162,26 +162,40 @@ as above (same checks, same reply bytes, no extra effects).
 ] }
 ```
 
+* **Capability gate**: a device that supports this section reports
+  `[cmd] syncinfo.lapply=batch1` (see Status report). Senders send `batch`,
+  `base` or `replace` only to such a device: older firmware silently skips
+  unknown top-level fields, so it would apply a stale document.
 * `batch` - opaque id, 1-40 printable ASCII bytes (no spaces). `base` -
   1-8 hex digits, either case. Any other value (wrong type, too long,
-  non-hex) rejects the whole document as `[err] lapply.reject`.
+  non-hex) rejects the whole document as `[err] lapply.reject`. A document
+  with `batch` must also carry `base`; without it the reply is
+  `[err] lapply.usage=batch requires base` and nothing changes. `base`
+  alone is allowed (a stale check with no record).
 * `replace` swaps an existing entry's `blobPath`, `version`, `abi`,
   `name` (label) and `signature`; position, category, hidden flag and
-  format are kept. An unknown id, or a missing `blobPath`, rejects the whole document.
-  `add` of an installed id stays rejected.
+  format are kept. It is refused (whole document) for an unknown id, a
+  missing `blobPath`, or an existing entry that is not a delivered blob app
+  (`format` other than `wasm` / `blob` - builtin and sprite entries are
+  refused). `add` of an installed id stays rejected.
+* **Blob paths are confined**: in ANY document, the `blobPath` of every
+  `add` / `replace` entry must pass the same `pathConfined()` check as the
+  file verbs, or the whole document answers `lapply.reject`.
 * The device checks, in this order:
   1. **Repeat**: if `batch` equals the batch recorded in
-     `/apps/.applied.json`, nothing is re-applied and the device answers the
-     recorded success line (`[cmd] lapply.ok=applied <n> entries <n>`). This
-     runs before the `base` check because the batch itself moved the
-     manifest off its base.
+     `/apps/.applied.json` AND the `lapply` header CRC equals the recorded
+     `doc_crc`, nothing is re-applied and the device answers the recorded
+     success line (`[cmd] lapply.ok=applied <n> entries <n>`). The same id
+     with different document bytes answers `[err] lapply.batchreuse` and
+     nothing changes. This runs before the `base` check because the batch
+     itself moved the manifest off its base.
   2. **Stale**: if `base` differs from the CRC-32 of the stored manifest
      (the `crc` `lget` reports; `00000000` when none is stored), the whole
      document is refused with `[err] lapply.stale=<current crc hex>\n` and
      nothing changes.
   3. **Apply**: as for any document; a rejected op answers `lapply.reject`.
   4. **Record** (only with `batch`): `{"batch","result","crc_after","at",
-     "ops","entries"}` is written to `/apps/.applied.json` via
+     "ops","entries","doc_crc"}` is written to `/apps/.applied.json` via
      `/apps/.applied.json.part` + rename BEFORE the success reply. `at` is
      wall-clock seconds, or 0 when the clock is unset. If the record cannot
      be written the manifest change stands and the reply is
@@ -189,7 +203,19 @@ as above (same checks, same reply bytes, no extra effects).
   5. **Orphan sweep**: after a successful batch document, top-level
      `/apps` files named `<id>-<hash8>.wasm` (8 lowercase hex digits) that
      the manifest no longer references are deleted. Skipped while a
-     `fwrite` session is active, and when the manifest cannot be re-read.
+     `fwrite` session is active, when the manifest cannot be re-read, and
+     when the manifest BEFORE the apply was absent or unreadable (`base`
+     `00000000`): a manifest rebuilt from the built-in apps references no
+     blobs and must never be used to judge them orphans.
+* **Upload order (contract)**: blobs for a batch are uploaded only after
+  the previous batch's reply has arrived. The sweep after any batch may
+  delete ANY delivered-shape blob the resulting manifest does not
+  reference, including one uploaded early for a later batch.
+* **Replaced app on a menu already on screen**: the menu is rebuilt on
+  menu entry, not when the manifest changes. Until the menu is re-entered,
+  its item for a replaced app still points at the old file; after the sweep
+  deletes that file, launching the app from that stale menu fails. Leaving
+  and re-entering the menu fixes it.
 * Only successes are recorded. A refused document (stale, rejected) leaves
   the record as it was, and a retry is re-checked from scratch.
 * Failure between the manifest save and the record (power cut, or the
@@ -219,8 +245,14 @@ manifest does not reference it.
 syncinfo   -> [cmd] syncinfo.fs_total=<n> fs_used=<n> fs_free=<n>
               [cmd] syncinfo.manifest=<0|1> entries=<n> schema=<n>
               [cmd] syncinfo.id=0123456789ab
+              [cmd] syncinfo.lapply=batch1
               [cmd] syncinfo.fw=<version-string>
 ```
+
+`syncinfo.lapply` advertises the `lapply` batch contract (`batch`, `base`,
+`replace`, applied record, orphan sweep - see "Batch documents"). Absent on
+older firmware, which must not be sent those fields. An incompatible change
+to that contract bumps the value (`batch2`, ...).
 
 Firmware version is also available via the always-on `version` / `info`
 verbs.
@@ -262,6 +294,7 @@ the reply to the reader's next command.
 <-- [cmd] syncinfo.fs_total=1441792 fs_used=131072 fs_free=1310720\n
 <-- [cmd] syncinfo.manifest=1 entries=13 schema=1\n
 <-- [cmd] syncinfo.id=0123456789ab\n
+<-- [cmd] syncinfo.lapply=batch1\n
 <-- [cmd] syncinfo.fw=1.4.2+ab12cd3\n
 ```
 
