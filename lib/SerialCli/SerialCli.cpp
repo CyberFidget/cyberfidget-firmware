@@ -20,6 +20,7 @@
 #include "LoadoutStore.h"     // LittleFS mount + manifest read
 #include "MenuManager.h"      // menutree dump (T-183/T-191)
 #include "SyncProtocol.h"     // pure crc / confinement / arg parsing
+#include "FerrySession.h"     // pure write session (fwrite..fwabort, lapply)
 
 #include "HAL.h"              // displayProxy() for screencap (T-191)
 #include "DisplayProxy.h"     // frameBuffer()
@@ -101,22 +102,19 @@ bool twoArgsEqual(const char* args, const char* first, const char* second) {
 }
 
 // =========================================================================
-// Sync-transport session state (device-only; SerialCli never compiles for
-// the native tests). One write session at a time - the browser opens with
-// `fwrite`, streams `fwdata` chunks, and closes with `fwcommit`/`fwabort`.
-// The whole-file CRC is recomputed from the temp file at commit, so chunks
-// may arrive in any order and any chunk may be retried (restartable).
+// Sync-transport glue (device-only; SerialCli never compiles for the native
+// tests). The write session itself - `fwrite`/`fwdata`/`fwcommit`/`fwabort`
+// state, policy, and reply text, plus `lapply` - lives in the pure
+// SyncProtocol::FerrySession. This file is one transport driver for it: it
+// supplies LittleFS storage effects, the staging-buffer allocator, and the
+// UART byte source, and prints the session's replies verbatim.
 // =========================================================================
-bool     g_writeActive = false;
-File     g_writeFile;
-char     g_writePath[128]  = {0};  // final path (confined)
-char     g_writeTemp[128]  = {0};  // temp path (final + ".part")
-uint32_t g_writeSize       = 0;    // expected total size
-uint32_t g_writeCrc        = 0;    // expected whole-file crc32
 
-// Shared payload staging buffer for `fwdata` chunks and `lapply` documents
-// (never used by both at once). +1 for a null terminator on ops JSON.
-constexpr size_t kPayloadBufBytes = SyncProtocol::kMaxApplyBytes + 1;
+// Shared payload staging buffer for `fwdata` chunks, `lapply` documents, and
+// the `fstat`/`fread` read verbs (never used by two at once). The ferry
+// session holds it while a write session is active; otherwise it is freed
+// after each use. +1 for a null terminator on ops JSON.
+using SyncProtocol::kPayloadBufBytes;
 uint8_t* g_payloadBuf = nullptr;
 
 bool allocatePayloadBuffer() {
@@ -129,13 +127,19 @@ bool allocatePayloadBuffer() {
     return g_payloadBuf != nullptr;
 }
 
-void releasePayloadIfIdle() {
-    if (!g_writeActive && g_payloadBuf != nullptr) {
+void freePayloadBuffer() {
+    if (g_payloadBuf != nullptr) {
         free(g_payloadBuf);
         g_payloadBuf = nullptr;
     }
 }
 
+// UART timeout ownership: the payload read bounds below belong to this serial
+// driver, not to FerrySession. The session asks its FerryByteSource for
+// "exactly n bytes" or "drain n bytes" and only learns success or give-up;
+// UartByteSource (below) turns that into these gap/total-duration limits.
+// Another transport supplies its own byte source with its own timing.
+//
 // Payload read bounds. A framed payload read runs inside SerialCli::poll(),
 // which runs inside AppManager::loop(), so an unbounded read hands a hostile
 // (or merely wedged) host a lever to freeze the whole device. Two independent
@@ -237,7 +241,7 @@ void swallowPairedLf() {
 // absolute, already-confined file path; only its directory prefixes are
 // created, never the file itself.
 void ensureParentDirs(const char* path) {
-    char dir[sizeof(g_writeTemp)];
+    char dir[128];
     strncpy(dir, path, sizeof(dir) - 1);
     dir[sizeof(dir) - 1] = '\0';
     // Walk each '/' after the leading one, creating the prefix directory.
@@ -249,14 +253,86 @@ void ensureParentDirs(const char* path) {
     }
 }
 
-void clearWriteSession() {
-    if (g_writeFile) g_writeFile.close();
-    g_writeActive = false;
-    g_writePath[0] = '\0';
-    g_writeTemp[0] = '\0';
-    g_writeSize = 0;
-    g_writeCrc  = 0;
-    releasePayloadIfIdle();
+// Payload bytes straight off the UART, bounded by the serial driver's own
+// gap/total-duration limits (see "UART timeout ownership" above).
+class UartByteSource : public SyncProtocol::FerryByteSource {
+public:
+    bool readExact(uint8_t* buf, size_t n) override {
+        return ::readExact(buf, n, kPayloadGapMs);
+    }
+    void drain(size_t n) override { drainBytes(n, kPayloadGapMs); }
+};
+
+// LittleFS storage effects for the ferry session.
+class LittleFsFerryStorage : public SyncProtocol::FerryStorage {
+public:
+    bool mount() override { return LoadoutStore::begin(); }
+    size_t freeBytes() override {
+        size_t total = LittleFS.totalBytes();
+        size_t used  = LittleFS.usedBytes();
+        return (total > used) ? (total - used) : 0;
+    }
+    uint8_t* acquirePayload() override {
+        return allocatePayloadBuffer() ? g_payloadBuf : nullptr;
+    }
+    void releasePayload() override { freePayloadBuffer(); }
+    bool openTemp(const char* tempPath) override {
+        // Nested confined paths (/apps/sub/x.dat) pass confinement but
+        // LittleFS won't create the intermediate dirs on open - do it first
+        // so the open succeeds. Spot-check nested writes on hardware.
+        ensureParentDirs(tempPath);
+        writeFile_ = LittleFS.open(tempPath, FILE_WRITE);
+        return (bool)writeFile_;
+    }
+    bool seekTemp(uint32_t offset) override {
+        return writeFile_.seek(offset, SeekSet);
+    }
+    size_t writeTemp(const uint8_t* data, size_t len) override {
+        return writeFile_.write(data, len);
+    }
+    void closeTemp() override {
+        if (writeFile_) {
+            writeFile_.flush();
+            writeFile_.close();
+        }
+    }
+    bool openReadBack(const char* path, uint32_t& sizeOut) override {
+        readFile_ = LittleFS.open(path, FILE_READ);
+        if (!readFile_) return false;
+        sizeOut = (uint32_t)readFile_.size();
+        return true;
+    }
+    int readBack(uint8_t* buf, size_t cap) override {
+        return readFile_.read(buf, cap);
+    }
+    void closeReadBack() override { readFile_.close(); }
+    bool rename(const char* from, const char* to) override {
+        return LittleFS.rename(from, to);
+    }
+    bool remove(const char* path) override { return LittleFS.remove(path); }
+    bool applyManifestOps(const char* opsJson, int& entriesOut,
+                          int& appliedOut) override {
+        return AppManager::instance().applyLoadoutOps(opsJson, &entriesOut,
+                                                      &appliedOut);
+    }
+
+private:
+    File writeFile_;
+    File readFile_;
+};
+
+// Defined in this order so the session is destroyed before its storage.
+LittleFsFerryStorage g_ferryStorage;
+SyncProtocol::FerrySession g_ferry(g_ferryStorage);
+
+// Read verbs borrow the staging buffer; free it afterwards unless the ferry
+// session is holding it for an active write.
+void releasePayloadIfIdle() {
+    if (!g_ferry.active()) freePayloadBuffer();
+}
+
+void sendReply(const SyncProtocol::FerryReply& reply) {
+    Serial.write((const uint8_t*)reply.text, reply.len);
 }
 
 #ifdef CF_TEST_CLI
@@ -775,201 +851,24 @@ void SerialCli::cmdHelp() {
 // prefixes so the browser side can parse without regex acrobatics.
 // =========================================================================
 
+// The write-session verbs are thin: FerrySession owns the state, the checks,
+// and the exact reply bytes; this driver only supplies the UART payload bytes
+// and prints the reply.
 void SerialCli::cmdFwrite(const char* args) {
-    char path[SyncProtocol::kMaxPathLen + 1];
-    uint32_t size = 0, crc = 0;
-    if (!SyncProtocol::parseWriteOpen(args, path, sizeof(path), size, crc)) {
-        Serial.println("[err] fwrite.usage=fwrite <path> <size> <crc32>");
-        return;
-    }
-    if (!SyncProtocol::pathConfined(path)) {
-        Serial.printf("[err] fwrite.path=%s (confined to /apps/ or /assets/)\n", path);
-        return;
-    }
-    if (!LoadoutStore::begin()) {
-        Serial.println("[err] fwrite.fs=mount failed");
-        return;
-    }
-    // Free-space guard (approximate - usedBytes includes an old copy if this
-    // overwrites, so this only rejects clearly-too-large transfers).
-    size_t total = LittleFS.totalBytes();
-    size_t used  = LittleFS.usedBytes();
-    size_t freeB = (total > used) ? (total - used) : 0;
-    if ((size_t)size > freeB) {
-        Serial.printf("[err] fwrite.space=need %u free %u\n",
-                      (unsigned)size, (unsigned)freeB);
-        return;
-    }
-
-    // Abort any stale session, then open a fresh temp file.
-    if (g_writeActive) {
-        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
-        clearWriteSession();
-    }
-    if (!allocatePayloadBuffer()) {
-        Serial.println("[err] fwrite.nomem");
-        return;
-    }
-    strncpy(g_writePath, path, sizeof(g_writePath) - 1);
-    g_writePath[sizeof(g_writePath) - 1] = '\0';
-    snprintf(g_writeTemp, sizeof(g_writeTemp), "%s.part", g_writePath);
-
-    // Nested confined paths (/apps/sub/x.dat) pass confinement but LittleFS
-    // won't create the intermediate dirs on open - do it first so the open
-    // succeeds. Spot-check nested writes on hardware.
-    ensureParentDirs(g_writeTemp);
-
-    g_writeFile = LittleFS.open(g_writeTemp, FILE_WRITE);
-    if (!g_writeFile) {
-        Serial.printf("[err] fwrite.open=%s\n", g_writeTemp);
-        clearWriteSession();
-        return;
-    }
-    g_writeActive = true;
-    g_writeSize   = size;
-    g_writeCrc    = crc;
-    Serial.printf("[cmd] fwrite.ok=%s size=%u chunk=%u crc=%08x\n",
-                  g_writePath, (unsigned)size,
-                  (unsigned)SyncProtocol::kMaxChunkBytes, (unsigned)crc);
+    sendReply(g_ferry.open(args));
 }
 
 void SerialCli::cmdFwdata(const char* args) {
-    uint32_t offset = 0, len = 0, crc = 0;
-    if (!SyncProtocol::parseChunkHeader(args, offset, len, crc)) {
-        // Length unknown -> cannot resync the stream; the browser must abort.
-        Serial.println("[err] fwdata.usage=fwdata <offset> <len> <crc32>");
-        return;
-    }
-    if (len == 0) {
-        Serial.println("[err] fwdata.len=0");
-        return;
-    }
-    if (len > SyncProtocol::kMaxChunkBytes) {
-        drainBytes(len, kPayloadGapMs);
-        Serial.printf("[err] fwdata.toobig=%u max=%u\n",
-                      (unsigned)len, (unsigned)SyncProtocol::kMaxChunkBytes);
-        return;
-    }
-    if (!g_writeActive) {
-        drainBytes(len, kPayloadGapMs);
-        Serial.println("[err] fwdata.nosession");
-        return;
-    }
-    if ((uint64_t)offset + len > g_writeSize) {
-        drainBytes(len, kPayloadGapMs);
-        Serial.printf("[err] fwdata.range=off %u len %u size %u\n",
-                      (unsigned)offset, (unsigned)len, (unsigned)g_writeSize);
-        return;
-    }
-    if (g_payloadBuf == nullptr) {
-        drainBytes(len, kPayloadGapMs);
-        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
-        clearWriteSession();
-        Serial.println("[err] fwdata.nomem");
-        return;
-    }
-    if (!readExact(g_payloadBuf, len, kPayloadGapMs)) {
-        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
-        clearWriteSession();
-        Serial.println("[err] fwdata.timeout");
-        return;
-    }
-    // Per-chunk integrity: a corrupt chunk is NAKed and never written, so the
-    // browser resends the same offset. The whole-file crc at commit is the
-    // final gate against a silently-missed chunk.
-    uint32_t got = SyncProtocol::crc32(g_payloadBuf, len);
-    if (got != crc) {
-        Serial.printf("[err] fwdata.crc=off %u got %08x want %08x\n",
-                      (unsigned)offset, (unsigned)got, (unsigned)crc);
-        return;
-    }
-    if (!g_writeFile.seek(offset, SeekSet)) {
-        Serial.printf("[err] fwdata.seek=%u\n", (unsigned)offset);
-        return;
-    }
-    size_t wrote = g_writeFile.write(g_payloadBuf, len);
-    if (wrote != len) {
-        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
-        clearWriteSession();
-        Serial.printf("[err] fwdata.write=%u/%u\n", (unsigned)wrote, (unsigned)len);
-        return;
-    }
-    Serial.printf("[cmd] fwdata.ok=off %u len %u\n", (unsigned)offset, (unsigned)len);
+    UartByteSource in;
+    sendReply(g_ferry.chunk(args, in));
 }
 
 void SerialCli::cmdFwcommit() {
-    if (!g_writeActive) {
-        Serial.println("[err] fwcommit.nosession");
-        return;
-    }
-    if (g_payloadBuf == nullptr) {
-        if (g_writeTemp[0]) LittleFS.remove(g_writeTemp);
-        clearWriteSession();
-        Serial.println("[err] fwcommit.nomem");
-        return;
-    }
-    g_writeFile.flush();
-    g_writeFile.close();
-
-    // Re-read the finished temp file and recompute the whole-file crc, so a
-    // dropped or out-of-order chunk (any transfer that doesn't reproduce the
-    // browser's bytes exactly) is rejected here rather than half-applied.
-    File rf = LittleFS.open(g_writeTemp, FILE_READ);
-    if (!rf) {
-        LittleFS.remove(g_writeTemp);
-        clearWriteSession();
-        Serial.println("[err] fwcommit.reopen");
-        return;
-    }
-    uint32_t fileSize = (uint32_t)rf.size();
-    uint32_t crc = SyncProtocol::crc32Begin();
-    while (true) {
-        int n = rf.read(g_payloadBuf, kPayloadBufBytes);
-        if (n <= 0) break;
-        crc = SyncProtocol::crc32Update(crc, g_payloadBuf, (size_t)n);
-    }
-    crc = SyncProtocol::crc32Finish(crc);
-    rf.close();
-
-    if (fileSize != g_writeSize) {
-        LittleFS.remove(g_writeTemp);
-        Serial.printf("[err] fwcommit.size=got %u want %u\n",
-                      (unsigned)fileSize, (unsigned)g_writeSize);
-        clearWriteSession();
-        return;
-    }
-    if (crc != g_writeCrc) {
-        LittleFS.remove(g_writeTemp);
-        Serial.printf("[err] fwcommit.crc=got %08x want %08x\n",
-                      (unsigned)crc, (unsigned)g_writeCrc);
-        clearWriteSession();
-        return;
-    }
-
-    // Atomic-ish publish: rename temp over the final path. littlefs renames
-    // atomically; keep the remove+retry fallback the loadout store uses in
-    // case the VFS refuses an overwrite. A power cut here leaves the old file
-    // or none - never a half-written blob.
-    bool ok = LittleFS.rename(g_writeTemp, g_writePath);
-    if (!ok) {
-        LittleFS.remove(g_writePath);
-        ok = LittleFS.rename(g_writeTemp, g_writePath);
-    }
-    if (!ok) {
-        LittleFS.remove(g_writeTemp);
-        Serial.printf("[err] fwcommit.rename=%s\n", g_writePath);
-        clearWriteSession();
-        return;
-    }
-    Serial.printf("[cmd] fwcommit.ok=%s size=%u crc=%08x\n",
-                  g_writePath, (unsigned)fileSize, (unsigned)crc);
-    clearWriteSession();
+    sendReply(g_ferry.commit());
 }
 
 void SerialCli::cmdFwabort() {
-    if (g_writeActive && g_writeTemp[0]) LittleFS.remove(g_writeTemp);
-    clearWriteSession();
-    Serial.println("[cmd] fwabort.ok");
+    sendReply(g_ferry.abort());
 }
 
 void SerialCli::cmdFdelete(const char* args) {
@@ -1207,50 +1106,8 @@ void SerialCli::cmdLget() {
 }
 
 void SerialCli::cmdLapply(const char* args) {
-    uint32_t len = 0, crc = 0;
-    if (!SyncProtocol::parseApplyHeader(args, len, crc)) {
-        Serial.println("[err] lapply.usage=lapply <len> <crc32>");
-        return;
-    }
-    if (len == 0) {
-        Serial.println("[err] lapply.len=0");
-        return;
-    }
-    if (len > SyncProtocol::kMaxApplyBytes) {
-        drainBytes(len, kPayloadGapMs);
-        Serial.printf("[err] lapply.toobig=%u max=%u\n",
-                      (unsigned)len, (unsigned)SyncProtocol::kMaxApplyBytes);
-        return;
-    }
-    if (!allocatePayloadBuffer()) {
-        drainBytes(len, kPayloadGapMs);
-        Serial.println("[err] lapply.nomem");
-        return;
-    }
-    if (!readExact(g_payloadBuf, len, kPayloadGapMs)) {
-        Serial.println("[err] lapply.timeout");
-        releasePayloadIfIdle();
-        return;
-    }
-    uint32_t got = SyncProtocol::crc32(g_payloadBuf, len);
-    if (got != crc) {
-        Serial.printf("[err] lapply.crc=got %08x want %08x\n",
-                      (unsigned)got, (unsigned)crc);
-        releasePayloadIfIdle();
-        return;
-    }
-    g_payloadBuf[len] = '\0';
-    int entries = 0, applied = 0;
-    if (!AppManager::instance().applyLoadoutOps((const char*)g_payloadBuf,
-                                                &entries, &applied)) {
-        // Malformed document, a rejected op, or a failed save - the stored
-        // manifest is untouched, so the menu still falls back cleanly.
-        Serial.println("[err] lapply.reject");
-        releasePayloadIfIdle();
-        return;
-    }
-    Serial.printf("[cmd] lapply.ok=applied %d entries %d\n", applied, entries);
-    releasePayloadIfIdle();
+    UartByteSource in;
+    sendReply(g_ferry.applyManifest(args, in));
 }
 
 // T-191: base64-encode and emit the 128x64 1bpp framebuffer as one

@@ -77,8 +77,9 @@ private:
     void cmdDiary(const char* arg);
 
     // Sync-transport verbs (always compiled). Session state for an
-    // in-progress `fwrite` lives in file-scope statics in the .cpp so this
-    // header stays free of Arduino filesystem types.
+    // in-progress `fwrite` lives in a SyncProtocol::FerrySession owned by the
+    // .cpp (with its LittleFS/UART adapters) so this header stays free of
+    // Arduino filesystem types.
     void cmdFwrite(const char* args);
     void cmdFwdata(const char* args);
     void cmdFwcommit();
