@@ -22,8 +22,11 @@ if it switched it on.
 
 The worker reads `wificfg.ssid/pass` and `pair.tok/acct/at`. The site is the
 compiled `https://cyberfidget.com`; test builds (`CF_TEST_CLI`) read an
-`upd.base` override and permit an HTTP LAN server. Release builds use HTTPS
-with the certificate bundle. The device credential is sent only in the
+`upd.base` override and permit an HTTP LAN server. Release builds use HTTPS,
+and the server's chain must end in the short trusted root list
+(`lib/TrustedRoots`), not the SDK's full certificate bundle, which is no
+longer linked. Each request builds the list's PEM text in PSRAM and frees it
+after the client is cleaned up. The device credential is sent only in the
 Authorization header, is never logged, and its header buffer is wiped after
 use. mbedTLS's allocator is set to PSRAM-first before the first handshake.
 

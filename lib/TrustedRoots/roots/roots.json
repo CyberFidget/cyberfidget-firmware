@@ -1,0 +1,133 @@
+{
+  "comment": "The device's trusted root list. Source of truth for lib/TrustedRoots/TrustedRootsData.cpp (tools/trusted-roots/generate.py) and for the chain check (tools/trusted-roots/check_chains.py). Every sha256 was checked against the value the CA or Mozilla's CA list publishes; 'checked' names where.",
+  "roots": [
+    {
+      "file": "isrg-root-x1.der",
+      "name": "ISRG Root X1",
+      "sha256": "96bcec06264976f37460779acf28c5a7cfe8a3c0aae11a8ffcee05c0bddf08c6",
+      "source": "https://letsencrypt.org/certs/isrgrootx1.der",
+      "checked": "Mozilla CA list (https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV)",
+      "protects": "objects.githubusercontent.com and release-assets.githubusercontent.com (Root YR is cross-signed by X1); Let's Encrypt's default cyberfidget.com chain ends here"
+    },
+    {
+      "file": "isrg-root-x2.der",
+      "name": "ISRG Root X2",
+      "sha256": "69729b8e15a86efc177a57afb7171dfc64add28c2fca8cf1507e34453ccb1470",
+      "source": "https://letsencrypt.org/certs/isrg-root-x2.der",
+      "checked": "Mozilla CA list (https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV)",
+      "protects": "cyberfidget.com (Root YE is cross-signed by X2)"
+    },
+    {
+      "file": "isrg-root-ye.der",
+      "name": "ISRG Root YE",
+      "sha256": "e14ffcad5b0025731006caa43a121a22d8e9700f4fb9cf852f02a708aa5d5666",
+      "source": "https://letsencrypt.org/certs/gen-y/root-ye.der",
+      "checked": "crt.sh ID 20878464462 (https://crt.sh/?id=20878464462); not yet in Mozilla's CA list",
+      "protects": "cyberfidget.com once Let's Encrypt serves the short chain"
+    },
+    {
+      "file": "isrg-root-yr.der",
+      "name": "ISRG Root YR",
+      "sha256": "e57b7e6f150c419102e8d5c055729ff967b9d1a829bf00cec89ca604ebf4a86f",
+      "source": "https://letsencrypt.org/certs/gen-y/root-yr.der",
+      "checked": "crt.sh ID 20878464596 (https://crt.sh/?id=20878464596); not yet in Mozilla's CA list",
+      "protects": "objects.githubusercontent.com and release-assets.githubusercontent.com once the short chain is served"
+    },
+    {
+      "file": "usertrust-ecc.der",
+      "name": "USERTrust ECC Certification Authority",
+      "sha256": "4ff460d54b9c86dabfbcfc5712e0400d2bed3fbc4d4fbdaa86e06adcd2a9ad7a",
+      "source": "http://crt.usertrust.com/USERTrustECCCertificationAuthority.crt",
+      "checked": "Mozilla CA list (https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV)",
+      "protects": "github.com, api.github.com, codeload.github.com (Sectigo Root E46 is cross-signed by it)"
+    },
+    {
+      "file": "usertrust-rsa.der",
+      "name": "USERTrust RSA Certification Authority",
+      "sha256": "e793c9b02fd8aa13e21c31228accb08119643b749c898964b1746d46c3d4cbd2",
+      "source": "http://crt.usertrust.com/USERTrustRSACertificationAuthority.crt",
+      "checked": "Mozilla CA list (https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV)",
+      "protects": "GitHub hosts served an RSA certificate (Sectigo Root R46 is cross-signed by it)"
+    },
+    {
+      "file": "sectigo-server-root-e46.der",
+      "name": "Sectigo Public Server Authentication Root E46",
+      "sha256": "c90f26f0fb1b4018b22227519b5ca2b53e2ca5b3be5cf18efe1bef47380c5383",
+      "source": "http://crt.sectigo.com/SectigoPublicServerAuthenticationRootE46.p7c (self-signed member)",
+      "checked": "Mozilla CA list (https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV)",
+      "protects": "github.com, api.github.com, codeload.github.com"
+    },
+    {
+      "file": "sectigo-server-root-r46.der",
+      "name": "Sectigo Public Server Authentication Root R46",
+      "sha256": "7bb647a62aeeac88bf257aa522d01ffea395e0ab45c73f93f65654ec38f25a06",
+      "source": "http://crt.sectigo.com/SectigoPublicServerAuthenticationRootR46.p7c (self-signed member)",
+      "checked": "Mozilla CA list (https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV)",
+      "protects": "GitHub hosts served an RSA certificate"
+    },
+    {
+      "file": "gts-root-r1.der",
+      "name": "GTS Root R1",
+      "sha256": "d947432abde7b7fa90fc2e6b59101b1280e0e1c7e4e40fa3c6887fff57a7f4cf",
+      "source": "https://pki.goog/repo/certs/gtsr1.der",
+      "checked": "Mozilla CA list (https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV)",
+      "protects": "backup: Google Trust Services, if the site moves hosts"
+    },
+    {
+      "file": "gts-root-r3.der",
+      "name": "GTS Root R3",
+      "sha256": "34d8a73ee208d9bcdb0d956520934b4e40e69482596e8b6f73c8426b010a6f48",
+      "source": "https://pki.goog/repo/certs/gtsr3.der",
+      "checked": "Mozilla CA list (https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV)",
+      "protects": "backup: Google Trust Services, if the site moves hosts"
+    },
+    {
+      "file": "gts-root-r4.der",
+      "name": "GTS Root R4",
+      "sha256": "349dfa4058c5e263123b398ae795573c4e1313c83fe68f93556cd5e8031b3c7d",
+      "source": "https://pki.goog/repo/certs/gtsr4.der",
+      "checked": "Mozilla CA list (https://ccadb.my.salesforce-sites.com/mozilla/IncludedCACertificateReportPEMCSV)",
+      "protects": "backup: Google Trust Services, if the site moves hosts"
+    },
+    {
+      "file": "amazon-root-ca-1.der",
+      "name": "Amazon Root CA 1",
+      "sha256": "8ecde6884f3d87b1125ba31ac3fcb13d7016de7f57cc904fe1cb97c6ae98196e",
+      "source": "https://www.amazontrust.com/repository/AmazonRootCA1.cer",
+      "checked": "https://www.amazontrust.com/repository/ and Mozilla CA list",
+      "protects": "backup: Amazon (AWS), if the site moves hosts"
+    },
+    {
+      "file": "amazon-root-ca-2.der",
+      "name": "Amazon Root CA 2",
+      "sha256": "1ba5b2aa8c65401a82960118f80bec4f62304d83cec4713a19c39c011ea46db4",
+      "source": "https://www.amazontrust.com/repository/AmazonRootCA2.cer",
+      "checked": "https://www.amazontrust.com/repository/ and Mozilla CA list",
+      "protects": "backup: Amazon (AWS), if the site moves hosts"
+    },
+    {
+      "file": "amazon-root-ca-3.der",
+      "name": "Amazon Root CA 3",
+      "sha256": "18ce6cfe7bf14e60b2e347b8dfe868cb31d02ebb3ada271569f50343b46db3a4",
+      "source": "https://www.amazontrust.com/repository/AmazonRootCA3.cer",
+      "checked": "https://www.amazontrust.com/repository/ and Mozilla CA list",
+      "protects": "backup: Amazon (AWS), if the site moves hosts"
+    },
+    {
+      "file": "amazon-root-ca-4.der",
+      "name": "Amazon Root CA 4",
+      "sha256": "e35d28419ed02025cfa69038cd623962458da5c695fbdea3c22b0bfb25897092",
+      "source": "https://www.amazontrust.com/repository/AmazonRootCA4.cer",
+      "checked": "https://www.amazontrust.com/repository/ and Mozilla CA list",
+      "protects": "backup: Amazon (AWS), if the site moves hosts"
+    }
+  ],
+  "protected_hosts": [
+    "cyberfidget.com",
+    "github.com",
+    "api.github.com",
+    "codeload.github.com",
+    "objects.githubusercontent.com",
+    "release-assets.githubusercontent.com"
+  ]
+}

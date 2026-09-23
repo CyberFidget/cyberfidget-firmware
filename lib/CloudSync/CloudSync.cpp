@@ -12,7 +12,6 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <esp_bt.h>
-#include <esp_crt_bundle.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
 #include <esp_system.h>
@@ -37,6 +36,7 @@
 #include "StatusService.h"
 #include "SerialCli.h"
 #include "SyncProtocol.h"
+#include "TrustedRoots.h"
 #include "WasmHostImports.h"
 #include "globals.h"
 
@@ -60,6 +60,8 @@ Result result;
 
 // Internal-heap low-water mark of this session (worker task only).
 size_t heapLow = SIZE_MAX;
+// The trusted root list failed to parse completely (worker task only).
+bool rootsRejected = false;
 void sampleHeap() {
     const size_t freeBytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     if (freeBytes < heapLow) heapLow = freeBytes;
@@ -144,20 +146,30 @@ struct Session {
 };
 
 // All HTTP calls are bounded by a short per-call timeout and the session
-// deadline. The URL must be same-origin and certificate-checked in releases.
+// deadline. The URL must be same-origin and certificate-checked in releases:
+// the server's chain must end in the trusted root list (lib/TrustedRoots),
+// whose PEM text must outlive the client.
 bool request(const Session& s, const std::string& url, const std::string* post,
              HttpReply& reply, Sink sink, void* sinkArg) {
     if (s.elapsed() >= kSessionMs || cancelRequested) return false;
+    char* roots = TrustedRoots::newPem();
+    if (!roots) return false;
+    // A partial parse would trust fewer roots: never connect on one.
+    if (!TrustedRoots::pemParsesCompletely(roots)) {
+        TrustedRoots::freePem(roots);
+        rootsRejected = true;
+        return false;
+    }
     esp_http_client_config_t config = {};
     config.url = url.c_str();
     config.method = post ? HTTP_METHOD_POST : HTTP_METHOD_GET;
-    config.crt_bundle_attach = esp_crt_bundle_attach;
+    config.cert_pem = roots;
     config.disable_auto_redirect = true;
     config.timeout_ms = kCallMs;
     config.event_handler = onHttpEvent;
     config.user_data = &reply;
     esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) return false;
+    if (!client) { TrustedRoots::freePem(roots); return false; }
     char auth[112];
     snprintf(auth, sizeof(auth), "Bearer %s", s.token);
     esp_http_client_set_header(client, "Authorization", auth);
@@ -176,6 +188,7 @@ bool request(const Session& s, const std::string& url, const std::string* post,
         reply.status = esp_http_client_get_status_code(client);
         if (reply.status == 204) {
             esp_http_client_cleanup(client);
+            TrustedRoots::freePem(roots);
             sampleHeap();
             return true;
         }
@@ -194,6 +207,7 @@ bool request(const Session& s, const std::string& url, const std::string* post,
     }
     sampleHeap();
     esp_http_client_cleanup(client);
+    TrustedRoots::freePem(roots);
     return ok;
 }
 
@@ -506,6 +520,7 @@ void runWorker(Result& r) {
     Session s;
     s.started = millis();
     heapLow = SIZE_MAX;
+    rootsRejected = false;
     const size_t bootLowBefore = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     sampleHeap();
     // Not registered with the task watchdog: a TLS open can block longer
@@ -765,6 +780,8 @@ void runWorker(Result& r) {
             r.ok = false;
         }
     } while (false);
+    // Reported over the transport error the failed request left behind.
+    if (rootsRejected) { r.ok = false; setError(r, "roots-parse"); }
 
     bool radioOff = true;
     if (radioStarted) {

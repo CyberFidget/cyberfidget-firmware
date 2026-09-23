@@ -1,0 +1,6 @@
+{
+    "name": "TrustedRoots",
+    "version": "1.0.0",
+    "description": "Short trusted root certificate list for device HTTPS",
+    "dependencies": []
+}

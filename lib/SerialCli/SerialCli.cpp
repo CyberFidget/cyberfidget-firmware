@@ -42,7 +42,6 @@
 #ifdef CF_TEST_CLI
 #include <Preferences.h>
 #include <WiFi.h>
-#include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 #include <mbedtls/platform.h>
 #include <esp_task_wdt.h>
@@ -53,6 +52,7 @@
 #include "AppManager.h"
 #include "MicCapture.h"
 #include "TlsProbeSession.h"
+#include "TrustedRoots.h"
 #endif
 
 namespace {
@@ -309,6 +309,7 @@ void tlsProbeTask(void*) {
     TlsProbeSession::State state = TlsProbeSession::State::Failed;
     uint32_t start = millis();
     esp_http_client_handle_t client = nullptr;
+    char* roots = nullptr;  // trusted roots as PEM; must outlive the client
     bool watched = (esp_task_wdt_add(nullptr) == ESP_OK);
     // The handshake trough falls inside esp_http_client_open() where no sample
     // can run; a drop in the since-boot low-water mark attributes it to us.
@@ -335,10 +336,14 @@ void tlsProbeTask(void*) {
         sampleTlsHeap(result);  // after join attempt
         if (state == TlsProbeSession::State::Timeout) break;
 
+        roots = TrustedRoots::newPem();
+        if (!roots) { result.err = "roots-alloc"; break; }
+        // A partial parse would trust fewer roots: never connect on one.
+        if (!TrustedRoots::pemParsesCompletely(roots)) { result.err = "roots-parse"; break; }
         esp_http_client_config_t config = {};
         config.url = g_tlsUrl;
         config.method = HTTP_METHOD_GET;
-        config.crt_bundle_attach = esp_crt_bundle_attach;
+        config.cert_pem = roots;
         config.disable_auto_redirect = true;
         config.timeout_ms = (int)kTlsCallMaxMs;
         client = esp_http_client_init(&config);
@@ -390,6 +395,7 @@ void tlsProbeTask(void*) {
     } while (false);
 
     if (client) esp_http_client_cleanup(client);
+    TrustedRoots::freePem(roots);
     WiFi.disconnect(true);
     if (!WiFi.mode(WIFI_OFF)) {
         state = TlsProbeSession::State::Failed;

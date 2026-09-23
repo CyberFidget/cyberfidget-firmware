@@ -149,6 +149,7 @@ does and how to invoke it.
 | Tool | What it does |
 |---|---|
 | [`tools/portal-preview/`](tools/portal-preview/README.md) | Serves the device's web-portal pages in a desktop browser with fixture API data, so portal UI changes can be reviewed and screenshotted without a device. Rendering harness only - not a device simulator. |
+| [`tools/trusted-roots/`](tools/trusted-roots/README.md) | Generates the device's short trusted root certificate table from `lib/TrustedRoots/roots/`, and checks that each protected host's live chain still ends in that list (also run, non-blocking, by the release workflow). |
 
 ## License
 
