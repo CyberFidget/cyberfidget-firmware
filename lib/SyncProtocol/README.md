@@ -11,11 +11,13 @@ This library has two halves, mirroring `LoadoutManifest`:
 | Runs on | Code | Purpose |
 |---------|------|---------|
 | device, native tests, WASM | `SyncProtocol.h/.cpp` | pure core: CRC-32, command-arg parsers, confinement, bounded reply formatting |
-| device only | `SerialCli` sync verbs | UART read/write + LittleFS glue; never compiled for native tests |
+| device, native tests | `FerrySession.h/.cpp` | pure write session behind `fwrite`/`fwdata`/`fwcommit`/`fwabort` and `lapply`: idle/active state, every check, and the exact reply bytes; storage effects and payload bytes are injected (`FerryStorage`, `FerryByteSource`) |
+| device only | `SerialCli` sync verbs | one transport driver: UART byte source (owns the payload gap/total-duration timeouts), LittleFS storage adapter, read verbs; never compiled for native tests |
 
 Native tests: `pio test -e test_sync` (framing, verb parsing, confinement,
-corruption rejection). Manifest-ops apply is in `LoadoutManifest::applyOps`
-(same suite + `test_loadout`).
+corruption rejection, and the ferry session driven with in-memory fakes).
+Manifest-ops apply is in `LoadoutManifest::applyOps` (same suite +
+`test_loadout`).
 
 ## Framing conventions
 
