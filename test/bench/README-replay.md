@@ -28,6 +28,14 @@ The runner embeds the bench session rules ONCE (reset dance +
 alive-poll before trusting the CLI; drain before framed reads) so no
 case re-invents them.
 
+Bench units that used `cloud token` before this firmware must set it again.
+An old saved credential without the committed link marker is cleaned at boot.
+The device-link case needs no current or previous account link. It starts with
+`link forget` (test builds only), which erases the unit's link, its
+previous-account memory and pending revokes locally, so reruns are safe; the
+next `link status` step checks that condition and fails before the code
+exchange. `link forget` also erases a `cloud token` credential.
+
 ## Step verbs (the instruction set = the T-191 tunnel)
 
 | do | fields | what it does |

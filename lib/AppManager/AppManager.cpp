@@ -13,6 +13,7 @@
 #include "LoadoutManifest.h"
 #include "LoadoutStore.h"
 #include "CloudSync.h"
+#include "DeviceIdentity.h"
 #include <Preferences.h>
 
 void (*keep_functions[])() = {menuBegin, menuEnd, menuRun};
@@ -36,7 +37,7 @@ static PowerManager powerManager(buttonManager);
 // whatever app is underneath, and most apps are not written to be paused.
 static bool appTakesPrompts(AppIndex app)
 {
-    return app == APP_MENU || app == APP_BOOT_ANIMATION;
+    return app == APP_MENU || app == APP_BOOT_ANIMATION || app == APP_LINK;
 }
 
 // Singleton instance
@@ -54,6 +55,7 @@ void AppManager::setup() {
     esp_log_level_set("*", ESP_LOG_VERBOSE);
     esp_log_level_set(TAG_MAIN, ESP_LOG_VERBOSE);
     HAL::initHardware();
+    DeviceIdentity::checkStored();
 
     // Mount the filesystem before the first menu build: MenuManager::begin
     // -> buildNestedMenu reads /loadout.json through LoadoutStore.
@@ -74,15 +76,21 @@ void AppManager::setup() {
     bool bootPortal = false;
     bool bootCloud = false;
     bool bootMusic = false;
+    bool bootLink = false;
+    bool bootUnlink = false;
     if (bootPrefs.begin("bootcfg", false)) {
         skipBootAnimation = bootPrefs.getBool("skipanim", false);
         bootPortal = bootPrefs.getBool("bootapp", false);
         bootCloud = bootPrefs.getBool("bootcloud", false);
         bootMusic = bootPrefs.getBool("bootmusic", false);
+        bootLink = bootPrefs.getBool("bootlink", false);
+        bootUnlink = bootPrefs.getBool("bootunlink", false);
         bootPrefs.remove("skipanim");
         bootPrefs.remove("bootapp");
         bootPrefs.remove("bootcloud");
         bootPrefs.remove("bootmusic");
+        bootPrefs.remove("bootlink");
+        bootPrefs.remove("bootunlink");
         bootPrefs.end();
     } else {
         ESP_LOGW(TAG_MAIN, "Failed to open boot preferences");
@@ -93,6 +101,7 @@ void AppManager::setup() {
     // check starts in a clean power cycle.
     appActive     = bootPortal ? APP_WEB_PORTAL
                   : bootMusic  ? APP_MUSIC_PLAYER
+                  : bootLink   ? APP_LINK
                                : (skipBootAnimation ? APP_MENU : APP_BOOT_ANIMATION);
     appPreviously = APP_MENU;
 
@@ -109,7 +118,9 @@ void AppManager::setup() {
     // Start the menu
     appDefs[appActive].beginFunc();
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
+    if (bootLink && !CloudSync::busy()) CloudSync::startLink();
     if (bootCloud && !bootPortal && !bootMusic) CloudSync::runSession(CloudSync::Reason::Recovery);
+    if (bootUnlink && !bootPortal && !bootMusic) CloudSync::startUnlink();
 
     ESP_LOGI(TAG_MAIN, "Returned from beginFunc() for appActive=%d", (int)appActive);
 }

@@ -35,3 +35,4 @@
 #include "WasmFsApp.h"
 #include "Timers.h"
 #include "StatusView.h"
+#include "DeviceLinkApp.h"

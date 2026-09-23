@@ -331,6 +331,24 @@ payload length from its header first, so the stream stays in frame.
 `tlsprobe` answers `radio-busy` during a session, and a session will not start
 while a probe runs.
 
+### Device link controls (test build only)
+
+```text
+link start   -> [cmd] link.code=<code>, later [cmd] link.state=<confirm|clear_apps|linked|declined|expired|error|unlinked> ...
+link ok|no   -> [cmd] link.answer=ok|no
+link clear|keep -> [cmd] link.answer=clear|keep
+link unlink  -> [cmd] link.state=unlinked (or error reason=<code>)
+link status  -> [cmd] link.status=linked:<yes|no> account:<label|-> fingerprint:<ok|mismatch> previous:<yes|no>
+link forget  -> [cmd] link.forget=ok|error
+```
+
+`link forget` erases the whole `pair` namespace on the unit only: the current
+link (including a `cloud token` credential), the previous-account memory used
+for the Clear / Keep question, and any pending revokes. It sends nothing to the server and answers `error` while a
+session runs. Use it to return a bench unit to the never-linked state before
+rerunning the device-link case; a revoke it discards stays active on the
+server until that credential is revoked from the site.
+
 ### UVLO simulation
 
 ```text

@@ -242,6 +242,48 @@ void test_op_sequence_keeps_contiguity(void) {
     TEST_ASSERT_TRUE(l.entries[2].hidden); // survived the arrange
 }
 
+void test_change_of_hands_removes_non_builtin_entries(void) {
+    Loadout l = makeBaseline();
+    for (auto& entry : l.entries) entry.format = "builtin";
+    LoadoutEntry delivered = makeEntry("delivered", "Games");
+    delivered.format = "wasm";
+    delivered.blobPath = "/apps/delivered-1234abcd.wasm";
+    TEST_ASSERT_TRUE(applyAdd(l, delivered));
+    LoadoutEntry other = makeEntry("other", "Tools");
+    other.format = "blob";
+    other.blobPath = "/apps/other.wasm";
+    TEST_ASSERT_TRUE(applyAdd(l, other));
+    const auto paths = removeNonBuiltin(l);
+    TEST_ASSERT_EQUAL_INT(2, (int)paths.size());
+    TEST_ASSERT_EQUAL_STRING(delivered.blobPath.c_str(), paths[0].c_str());
+    TEST_ASSERT_EQUAL_STRING(other.blobPath.c_str(), paths[1].c_str());
+    TEST_ASSERT_EQUAL_INT(4, (int)l.entries.size());
+    for (const auto& entry : l.entries) TEST_ASSERT_EQUAL_STRING("builtin", entry.format.c_str());
+    assertPositionsRenumbered(l);
+}
+
+void test_change_of_hands_keeps_empty_format_and_missing_blob(void) {
+    Loadout l = makeBaseline();
+    for (auto& entry : l.entries) entry.format = "builtin";
+    LoadoutEntry legacy = makeEntry("legacy", "Games");
+    legacy.format = "";
+    legacy.blobPath = "/apps/legacy.wasm";
+    TEST_ASSERT_TRUE(applyAdd(l, legacy));
+    LoadoutEntry incomplete = makeEntry("incomplete", "Games");
+    incomplete.format = "wasm";
+    TEST_ASSERT_TRUE(applyAdd(l, incomplete));
+    const auto paths = removeNonBuiltin(l);
+    TEST_ASSERT_TRUE(paths.empty());
+    TEST_ASSERT_EQUAL_INT(6, (int)l.entries.size());
+    bool foundLegacy = false, foundIncomplete = false;
+    for (const auto& entry : l.entries) {
+        if (entry.id == "legacy") foundLegacy = true;
+        if (entry.id == "incomplete") foundIncomplete = true;
+    }
+    TEST_ASSERT_TRUE(foundLegacy);
+    TEST_ASSERT_TRUE(foundIncomplete);
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -261,5 +303,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_arrange_missing_entries_appended_stably);
     RUN_TEST(test_arrange_preserves_hidden_flags);
     RUN_TEST(test_op_sequence_keeps_contiguity);
+    RUN_TEST(test_change_of_hands_removes_non_builtin_entries);
+    RUN_TEST(test_change_of_hands_keeps_empty_format_and_missing_blob);
     return UNITY_END();
 }

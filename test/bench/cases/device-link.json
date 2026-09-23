@@ -1,0 +1,17 @@
+{
+  "name": "Link a Fidget through the LAN test site",
+  "reviewer_setup": "Precondition: a bench Fidget with saved WiFi settings. The case starts with the test-build verb link forget, which erases the unit's current link, previous-account memory and pending revokes locally (nothing is sent to the site), so every rerun starts from the never-linked state and never stops at a Clear / Keep answer; the following link status step confirms it and fails immediately otherwise. Build and install local_test. In the website worktree, set CF_TEST_DEVICE_DATA_DIR to an empty test directory and run C:/php/php.exe -d auto_prepend_file=tests-node/fixtures/device-pair-prepend.php -S 0.0.0.0:8000 -t . from the site root. Set CF_BENCH_BASE=http://<LAN-IP>:8000. Run python test/bench/cf_replay.py test/bench/cases/device-link.json --port <PORT>. When the six-character code prints, bind it during the 90-second wait with curl --request POST --header 'Authorization: Bearer test-mode-token-1' --header 'Content-Type: application/json' --data '{\"action\":\"bind\",\"user_code\":\"<CODE>\"}' http://<LAN-IP>:8000/api/device-pair.php . Use a fresh code on every run. Clone check for the reviewer: after a successful link, copy the entire NVS from unit A to a different unit B; B must discard the copied link with the notice and send no credential request, while A remains linked. Do not use a live account for this case.",
+  "steps": [
+    {"do": "reset"},
+    {"do": "wait_cli"},
+    {"do": "command", "command": "link forget", "contains": ["[cmd] link.forget=ok"]},
+    {"do": "command", "command": "link status", "contains": ["linked:no", "previous:no"]},
+    {"do": "command", "command": "cloud base $CF_BENCH_BASE", "expand_env": true, "contains": ["[cmd] cloud.base=ok"]},
+    {"do": "command", "command": "link start", "until": "[cmd] link.code=", "timeout_s": 30, "matches": "link\\.code=[A-HJ-NP-Z3-9]{6}"},
+    {"do": "wait", "ms": 90000},
+    {"do": "command", "command": "link ok", "until": "[cmd] link.state=linked", "timeout_s": 30, "contains": ["[cmd] link.state=linked account=user-1"]},
+    {"do": "command", "command": "link status", "contains": ["linked:yes", "fingerprint:ok"]},
+    {"do": "command", "command": "link unlink", "until": "[cmd] link.state=unlinked", "timeout_s": 30},
+    {"do": "command", "command": "link status", "contains": ["linked:no"]}
+  ]
+}

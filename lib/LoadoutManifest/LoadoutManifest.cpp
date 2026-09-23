@@ -555,6 +555,19 @@ bool applyRemove(Loadout& loadout, const char* id) {
     return true;
 }
 
+std::vector<std::string> removeNonBuiltin(Loadout& loadout) {
+    std::vector<std::string> paths;
+    std::vector<LoadoutEntry> kept;
+    for (const auto& entry : loadout.entries) {
+        if (entry.format.empty() || entry.format == "builtin" || entry.blobPath.empty())
+            kept.push_back(entry);
+        else paths.push_back(entry.blobPath);
+    }
+    loadout.entries = std::move(kept);
+    renumber(loadout);
+    return paths;
+}
+
 bool applyHide(Loadout& loadout, const char* id, bool hidden) {
     if (!id) return false;
     int idx = findEntry(loadout, id);
