@@ -16,6 +16,34 @@
 
 using namespace SyncProtocol;
 
+// ---------- Device identity ----------
+
+void test_device_id_uses_efuse_byte_order_and_keeps_leading_zero(void) {
+    char id[13];
+    formatDeviceId(0xefcdab341200ULL, id);
+    TEST_ASSERT_EQUAL_STRING("001234abcdef", id);
+    TEST_ASSERT_EQUAL_UINT32(12u, (uint32_t)std::strlen(id));
+}
+
+void test_device_id_uses_lowercase_hex(void) {
+    char id[13];
+    formatDeviceId(0xab8967452301ULL, id);
+    TEST_ASSERT_EQUAL_STRING("0123456789ab", id);
+}
+
+void test_legacy_info_mac_fixture(void) {
+    const uint64_t mac = 0xefcdab341200ULL;
+    char legacy[18];
+    std::snprintf(legacy, sizeof(legacy), "%02X:%02X:%02X:%02X:%02X:%02X",
+                  static_cast<uint8_t>((mac >> 40) & 0xFF),
+                  static_cast<uint8_t>((mac >> 32) & 0xFF),
+                  static_cast<uint8_t>((mac >> 24) & 0xFF),
+                  static_cast<uint8_t>((mac >> 16) & 0xFF),
+                  static_cast<uint8_t>((mac >>  8) & 0xFF),
+                  static_cast<uint8_t>((mac >>  0) & 0xFF));
+    TEST_ASSERT_EQUAL_STRING("EF:CD:AB:34:12:00", legacy);
+}
+
 // ---------- CRC-32 ----------
 
 void test_crc32_known_check_value(void) {
@@ -297,6 +325,9 @@ void tearDown(void) {}
 
 int main(int /*argc*/, char** /*argv*/) {
     UNITY_BEGIN();
+    RUN_TEST(test_device_id_uses_efuse_byte_order_and_keeps_leading_zero);
+    RUN_TEST(test_device_id_uses_lowercase_hex);
+    RUN_TEST(test_legacy_info_mac_fixture);
     RUN_TEST(test_crc32_known_check_value);
     RUN_TEST(test_crc32_empty_is_zero);
     RUN_TEST(test_crc32_streaming_matches_oneshot);

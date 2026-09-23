@@ -107,6 +107,17 @@ bool atEnd(const char* p) {
 
 } // namespace
 
+void formatDeviceId(uint64_t efuseMac, char* out) {
+    constexpr char kHex[] = "0123456789abcdef";
+    // ESP.getEfuseMac() packs the esptool-order base MAC bytes low to high.
+    for (size_t i = 0; i < 6; ++i) {
+        uint8_t byte = static_cast<uint8_t>(efuseMac >> (i * 8));
+        out[i * 2] = kHex[byte >> 4];
+        out[i * 2 + 1] = kHex[byte & 0x0F];
+    }
+    out[12] = '\0';
+}
+
 uint32_t crc32Begin() { return 0xFFFFFFFFu; }
 
 uint32_t crc32Update(uint32_t crc, const void* data, size_t len) {

@@ -558,6 +558,8 @@ void SerialCli::cmdDiary(const char* arg) {
 
 void SerialCli::cmdInfo() {
     uint64_t mac = ESP.getEfuseMac();
+    char id[13];
+    SyncProtocol::formatDeviceId(mac, id);
     Serial.printf("[cmd] info.fw=%s\n",      getFirmwareVersionString());
     Serial.printf("[cmd] info.type=%s\n",    getFirmwareBuildType());
     Serial.printf("[cmd] info.built=%s\n",   getFirmwareBuildTimestamp());
@@ -572,6 +574,7 @@ void SerialCli::cmdInfo() {
                   static_cast<uint8_t>((mac >> 16) & 0xFF),
                   static_cast<uint8_t>((mac >>  8) & 0xFF),
                   static_cast<uint8_t>((mac >>  0) & 0xFF));
+    Serial.printf("[cmd] info.id=%s\n", id);
     Serial.printf("[cmd] info.uptime_ms=%lu\n", static_cast<unsigned long>(millis()));
     const bool batteryPlausible = batteryVoltage >= 2.0f && batteryVoltage <= 4.6f;
     const long batteryMv = batteryPlausible
@@ -1138,6 +1141,8 @@ void SerialCli::pollScreenStream() {
 }
 
 void SerialCli::cmdSyncinfo() {
+    char id[13];
+    SyncProtocol::formatDeviceId(ESP.getEfuseMac(), id);
     LoadoutStore::begin();
     size_t total = LittleFS.totalBytes();
     size_t used  = LittleFS.usedBytes();
@@ -1155,6 +1160,10 @@ void SerialCli::cmdSyncinfo() {
     }
     Serial.printf("[cmd] syncinfo.manifest=%d entries=%d schema=%d\n",
                   present, entries, schema);
+    // New syncinfo lines go BEFORE the fw line: deployed readers stop after
+    // the fw line and would otherwise take a trailing line as the reply to
+    // their next command.
+    Serial.printf("[cmd] syncinfo.id=%s\n", id);
     Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
 }
 
