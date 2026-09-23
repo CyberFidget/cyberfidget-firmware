@@ -108,6 +108,9 @@ public:
     }
     bool remove(const char* path) override {
         removed.push_back(path);
+        // Like the device's LittleFS: a file that is still open cannot be
+        // unlinked ("Has open FD"), so the removal silently does nothing.
+        if (tempOpen_ && tempName_ == path) return false;
         return files.erase(path) > 0;
     }
 

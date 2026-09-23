@@ -63,12 +63,17 @@ void FerrySession::clear() {
     releasePayloadIfIdle();
 }
 
+// The temp file is closed before it is removed: the device's filesystem
+// refuses to unlink an open file, and the orphan would hold space until the
+// next reboot's sweep.
 void FerrySession::discard() {
+    storage_.closeTemp();
     if (temp_[0]) storage_.remove(temp_);
     clear();
 }
 
 void FerrySession::reset() {
+    if (state_ == State::Active) storage_.closeTemp();
     if (state_ == State::Active && temp_[0]) storage_.remove(temp_);
     clear();
 }
