@@ -6,7 +6,6 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
-#include <time.h>             // wall clock for the applied-batch record
 
 #include <FS.h>
 #include <LittleFS.h>
@@ -22,6 +21,8 @@
 #include "MenuManager.h"      // menutree dump (T-183/T-191)
 #include "SyncProtocol.h"     // pure crc / confinement / arg parsing
 #include "FerrySession.h"     // pure write session (fwrite..fwabort, lapply)
+#include "LittleFsFerryStorage.h"
+#include "CloudSync.h"
 
 #include "HAL.h"              // displayProxy() for screencap (T-191)
 #include "DisplayProxy.h"     // frameBuffer()
@@ -108,15 +109,13 @@ bool twoArgsEqual(const char* args, const char* first, const char* second) {
 // Sync-transport glue (device-only; SerialCli never compiles for the native
 // tests). The write session itself - `fwrite`/`fwdata`/`fwcommit`/`fwabort`
 // state, policy, and reply text, plus `lapply` - lives in the pure
-// SyncProtocol::FerrySession. This file is one transport driver for it: it
-// supplies LittleFS storage effects, the staging-buffer allocator, and the
-// UART byte source, and prints the session's replies verbatim.
+// SyncProtocol::FerrySession. This file supplies the UART byte source and
+// prints replies verbatim; LittleFsFerryStorage is shared with the WiFi driver.
 // =========================================================================
 
-// Shared payload staging buffer for `fwdata` chunks, `lapply` documents, and
-// the `fstat`/`fread` read verbs (never used by two at once). The ferry
-// session holds it while a write session is active; otherwise it is freed
-// after each use. +1 for a null terminator on ops JSON.
+// Read-verb payload buffer. FerrySession's shared LittleFS adapter owns its
+// separate buffer while a write is active; these reads release theirs after
+// each command.
 using SyncProtocol::kPayloadBufBytes;
 uint8_t* g_payloadBuf = nullptr;
 
@@ -238,24 +237,6 @@ void swallowPairedLf() {
     }
 }
 
-// Create every intermediate directory in a confined file path so a nested
-// target (e.g. /apps/sub/x.dat) can actually be opened for write - Arduino
-// LittleFS does not auto-create parent directories on open(). `path` is an
-// absolute, already-confined file path; only its directory prefixes are
-// created, never the file itself.
-void ensureParentDirs(const char* path) {
-    char dir[128];
-    strncpy(dir, path, sizeof(dir) - 1);
-    dir[sizeof(dir) - 1] = '\0';
-    // Walk each '/' after the leading one, creating the prefix directory.
-    for (char* s = dir + 1; *s; ++s) {
-        if (*s != '/') continue;
-        *s = '\0';
-        if (!LittleFS.exists(dir)) LittleFS.mkdir(dir);
-        *s = '/';
-    }
-}
-
 // Payload bytes straight off the UART, bounded by the serial driver's own
 // gap/total-duration limits (see "UART timeout ownership" above).
 class UartByteSource : public SyncProtocol::FerryByteSource {
@@ -266,112 +247,13 @@ public:
     void drain(size_t n) override { drainBytes(n, kPayloadGapMs); }
 };
 
-// LittleFS storage effects for the ferry session.
-class LittleFsFerryStorage : public SyncProtocol::FerryStorage {
-public:
-    bool mount() override { return LoadoutStore::begin(); }
-    size_t freeBytes() override {
-        size_t total = LittleFS.totalBytes();
-        size_t used  = LittleFS.usedBytes();
-        return (total > used) ? (total - used) : 0;
-    }
-    uint8_t* acquirePayload() override {
-        return allocatePayloadBuffer() ? g_payloadBuf : nullptr;
-    }
-    void releasePayload() override { freePayloadBuffer(); }
-    bool openTemp(const char* tempPath) override {
-        // Nested confined paths (/apps/sub/x.dat) pass confinement but
-        // LittleFS won't create the intermediate dirs on open - do it first
-        // so the open succeeds. Spot-check nested writes on hardware.
-        ensureParentDirs(tempPath);
-        writeFile_ = LittleFS.open(tempPath, FILE_WRITE);
-        return (bool)writeFile_;
-    }
-    bool seekTemp(uint32_t offset) override {
-        return writeFile_.seek(offset, SeekSet);
-    }
-    size_t writeTemp(const uint8_t* data, size_t len) override {
-        return writeFile_.write(data, len);
-    }
-    void closeTemp() override {
-        if (writeFile_) {
-            writeFile_.flush();
-            writeFile_.close();
-        }
-    }
-    bool openReadBack(const char* path, uint32_t& sizeOut) override {
-        readFile_ = LittleFS.open(path, FILE_READ);
-        if (!readFile_) return false;
-        sizeOut = (uint32_t)readFile_.size();
-        return true;
-    }
-    int readBack(uint8_t* buf, size_t cap) override {
-        return readFile_.read(buf, cap);
-    }
-    void closeReadBack() override { readFile_.close(); }
-    bool rename(const char* from, const char* to) override {
-        return LittleFS.rename(from, to);
-    }
-    bool remove(const char* path) override { return LittleFS.remove(path); }
-    bool applyManifestOps(const char* opsJson, int& entriesOut,
-                          int& appliedOut) override {
-        return AppManager::instance().applyLoadoutOps(opsJson, &entriesOut,
-                                                      &appliedOut);
-    }
-    bool loadManifest(std::string& jsonOut) override {
-        // Same bytes `lget` reports, so a `base` CRC matches its value.
-        LoadoutStore::begin();
-        LoadoutManifest::Loadout lo;
-        return loadLoadoutManifest(lo, &jsonOut);
-    }
-    bool writeFile(const char* path, const uint8_t* data, size_t len) override {
-        ensureParentDirs(path);
-        File f = LittleFS.open(path, FILE_WRITE);
-        if (!f) return false;
-        const size_t wrote = f.write(data, len);
-        f.flush();
-        f.close();
-        return wrote == len;
-    }
-    bool listFiles(const char* dir, std::vector<std::string>& namesOut) override {
-        File directory = LittleFS.open(dir, FILE_READ);
-        if (!directory) return false;
-        if (!directory.isDirectory()) {
-            directory.close();
-            return false;
-        }
-        for (File e = directory.openNextFile(); e; e = directory.openNextFile()) {
-            const bool isDir = e.isDirectory();
-            const char* name = e.name();
-            if (!isDir && name != nullptr) {
-                // File::name() may be a basename or a full path by core version.
-                const char* slash = strrchr(name, '/');
-                namesOut.push_back(slash != nullptr ? slash + 1 : name);
-            }
-            e.close();
-        }
-        directory.close();
-        return true;
-    }
-    uint32_t nowEpochSeconds() override {
-        // Unset clocks start near 1970; anything before 2020 means unknown.
-        const time_t now = time(nullptr);
-        return now > (time_t)1577836800 ? (uint32_t)now : 0;
-    }
-
-private:
-    File writeFile_;
-    File readFile_;
-};
-
-// Defined in this order so the session is destroyed before its storage.
-LittleFsFerryStorage g_ferryStorage;
+// The serial and WiFi drivers use the same LittleFS ferry adapter.
+SyncProtocol::LittleFsFerryStorage g_ferryStorage;
 SyncProtocol::FerrySession g_ferry(g_ferryStorage);
 
-// Read verbs borrow the staging buffer; free it afterwards unless the ferry
-// session is holding it for an active write.
-void releasePayloadIfIdle() {
-    if (!g_ferry.active()) freePayloadBuffer();
+// Read verbs use a separate buffer from the ferry and release it afterwards.
+void releaseReadPayload() {
+    freePayloadBuffer();
 }
 
 void sendReply(const SyncProtocol::FerryReply& reply) {
@@ -528,6 +410,16 @@ void tlsProbeTask(void*) {
 #endif
 }  // namespace
 
+bool SerialCli::ferryActive() const { return g_ferry.active(); }
+
+bool SerialCli::radioBusy() const {
+#ifdef CF_TEST_CLI
+    return g_tlsSession.current() != TlsProbeSession::State::Idle;
+#else
+    return false;
+#endif
+}
+
 SerialCli& SerialCli::instance() {
     static SerialCli singleton;
     return singleton;
@@ -538,6 +430,13 @@ void SerialCli::poll() {
 #ifdef CF_TEST_CLI
     pollPendingTapReleases();
     pollTlsprobeResult();
+    CloudSync::Result cloudResult;
+    if (CloudSync::consumeResult(cloudResult)) {
+        Serial.printf("[cmd] cloud.result=%s err=%s applied=%s offered=%s next_ms=%u heap_min=%u\n",
+                      cloudResult.ok ? (cloudResult.none ? "none" : "ok") : "error",
+                      cloudResult.err, cloudResult.applied, cloudResult.offered,
+                      (unsigned)cloudResult.nextMs, (unsigned)cloudResult.heapMin);
+    }
 #endif
     while (Serial.available() > 0) {
         int byte = Serial.read();
@@ -571,6 +470,31 @@ void SerialCli::poll() {
 
 void SerialCli::dispatch(const char* line) {
     const char* arg = nullptr;
+    if (CloudSync::busy()) {
+        // Refuse writes while a network pull owns the store. A refused
+        // fwdata/lapply still drains its payload first, as FerrySession
+        // does on its own early refusals, so the stream stays in frame.
+        uint32_t offset = 0, len = 0, crc = 0;
+        size_t payload = 0;
+        bool refuse = ieq(line, "fwcommit") || ieq(line, "fwabort") ||
+                      ieq(line, "lapply") || verbWithArg(line, "fwrite", &arg) ||
+                      verbWithArg(line, "fdelete", &arg);
+        if (!refuse && verbWithArg(line, "fwdata", &arg)) {
+            refuse = true;
+            if (SyncProtocol::parseChunkHeader(arg, offset, len, crc)) payload = len;
+        } else if (!refuse && verbWithArg(line, "lapply", &arg)) {
+            refuse = true;
+            if (SyncProtocol::parseApplyHeader(arg, len, crc)) payload = len;
+        }
+        if (refuse) {
+            if (payload > 0) {
+                UartByteSource in;
+                in.drain(payload);
+            }
+            Serial.println("[err] sync.busy");
+            return;
+        }
+    }
     if (ieq(line, "version")) { cmdVersion(); return; }
     if (ieq(line, "info"))    { cmdInfo();    return; }
     if (ieq(line, "help"))    { cmdHelp();    return; }
@@ -597,6 +521,33 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "fread", &arg))   { cmdFread(arg);   return; }
     if (verbWithArg(line, "lapply", &arg))  { cmdLapply(arg);  return; }
 #ifdef CF_TEST_CLI
+    if (ieq(line, "cloud check")) {
+        if (!CloudSync::runSession(CloudSync::Reason::Manual))
+            Serial.println("[cmd] cloud.result=error err=busy applied=- offered=- next_ms=0 heap_min=0");
+        return;
+    }
+    if (verbWithArg(line, "cloud", &arg)) {
+        const char* value = nullptr;
+        if (verbWithArg(arg, "base", &value)) {
+            Serial.printf("[cmd] cloud.base=%s\n", CloudSync::setBase(value) ? "ok" : "error");
+            return;
+        }
+        if (verbWithArg(arg, "token", &value)) {
+            const bool saved = CloudSync::setToken(value);
+            memset(const_cast<char*>(value), 0, strlen(value));
+            Serial.printf("[cmd] cloud.token=%s\n", saved ? "ok" : "error");
+            return;
+        }
+        if (verbWithArg(arg, "autoapply", &value)) {
+            const bool on = ieq(value, "on");
+            const bool off = ieq(value, "off");
+            Serial.printf("[cmd] cloud.autoapply=%s\n",
+                          (on || off) && CloudSync::setAutoapply(on) ? "ok" : "error");
+            return;
+        }
+        Serial.println("[cmd] cloud.error=usage");
+        return;
+    }
     if (ieq(line, "apps")) { cmdApps(); return; }
     if (ieq(line, "app"))  { cmdApp();  return; }
     if (ieq(line, "net"))  { cmdNet();  return; }
@@ -1133,7 +1084,7 @@ void SerialCli::cmdHelp() {
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"
                    "wifi <ssid>|<pass>,wasmstat,btn,sleep,rail,gauge,uvlo,"
                    "soak <app|off>,prompt <n> [timeout_ms],"
-                   "status [post|popup|clear|checkin]");
+                   "status [post|popup|clear|checkin],cloud <base|token|check|autoapply>");
 #endif
 }
 
@@ -1286,7 +1237,7 @@ void SerialCli::cmdFstat(const char* args) {
         const int got = file.read(g_payloadBuf, want);
         if (got <= 0) {
             file.close();
-            releasePayloadIfIdle();
+            releaseReadPayload();
             Serial.printf("[err] fstat.read=%s\n", path);
             return;
         }
@@ -1295,7 +1246,7 @@ void SerialCli::cmdFstat(const char* args) {
     }
     file.close();
     crc = SyncProtocol::crc32Finish(crc);
-    releasePayloadIfIdle();
+    releaseReadPayload();
     Serial.printf("[cmd] fstat.ok=%s size=%u crc=%08x\n",
                   path, (unsigned)size, (unsigned)crc);
 }
@@ -1348,7 +1299,7 @@ void SerialCli::cmdFread(const char* args) {
     }
     if (!file.seek(offset, SeekSet)) {
         file.close();
-        releasePayloadIfIdle();
+        releaseReadPayload();
         Serial.printf("[err] fread.seek=%u\n", (unsigned)offset);
         return;
     }
@@ -1360,7 +1311,7 @@ void SerialCli::cmdFread(const char* args) {
     }
     file.close();
     if (got != len) {
-        releasePayloadIfIdle();
+        releaseReadPayload();
         Serial.printf("[err] fread.read=%u/%u\n", (unsigned)got, (unsigned)len);
         return;
     }
@@ -1370,13 +1321,13 @@ void SerialCli::cmdFread(const char* args) {
     const size_t headerLen = SyncProtocol::formatReadHeader(
         header, sizeof(header), path, offset, len, crc);
     if (headerLen == 0) {
-        releasePayloadIfIdle();
+        releaseReadPayload();
         Serial.println("[err] fread.reply");
         return;
     }
     Serial.write((const uint8_t*)header, headerLen);
     Serial.write(g_payloadBuf, len);
-    releasePayloadIfIdle();
+    releaseReadPayload();
 }
 
 void SerialCli::cmdLget() {
@@ -1661,7 +1612,7 @@ void SerialCli::cmdTlsprobe(const char* url) {
         Serial.println("[cmd] tlsprobe.error=invalid-url");
         return;
     }
-    if (WiFi.getMode() != WIFI_OFF) {
+    if (WiFi.getMode() != WIFI_OFF || CloudSync::busy()) {
         Serial.println("[cmd] tlsprobe.error=radio-busy");
         return;
     }

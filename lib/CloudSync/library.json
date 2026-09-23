@@ -1,0 +1,6 @@
+{
+    "name": "CloudSync",
+    "version": "1.0.0",
+    "description": "STA device check-in and app delivery",
+    "dependencies": []
+}

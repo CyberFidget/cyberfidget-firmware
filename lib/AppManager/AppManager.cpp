@@ -12,11 +12,23 @@
 #include "SerialCli.h"
 #include "LoadoutManifest.h"
 #include "LoadoutStore.h"
+#include "CloudSync.h"
 #include <Preferences.h>
 
 void (*keep_functions[])() = {menuBegin, menuEnd, menuRun};
 
 static auto& buttonManager = HAL::buttonManager();
+
+// One centered line while a radio app waits for a network check to end.
+static void showRadioNotice(const char* text) {
+    DisplayProxy& screen = HAL::displayProxy();
+    screen.clear();
+    screen.setColor(WHITE);
+    screen.setFont(ArialMT_Plain_10);
+    screen.setTextAlignment(TEXT_ALIGN_CENTER);
+    screen.drawString(64, 27, text);
+    screen.display();
+}
 static PowerManager powerManager(buttonManager);
 
 // Prompts pause the menu only (and the boot screen that hands over to it).
@@ -60,17 +72,27 @@ void AppManager::setup() {
     Preferences bootPrefs;
     bool skipBootAnimation = false;
     bool bootPortal = false;
+    bool bootCloud = false;
+    bool bootMusic = false;
     if (bootPrefs.begin("bootcfg", false)) {
         skipBootAnimation = bootPrefs.getBool("skipanim", false);
         bootPortal = bootPrefs.getBool("bootapp", false);
+        bootCloud = bootPrefs.getBool("bootcloud", false);
+        bootMusic = bootPrefs.getBool("bootmusic", false);
         bootPrefs.remove("skipanim");
         bootPrefs.remove("bootapp");
+        bootPrefs.remove("bootcloud");
+        bootPrefs.remove("bootmusic");
         bootPrefs.end();
     } else {
         ESP_LOGW(TAG_MAIN, "Failed to open boot preferences");
     }
+    CloudSync::recoverFailure();
 
+    // A Bluetooth app relaunched across the reboot that followed a network
+    // check starts in a clean power cycle.
     appActive     = bootPortal ? APP_WEB_PORTAL
+                  : bootMusic  ? APP_MUSIC_PLAYER
                                : (skipBootAnimation ? APP_MENU : APP_BOOT_ANIMATION);
     appPreviously = APP_MENU;
 
@@ -87,12 +109,15 @@ void AppManager::setup() {
     // Start the menu
     appDefs[appActive].beginFunc();
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
+    if (bootCloud && !bootPortal && !bootMusic) CloudSync::runSession(CloudSync::Reason::Recovery);
 
     ESP_LOGI(TAG_MAIN, "Returned from beginFunc() for appActive=%d", (int)appActive);
 }
 
 void AppManager::loop() {
     HAL::loopHardware();
+
+    CloudSync::poll();
 
     processButtonEvents();
     SerialCli::instance().poll();
@@ -128,6 +153,14 @@ void AppManager::loop() {
         return;
     }
 #endif
+
+    // A network check in progress holds off the idle sleep: sleeping would
+    // cut WiFi mid-exchange and lose the follow-up report and the result.
+    // The session is bounded by its own deadline, and the idle period
+    // restarts when it ends so its status line can be seen.
+    if (CloudSync::busy()) {
+        millis_APP_LASTINTERACTION = millis_NOW;
+    }
 
     if ((millis_NOW - millis_APP_LASTINTERACTION) >= TASK_LASTINTERACT) {
         // An open prompt does not keep the device awake: it closes with no
@@ -168,6 +201,8 @@ void AppManager::processButtonEvents()
 
 void AppManager::persistMenuArrangement(const std::vector<LoadoutManifest::ArrangeItem>& order)
 {
+    // The network worker applies documents to the same manifest.
+    LoadoutStore::Guard manifestGuard;
     // Start from the stored manifest; a device that has never persisted
     // one gets a baseline snapshot of the compiled-in registry so the
     // arrange has something to anchor against.
@@ -192,6 +227,8 @@ void AppManager::persistMenuArrangement(const std::vector<LoadoutManifest::Arran
 
 bool AppManager::applyLoadoutOps(const char* opsJson, int* entriesOut, int* appliedOut)
 {
+    // Read-modify-write under the same lock as the menu reorder.
+    LoadoutStore::Guard manifestGuard;
     if (entriesOut) *entriesOut = 0;
     if (appliedOut) *appliedOut = 0;
 
@@ -235,6 +272,31 @@ void AppManager::switchToApp(AppIndex newApp)
 {
     ESP_LOGI(TAG_MAIN, "Switching to app %d", newApp);
     if (newApp == appActive) return;
+    if (newApp == APP_MUSIC_PLAYER || newApp == APP_WEB_PORTAL) {
+        // Radio apps: a network check must be over (WiFi off) before they
+        // start. Bluetooth after any WiFi use this power cycle, or a check
+        // that would not stop in time, goes through a reboot that
+        // relaunches the app.
+        const bool checking = CloudSync::busy();
+        if (checking) showRadioNotice("Finishing check...");
+        const bool stopped = CloudSync::cancelPending();
+        const bool btAfterWifi = newApp == APP_MUSIC_PLAYER &&
+                                 CloudSync::radioUsedThisPowerCycle();
+        if (!stopped || btAfterWifi) {
+            Preferences boot;
+            if (boot.begin("bootcfg", false)) {
+                boot.putBool("skipanim", true);
+                boot.putBool(newApp == APP_MUSIC_PLAYER ? "bootmusic" : "bootapp", true);
+                boot.end();
+            }
+            if (!checking) showRadioNotice("Restarting...");
+            ModalPrompt::instance().closeForTeardown();
+            Serial.flush();
+            delay(50);
+            ESP.restart();
+            return;
+        }
+    }
 
     // An open prompt belongs to the app being left: close it (no choice)
     // while that app's button callbacks can still be handed back.
