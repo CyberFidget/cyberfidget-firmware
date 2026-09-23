@@ -6,6 +6,7 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <time.h>             // wall clock for the applied-batch record
 
 #include <FS.h>
 #include <LittleFS.h>
@@ -316,6 +317,46 @@ public:
                           int& appliedOut) override {
         return AppManager::instance().applyLoadoutOps(opsJson, &entriesOut,
                                                       &appliedOut);
+    }
+    bool loadManifest(std::string& jsonOut) override {
+        // Same bytes `lget` reports, so a `base` CRC matches its value.
+        LoadoutStore::begin();
+        LoadoutManifest::Loadout lo;
+        return loadLoadoutManifest(lo, &jsonOut);
+    }
+    bool writeFile(const char* path, const uint8_t* data, size_t len) override {
+        ensureParentDirs(path);
+        File f = LittleFS.open(path, FILE_WRITE);
+        if (!f) return false;
+        const size_t wrote = f.write(data, len);
+        f.flush();
+        f.close();
+        return wrote == len;
+    }
+    bool listFiles(const char* dir, std::vector<std::string>& namesOut) override {
+        File directory = LittleFS.open(dir, FILE_READ);
+        if (!directory) return false;
+        if (!directory.isDirectory()) {
+            directory.close();
+            return false;
+        }
+        for (File e = directory.openNextFile(); e; e = directory.openNextFile()) {
+            const bool isDir = e.isDirectory();
+            const char* name = e.name();
+            if (!isDir && name != nullptr) {
+                // File::name() may be a basename or a full path by core version.
+                const char* slash = strrchr(name, '/');
+                namesOut.push_back(slash != nullptr ? slash + 1 : name);
+            }
+            e.close();
+        }
+        directory.close();
+        return true;
+    }
+    uint32_t nowEpochSeconds() override {
+        // Unset clocks start near 1970; anything before 2020 means unknown.
+        const time_t now = time(nullptr);
+        return now > (time_t)1577836800 ? (uint32_t)now : 0;
     }
 
 private:
@@ -1443,6 +1484,7 @@ void SerialCli::cmdSyncinfo() {
     // the fw line and would otherwise take a trailing line as the reply to
     // their next command.
     Serial.printf("[cmd] syncinfo.id=%s\n", id);
+    Serial.printf("[cmd] syncinfo.lapply=%s\n", SyncProtocol::kLapplyCapability);
     Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
 }
 

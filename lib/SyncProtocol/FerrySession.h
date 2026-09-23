@@ -32,6 +32,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <string>
+#include <vector>
+
 #include "SyncProtocol.h"
 
 namespace SyncProtocol {
@@ -85,6 +88,22 @@ public:
     /// malformed document, a rejected op, or a failed save.
     virtual bool applyManifestOps(const char* opsJson, int& entriesOut,
                                   int& appliedOut) = 0;
+
+    // ---- batch apply (documents carrying `batch` / `base`) ----
+
+    /// The stored manifest bytes exactly as `lget` reports them. False when
+    /// no readable manifest is stored (`lget` then reports crc 00000000).
+    virtual bool loadManifest(std::string& jsonOut) = 0;
+    /// Write `len` bytes as the complete content of `path` (created or
+    /// truncated; missing parent directories created), then close it. Uses
+    /// its own handle, never the write session's temp file. True only when
+    /// every byte was written.
+    virtual bool writeFile(const char* path, const uint8_t* data, size_t len) = 0;
+    /// Basenames of the regular files directly inside `dir` (no recursion).
+    /// False when the directory cannot be opened.
+    virtual bool listFiles(const char* dir, std::vector<std::string>& namesOut) = 0;
+    /// Wall-clock seconds since the Unix epoch, or 0 when the clock is unset.
+    virtual uint32_t nowEpochSeconds() = 0;
 };
 
 /// Raw payload bytes that follow a length-framed header.
@@ -132,6 +151,15 @@ public:
     /// `lapply <len> <crc32>` argument tail; the ops document follows in
     /// `in`. Independent of the write state: it neither needs nor disturbs
     /// an active write session.
+    ///
+    /// A document carrying `batch` and/or `base` takes the batch path: a
+    /// repeat of the recorded batch answers the recorded success line
+    /// without re-applying; a `base` that differs from the stored manifest's
+    /// CRC-32 is refused (`[err] lapply.stale=<crc>`) with nothing changed;
+    /// a `batch` success is recorded at kAppliedRecordPath before the reply;
+    /// and orphaned delivered blobs are swept afterwards (skipped while a
+    /// write session is active). A document without them applies exactly as
+    /// before.
     FerryReply applyManifest(const char* args, FerryByteSource& in);
 
     /// Abort without a reply: remove only this session's temp file (if a
@@ -142,6 +170,8 @@ private:
     void clear();
     void releasePayloadIfIdle();
     void discard();  // remove the temp file, then clear()
+    bool writeAppliedRecord(const std::string& record);
+    void sweepOrphanBlobs(const std::string& manifestJson);
 
     FerryStorage& storage_;
     State    state_ = State::Idle;
