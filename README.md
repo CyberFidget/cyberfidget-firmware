@@ -107,6 +107,8 @@ Apps interact with the hardware through the **HAL API** — a set of abstraction
 
 Apps follow the `begin()` / `update()` / `end()` lifecycle and register via the `APP_ENTRY` macro in `AppManifest.h`. See any app in `lib/` for examples.
 
+**Two C++ features are off in device builds** to keep the firmware image small: exceptions (`try`/`catch`/`throw` do not compile) and the `<iostream>` streams (`std::cout`, `std::cin`). Log with `ESP_LOGx(...)` or `Serial.printf(...)` instead. Avoid `<sstream>` too: it compiles, but pulls roughly 200 KB of stream and locale code back into the image. The emulator does not enforce these limits, so an app that runs there can still fail the device build.
+
 **Apps you create through the HAL API are yours** — the linking exception in the license means they are not considered derivative works of the firmware, regardless of how they are compiled or linked.
 
 ## Manual test checklist

@@ -28,9 +28,6 @@
 #include <esp_system.h>
 #include <sys/time.h>    // settimeofday for POST /api/time + the time WS frame
 
-// External fonts (thingpulse OLED lib) for the caption screen's large mode
-extern const uint8_t ArialMT_Plain_16[];
-
 // ---------------------------------------------------------------------------
 // Debug logging
 // ---------------------------------------------------------------------------
