@@ -173,7 +173,12 @@ def main():
 
         # --- 1. syncinfo
         d.send_line("syncinfo")
-        lines = d.read_lines(n=3, timeout=4)
+        # Read through the fw line, which is always last; the line count
+        # grows as firmware adds keys (id arrived after 1.3.3).
+        lines = []
+        end = time.time() + 4
+        while time.time() < end and not any(".fw=" in l for l in lines):
+            lines += d.read_lines(n=1, timeout=max(0.1, end - time.time()))
         ok = any("fs_total" in l for l in lines) and any("manifest" in l for l in lines) and any(".fw=" in l for l in lines)
         report("syncinfo three report lines", ok, " | ".join(lines))
         fs_free0 = 0
