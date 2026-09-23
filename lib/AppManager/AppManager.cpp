@@ -4,6 +4,7 @@
 #include "AppManager.h"
 #include "HAL.h"
 #include "MenuManager.h"
+#include "ModalPrompt.h"
 #include "globals.h"
 #include "PowerManager.h"
 #include "BatteryDiary.h"
@@ -17,6 +18,14 @@ void (*keep_functions[])() = {menuBegin, menuEnd, menuRun};
 
 static auto& buttonManager = HAL::buttonManager();
 static PowerManager powerManager(buttonManager);
+
+// Prompts pause the menu only (and the boot screen that hands over to it).
+// Apps that need a prompt must extend this deliberately: the prompt pauses
+// whatever app is underneath, and most apps are not written to be paused.
+static bool appTakesPrompts(AppIndex app)
+{
+    return app == APP_MENU || app == APP_BOOT_ANIMATION;
+}
 
 // Singleton instance
 AppManager& AppManager::instance() {
@@ -77,6 +86,7 @@ void AppManager::setup() {
 
     // Start the menu
     appDefs[appActive].beginFunc();
+    ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
 
     ESP_LOGI(TAG_MAIN, "Returned from beginFunc() for appActive=%d", (int)appActive);
 }
@@ -106,24 +116,35 @@ void AppManager::loop() {
         BatteryDiary::onRuntimeShutdown(batteryVoltage,
                                         batteryVoltagePercentage,
                                         batteryChangeRate);
+        ModalPrompt::instance().closeForTeardown();
         powerManager.shutdownForEmptyBattery();
         return;
     }
 
 #ifdef CF_TEST_CLI
     if (SerialCli::instance().consumeSleepRequest()) {
+        ModalPrompt::instance().closeForTeardown();
         powerManager.deepSleep(true);
         return;
     }
 #endif
 
     if ((millis_NOW - millis_APP_LASTINTERACTION) >= TASK_LASTINTERACT) {
+        // An open prompt does not keep the device awake: it closes with no
+        // choice first, then sleep proceeds exactly as it does without one.
+        ModalPrompt::instance().closeForTeardown();
         powerManager.deepSleep();
     }
 }
 
 void AppManager::runActiveApp()
 {
+    // An open prompt owns the screen and buttons; the app underneath is
+    // paused (its update is skipped) until the prompt closes.
+    if (ModalPrompt::instance().isOpen()) {
+        ModalPrompt::instance().update();
+        return;
+    }
     // calls the runFunc for the currently active app
     appDefs[appActive].runFunc();
 }
@@ -133,6 +154,9 @@ void AppManager::processButtonEvents()
     ButtonEvent ev;
     while (HAL::buttonManager().getNextEvent(ev))
     {
+        // The tail (Held/Release) of a press that began inside a prompt
+        // stays out of the app the prompt was covering.
+        if (ModalPrompt::instance().swallowEvent(ev)) continue;
         if (HAL::buttonManager().hasCallback(ev.buttonIndex)) {
             auto cb = HAL::buttonManager().getCallback(ev.buttonIndex);
             if (cb) cb(ev);
@@ -212,6 +236,10 @@ void AppManager::switchToApp(AppIndex newApp)
     ESP_LOGI(TAG_MAIN, "Switching to app %d", newApp);
     if (newApp == appActive) return;
 
+    // An open prompt belongs to the app being left: close it (no choice)
+    // while that app's button callbacks can still be handed back.
+    ModalPrompt::instance().closeForTeardown();
+
     // end old
     appDefs[appActive].endFunc();
 
@@ -220,4 +248,5 @@ void AppManager::switchToApp(AppIndex newApp)
 
     // begin new
     appDefs[appActive].beginFunc();
+    ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
 }

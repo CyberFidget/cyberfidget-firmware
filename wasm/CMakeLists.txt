@@ -109,6 +109,10 @@ set(FW_SOURCES
     ${LIB_DIR}/CFGraphics/src/cf_gfx_sprite.cpp
     ${LIB_DIR}/CFGraphics/src/cf_gfx_actor.cpp
     ${LIB_DIR}/CFGraphics/src/cf_gfx_collision.cpp
+    # Shared menu primitives: the same ModalPrompt / ScrollLabel sources the
+    # firmware uses, compiled here so the emulator cannot drift from them.
+    ${LIB_DIR}/MenuManager/ScrollLabel.cpp
+    ${LIB_DIR}/MenuManager/ModalPrompt.cpp
 )
 
 # ---- Per-app sources and defines ----

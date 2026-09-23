@@ -25,7 +25,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 | `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary` | `apps`, `app`, `launch`, `soak` |
 | `menutree`, `screencap`, `screenstream` | `net`, `heapstat`, `tlsprobe`, `tlsalloc`, `mic`, `wifi`, `wasmstat` |
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
-| `lget`, `lapply`, `syncinfo` | |
+| `lget`, `lapply`, `syncinfo` | `prompt` |
 
 The `local_test` PlatformIO environment defines `CF_TEST_CLI`. A normal
 `local` build does not compile the gated dispatch arms or implementations.
@@ -213,6 +213,25 @@ sleep               -> [cmd] sleep=requested
 
 A tap generates a later `[cmd] btn.release=<index>` line. `sleep` sets a request
 consumed by `AppManager`, keeping teardown out of serial dispatch.
+
+### Sample prompt
+
+```text
+prompt <n> [timeout_ms] -> [cmd] prompt.open=<n> timeout_ms=<ms>
+                           ... later, when it closes:
+                           [cmd] prompt.result=<index|none>
+bad arguments           -> [err] prompt.usage=prompt <1-8> [timeout_ms]
+prompt already open     -> [err] prompt.busy=1
+not on the menu         -> [err] prompt.refused=not-menu
+```
+
+Opens a `ModalPrompt` (see `lib/MenuManager/README.md`) titled "Sample prompt"
+with `n` placeholder options, 1 to 8. The last option is always a long label so
+its row scrolls when focused. `timeout_ms` is digits only, 0 to 3600000; 0 or
+omitted means no timeout. The prompt opens only over the menu (or the boot screen); drive it
+with `btn` (Up = 0, Down = 1, Enter = 5) or the physical buttons.
+`prompt.result` is the zero-based chosen option, or `none` when the timeout
+expired. Use it with `screencap` for bench screenshots of 2, 3 and 8 options.
 
 ### Rail controls
 

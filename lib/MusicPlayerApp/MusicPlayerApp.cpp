@@ -142,7 +142,7 @@ void MusicPlayerApp::begin() {
     connectedDeviceName = "";
     connectFailNeedsRestart = false;
     currentTrackIndex = -1;
-    marqueeOffset = 0;
+    titleMarquee.reset();
 
     // Clear any LEDs left over from a previous app
     setColorsOff();
@@ -826,7 +826,7 @@ void MusicPlayerApp::playTrack(int index) {
     currentTrackIndex = index;
     nowPlayingTitle = "";
     nowPlayingArtist = "";
-    marqueeOffset = 0;
+    titleMarquee.reset();
 
     // Open file directly by path (bypasses SDIndex which may not be populated)
     const char* path = trackLibrary[index].path.c_str();
@@ -979,7 +979,7 @@ void MusicPlayerApp::onMetadata(MetaDataType type, const char* str, int len) {
     val.trim();
     if (type == Title && val.length()) {
         instance->nowPlayingTitle = val;
-        instance->marqueeOffset = 0;
+        instance->titleMarquee.reset();
     }
     if (type == Artist && val.length()) {
         instance->nowPlayingArtist = val;
@@ -1720,22 +1720,9 @@ void MusicPlayerApp::renderPlayer() {
                        (currentTrackIndex >= 0 && currentTrackIndex < (int)trackLibrary.size()) ?
                        trackLibrary[currentTrackIndex].display : "No track";
 
-    int titleWidth = display.getStringWidth(titleText);
-    int maxWidth = 120;
-    if (titleWidth > maxWidth) {
-        if (millis() - lastMarqueeUpdate > 300) {
-            lastMarqueeUpdate = millis();
-            marqueeOffset += 6;
-            if (marqueeOffset > titleWidth - maxWidth + 30) {
-                marqueeOffset = -20;
-            }
-        }
-        display.setTextAlignment(TEXT_ALIGN_LEFT);
-        display.drawString(4 - marqueeOffset, 19, titleText);
-        display.setTextAlignment(TEXT_ALIGN_CENTER);
-    } else {
-        display.drawString(64, 19, titleText);
-    }
+    // Shared marquee: long titles scroll inside x=4..124, short ones center at 64.
+    titleMarquee.draw(4, 19, 120, titleText.c_str(), true);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
 
     // Play/Pause + shuffle — shifted up 7px (was y=38)
     String status = isPlaying ? "> Playing" : "|| Paused";
