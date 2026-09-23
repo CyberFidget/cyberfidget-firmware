@@ -26,6 +26,17 @@
  * stores, belongs to the caller. Left, Right and Back do nothing, so a
  * prompt without a timeout waits for an answer.
  *
+ * Host contract (AppManager is the host):
+ *  - A prompt can only open while the host allows it, which it does only
+ *    while the menu or the boot screen that leads to it is the active app.
+ *    Apps that need prompts must extend that deliberately.
+ *  - Before anything tears the prompt down (an app switch, idle sleep, the
+ *    battery shutdown) the host calls closeForTeardown(): the prompt closes
+ *    with kNoChoice, so the done callback runs exactly once per open.
+ *  - Before dispatching each button event to an app the host asks
+ *    swallowEvent(); a button that went down inside the prompt never
+ *    delivers its Held or Release to the app after the prompt closes.
+ *
  * Layout (128x64): inverted title bar, then up to kVisibleRows option rows
  * with the focused row filled; a scrollbar appears on the right when the
  * options do not all fit. The focused row marquees when too long.
@@ -42,10 +53,12 @@ public:
     /**
      * @brief Open the prompt. Strings are copied.
      * @param timeoutMs  0 = no timeout (the default). Otherwise the prompt
-     *                   closes with kNoChoice after this long without Up/Down.
+     *                   closes with kNoChoice after this long without an
+     *                   Up/Down/Enter press (never while Enter is held).
      * @param done       called once after the prompt closes and the previous
      *                   button callbacks are back; may be nullptr.
-     * @return false if a prompt is already open or optionCount < 1.
+     * @return false if a prompt is already open, optionCount < 1, or the
+     *         host does not allow prompts right now (see canOpen()).
      */
     bool open(const char *title,
               const char *const *options,
@@ -54,6 +67,20 @@ public:
               uint32_t timeoutMs = 0);
 
     bool isOpen() const { return model.isOpen(); }
+
+    /** True when the host currently allows a prompt to open. */
+    bool canOpen() const { return hostAllows; }
+
+    // ---- Host (AppManager) hooks ----
+
+    /** Called after every app switch with whether the new app takes prompts. */
+    void setHostAllows(bool allows);
+
+    /** Close an open prompt with kNoChoice before a teardown; no-op if closed. */
+    void closeForTeardown();
+
+    /** True when this button event must not reach the app. */
+    bool swallowEvent(const ButtonEvent &event);
 
     /** Timeout check + one frame. Called by AppManager while open. */
     void update();
@@ -70,6 +97,8 @@ private:
     static void onUp(const ButtonEvent &event);
     static void onDown(const ButtonEvent &event);
     static void onEnter(const ButtonEvent &event);
+    static void onOther(const ButtonEvent &event);
+    static PromptButtonGuard::Kind kindOf(const ButtonEvent &event);
 
     ModalPromptModel         model;
     ScrollLabel              titleLabel;
@@ -78,6 +107,10 @@ private:
     std::string              title;
     std::vector<std::string> options;
     DoneCallback             done = nullptr;
+    PromptButtonGuard        guard;
+    bool                     hostAllows = false;
+    uint32_t                 hostGeneration = 0;   // bumped on every app switch
+    uint32_t                 openGeneration = 0;
 
     static constexpr int kButtons = 6;
     ButtonCallback savedCallbacks[kButtons] = {};

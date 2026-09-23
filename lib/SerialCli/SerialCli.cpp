@@ -771,9 +771,16 @@ void SerialCli::cmdPrompt(const char* args) {
     for (uint32_t i = 0; i < count; ++i) options[i] = kPromptSamples[i];
     options[count - 1] = kPromptLongSample;
 
-    if (!ModalPrompt::instance().open("Sample prompt", options, (int)count,
-                                      onSamplePromptDone, timeoutMs)) {
+    ModalPrompt& prompt = ModalPrompt::instance();
+    if (prompt.isOpen()) {
         Serial.println("[err] prompt.busy=1");
+        return;
+    }
+    // Prompts only pause the menu (or the boot screen leading to it).
+    if (!prompt.canOpen() ||
+        !prompt.open("Sample prompt", options, (int)count,
+                     onSamplePromptDone, timeoutMs)) {
+        Serial.println("[err] prompt.refused=not-menu");
         return;
     }
     Serial.printf("[cmd] prompt.open=%lu timeout_ms=%lu\n",

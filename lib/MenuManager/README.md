@@ -37,6 +37,12 @@ Behavior:
 * **Result only.** The prompt reports the chosen index, or `kNoChoice` when
   its timeout expires. What an answer means, and anything that gets stored
   because of it, belongs to the caller. The prompt has no built-in strings.
+* **Menu only.** A prompt can only open while the menu (or the boot screen
+  that hands over to it) is the active app; `open()` returns false anywhere
+  else. The prompt pauses the app underneath, and only the menu is written to
+  be paused that way. An app that needs a prompt later must extend this
+  deliberately (`appTakesPrompts()` in `AppManager.cpp`) and check that it
+  survives being paused.
 * **Takes over the screen and buttons while open.** `open()` saves the six
   button callbacks the current app had and installs its own; they are handed
   back before the done callback runs. `AppManager` draws the prompt instead
@@ -51,13 +57,22 @@ Behavior:
   options the window follows the selection one row at a time and a scrollbar
   appears on the right.
 * **Timeout is optional** and off unless `open()` is given one. It counts
-  from opening or the last Up/Down, closes with `kNoChoice`, and never
-  selects an option, even if Enter is being held at that moment.
+  from opening or the last Up/Down/Enter press, never fires while Enter is
+  held, closes with `kNoChoice`, and never selects an option.
+* **Nothing leaks into the app.** When the prompt closes, any button that
+  went down inside it (or is still down) has its Held events and its next
+  Release dropped, so finishing a press cannot act on the menu underneath.
+* **Always answers exactly once.** An app switch, idle sleep, or the empty
+  battery shutdown first closes an open prompt with `kNoChoice` (done
+  callback runs, button callbacks go back to the app they came from). An open
+  prompt does not keep the device awake: opening it restarts the idle clock
+  once, and when that runs out the prompt closes and sleep proceeds as usual.
+  The serial `reboot` restarts directly and does not run the callback.
 * **Long rows marquee.** The focused row uses `ScrollLabel`; the title does
   too, so a long title scrolls instead of being cut off.
 
-`open()` returns false if a prompt is already open or the option count is
-below 1. Strings are copied, so the caller's arrays need not outlive the call.
+`open()` returns false if a prompt is already open, the option count is
+below 1, or the active app does not take prompts. Strings are copied, so the caller's arrays need not outlive the call.
 
 The selection, window and timeout math lives in `ModalPromptModel.h`
 (header-only, no display or button dependencies) and is covered by the
@@ -77,7 +92,11 @@ Player's now-playing title marquee, moved here unchanged:
   previous step. Once it has moved 30 px past the point where its end is
   visible, it jumps to a 20 px lead-in and scrolls again.
 * `reset()` returns the text to its start position (call it when the text
-  changes). It does not restart the 300 ms step clock.
+  changes). It does not restart the 300 ms step clock; this is the Music
+  Player's behavior.
+* `restart(nowMs)` also restarts the step clock, so newly shown long text
+  holds still for one full step before moving. The prompt uses it for a newly
+  focused row.
 
 ```cpp
 ScrollLabel title;                   // one per scrolling line, kept across frames

@@ -31,8 +31,10 @@ bool ModalPrompt::open(const char *titleText,
                        DoneCallback onDone,
                        uint32_t timeoutMs)
 {
+    if (!hostAllows) return false;
     if (model.isOpen() || optionCount < 1 || !optionTexts) return false;
-    if (!model.open(optionCount, kVisibleRows, (uint32_t)millis(), timeoutMs)) return false;
+    const uint32_t now = (uint32_t)millis();
+    if (!model.open(optionCount, kVisibleRows, now, timeoutMs)) return false;
 
     title = titleText ? titleText : "";
     options.clear();
@@ -40,9 +42,14 @@ bool ModalPrompt::open(const char *titleText,
         options.push_back(optionTexts[i] ? optionTexts[i] : "");
     }
     done = onDone;
-    titleLabel.reset();
-    focusLabel.reset();
+    titleLabel.restart(now);
+    focusLabel.restart(now);
     labelFor = model.selected();
+    guard.beginOpen();
+    openGeneration = hostGeneration;
+    // A prompt appearing counts as activity once, so the idle-sleep clock
+    // starts from now; it does not hold the device awake after that.
+    millis_APP_LASTINTERACTION = millis_NOW;
 
     // Take the buttons: remember whatever the app underneath had so it
     // gets exactly those back when the prompt closes.
@@ -54,6 +61,10 @@ bool ModalPrompt::open(const char *titleText,
     buttons.registerCallback(button_UpIndex, onUp);
     buttons.registerCallback(button_DownIndex, onDown);
     buttons.registerCallback(button_EnterIndex, onEnter);
+    // The rest only feed the guard, so their presses cannot leak either.
+    buttons.registerCallback(button_LeftIndex, onOther);
+    buttons.registerCallback(button_RightIndex, onOther);
+    buttons.registerCallback(button_SelectIndex, onOther);
     return true;
 }
 
@@ -70,9 +81,23 @@ void ModalPrompt::update()
 void ModalPrompt::finish()
 {
     auto &buttons = HAL::buttonManager();
+    // Buttons still down (or pressed inside the prompt and not yet released)
+    // must not finish their press in the app underneath.
+    uint32_t stillDown = 0;
     for (int i = 0; i < kButtons; i++) {
-        if (savedCallbacks[i]) buttons.registerCallback(i, savedCallbacks[i]);
-        else                   buttons.unregisterCallback(i);
+        if (buttons.isPressed(i)) stillDown |= (uint32_t)1u << i;
+    }
+    guard.armOnClose(stillDown);
+
+    // Hand the callbacks back only to the app they came from. The host
+    // closes the prompt before any app switch, so a changed generation
+    // means that was skipped; the new app's own callbacks then stay.
+    const bool sameApp = (openGeneration == hostGeneration);
+    for (int i = 0; i < kButtons; i++) {
+        if (sameApp) {
+            if (savedCallbacks[i]) buttons.registerCallback(i, savedCallbacks[i]);
+            else                   buttons.unregisterCallback(i);
+        }
         savedCallbacks[i] = nullptr;
     }
 
@@ -80,6 +105,35 @@ void ModalPrompt::finish()
     DoneCallback cb = done;
     done = nullptr;
     if (cb) cb(model.result());
+}
+
+void ModalPrompt::setHostAllows(bool allows)
+{
+    hostGeneration++;
+    hostAllows = allows;
+}
+
+void ModalPrompt::closeForTeardown()
+{
+    if (!model.isOpen()) return;
+    model.dismiss();
+    // No new prompt may open from the done callback mid-teardown.
+    const bool allowed = hostAllows;
+    hostAllows = false;
+    finish();
+    hostAllows = allowed;
+}
+
+bool ModalPrompt::swallowEvent(const ButtonEvent &event)
+{
+    return guard.consume(event.buttonIndex, kindOf(event));
+}
+
+PromptButtonGuard::Kind ModalPrompt::kindOf(const ButtonEvent &event)
+{
+    if (event.eventType == ButtonEvent_Pressed)  return PromptButtonGuard::Press;
+    if (event.eventType == ButtonEvent_Released) return PromptButtonGuard::Release;
+    return PromptButtonGuard::Held;
 }
 
 void ModalPrompt::draw()
@@ -100,7 +154,8 @@ void ModalPrompt::draw()
     const int textW = rowW - 2 * MP_TEXT_X;
 
     if (model.selected() != labelFor) {
-        focusLabel.reset();
+        // A newly focused long row holds still for one step before scrolling.
+        focusLabel.restart((uint32_t)millis());
         labelFor = model.selected();
     }
 
@@ -139,6 +194,7 @@ void ModalPrompt::draw()
 // Up/Down act on the press edge, like the main menu.
 void ModalPrompt::onUp(const ButtonEvent &event)
 {
+    instance().guard.noteWhileOpen(event.buttonIndex, kindOf(event));
     if (event.eventType == ButtonEvent_Pressed) {
         instance().model.moveUp((uint32_t)millis());
     }
@@ -146,6 +202,7 @@ void ModalPrompt::onUp(const ButtonEvent &event)
 
 void ModalPrompt::onDown(const ButtonEvent &event)
 {
+    instance().guard.noteWhileOpen(event.buttonIndex, kindOf(event));
     if (event.eventType == ButtonEvent_Pressed) {
         instance().model.moveDown((uint32_t)millis());
     }
@@ -156,9 +213,17 @@ void ModalPrompt::onDown(const ButtonEvent &event)
 void ModalPrompt::onEnter(const ButtonEvent &event)
 {
     ModalPrompt &self = instance();
+    self.guard.noteWhileOpen(event.buttonIndex, kindOf(event));
     if (event.eventType == ButtonEvent_Pressed) {
-        self.model.selectPressed();
+        self.model.selectPressed((uint32_t)millis());
     } else if (event.eventType == ButtonEvent_Released) {
         if (self.model.selectReleased()) self.finish();
     }
+}
+
+// Left, Right and Back do nothing in a prompt; they are tracked only so a
+// press started here is not finished in the app after the prompt closes.
+void ModalPrompt::onOther(const ButtonEvent &event)
+{
+    instance().guard.noteWhileOpen(event.buttonIndex, kindOf(event));
 }

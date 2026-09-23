@@ -21,9 +21,10 @@
  * - Select is edge-triggered: only a release that follows a press seen
  *   while the prompt was open chooses, so a button already held when the
  *   prompt opened cannot pick an option.
- * - The timeout is optional (0 = none) and counts from the last Up/Down
- *   or from opening, so it never fires while someone is navigating. It
- *   closes the prompt with kNoChoice and never selects an option.
+ * - The timeout is optional (0 = none) and counts from opening or the
+ *   last Up/Down/Select press, so it never fires while someone is
+ *   navigating, and it never fires while Select is held down. It closes
+ *   the prompt with kNoChoice and never selects an option.
  */
 class ModalPromptModel {
 public:
@@ -59,8 +60,10 @@ public:
     }
 
     /** Select button went down while the prompt was open. */
-    void selectPressed() {
-        if (open_) selectArmed_ = true;
+    void selectPressed(uint32_t nowMs) {
+        if (!open_) return;
+        selectArmed_ = true;
+        lastInputMs_ = nowMs;
     }
 
     /**
@@ -78,6 +81,7 @@ public:
     /** Returns true exactly when this call timed the prompt out. */
     bool tick(uint32_t nowMs) {
         if (!open_ || timeoutMs_ == 0) return false;
+        if (selectArmed_) return false;  // held Select: wait for its release
         if (nowMs - lastInputMs_ < timeoutMs_) return false;
         result_ = kNoChoice;
         open_ = false;
@@ -119,6 +123,55 @@ private:
     bool     selectArmed_ = false;
     bool     open_        = false;
     int      result_      = kNoChoice;
+};
+
+/**
+ * @brief Keeps button activity that started inside a prompt out of the app
+ * underneath once the prompt closes.
+ *
+ * While the prompt is open the host reports every button event with
+ * noteWhileOpen(). On close, armOnClose() marks every button that went down
+ * inside the prompt and has not come up yet, plus any the hardware still
+ * reports as down. The host then asks consume() before dispatching each
+ * event to the app: a marked button's Held events and its next Release are
+ * swallowed (the Release clears the mark); a fresh Press clears the mark
+ * and is delivered.
+ */
+class PromptButtonGuard {
+public:
+    enum Kind { Press, Release, Held };
+    static constexpr int kMaxButtons = 32;
+
+    /** Start tracking a new prompt (pending swallows are kept). */
+    void beginOpen() { down_ = 0; }
+
+    void noteWhileOpen(int button, Kind kind) {
+        if (!valid(button)) return;
+        if (kind == Press)   down_ |= maskOf(button);
+        if (kind == Release) down_ &= ~maskOf(button);
+    }
+
+    void armOnClose(uint32_t stillPressedMask) {
+        swallow_ |= down_ | stillPressedMask;
+        down_ = 0;
+    }
+
+    /** True when the event must not reach the app. */
+    bool consume(int button, Kind kind) {
+        if (!valid(button) || !(swallow_ & maskOf(button))) return false;
+        if (kind == Held) return true;
+        swallow_ &= ~maskOf(button);
+        return kind == Release;
+    }
+
+    uint32_t pendingMask() const { return swallow_; }
+
+private:
+    static bool valid(int button) { return button >= 0 && button < kMaxButtons; }
+    static uint32_t maskOf(int button) { return (uint32_t)1u << button; }
+
+    uint32_t down_    = 0;
+    uint32_t swallow_ = 0;
 };
 
 #endif

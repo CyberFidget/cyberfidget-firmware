@@ -159,14 +159,14 @@ void test_release_without_press_does_not_choose(void) {
 void test_select_first_and_last(void) {
     ModalPromptModel m;
     m.open(8, kRows, 0, 0);
-    m.selectPressed();
+    m.selectPressed(0);
     TEST_ASSERT_TRUE(m.selectReleased());
     TEST_ASSERT_FALSE(m.isOpen());
     TEST_ASSERT_EQUAL_INT(0, m.result());
 
     m.open(8, kRows, 0, 0);
     m.moveUp(1);  // wrap to the last
-    m.selectPressed();
+    m.selectPressed(0);
     TEST_ASSERT_TRUE(m.selectReleased());
     TEST_ASSERT_EQUAL_INT(7, m.result());
 }
@@ -175,11 +175,11 @@ void test_closed_prompt_ignores_input(void) {
     ModalPromptModel m;
     m.open(3, kRows, 0, 0);
     m.moveDown(1);
-    m.selectPressed();
+    m.selectPressed(0);
     m.selectReleased();
     TEST_ASSERT_EQUAL_INT(1, m.result());
     m.moveDown(2);
-    m.selectPressed();
+    m.selectPressed(0);
     TEST_ASSERT_FALSE(m.selectReleased());
     TEST_ASSERT_EQUAL_INT(1, m.result());
     TEST_ASSERT_EQUAL_INT(1, m.selected());
@@ -188,7 +188,7 @@ void test_closed_prompt_ignores_input(void) {
 void test_reopen_clears_previous_result_and_arming(void) {
     ModalPromptModel m;
     m.open(3, kRows, 0, 0);
-    m.selectPressed();       // armed, then the prompt is reopened
+    m.selectPressed(0);      // armed, then the prompt is reopened
     m.open(3, kRows, 0, 0);
     TEST_ASSERT_FALSE(m.selectReleased());
     TEST_ASSERT_EQUAL_INT(ModalPromptModel::kNoChoice, m.result());
@@ -226,13 +226,74 @@ void test_timeout_counts_from_last_navigation(void) {
     TEST_ASSERT_EQUAL_INT(ModalPromptModel::kNoChoice, m.result());
 }
 
-void test_timeout_while_select_held_is_no_choice(void) {
+void test_timeout_never_fires_while_select_held(void) {
     ModalPromptModel m;
     m.open(3, kRows, 0, 1000);
-    m.selectPressed();
+    m.selectPressed(500);
+    TEST_ASSERT_FALSE(m.tick(1500));
+    TEST_ASSERT_FALSE(m.tick(60000));
+    TEST_ASSERT_TRUE(m.isOpen());
+    TEST_ASSERT_TRUE(m.selectReleased());   // the release still chooses
+    TEST_ASSERT_EQUAL_INT(0, m.result());
+}
+
+void test_release_after_timeout_chooses_nothing(void) {
+    ModalPromptModel m;
+    m.open(3, kRows, 0, 1000);
     TEST_ASSERT_TRUE(m.tick(1000));
-    TEST_ASSERT_FALSE(m.selectReleased());  // the late release chooses nothing
+    m.selectPressed(1001);
+    TEST_ASSERT_FALSE(m.selectReleased());
     TEST_ASSERT_EQUAL_INT(ModalPromptModel::kNoChoice, m.result());
+}
+
+// ------------------------------------------------------------ button guard
+
+void test_guard_swallows_release_and_held_of_button_pressed_inside(void) {
+    PromptButtonGuard g;
+    g.beginOpen();
+    g.noteWhileOpen(5, PromptButtonGuard::Press);   // Enter held at close
+    g.noteWhileOpen(0, PromptButtonGuard::Press);   // Up pressed and released
+    g.noteWhileOpen(0, PromptButtonGuard::Release);
+    g.armOnClose(0);
+    TEST_ASSERT_FALSE(g.consume(0, PromptButtonGuard::Release));
+    TEST_ASSERT_TRUE(g.consume(5, PromptButtonGuard::Held));
+    TEST_ASSERT_TRUE(g.consume(5, PromptButtonGuard::Held));
+    TEST_ASSERT_TRUE(g.consume(5, PromptButtonGuard::Release));
+    // Only that one release: the next press/release pair reaches the app.
+    TEST_ASSERT_FALSE(g.consume(5, PromptButtonGuard::Press));
+    TEST_ASSERT_FALSE(g.consume(5, PromptButtonGuard::Release));
+}
+
+void test_guard_swallows_buttons_still_down_at_close(void) {
+    PromptButtonGuard g;
+    g.beginOpen();
+    g.armOnClose((1u << 1) | (1u << 4));   // held since before the prompt
+    TEST_ASSERT_TRUE(g.consume(1, PromptButtonGuard::Release));
+    TEST_ASSERT_TRUE(g.consume(4, PromptButtonGuard::Held));
+    TEST_ASSERT_TRUE(g.consume(4, PromptButtonGuard::Release));
+    TEST_ASSERT_EQUAL_UINT32(0, g.pendingMask());
+}
+
+void test_guard_fresh_press_clears_mark(void) {
+    PromptButtonGuard g;
+    g.beginOpen();
+    g.noteWhileOpen(2, PromptButtonGuard::Press);
+    g.armOnClose(0);
+    // A missed release followed by a new press: deliver the press and stop
+    // swallowing, so the new press's release is not lost.
+    TEST_ASSERT_FALSE(g.consume(2, PromptButtonGuard::Press));
+    TEST_ASSERT_FALSE(g.consume(2, PromptButtonGuard::Release));
+}
+
+void test_guard_ignores_out_of_range_buttons(void) {
+    PromptButtonGuard g;
+    g.beginOpen();
+    g.noteWhileOpen(-1, PromptButtonGuard::Press);
+    g.noteWhileOpen(99, PromptButtonGuard::Press);
+    g.armOnClose(0);
+    TEST_ASSERT_FALSE(g.consume(-1, PromptButtonGuard::Release));
+    TEST_ASSERT_FALSE(g.consume(99, PromptButtonGuard::Release));
+    TEST_ASSERT_EQUAL_UINT32(0, g.pendingMask());
 }
 
 void test_timeout_survives_clock_wrap(void) {
@@ -291,6 +352,19 @@ void test_scroll_label_long_text_restarts_past_the_end(void) {
     TEST_ASSERT_EQUAL_INT(-14, s.offset());
 }
 
+void test_scroll_label_restart_holds_one_full_step(void) {
+    ScrollLabel s;
+    s.tick(200, 120, 301);
+    s.tick(200, 120, 602);
+    TEST_ASSERT_EQUAL_INT(12, s.offset());
+    s.restart(5000);          // e.g. a newly focused prompt row
+    TEST_ASSERT_EQUAL_INT(0, s.offset());
+    s.tick(200, 120, 5300);   // exactly one step period: still holding
+    TEST_ASSERT_EQUAL_INT(0, s.offset());
+    s.tick(200, 120, 5301);
+    TEST_ASSERT_EQUAL_INT(6, s.offset());
+}
+
 void test_scroll_label_reset_returns_to_start_keeping_step_clock(void) {
     ScrollLabel s;
     s.tick(200, 120, 301);
@@ -322,12 +396,18 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_no_timeout_by_default);
     RUN_TEST(test_timeout_closes_with_no_choice);
     RUN_TEST(test_timeout_counts_from_last_navigation);
-    RUN_TEST(test_timeout_while_select_held_is_no_choice);
+    RUN_TEST(test_timeout_never_fires_while_select_held);
+    RUN_TEST(test_release_after_timeout_chooses_nothing);
+    RUN_TEST(test_guard_swallows_release_and_held_of_button_pressed_inside);
+    RUN_TEST(test_guard_swallows_buttons_still_down_at_close);
+    RUN_TEST(test_guard_fresh_press_clears_mark);
+    RUN_TEST(test_guard_ignores_out_of_range_buttons);
     RUN_TEST(test_timeout_survives_clock_wrap);
     RUN_TEST(test_scroll_label_short_text_stays_still);
     RUN_TEST(test_scroll_label_exact_width_stays_still);
     RUN_TEST(test_scroll_label_long_text_steps_after_more_than_300ms);
     RUN_TEST(test_scroll_label_long_text_restarts_past_the_end);
+    RUN_TEST(test_scroll_label_restart_holds_one_full_step);
     RUN_TEST(test_scroll_label_reset_returns_to_start_keeping_step_clock);
     return UNITY_END();
 }

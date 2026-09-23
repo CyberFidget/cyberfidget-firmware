@@ -38,6 +38,16 @@ public:
     void reset() { offset_ = 0; }
 
     /**
+     * @brief Opt-in variant of reset(): back to the start position AND
+     * restart the step clock at nowMs, so newly shown long text holds still
+     * for one full step before it moves. The Music Player keeps reset().
+     */
+    void restart(uint32_t nowMs) {
+        offset_ = 0;
+        lastStepMs_ = nowMs;
+    }
+
+    /**
      * @brief Advance the marquee for a label of textWidth pixels in a box of
      * boxWidth pixels at time nowMs. Does nothing for text that fits.
      */
