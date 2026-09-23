@@ -45,6 +45,10 @@ public:
     static SerialCli& instance();
 
     void poll();
+    // A network pull must not overlap a partially written serial blob.
+    bool ferryActive() const;
+    // True while a test-build radio probe owns WiFi.
+    bool radioBusy() const;
 
 #ifdef CF_TEST_CLI
     // Consumed by AppManager::loop so the display teardown never runs inside

@@ -11,6 +11,8 @@
 
 #include <FS.h>
 #include <LittleFS.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "esp_log.h"
 
 static const char* TAG_LOADOUT = "LoadoutStore";
@@ -21,6 +23,17 @@ static const char* kTempPath     = "/loadout.json.tmp";
 namespace LoadoutStore {
 
 static bool mounted = false;
+
+// Created during static initialization, before any task can race for it.
+static SemaphoreHandle_t manifestLock = xSemaphoreCreateRecursiveMutex();
+
+void lock() {
+    if (manifestLock) xSemaphoreTakeRecursive(manifestLock, portMAX_DELAY);
+}
+
+void unlock() {
+    if (manifestLock) xSemaphoreGiveRecursive(manifestLock);
+}
 
 // Boot-time sweep of orphaned "<file>.part" temp files left behind when an
 // fwrite transfer was interrupted (power cut / cable pull between fwdata and
@@ -97,6 +110,7 @@ bool load(std::string& jsonOut) {
 }
 
 bool save(const std::string& json) {
+    Guard guard;  // one writer of the shared temp path at a time
     if (!begin()) return false;
 
     // 1) Write the full document to a temp file.

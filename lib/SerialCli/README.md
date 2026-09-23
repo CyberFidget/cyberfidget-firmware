@@ -302,6 +302,30 @@ hibernate replies read back the hibernating bit after the write.
 readback. The setting is transient: `BatteryManager::init()` resets VALRT.MIN
 to 3.9 V on every boot.
 
+### Cloud pull controls (test build only)
+
+```text
+cloud base <url>          -> [cmd] cloud.base=ok|error
+cloud token <credential>  -> [cmd] cloud.token=ok|error
+cloud autoapply on|off    -> [cmd] cloud.autoapply=ok|error
+cloud check               -> [cmd] cloud.result=<ok|none|error> err=<code> applied=<batch|-> offered=<fw|-> next_ms=<n> heap_min=<B>
+```
+
+`cloud check` starts an asynchronous session and emits its one result line
+when the worker completes. The credential is written to `pair.tok` for a LAN
+bench and is never echoed. `cloud base` accepts HTTP only in a test build.
+The check-in and loadout use the site's real endpoints; the server's rate
+limit can make a successful session last over one minute. `err=` carries a
+`rejected:<reason>` answer when an offer can never apply, and
+`report-deferred` when the answer waits for the next session. The `upd.base`
+override is read only by test builds.
+
+While a session runs, `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete` and `lapply`
+answer `[err] sync.busy`. A refused `fwdata` or `lapply` still drains the
+payload length from its header first, so the stream stays in frame.
+`tlsprobe` answers `radio-busy` during a session, and a session will not start
+while a probe runs.
+
 ### UVLO simulation
 
 ```text

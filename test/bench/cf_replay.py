@@ -94,6 +94,27 @@ class Tunnel:
         self.send(line)
         return self.drain(wait)
 
+    def lget(self):
+        self.drain(0.1)
+        self.send("lget")
+        header = self.read_cmd()
+        match = re.search(r"lget\.present=1 .* len=(\d+) crc=([0-9a-f]{8})", header)
+        if not match:
+            return header, None
+        size = int(match.group(1))
+        end = time.time() + 5.0
+        while len(self.rx) < size and time.time() < end:
+            self.rx += self.s.read(size - len(self.rx))
+        if len(self.rx) < size:
+            return header, None
+        raw, self.rx = self.rx[:size], self.rx[size:]
+        if "%08x" % (zlib.crc32(raw) & 0xffffffff) != match.group(2):
+            return header, None
+        try:
+            return header, json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return header, None
+
     # --- composite primitives cases lean on ---
     def nav_to_menu(self, tries=10):
         for _ in range(tries):
@@ -196,6 +217,8 @@ def run_case(case, port, outdir):
                 res.note("wait", "%dms" % st.get("ms", 500))
             elif do == "command":
                 command = st["command"]
+                if st.get("expand_env"):
+                    command = os.path.expandvars(command)
                 until = st.get("until")
                 if until:
                     t.drain(0.1)
@@ -208,6 +231,8 @@ def run_case(case, port, outdir):
                     out = t.cmd(command, float(st.get("timeout_s", 0.9)))
                 print(out, end="" if out.endswith("\n") else "\n")
                 ok = all(token in out for token in st.get("contains", []))
+                if "matches" in st:
+                    ok = ok and re.search(st["matches"], out) is not None
                 if until:
                     ok = ok and until in out
                 res.step("command", ok, out.strip())
@@ -289,6 +314,9 @@ def run_case(case, port, outdir):
                 mt = t.cmd("menutree", 1.2)
                 has = st.get("has")
                 nhas = st.get("not_has")
+                if st.get("expand_env"):
+                    has = os.path.expandvars(has) if has is not None else None
+                    nhas = os.path.expandvars(nhas) if nhas is not None else None
                 ok = True; d = ""
                 if has is not None:
                     found = any(has in l for l in mt.splitlines())
@@ -316,6 +344,12 @@ def run_case(case, port, outdir):
                 si = t.cmd("syncinfo", 1.0)
                 ok = all(str(v) in si for v in st.get("contains", []))
                 res.step("assert_syncinfo", ok, ("contains %s" % st.get("contains", [])))
+            elif do == "assert_lget":
+                header, manifest = t.lget()
+                wanted = os.path.expandvars(st["id"])
+                entries = manifest.get("entries", []) if isinstance(manifest, dict) else []
+                found = any(isinstance(entry, dict) and entry.get("id") == wanted for entry in entries)
+                res.step("assert_lget", found, "id=%s present=%s header=%s" % (wanted, found, header))
             else:
                 res.step(do or "?", False, "unknown step verb")
     finally:
