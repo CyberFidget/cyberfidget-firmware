@@ -175,8 +175,13 @@ tagged runtime report to `WasmFsApp`.
 
 `heapstat` only reads the internal heap counters. `tlsprobe` starts one plain
 task and reports the result later from the main loop. It reads `wificfg`
-credentials without changing them, uses STA only, verifies the host through
-the SDK certificate bundle, and turns Wi-Fi off before reporting. The default
+credentials without changing them, uses STA only, verifies the host against
+the trusted root list (`lib/TrustedRoots`, the same list the check-in client
+uses), and turns Wi-Fi off before reporting. A host whose chain does not end
+in that list fails with `err=tls-connect`. The list's PEM text is held in
+PSRAM; parsing it into the handshake follows the `tlsalloc` placement, so
+the internal-placement probe now also carries the parsed roots (about
+13 KB of DER plus parse structures). The default
 URL is `https://cyberfidget.com/update/firmware.php?list=1`; an override must
 be HTTPS and contain no whitespace. `tls_ms` measures the SDK connection open,
 including DNS, TCP, TLS handshake, and request headers; `get_ms` runs from

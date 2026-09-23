@@ -348,6 +348,12 @@ jobs:
       # ---------------------------------------------------------------------
       # Build
       # ---------------------------------------------------------------------
+      # Blocking: the committed trusted root table must match the .der files
+      # in lib/TrustedRoots/roots/, or the device would ship a list nobody
+      # reviewed. -B keeps Python from writing bytecode into the checkout.
+      - name: Check the trusted root table is current
+        run: python -B tools/trusted-roots/generate.py --check
+
       - name: Install PlatformIO
         run: pip install "platformio==${PLATFORMIO_VERSION}" esptool
 
@@ -416,6 +422,15 @@ jobs:
           python scripts/release_image.py .pio/build/local/firmware.bin \
             --info .pio/build/local/release-info.json \
             --version "${TAG#v}" --hw-min-rev "$HW_MIN_REV" --hw-max-rev "$HW_MAX_REV"
+
+      # The device trusts only the short root list in lib/TrustedRoots. Warn,
+      # never fail, when a protected host's live chain no longer ends in it:
+      # a host changing certificate authority must not block a firmware
+      # release, but it has to be seen before devices lose that host.
+      # -B keeps Python from writing bytecode into the checkout.
+      - name: Check protected hosts against the trusted root list
+        continue-on-error: true
+        run: python -B tools/trusted-roots/check_chains.py
 
       - name: Merge firmware binary
         run: |
