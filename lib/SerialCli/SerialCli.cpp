@@ -32,6 +32,7 @@
 #include "WasmFsApp.h"       // wasmstat (T-183)
 #include "WasmHostImports.h"  // kDeviceHalAbi (REQ-063)
 #include "UvloLogic.h"
+#include "ModalPrompt.h"     // prompt (sample modal for bench screenshots)
 #endif
 
 #ifdef CF_TEST_CLI
@@ -498,6 +499,8 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "gauge", &arg))  { cmdGauge(arg); return; }
     if (ieq(line, "uvlo"))                  { cmdUvlo("");    return; }
     if (verbWithArg(line, "uvlo", &arg))   { cmdUvlo(arg);  return; }
+    if (ieq(line, "prompt"))                { cmdPrompt("");  return; }
+    if (verbWithArg(line, "prompt", &arg)) { cmdPrompt(arg); return; }
 #endif
     Serial.printf("[err] unknown command: %s\n", line);
 }
@@ -636,6 +639,70 @@ void SerialCli::cmdUvlo(const char* args) {
         runtimeTrip ? "shutdown" : "ok", CF_UVLO_SLEEP_THRESHOLD_MV,
         CF_UVLO_RUNTIME_THRESHOLD_MV, CF_UVLO_RUNTIME_DEBOUNCE_MS);
 }
+
+// Sample prompt for bench screenshots: opens a ModalPrompt with n options
+// (the last one is deliberately long so its row scrolls) and reports the
+// answer when it closes. The strings are placeholders, not product copy.
+namespace {
+constexpr int kPromptMaxOptions = 8;
+constexpr uint32_t kPromptMaxTimeoutMs = 3600000;
+const char* const kPromptSamples[kPromptMaxOptions] = {
+    "Option one", "Option two", "Option three", "Option four",
+    "Option five", "Option six", "Option seven", "Option eight",
+};
+const char kPromptLongSample[] = "A much longer sample option that scrolls";
+
+void onSamplePromptDone(int result) {
+    if (result == ModalPrompt::kNoChoice) {
+        Serial.println("[cmd] prompt.result=none");
+    } else {
+        Serial.printf("[cmd] prompt.result=%d\n", result);
+    }
+}
+
+bool parseDecimal(const char* s, const char** end, uint32_t max, uint32_t* out) {
+    if (*s < '0' || *s > '9') return false;
+    uint32_t v = 0;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (uint32_t)(*s - '0');
+        if (v > max) return false;
+        ++s;
+    }
+    *end = s;
+    *out = v;
+    return true;
+}
+}  // namespace
+
+void SerialCli::cmdPrompt(const char* args) {
+    uint32_t count = 0, timeoutMs = 0;
+    const char* p = args;
+    bool ok = parseDecimal(p, &p, kPromptMaxOptions, &count) && count >= 1;
+    if (ok) {
+        while (*p == ' ') ++p;
+        if (*p != '\0') {
+            ok = parseDecimal(p, &p, kPromptMaxTimeoutMs, &timeoutMs);
+            while (ok && *p == ' ') ++p;
+            ok = ok && *p == '\0';
+        }
+    }
+    if (!ok) {
+        Serial.println("[err] prompt.usage=prompt <1-8> [timeout_ms]");
+        return;
+    }
+
+    const char* options[kPromptMaxOptions];
+    for (uint32_t i = 0; i < count; ++i) options[i] = kPromptSamples[i];
+    options[count - 1] = kPromptLongSample;
+
+    if (!ModalPrompt::instance().open("Sample prompt", options, (int)count,
+                                      onSamplePromptDone, timeoutMs)) {
+        Serial.println("[err] prompt.busy=1");
+        return;
+    }
+    Serial.printf("[cmd] prompt.open=%lu timeout_ms=%lu\n",
+                  (unsigned long)count, (unsigned long)timeoutMs);
+}
 #endif
 
 void SerialCli::cmdVersion() {
@@ -763,7 +830,7 @@ void SerialCli::cmdHelp() {
     Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,heapstat,"
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"
                    "wifi <ssid>|<pass>,wasmstat,btn,sleep,rail,gauge,uvlo,"
-                   "soak <app|off>");
+                   "soak <app|off>,prompt <n> [timeout_ms]");
 #endif
 }
 

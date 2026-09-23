@@ -4,6 +4,7 @@
 #include "AppManager.h"
 #include "HAL.h"
 #include "MenuManager.h"
+#include "ModalPrompt.h"
 #include "globals.h"
 #include "PowerManager.h"
 #include "BatteryDiary.h"
@@ -124,6 +125,12 @@ void AppManager::loop() {
 
 void AppManager::runActiveApp()
 {
+    // An open prompt owns the screen and buttons; the app underneath is
+    // paused (its update is skipped) until the prompt closes.
+    if (ModalPrompt::instance().isOpen()) {
+        ModalPrompt::instance().update();
+        return;
+    }
     // calls the runFunc for the currently active app
     appDefs[appActive].runFunc();
 }

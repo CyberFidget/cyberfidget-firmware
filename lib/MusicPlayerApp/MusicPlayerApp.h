@@ -12,6 +12,7 @@
 #include "AppDefs.h"
 #include "ButtonManager.h"
 #include "MenuManager.h"
+#include "ScrollLabel.h"
 #include "BTScanner.h"
 #include "ID3Scanner.h"
 
@@ -184,9 +185,8 @@ private:
     uint32_t resumeBytePosition = 0;
     bool hasResumeState = false;
 
-    // Marquee
-    int marqueeOffset = 0;
-    unsigned long lastMarqueeUpdate = 0;
+    // Now-playing title marquee (shared ScrollLabel)
+    ScrollLabel titleMarquee;
 
     // LED effects
     LEDEffectMode ledEffectMode = LED_OFF;
