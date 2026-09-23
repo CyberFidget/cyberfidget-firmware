@@ -48,6 +48,8 @@ info    -> [cmd] info.fw=...
            [cmd] info.battery.voltage_mv=...
            [cmd] info.battery.soc=...
            [cmd] info.battery.crate=...
+           [cmd] info.board_rev=<major>.<minor>
+           [cmd] info.board=src=<efuse|default|unknown-layout|read-error> hil=<0|1> eng=<0|1> layout=<n>
            [cmd] info.wake.cause=...
 help    -> [cmd] help=...
            [cmd] help.sync=...
@@ -59,6 +61,19 @@ help    -> [cmd] help=...
 `info.id` is the canonical unit id: the eFuse base MAC in esptool byte order,
 as 12 lowercase hex characters without separators. `info.mac` retains its
 historical reversed presentation for compatibility.
+
+`info.board_rev` is the mainboard hardware revision as `major.minor` (for
+example `1.2`), read once at boot from the board identity block in eFuse BLK3
+(parsed by `lib/BoardInfo`). `info.board` says where it came from: `efuse` for
+a provisioned board, `default` for a board whose block carries no identity
+magic (every board built before provisioning, or an unreadable block), and
+`unknown-layout` when the magic is present but the layout version is not one
+this firmware understands. The last two report the rev 1.2 defaults with
+`hil=0 eng=0`; `layout` is the raw layout byte (0 when no magic). `hil=1`
+marks a hardware-in-the-loop bench unit and `eng=1` an engineering sample.
+`info.wake.cause` is the reply's terminator line: new `info` keys are always
+added above it, and host readers read through it rather than counting lines.
+The `version` reply and the boot banner do not carry the board revision.
 
 ### Timeline, reset, and battery snapshot
 

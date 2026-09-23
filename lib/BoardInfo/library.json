@@ -1,0 +1,6 @@
+{
+    "name": "BoardInfo",
+    "version": "1.0.0",
+    "description": "Board identity block parser (hardware revision + provisioning flags from eFuse BLK3), pure core",
+    "dependencies": []
+}

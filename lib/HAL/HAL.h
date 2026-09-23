@@ -9,6 +9,7 @@
 
 #include <SSD1306Wire.h>
 #include "DisplayProxy.h"
+#include "BoardInfo.h"
 
 // Forward-declare any hardware-related classes you want to expose from the HAL:
 class AudioManager;
@@ -91,6 +92,11 @@ namespace HAL
     ButtonManager& buttonManager();
 
     SPARKFUN_LIS2DH12& accelerometer();
+
+    // Board identity (hardware revision + provisioning flags) read from eFuse
+    // at the start of initHardware(). Unprogrammed boards report rev 1.2
+    // with source Default. Use this to branch on board revision.
+    const BoardInfo::Info& boardInfo();
 
     // If you want to set wake pins, deep sleep, etc. directly from AppManager
     void configureWakeupPins();

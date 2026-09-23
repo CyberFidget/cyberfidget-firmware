@@ -426,6 +426,14 @@ else
     fail "syncinfo prints a line after fw: $LAST_SYNCINFO"
 fi
 
+# Same rule for info: wake.cause is its terminator line.
+LAST_INFO="$(awk '/^void SerialCli::cmdInfo\(/{f=1} f&&/\[cmd\] info\./{l=$0} f&&/^}/{print l; exit}' lib/SerialCli/SerialCli.cpp)"
+if echo "$LAST_INFO" | grep -q 'info\.wake\.cause='; then
+    pass "info prints its wake.cause line last"
+else
+    fail "info prints a line after wake.cause: $LAST_INFO"
+fi
+
 # ----------------------------------------------------------------------------
 echo ""
 echo "=================================================="
