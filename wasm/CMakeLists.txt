@@ -41,6 +41,7 @@ include_directories(${CMAKE_CURRENT_SOURCE_DIR}/generated)
 set(LIB_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../lib)
 include_directories(
     ${LIB_DIR}/HAL
+    ${LIB_DIR}/BoardInfo
     ${LIB_DIR}/DisplayProxy
     ${LIB_DIR}/ButtonManager
     ${LIB_DIR}/AudioManager
