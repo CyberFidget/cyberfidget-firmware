@@ -81,6 +81,46 @@ native `test_core_menuprompt` suite.
 Test builds (`local_test`) can open a sample prompt over serial with
 `prompt <n> [timeout_ms]`; see `lib/SerialCli/README.md`.
 
+## Status bar and Status screen
+
+Every menu screen draws a 12 px status strip across the top (`StatusView`);
+apps and screensavers keep the full 128x64. The menu list sits below it:
+13 px rows (was 16), text at the row top (was +2), still 4 visible rows, so
+navigation, wrap, scrolling and the cross-slide are unchanged. The strip:
+
+* **Left:** a WiFi glyph and the age of the last check-in: `--` never, `<1h`,
+  `5h`, `3d`. Fewer arcs as the check-in ages. It never means "connected
+  now"; WiFi is normally off. The only live state is Dev mode listening,
+  drawn inverted with no age.
+* **Middle:** the most important pending line (marquee via `ScrollLabel`
+  when long).
+* **Right:** battery %.
+
+The **Status** item (a root menu leaf) shows a dot while something needs
+attention. It opens a screen listing the last check-in (age, cached or
+fresh), battery detail and every pending notification (`*` = needs
+attention, `(late)` / `(cached)` flags). Up/Down move, Back returns;
+leaving it clears the dot.
+
+The data comes from `lib/StatusService` (header-only, no display or
+networking, covered by `test_core_status`). Any subsystem posts:
+
+```cpp
+#include "StatusService.h"
+StatusService::instance().post(StatusKind::Checking, nullptr,
+                               StatusService::defaultPriority(StatusKind::Checking),
+                               false /* sticky */, millis());
+```
+
+`StatusView::popup(kind, text, flags, onAccept)` asks about a major event
+with a `ModalPrompt` (accept / "Later"). Accept clears the entry and calls
+`onAccept`; Later, a teardown, or a popup that cannot open (not on the menu)
+routes the event to the bar and badge. What accepting means belongs to the
+caller. The check-in clock is `StatusView::nowSec()`: pass it to
+`setCheckIn()`.
+
+The emulator has no menu host, so the bar is device-only there.
+
 ## ScrollLabel
 
 One line of text that scrolls when it is wider than its box. It is the Music

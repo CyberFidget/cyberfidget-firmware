@@ -60,3 +60,6 @@ APP_ENTRY(APP_TIMERS,                "Timers",              "Tools",          []
 // no menu leaf of its own (like APP_MENU); blob leaves point their AppIndex
 // here after staging the file path via WasmFsApp::setPending.
 APP_ENTRY(APP_WASM_HOST,             "",                    "",               [](){ WasmFsApp::wasmFsAppBegin();             }, [](){ WasmFsApp::wasmFsAppEnd();             }, [](){ WasmFsApp::wasmFsAppRun();             })
+// Status screen behind the main-menu status bar: last check-in, battery
+// detail, pending notifications. Appended last so existing indices stay put.
+APP_ENTRY(APP_STATUS,                "Status",              "",               StatusView::appBegin,                             StatusView::appEnd,                             StatusView::appUpdate                      )

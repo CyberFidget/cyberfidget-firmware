@@ -25,7 +25,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 | `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary` | `apps`, `app`, `launch`, `soak` |
 | `menutree`, `screencap`, `screenstream` | `net`, `heapstat`, `tlsprobe`, `tlsalloc`, `mic`, `wifi`, `wasmstat` |
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
-| `lget`, `lapply`, `syncinfo` | `prompt` |
+| `lget`, `lapply`, `syncinfo` | `prompt`, `status` |
 
 The `local_test` PlatformIO environment defines `CF_TEST_CLI`. A normal
 `local` build does not compile the gated dispatch arms or implementations.
@@ -232,6 +232,41 @@ omitted means no timeout. The prompt opens only over the menu (or the boot scree
 with `btn` (Up = 0, Down = 1, Enter = 5) or the physical buttons.
 `prompt.result` is the zero-based chosen option, or `none` when the timeout
 expired. Use it with `screencap` for bench screenshots of 2, 3 and 8 options.
+
+### Status bar states
+
+```text
+status                -> [cmd] status.bar=<current line|->
+                         [cmd] status.badge=<0|1>
+                         [cmd] status.glyph=<never|hour|today|days|live> age=<label|-> checkin_age_s=<n|-> cached=<0|1>
+                         [cmd] status.item=<kind> pri=<0-2> sticky=<0|1> attn=<0|1> late=<0|1> cached=<0|1> text=<text>   (one per entry)
+                         [cmd] status.count=<n>
+status post <kind> [late] [cached] [text]
+                      -> [cmd] status.post=<kind> badge=<0|1>
+                         [err] status.post.refused=<kind>        (info/warning without text)
+status popup <kind> [late] [cached] [text]
+                      -> [cmd] status.popup=<kind> open=1
+                         ... later: [cmd] status.popup.result=<accept|ignore> kind=<kind>
+                         [cmd] status.popup=<kind> open=0 routed=bar   (not on the menu)
+status clear [kind]   -> [cmd] status.clear=all | [cmd] status.clear=<kind> removed=<n>
+status checkin <never|seconds_ago> [cached]
+                      -> [cmd] status.checkin=<seconds_ago> cached=<0|1> glyph=<state>
+                         [cmd] status.checkin=never glyph=never
+bad arguments         -> [err] status.usage=...
+```
+
+Drives the main-menu status bar (see `lib/MenuManager/README.md`) without any
+networking, so every state can be shown and captured with `screencap`.
+`<kind>` is `info`, `warning`, `checking`, `ready`, `changes` or `listening`.
+Empty text uses the kind's own copy ("Checking for updates...", "Update
+ready", "App changes waiting", "Dev mode"); `info` and `warning` need text.
+The words `late` and `cached` right after the kind set those flags. Posts are
+sticky at the kind's default priority (`ready` and `changes` badge the Status
+item). A popup offers the accept option and "Later"; Later, or no answer,
+routes the event to the bar and badge. `checkin` records a check-in that many
+seconds ago (up to 8640000, 100 days) so the WiFi glyph and age label can be
+shown for every bucket. The read-back ends on `status.count`: new keys go
+above it.
 
 ### Rail controls
 

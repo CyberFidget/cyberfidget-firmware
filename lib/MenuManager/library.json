@@ -19,6 +19,9 @@
         },
         {
             "name": "Globals"
+        },
+        {
+            "name": "StatusService"
         }
     ]
 }
