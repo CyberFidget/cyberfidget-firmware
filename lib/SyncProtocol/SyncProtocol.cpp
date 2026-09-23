@@ -148,6 +148,9 @@ bool pathConfined(const char* path) {
     }
     if (!rooted) return false;
 
+    // The applied-batch record is written only by the apply path.
+    if (startsWith(path, kAppliedRecordPath)) return false;
+
     // Byte-level hygiene + traversal check. Reject any control byte or space,
     // and any "." / ".." segment (a "." segment is harmless but never
     // legitimate here, so refuse it too and keep the rule simple).
@@ -167,6 +170,28 @@ bool pathConfined(const char* path) {
         if (segLen == 2 && path[start] == '.' && path[start + 1] == '.') return false; // ".."
         if (segLen == 0 && start < len) return false;              // "//"
         i = end;
+    }
+    return true;
+}
+
+bool isDeliveredBlobName(const char* name) {
+    if (!name) return false;
+    static const char kExt[] = ".wasm";
+    const size_t extLen = sizeof(kExt) - 1;
+    const size_t len = std::strlen(name);
+    // At least a 1-byte id + "-" + 8 hex + ".wasm".
+    if (len < 1 + 1 + 8 + extLen) return false;
+    if (name[0] == '.') return false;
+    if (std::strcmp(name + len - extLen, kExt) != 0) return false;
+    const size_t hashAt = len - extLen - 8;
+    if (name[hashAt - 1] != '-') return false;
+    for (size_t i = hashAt; i < hashAt + 8; i++) {
+        const char h = name[i];
+        if (!((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f'))) return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        const unsigned char c = (unsigned char)name[i];
+        if (c <= 0x20 || c == 0x7F || c == '/') return false;
     }
     return true;
 }

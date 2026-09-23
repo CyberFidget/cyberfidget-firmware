@@ -12,6 +12,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstring>
 #include <limits.h>
 #include <stdlib.h>
@@ -619,6 +620,46 @@ bool parseArrangeArray(Cursor& c, std::vector<ArrangeItem>& order) {
     return true;
 }
 
+// A `batch` id: 1..kMaxBatchIdLen printable ASCII bytes (no space/control).
+bool validBatchId(const std::string& s) {
+    if (s.empty() || s.size() > kMaxBatchIdLen) return false;
+    for (char ch : s) {
+        unsigned char u = (unsigned char)ch;
+        if (u < 0x21 || u > 0x7E) return false;
+    }
+    return true;
+}
+
+// A `base` value: 1..8 hex digits, either case.
+bool parseBaseHex(const std::string& s, uint32_t& out) {
+    if (s.empty() || s.size() > 8) return false;
+    uint32_t v = 0;
+    for (char h : s) {
+        if      (h >= '0' && h <= '9') v = (v << 4) | (uint32_t)(h - '0');
+        else if (h >= 'a' && h <= 'f') v = (v << 4) | (uint32_t)(h - 'a' + 10);
+        else if (h >= 'A' && h <= 'F') v = (v << 4) | (uint32_t)(h - 'A' + 10);
+        else return false;
+    }
+    out = v;
+    return true;
+}
+
+// Parse the value of a top-level `batch` or `base` key (cursor on the value)
+// into `meta`. An invalid value fails the whole document.
+bool parseMetaField(Cursor& c, const std::string& key, OpsMeta& meta) {
+    std::string value;
+    if (!parseString(c, value)) return false;
+    if (key == "batch") {
+        if (!validBatchId(value)) return false;
+        meta.batch = value;
+        meta.hasBatch = true;
+        return true;
+    }
+    if (!parseBaseHex(value, meta.base)) return false;
+    meta.hasBase = true;
+    return true;
+}
+
 // Parse and apply one op object (cursor on its opening '{') to `work`.
 bool applyOneOp(Cursor& c, Loadout& work, int& applied) {
     skipWs(c);
@@ -682,6 +723,9 @@ bool applyOneOp(Cursor& c, Loadout& work, int& applied) {
     } else if (opType == "arrange") {
         if (!hasOrder) return false;
         if (!applyArrange(work, order)) return false;
+    } else if (opType == "replace") {
+        if (!hasEntry) return false;
+        if (!applyReplace(work, entry)) return false;
     } else {
         return false; // unknown / missing op discriminator
     }
@@ -723,6 +767,7 @@ bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut) {
     Cursor c{opsJson};
     Loadout work = loadout; // apply to a copy so a failure leaves the original
     int applied = 0;
+    OpsMeta meta; // validated here; acted on by the transport session
 
     skipWs(c);
     if (*c.p != '{') return false;
@@ -752,6 +797,8 @@ bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut) {
                 } else {
                     c.p++;
                 }
+            } else if (key == "batch" || key == "base") {
+                if (!parseMetaField(c, key, meta)) return false;
             } else {
                 if (!skipValue(c, 0)) return false; // unknown top-level field
             }
@@ -768,6 +815,130 @@ bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut) {
 
     loadout = std::move(work);
     if (appliedOut) *appliedOut = applied;
+    return true;
+}
+
+bool applyReplace(Loadout& loadout, const LoadoutEntry& entry) {
+    if (entry.id.empty() || entry.blobPath.empty()) return false;
+    int idx = findEntry(loadout, entry.id.c_str());
+    if (idx < 0) return false; // replace never creates an entry
+    LoadoutEntry& e = loadout.entries[(size_t)idx];
+    e.blobPath = entry.blobPath;
+    e.version  = entry.version;
+    e.abi      = entry.abi;
+    e.name     = entry.name;
+    // A signature belongs to the blob it signed: the new blob's (or none).
+    e.signature = entry.signature;
+    return true;
+}
+
+bool parseOpsMeta(const char* opsJson, OpsMeta& out) {
+    if (!opsJson) return false;
+    Cursor c{opsJson};
+    OpsMeta meta;
+    skipWs(c);
+    if (*c.p != '{') return false;
+    c.p++;
+    skipWs(c);
+    if (*c.p != '}') {
+        while (true) {
+            skipWs(c);
+            std::string key;
+            if (!parseString(c, key)) return false;
+            skipWs(c);
+            if (*c.p != ':') return false;
+            c.p++;
+            skipWs(c);
+            if (key == "batch" || key == "base") {
+                if (!parseMetaField(c, key, meta)) return false;
+            } else {
+                if (!skipValue(c, 0)) return false;
+            }
+            skipWs(c);
+            if (*c.p == ',') { c.p++; continue; }
+            if (*c.p == '}') { c.p++; break; }
+            return false;
+        }
+    } else {
+        c.p++;
+    }
+    skipWs(c);
+    if (*c.p != '\0') return false; // trailing garbage
+    out = std::move(meta);
+    return true;
+}
+
+std::string serializeAppliedRecord(const AppliedRecord& rec) {
+    char crc[9];
+    std::snprintf(crc, sizeof(crc), "%08x", (unsigned)rec.crcAfter);
+    std::string out = "{\"batch\":";
+    appendEscaped(out, rec.batch);
+    out += ",\"result\":";
+    appendEscaped(out, rec.result);
+    out += ",\"crc_after\":\"";
+    out += crc;
+    out += "\",\"at\":";
+    out += std::to_string((unsigned long)rec.at);
+    out += ",\"ops\":";
+    out += std::to_string(rec.ops);
+    out += ",\"entries\":";
+    out += std::to_string(rec.entries);
+    out += "}\n";
+    return out;
+}
+
+bool parseAppliedRecord(const char* json, AppliedRecord& out) {
+    if (!json) return false;
+    Cursor c{json};
+    AppliedRecord rec;
+    bool hasBatch = false, hasResult = false;
+    skipWs(c);
+    if (*c.p != '{') return false;
+    c.p++;
+    skipWs(c);
+    if (*c.p != '}') {
+        while (true) {
+            skipWs(c);
+            std::string key;
+            if (!parseString(c, key)) return false;
+            skipWs(c);
+            if (*c.p != ':') return false;
+            c.p++;
+            skipWs(c);
+            long v = 0;
+            if (key == "batch") {
+                if (!parseString(c, rec.batch)) return false;
+                hasBatch = true;
+            } else if (key == "result") {
+                if (!parseString(c, rec.result)) return false;
+                hasResult = true;
+            } else if (key == "crc_after") {
+                std::string hex;
+                if (!parseString(c, hex) || !parseBaseHex(hex, rec.crcAfter)) return false;
+            } else if (key == "at") {
+                if (!parseInt(c, v) || v < 0) return false;
+                rec.at = (uint32_t)v;
+            } else if (key == "ops") {
+                if (!parseInt(c, v) || v < 0 || v > INT_MAX) return false;
+                rec.ops = (int)v;
+            } else if (key == "entries") {
+                if (!parseInt(c, v) || v < 0 || v > INT_MAX) return false;
+                rec.entries = (int)v;
+            } else {
+                if (!skipValue(c, 0)) return false;
+            }
+            skipWs(c);
+            if (*c.p == ',') { c.p++; continue; }
+            if (*c.p == '}') { c.p++; break; }
+            return false;
+        }
+    } else {
+        c.p++;
+    }
+    skipWs(c);
+    if (*c.p != '\0') return false; // trailing garbage
+    if (!hasBatch || !hasResult || rec.batch.empty()) return false;
+    out = std::move(rec);
     return true;
 }
 

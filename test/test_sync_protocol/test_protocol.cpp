@@ -320,6 +320,33 @@ void test_flist_nontruncated_summary(void) {
         "[cmd] flist.done=/assets entries=1 truncated=0 max=64\n", summary);
 }
 
+void test_confinement_rejects_applied_record(void) {
+    TEST_ASSERT_FALSE(pathConfined("/apps/.applied.json"));
+    TEST_ASSERT_FALSE(pathConfined("/apps/.applied.json.part"));
+    TEST_ASSERT_FALSE(pathConfined(kAppliedRecordPath));
+    TEST_ASSERT_FALSE(pathConfined(kAppliedRecordTemp));
+    TEST_ASSERT_TRUE(pathConfined("/apps/applied.json"));      // not the record
+    TEST_ASSERT_TRUE(pathConfined("/assets/.applied.json"));   // other root
+}
+
+void test_delivered_blob_name_shape(void) {
+    TEST_ASSERT_TRUE(isDeliveredBlobName("booper-0123abcd.wasm"));
+    TEST_ASSERT_TRUE(isDeliveredBlobName("my-app-deadbeef.wasm"));
+    TEST_ASSERT_TRUE(isDeliveredBlobName("x-00000000.wasm"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper.wasm"));          // browser-send name
+    TEST_ASSERT_FALSE(isDeliveredBlobName("-0123abcd.wasm"));       // empty id
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper-0123ABCD.wasm")); // upper-case hash
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper-0123abc.wasm"));  // 7 digits
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper_0123abcd.wasm")); // no dash
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper-0123abcd.bin"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper-0123abcd.wasm.part"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName(".x-0123abcd.wasm"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName("sub/x-0123abcd.wasm"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName("a b-0123abcd.wasm"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName(""));
+    TEST_ASSERT_FALSE(isDeliveredBlobName(nullptr));
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -351,5 +378,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_fread_header_and_chunk_ceiling);
     RUN_TEST(test_flist_entry_cap_and_truncation_summary);
     RUN_TEST(test_flist_nontruncated_summary);
+    RUN_TEST(test_confinement_rejects_applied_record);
+    RUN_TEST(test_delivered_blob_name_shape);
     return UNITY_END();
 }

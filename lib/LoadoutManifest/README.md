@@ -92,6 +92,36 @@ of its category section, and `arrange` normalizes to contiguous sections
 (first-appearance order, stable within a section). Unknown ids in an
 arrange are ignored; entries missing from it are appended, never lost.
 
+### Batch documents (`batch`, `base`, `replace`)
+
+`applyOps` also accepts two optional top-level fields and one more op, for
+deliveries that must be retried safely. A document without them applies
+exactly as before.
+
+* `batch` (string, 1-40 printable ASCII bytes, no spaces) and `base`
+  (string, 1-8 hex digits: the CRC-32 of the manifest bytes the document
+  was built against) are validated here - a wrong type or value rejects the
+  whole document - but not acted on. The stale-revision refusal, the
+  applied-batch record, and the orphan-blob sweep need the stored manifest
+  bytes and the filesystem, so the transport session owns them (see
+  `lib/SyncProtocol/README.md`, "Batch documents"). `parseOpsMeta` reads
+  just these two fields for that session.
+* `replace` (`applyReplace`): `{ "op": "replace", "entry": { ...full
+  entry... } }` swaps an EXISTING entry's `blobPath`, `version`, `abi`,
+  `name` and `signature` (a signature belongs to the blob it signed),
+  keeping its position, category, hidden flag and format. An unknown id or an empty `blobPath` rejects the document.
+  `add` of an installed id stays rejected.
+* `serializeAppliedRecord` / `parseAppliedRecord` read and write the
+  applied-batch record (`{"batch","result","crc_after","at","ops",
+  "entries"}`) the transport keeps at `/apps/.applied.json`.
+
+Delivered app blobs are named `/apps/<id>-<hash8>.wasm` (hash8 = the first
+8 lowercase hex digits of the blob's SHA-256). Because the name changes
+with the content, a `replace` points the entry at a new file and the old
+one becomes an orphan the transport sweeps after the apply. The schema is
+unchanged (still version 1), so firmware without `replace` still reads a
+manifest written by firmware with it.
+
 ## On-device reordering
 
 Long-press (hold ~1s) the select button on a menu leaf to pick it up;

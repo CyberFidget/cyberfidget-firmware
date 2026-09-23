@@ -48,6 +48,25 @@ constexpr uint32_t kMaxListEntries = 64;
 /// covers a kMaxPathLen path plus decimal uint32 fields and terminator.
 constexpr size_t kReadReplyBytes = 192;
 
+/// Where the device durably records the last batch `lapply` applied. The
+/// file verbs never reach it (pathConfined() refuses this path and anything
+/// that extends it, such as its `.part` temp), so a host can neither forge
+/// nor erase the record; only the apply path writes it.
+constexpr const char* kAppliedRecordPath = "/apps/.applied.json";
+constexpr const char* kAppliedRecordTemp = "/apps/.applied.json.part";
+
+/// Directory the orphan-blob sweep after a batch apply walks (top level only).
+constexpr const char* kDeliveredBlobDir = "/apps";
+
+/**
+ * True if `name` (a basename, no directory) has the delivered-app blob shape
+ * `<id>-<hash8>.wasm`: a non-empty id that does not start with '.', one '-',
+ * exactly 8 lowercase hex digits, then `.wasm`. Only files of this shape are
+ * ever deleted by the orphan sweep; any other name (for example a browser
+ * send's `<id>.wasm`) is left alone.
+ */
+bool isDeliveredBlobName(const char* name);
+
 /// Format ESP.getEfuseMac() as the canonical 12-character lowercase unit id.
 /// `out` must have room for 13 bytes including the terminator.
 void formatDeviceId(uint64_t efuseMac, char* out);
@@ -75,7 +94,9 @@ uint32_t crc32Finish(uint32_t crc);
  * stance so a hostile browser can't read, overwrite, or delete anything
  * outside the app/asset area. The loadout manifest itself is intentionally
  * NOT writable here - it is edited only through the `lapply` verb, which
- * runs the manifest apply core rather than a blind byte overwrite.
+ * runs the manifest apply core rather than a blind byte overwrite. The
+ * applied-batch record (kAppliedRecordPath, and any path extending it) is
+ * refused for the same reason.
  */
 bool pathConfined(const char* path);
 

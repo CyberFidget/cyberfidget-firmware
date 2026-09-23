@@ -51,7 +51,9 @@ predicate and are confined to `/apps/` and `/assets/` on the device filesystem.
 A file path must be absolute, name a file (no trailing `/`), carry no
 `.`/`..`/empty segment, contain no spaces or control bytes, and be `<= 96`
 bytes. The loadout manifest (`/loadout.json`) is deliberately not exposed by
-the file verbs; `lget` and `lapply` are its only transport surface.
+the file verbs; `lget` and `lapply` are its only transport surface. The
+applied-batch record `/apps/.applied.json` (and any path extending it, such
+as its `.part` temp) is refused the same way; only `lapply` writes it.
 
 `flist` takes a trailing-slash-free directory path: `/apps`, `/assets`, or a
 subdirectory such as `/apps/icons`. The device appends a synthetic child
@@ -116,7 +118,7 @@ The CRC in each `fread.ok` header covers only that returned chunk.
 ```
 lget                              -> [cmd] lget.present=<0|1> entries=<n> schema=<n> len=<n> crc=<hex>
                                      <len raw bytes of manifest JSON follow (omitted when present=0)>
-lapply <len> <crc32>              -> [cmd] lapply.ok=applied <n> entries <n>   (or [err] lapply.reject / .crc)
+lapply <len> <crc32>              -> [cmd] lapply.ok=applied <n> entries <n>   (or [err] lapply.reject / .crc / .stale / .record)
   <len raw bytes of ops JSON follow the line>
 ```
 
@@ -143,6 +145,73 @@ temp-file-then-rename save the on-device reorder uses. **Applied changes
 take effect at the next boot menu build** (same as the long-press reorder),
 so a torn write can never brick the running menu - it falls back per the
 missing/stale-manifest rules.
+
+#### Batch documents (`batch`, `base`, `replace`)
+
+A delivery that must be retried safely adds two optional top-level fields
+and may use the `replace` op. A document with neither field applies exactly
+as above (same checks, same reply bytes, no extra effects).
+
+```json
+{ "batch": "7f3c-0001",
+  "base":  "1b9d1c4e",
+  "ops": [
+    { "op": "replace", "entry": { "id": "booper", "name": "Booper",
+                                  "blobPath": "/apps/booper-89abcdef.wasm",
+                                  "version": "2.0", "abi": "1" } }
+] }
+```
+
+* `batch` - opaque id, 1-40 printable ASCII bytes (no spaces). `base` -
+  1-8 hex digits, either case. Any other value (wrong type, too long,
+  non-hex) rejects the whole document as `[err] lapply.reject`.
+* `replace` swaps an existing entry's `blobPath`, `version`, `abi`,
+  `name` (label) and `signature`; position, category, hidden flag and
+  format are kept. An unknown id, or a missing `blobPath`, rejects the whole document.
+  `add` of an installed id stays rejected.
+* The device checks, in this order:
+  1. **Repeat**: if `batch` equals the batch recorded in
+     `/apps/.applied.json`, nothing is re-applied and the device answers the
+     recorded success line (`[cmd] lapply.ok=applied <n> entries <n>`). This
+     runs before the `base` check because the batch itself moved the
+     manifest off its base.
+  2. **Stale**: if `base` differs from the CRC-32 of the stored manifest
+     (the `crc` `lget` reports; `00000000` when none is stored), the whole
+     document is refused with `[err] lapply.stale=<current crc hex>\n` and
+     nothing changes.
+  3. **Apply**: as for any document; a rejected op answers `lapply.reject`.
+  4. **Record** (only with `batch`): `{"batch","result","crc_after","at",
+     "ops","entries"}` is written to `/apps/.applied.json` via
+     `/apps/.applied.json.part` + rename BEFORE the success reply. `at` is
+     wall-clock seconds, or 0 when the clock is unset. If the record cannot
+     be written the manifest change stands and the reply is
+     `[err] lapply.record=<crc after hex>\n`.
+  5. **Orphan sweep**: after a successful batch document, top-level
+     `/apps` files named `<id>-<hash8>.wasm` (8 lowercase hex digits) that
+     the manifest no longer references are deleted. Skipped while a
+     `fwrite` session is active, and when the manifest cannot be re-read.
+* Only successes are recorded. A refused document (stale, rejected) leaves
+  the record as it was, and a retry is re-checked from scratch.
+* Failure between the manifest save and the record (power cut, or the
+  `lapply.record` error): the new manifest is in place, the record is the
+  previous one or none (the rename fallback may already have removed it),
+  and no success line was sent. A retry of the same batch
+  carrying `base` is refused as stale with the post-apply CRC, so it is
+  never applied twice; the sender reconciles with `lget`.
+* `/apps/.applied.json` (and any path extending it) is refused by every
+  file verb, so it cannot be written, deleted, or read over the wire; only
+  the apply path writes it. It is not a menu entry (the menu is built from
+  the manifest).
+
+**Names the orphan sweep never deletes.** A browser send today writes
+`/apps/<id>.wasm`; that shape has no `-<8 hex>` suffix, so those blobs are
+never swept (the site removes them itself with `fdelete`). Also never swept:
+anything outside the top level of `/apps` (nested files, `/apps/.diary/`,
+`/assets/`), non-`.wasm` files, `.part` temps (the boot sweep owns those),
+and names whose suffix is not exactly 8 lowercase hex digits. One overlap
+remains: a browser-sent id that itself ends in `-` plus 8 lowercase hex
+digits looks delivered, and is deleted if a batch apply runs while the
+manifest does not reference it.
 
 ### Status report
 

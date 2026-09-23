@@ -12,6 +12,8 @@
 
 #include "FerrySession.h"
 
+#include "LoadoutManifest.h"
+
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -272,16 +274,132 @@ FerryReply FerrySession::applyManifest(const char* args, FerryByteSource& in) {
                          (unsigned)got, (unsigned)crc);
     }
     buf[len] = '\0';
+    const char* doc = (const char*)buf;
+
+    // Batch path: only for a document carrying `batch` or `base`. A document
+    // without them (or one too malformed to read them from, which the apply
+    // below rejects anyway) takes exactly the historical path.
+    LoadoutManifest::OpsMeta meta;
+    const bool batchDoc = LoadoutManifest::parseOpsMeta(doc, meta) &&
+                          (meta.hasBatch || meta.hasBase);
+
+    if (batchDoc && meta.hasBatch) {
+        // Idempotent retry: checked BEFORE `base`, because the batch itself
+        // moved the manifest off the base it was built against.
+        char rec[256];
+        size_t recLen = 0;
+        uint32_t recSize = 0;
+        if (storage_.openReadBack(kAppliedRecordPath, recSize)) {
+            while (recLen < sizeof(rec) - 1) {
+                const int n = storage_.readBack((uint8_t*)rec + recLen,
+                                                sizeof(rec) - 1 - recLen);
+                if (n <= 0) break;
+                recLen += (size_t)n;
+            }
+            storage_.closeReadBack();
+        }
+        rec[recLen] = '\0';
+        LoadoutManifest::AppliedRecord prior;
+        if (recLen > 0 && LoadoutManifest::parseAppliedRecord(rec, prior) &&
+            prior.batch == meta.batch && prior.result == "applied") {
+            releasePayloadIfIdle();
+            return setFormat(true, "[cmd] lapply.ok=applied %d entries %d\n",
+                             prior.ops, prior.entries);
+        }
+    }
+
+    if (batchDoc && meta.hasBase) {
+        std::string current;
+        const uint32_t currentCrc = storage_.loadManifest(current)
+            ? crc32(current.data(), current.size()) : 0;
+        if (currentCrc != meta.base) {
+            releasePayloadIfIdle();
+            return setFormat(false, "[err] lapply.stale=%08x\n",
+                             (unsigned)currentCrc);
+        }
+    }
+
     int entries = 0, applied = 0;
-    if (!storage_.applyManifestOps((const char*)buf, entries, applied)) {
+    if (!storage_.applyManifestOps(doc, entries, applied)) {
         // Malformed document, a rejected op, or a failed save - the stored
         // manifest is untouched, so the menu still falls back cleanly.
         releasePayloadIfIdle();
         return setLine(false, "[err] lapply.reject");
     }
     releasePayloadIfIdle();
+    if (!batchDoc) {
+        return setFormat(true, "[cmd] lapply.ok=applied %d entries %d\n",
+                         applied, entries);
+    }
+
+    std::string after;
+    const bool haveAfter = storage_.loadManifest(after);
+    const uint32_t crcAfter = haveAfter ? crc32(after.data(), after.size()) : 0;
+
+    if (meta.hasBatch) {
+        // Durable before the reply: a sender that loses this reply retries
+        // the same batch and gets the same success line, never a re-apply.
+        LoadoutManifest::AppliedRecord record;
+        record.batch    = meta.batch;
+        record.result   = "applied";
+        record.crcAfter = crcAfter;
+        record.at       = storage_.nowEpochSeconds();
+        record.ops      = applied;
+        record.entries  = entries;
+        if (!writeAppliedRecord(LoadoutManifest::serializeAppliedRecord(record))) {
+            // The manifest IS changed; only the record is missing. Report
+            // the new manifest CRC so the sender can reconcile with `lget`
+            // instead of retrying blind (a retry carrying `base` would be
+            // refused as stale, not applied twice).
+            return setFormat(false, "[err] lapply.record=%08x\n",
+                             (unsigned)crcAfter);
+        }
+    }
+
+    // Orphan sweep strictly after a successful apply, and never while a
+    // write session is active (its blob may not be in the manifest yet).
+    if (haveAfter && state_ == State::Idle) sweepOrphanBlobs(after);
+
     return setFormat(true, "[cmd] lapply.ok=applied %d entries %d\n",
                      applied, entries);
+}
+
+// Temp-then-rename, like every other durable write: a power cut leaves the
+// previous record or none, never a torn one. The temp name ends in ".part"
+// so the boot sweep reclaims an orphan.
+bool FerrySession::writeAppliedRecord(const std::string& record) {
+    if (!storage_.writeFile(kAppliedRecordTemp, (const uint8_t*)record.data(),
+                            record.size())) {
+        storage_.remove(kAppliedRecordTemp);
+        return false;
+    }
+    bool ok = storage_.rename(kAppliedRecordTemp, kAppliedRecordPath);
+    if (!ok) {
+        storage_.remove(kAppliedRecordPath);
+        ok = storage_.rename(kAppliedRecordTemp, kAppliedRecordPath);
+    }
+    if (!ok) storage_.remove(kAppliedRecordTemp);
+    return ok;
+}
+
+// Delete top-level /apps blobs of the delivered shape that the manifest no
+// longer references. Anything not of that shape (a browser send's
+// `<id>.wasm`, assets, nested files, the diary) is never touched. If the
+// manifest cannot be read, nothing is deleted.
+void FerrySession::sweepOrphanBlobs(const std::string& manifestJson) {
+    LoadoutManifest::Loadout loadout;
+    if (!LoadoutManifest::parseManifest(manifestJson.c_str(), loadout)) return;
+    std::vector<std::string> names;
+    if (!storage_.listFiles(kDeliveredBlobDir, names)) return;
+    for (const std::string& name : names) {
+        if (!isDeliveredBlobName(name.c_str())) continue;
+        const std::string path = std::string(kDeliveredBlobDir) + "/" + name;
+        bool referenced = false;
+        for (const auto& e : loadout.entries) {
+            if (e.blobPath == path) { referenced = true; break; }
+        }
+        if (!referenced) storage_.remove(path.c_str());
+    }
 }
 
 } // namespace SyncProtocol

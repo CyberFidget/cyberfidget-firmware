@@ -122,10 +122,47 @@ public:
         if (!LoadoutManifest::applyOps(work, opsJson, &applied)) return false;
         if (!saveOk) return false;
         manifest = work;
+        manifestStored = true;
         entriesOut = (int)manifest.entries.size();
         appliedOut = applied;
         return true;
     }
+
+    // ---- batch apply effects ----
+    bool     manifestStored = true; // false = no manifest (lget present=0)
+    bool     writeFileOk = true;    // false = injected record-write failure
+    uint32_t clock = 0;
+    int      loadCalls = 0;
+    int      writeFileCalls = 0;
+    int      listCalls = 0;
+
+    bool loadManifest(std::string& jsonOut) override {
+        loadCalls++;
+        if (!manifestStored) return false;
+        jsonOut = LoadoutManifest::serializeManifest(manifest);
+        return true;
+    }
+    bool writeFile(const char* path, const uint8_t* data, size_t len) override {
+        writeFileCalls++;
+        if (!writeFileOk) {
+            files[path] = std::vector<uint8_t>(data, data + len / 2); // torn
+            return false;
+        }
+        files[path] = std::vector<uint8_t>(data, data + len);
+        return true;
+    }
+    bool listFiles(const char* dir, std::vector<std::string>& namesOut) override {
+        listCalls++;
+        const std::string prefix = std::string(dir) + "/";
+        for (const auto& kv : files) {
+            if (kv.first.compare(0, prefix.size(), prefix) != 0) continue;
+            const std::string rest = kv.first.substr(prefix.size());
+            if (rest.find('/') != std::string::npos) continue; // not recursive
+            namesOut.push_back(rest);
+        }
+        return true;
+    }
+    uint32_t nowEpochSeconds() override { return clock; }
 
     bool tempOpen() const { return tempOpen_; }
     bool has(const char* path) const { return files.count(path) > 0; }
@@ -634,6 +671,309 @@ void test_lapply_during_write_keeps_session_and_buffer(void) {
     assertReply("[cmd] fwcommit.ok=/apps/hello.wasm size=5 crc=c1446436\n", s.commit());
 }
 
+// ---------- lapply batch contract (batch / base / replace / orphan sweep) ----------
+
+static uint32_t manifestCrc(const FakeStorage& fs) {
+    return crcOf(LoadoutManifest::serializeManifest(fs.manifest));
+}
+
+static std::string hex8(uint32_t v) {
+    return hdr("%08x", (unsigned)v);
+}
+
+// A baseline whose APP_B is a delivered blob app.
+static LoadoutManifest::Loadout deliveredBaseline(void) {
+    LoadoutManifest::Loadout l = baseline();
+    l.entries[1].format   = "wasm";
+    l.entries[1].blobPath = "/apps/APP_B-0123abcd.wasm";
+    l.entries[1].version  = "1.0";
+    l.entries[1].abi      = "1";
+    l.entries[1].hidden   = true;
+    return l;
+}
+
+void test_lapply_legacy_doc_takes_no_batch_effects(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    fs.files["/apps/orphan-deadbeef.wasm"] = {1};
+    FerrySession s(fs);
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n",
+                lapply(s, "{\"ops\":[{\"op\":\"hide\",\"id\":\"APP_B\",\"hidden\":true}]}"));
+    TEST_ASSERT_EQUAL_INT(1, fs.applyCalls);
+    TEST_ASSERT_EQUAL_INT(0, fs.loadCalls);
+    TEST_ASSERT_EQUAL_INT(0, fs.writeFileCalls);
+    TEST_ASSERT_EQUAL_INT(0, fs.listCalls);
+    TEST_ASSERT_TRUE(fs.removed.empty());
+    TEST_ASSERT_TRUE(fs.has("/apps/orphan-deadbeef.wasm"));
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordPath));
+}
+
+void test_lapply_replace_swaps_blob_keeps_placement(void) {
+    FakeStorage fs;
+    fs.manifest = deliveredBaseline();
+    FerrySession s(fs);
+    const std::string doc =
+        "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_B\",\"name\":\"B2\","
+        "\"category\":\"Tools\",\"hidden\":false,\"position\":0,"
+        "\"blobPath\":\"/apps/APP_B-89abcdef.wasm\",\"version\":\"2.0\",\"abi\":\"2\"}}]}";
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n", lapply(s, doc));
+    const LoadoutManifest::LoadoutEntry& e = fs.manifest.entries[1];
+    TEST_ASSERT_EQUAL_STRING("APP_B", e.id.c_str());
+    TEST_ASSERT_EQUAL_STRING("/apps/APP_B-89abcdef.wasm", e.blobPath.c_str());
+    TEST_ASSERT_EQUAL_STRING("2.0", e.version.c_str());
+    TEST_ASSERT_EQUAL_STRING("2", e.abi.c_str());
+    TEST_ASSERT_EQUAL_STRING("B2", e.name.c_str());
+    TEST_ASSERT_EQUAL_STRING("Games", e.category.c_str()); // kept
+    TEST_ASSERT_TRUE(e.hidden);                            // kept
+    TEST_ASSERT_EQUAL_INT(1, e.position);                  // kept
+    TEST_ASSERT_EQUAL_STRING("wasm", e.format.c_str());    // kept
+}
+
+void test_lapply_replace_unknown_id_refuses_document(void) {
+    FakeStorage fs;
+    fs.manifest = deliveredBaseline();
+    const uint32_t before = manifestCrc(fs);
+    FerrySession s(fs);
+    const std::string doc =
+        "{\"batch\":\"b-1\",\"ops\":["
+        "{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true},"
+        "{\"op\":\"replace\",\"entry\":{\"id\":\"APP_NOPE\","
+        "\"blobPath\":\"/apps/APP_NOPE-00000000.wasm\"}}]}";
+    assertReply("[err] lapply.reject\r\n", lapply(s, doc));
+    TEST_ASSERT_EQUAL_UINT32(before, manifestCrc(fs));
+    TEST_ASSERT_FALSE(fs.manifest.entries[0].hidden); // the hide was not kept
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordPath));
+}
+
+void test_lapply_stale_base_refused_and_unchanged(void) {
+    FakeStorage fs;
+    fs.manifest = deliveredBaseline();
+    fs.files["/apps/orphan-deadbeef.wasm"] = {1};
+    const uint32_t current = manifestCrc(fs);
+    const uint32_t wrong = current ^ 1u;
+    FerrySession s(fs);
+    const std::string doc = "{\"batch\":\"b-1\",\"base\":\"" + hex8(wrong) +
+        "\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}";
+    FerryReply r = lapply(s, doc);
+    TEST_ASSERT_FALSE(r.ok);
+    TEST_ASSERT_EQUAL_STRING(("[err] lapply.stale=" + hex8(current) + "\n").c_str(),
+                             text(r).c_str());
+    TEST_ASSERT_EQUAL_INT(0, fs.applyCalls);
+    TEST_ASSERT_EQUAL_UINT32(current, manifestCrc(fs));
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordPath));
+    TEST_ASSERT_TRUE(fs.has("/apps/orphan-deadbeef.wasm")); // no sweep either
+    TEST_ASSERT_EQUAL_INT(0, fs.payloadLive);
+}
+
+void test_lapply_matching_base_applies(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    FerrySession s(fs);
+    // Upper-case hex is the same CRC.
+    std::string base = hex8(manifestCrc(fs));
+    for (char& ch : base) if (ch >= 'a' && ch <= 'f') ch = (char)(ch - 'a' + 'A');
+    const std::string doc = "{\"base\":\"" + base +
+        "\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}";
+    assertReply("[cmd] lapply.ok=applied 1 entries 1\n", lapply(s, doc));
+    TEST_ASSERT_EQUAL_INT(1, (int)fs.manifest.entries.size());
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordPath)); // no batch -> no record
+}
+
+void test_lapply_base_zero_matches_absent_manifest(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();   // what the device seeds from the registry
+    fs.manifestStored = false;  // but nothing is stored yet
+    FerrySession s(fs);
+    assertReply("[err] lapply.stale=00000000\n",
+                lapply(s, "{\"base\":\"12345678\",\"ops\":[]}"));
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n",
+                lapply(s, "{\"base\":\"00000000\",\"ops\":"
+                          "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}"));
+}
+
+void test_lapply_batch_recorded_before_success_reply(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    fs.clock = 1790000000u;
+    FerrySession s(fs);
+    const std::string doc = "{\"batch\":\"b-42\",\"base\":\"" + hex8(manifestCrc(fs)) +
+        "\",\"ops\":[{\"op\":\"add\",\"entry\":{\"id\":\"APP_E\",\"category\":\"Games\","
+        "\"format\":\"wasm\",\"blobPath\":\"/apps/APP_E-00c0ffee.wasm\"}}]}";
+    FerryReply r = lapply(s, doc);
+    assertReply("[cmd] lapply.ok=applied 1 entries 3\n", r);
+    TEST_ASSERT_TRUE(fs.has(kAppliedRecordPath));
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordTemp));
+    LoadoutManifest::AppliedRecord rec;
+    TEST_ASSERT_TRUE(LoadoutManifest::parseAppliedRecord(
+        fs.content(kAppliedRecordPath).c_str(), rec));
+    TEST_ASSERT_EQUAL_STRING("b-42", rec.batch.c_str());
+    TEST_ASSERT_EQUAL_STRING("applied", rec.result.c_str());
+    TEST_ASSERT_EQUAL_UINT32(manifestCrc(fs), rec.crcAfter);
+    TEST_ASSERT_EQUAL_UINT32(1790000000u, rec.at);
+    TEST_ASSERT_EQUAL_INT(1, rec.ops);
+    TEST_ASSERT_EQUAL_INT(3, rec.entries);
+
+    // The success reply depends on the record: when the record cannot be
+    // made durable there is no success line.
+    FakeStorage fs2;
+    fs2.manifest = baseline();
+    fs2.writeFileOk = false;
+    FerrySession s2(fs2);
+    FerryReply r2 = lapply(s2, "{\"batch\":\"b-43\",\"ops\":"
+                               "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}");
+    TEST_ASSERT_FALSE(r2.ok);
+}
+
+void test_lapply_repeat_batch_not_reapplied(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    FerrySession s(fs);
+    const std::string doc = "{\"batch\":\"b-7\",\"base\":\"" + hex8(manifestCrc(fs)) +
+        "\",\"ops\":[{\"op\":\"add\",\"entry\":{\"id\":\"APP_E\",\"category\":\"Games\"}}]}";
+    assertReply("[cmd] lapply.ok=applied 1 entries 3\n", lapply(s, doc));
+    const uint32_t after = manifestCrc(fs);
+    // The same batch again (lost reply): same success line, not re-applied
+    // (a re-apply would be refused - APP_E already exists - and the base is
+    // now stale).
+    assertReply("[cmd] lapply.ok=applied 1 entries 3\n", lapply(s, doc));
+    TEST_ASSERT_EQUAL_INT(1, fs.applyCalls);
+    TEST_ASSERT_EQUAL_UINT32(after, manifestCrc(fs));
+    TEST_ASSERT_EQUAL_INT(0, fs.payloadLive);
+
+    // A different batch id is a new document and goes through the checks.
+    const std::string next = "{\"batch\":\"b-8\",\"base\":\"" + hex8(after) +
+        "\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_E\"}]}";
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n", lapply(s, next));
+    TEST_ASSERT_EQUAL_INT(2, fs.applyCalls);
+}
+
+// Defined consistent state for a failure between the manifest save and the
+// record write (the injected record failure stands in for a power cut at
+// that point): the NEW manifest is in place, the record is the previous one
+// or none (here: none), no temp is left behind, and no success line was sent.
+// The sender's retry of the same batch carries the old `base`, so it is
+// refused as stale - reporting the post-apply CRC - and never applied twice.
+void test_lapply_failure_between_apply_and_record_is_consistent(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    const uint32_t before = manifestCrc(fs);
+    fs.writeFileOk = false;
+    FerrySession s(fs);
+    const std::string doc = "{\"batch\":\"b-9\",\"base\":\"" + hex8(before) +
+        "\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}";
+    FerryReply r = lapply(s, doc);
+    const uint32_t after = manifestCrc(fs);
+    TEST_ASSERT_FALSE(r.ok);
+    TEST_ASSERT_EQUAL_STRING(("[err] lapply.record=" + hex8(after) + "\n").c_str(),
+                             text(r).c_str());
+    TEST_ASSERT_EQUAL_INT(1, (int)fs.manifest.entries.size()); // applied
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordPath));
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordTemp));             // torn temp removed
+
+    fs.writeFileOk = true;
+    FerryReply retry = lapply(s, doc);
+    TEST_ASSERT_EQUAL_STRING(("[err] lapply.stale=" + hex8(after) + "\n").c_str(),
+                             text(retry).c_str());
+    TEST_ASSERT_EQUAL_INT(1, fs.applyCalls);
+    TEST_ASSERT_EQUAL_INT(1, (int)fs.manifest.entries.size());
+
+    // A rename failure after a good temp write is a record failure too, and
+    // leaves no temp behind.
+    FakeStorage fs2;
+    fs2.manifest = baseline();
+    fs2.files[kAppliedRecordPath] = std::vector<uint8_t>{'o', 'l', 'd'};
+    FerrySession s2(fs2);
+    fs2.renameFailures = 2;
+    FerryReply r2 = lapply(s2, "{\"batch\":\"b-10\",\"ops\":"
+                               "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}");
+    TEST_ASSERT_FALSE(r2.ok);
+    TEST_ASSERT_FALSE(fs2.has(kAppliedRecordTemp));
+}
+
+void test_lapply_sweep_deletes_only_orphan_delivered_blobs(void) {
+    FakeStorage fs;
+    fs.manifest = deliveredBaseline();                 // references APP_B-0123abcd
+    fs.files["/apps/APP_B-0123abcd.wasm"] = {1};       // referenced: kept
+    fs.files["/apps/APP_B-89abcdef.wasm"] = {1};       // orphan delivered: deleted
+    fs.files["/apps/legacy.wasm"] = {1};               // browser-send name: kept
+    fs.files["/apps/APP_C-DEADBEEF.wasm"] = {1};       // upper-case hash: kept
+    fs.files["/apps/APP_C-0123abc.wasm"] = {1};        // 7-digit hash: kept
+    fs.files["/apps/APP_C-0123abcd.bin"] = {1};        // not .wasm: kept
+    fs.files["/apps/sub/x-00000000.wasm"] = {1};       // nested: kept
+    fs.files["/apps/.diary/batdiary.bin"] = {1};       // internal: kept
+    fs.files["/assets/y-00000000.wasm"] = {1};         // other root: kept
+    FerrySession s(fs);
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n",
+                lapply(s, "{\"batch\":\"b-gc\",\"ops\":"
+                          "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}"));
+    TEST_ASSERT_FALSE(fs.has("/apps/APP_B-89abcdef.wasm"));
+    TEST_ASSERT_TRUE(fs.has("/apps/APP_B-0123abcd.wasm"));
+    TEST_ASSERT_TRUE(fs.has("/apps/legacy.wasm"));
+    TEST_ASSERT_TRUE(fs.has("/apps/APP_C-DEADBEEF.wasm"));
+    TEST_ASSERT_TRUE(fs.has("/apps/APP_C-0123abc.wasm"));
+    TEST_ASSERT_TRUE(fs.has("/apps/APP_C-0123abcd.bin"));
+    TEST_ASSERT_TRUE(fs.has("/apps/sub/x-00000000.wasm"));
+    TEST_ASSERT_TRUE(fs.has("/apps/.diary/batdiary.bin"));
+    TEST_ASSERT_TRUE(fs.has("/assets/y-00000000.wasm"));
+    TEST_ASSERT_TRUE(fs.has(kAppliedRecordPath));
+    TEST_ASSERT_EQUAL_INT(1, (int)fs.removed.size());
+}
+
+void test_lapply_replace_then_sweep_drops_old_blob(void) {
+    FakeStorage fs;
+    fs.manifest = deliveredBaseline();
+    fs.files["/apps/APP_B-0123abcd.wasm"] = {1};
+    fs.files["/apps/APP_B-89abcdef.wasm"] = {2};  // new blob, already ferried
+    FerrySession s(fs);
+    const std::string doc = "{\"batch\":\"b-r\",\"base\":\"" + hex8(manifestCrc(fs)) +
+        "\",\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_B\",\"name\":\"B\","
+        "\"blobPath\":\"/apps/APP_B-89abcdef.wasm\",\"version\":\"2\",\"abi\":\"1\"}}]}";
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n", lapply(s, doc));
+    TEST_ASSERT_FALSE(fs.has("/apps/APP_B-0123abcd.wasm"));
+    TEST_ASSERT_TRUE(fs.has("/apps/APP_B-89abcdef.wasm"));
+}
+
+void test_lapply_sweep_skipped_during_write_session(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    fs.files["/apps/APP_E-00c0ffee.wasm"] = {1};  // not yet in the manifest
+    FerrySession s(fs);
+    openHello(s);
+    assertReply("[cmd] lapply.ok=applied 1 entries 2\n",
+                lapply(s, "{\"batch\":\"b-w\",\"ops\":"
+                          "[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}"));
+    TEST_ASSERT_TRUE(fs.has("/apps/APP_E-00c0ffee.wasm"));
+    TEST_ASSERT_EQUAL_INT(0, fs.listCalls);
+    TEST_ASSERT_TRUE(s.active());
+    TEST_ASSERT_EQUAL_INT(1, fs.payloadLive);
+}
+
+void test_lapply_invalid_batch_or_base_rejected(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    FerrySession s(fs);
+    const std::string longId(41, 'x');
+    assertReply("[err] lapply.reject\r\n",
+                lapply(s, "{\"batch\":\"" + longId + "\",\"ops\":[]}"));
+    assertReply("[err] lapply.reject\r\n", lapply(s, "{\"batch\":\"\",\"ops\":[]}"));
+    assertReply("[err] lapply.reject\r\n", lapply(s, "{\"batch\":7,\"ops\":[]}"));
+    assertReply("[err] lapply.reject\r\n", lapply(s, "{\"base\":\"xyz\",\"ops\":[]}"));
+    assertReply("[err] lapply.reject\r\n",
+                lapply(s, "{\"base\":\"123456789\",\"ops\":[]}"));
+    TEST_ASSERT_FALSE(fs.has(kAppliedRecordPath));
+    TEST_ASSERT_EQUAL_INT(2, (int)fs.manifest.entries.size());
+}
+
+void test_applied_record_not_reachable_by_fwrite(void) {
+    FakeStorage fs;
+    FerrySession s(fs);
+    assertReply("[err] fwrite.path=/apps/.applied.json (confined to /apps/ or /assets/)\n",
+                s.open("/apps/.applied.json 5 c1446436"));
+    assertReply("[err] fwrite.path=/apps/.applied.json.part (confined to /apps/ or /assets/)\n",
+                s.open("/apps/.applied.json.part 5 c1446436"));
+    TEST_ASSERT_FALSE(s.active());
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -670,5 +1010,19 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_lapply_failed_save_rejects);
     RUN_TEST(test_lapply_crc_and_framing_errors);
     RUN_TEST(test_lapply_during_write_keeps_session_and_buffer);
+    RUN_TEST(test_lapply_legacy_doc_takes_no_batch_effects);
+    RUN_TEST(test_lapply_replace_swaps_blob_keeps_placement);
+    RUN_TEST(test_lapply_replace_unknown_id_refuses_document);
+    RUN_TEST(test_lapply_stale_base_refused_and_unchanged);
+    RUN_TEST(test_lapply_matching_base_applies);
+    RUN_TEST(test_lapply_base_zero_matches_absent_manifest);
+    RUN_TEST(test_lapply_batch_recorded_before_success_reply);
+    RUN_TEST(test_lapply_repeat_batch_not_reapplied);
+    RUN_TEST(test_lapply_failure_between_apply_and_record_is_consistent);
+    RUN_TEST(test_lapply_sweep_deletes_only_orphan_delivered_blobs);
+    RUN_TEST(test_lapply_replace_then_sweep_drops_old_blob);
+    RUN_TEST(test_lapply_sweep_skipped_during_write_session);
+    RUN_TEST(test_lapply_invalid_batch_or_base_rejected);
+    RUN_TEST(test_applied_record_not_reachable_by_fwrite);
     return UNITY_END();
 }
