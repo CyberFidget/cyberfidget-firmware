@@ -48,6 +48,10 @@ constexpr uint32_t kMaxListEntries = 64;
 /// covers a kMaxPathLen path plus decimal uint32 fields and terminator.
 constexpr size_t kReadReplyBytes = 192;
 
+/// Format ESP.getEfuseMac() as the canonical 12-character lowercase unit id.
+/// `out` must have room for 13 bytes including the terminator.
+void formatDeviceId(uint64_t efuseMac, char* out);
+
 // ---------------------------------------------------------------------------
 // CRC-32 (IEEE 802.3, reflected, poly 0xEDB88320) - the checksum every
 // framed payload carries. Matches the stock zlib / JS crc32 so the browser

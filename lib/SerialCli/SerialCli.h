@@ -105,6 +105,10 @@ private:
     bool launchResolved(const char* arg, const char* replyVerb, int* appIndex);
     void cmdApp();
     void cmdNet();
+    void cmdHeapstat();
+    void cmdTlsalloc(const char* arg);
+    void cmdTlsprobe(const char* url);
+    void pollTlsprobeResult();
     void cmdWifi(const char* arg);
     void cmdMic();
     void cmdSleep();

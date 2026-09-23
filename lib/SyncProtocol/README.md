@@ -147,11 +147,21 @@ missing/stale-manifest rules.
 ```
 syncinfo   -> [cmd] syncinfo.fs_total=<n> fs_used=<n> fs_free=<n>
               [cmd] syncinfo.manifest=<0|1> entries=<n> schema=<n>
+              [cmd] syncinfo.id=0123456789ab
               [cmd] syncinfo.fw=<version-string>
 ```
 
 Firmware version is also available via the always-on `version` / `info`
 verbs.
+
+`syncinfo.id` and `info.id` report the same canonical unit id (the eFuse
+base MAC in esptool byte order, 12 lowercase hex characters without separators).
+`info.mac` remains the historical reversed compatibility output.
+
+Compatibility rule: `syncinfo.fw` is always the LAST `syncinfo` line and
+`info.wake.cause` the last `info` line. Readers stop there, so any new key
+must be emitted before them; a line after the terminator would be read as
+the reply to the reader's next command.
 
 ## Example byte flow (install one blob + stage a manifest edit)
 
@@ -180,6 +190,7 @@ verbs.
 --> syncinfo\n
 <-- [cmd] syncinfo.fs_total=1441792 fs_used=131072 fs_free=1310720\n
 <-- [cmd] syncinfo.manifest=1 entries=13 schema=1\n
+<-- [cmd] syncinfo.id=0123456789ab\n
 <-- [cmd] syncinfo.fw=1.4.2+ab12cd3\n
 ```
 
