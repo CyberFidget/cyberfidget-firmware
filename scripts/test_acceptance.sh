@@ -380,6 +380,43 @@ else
     fail "build-release.yml concurrency group is not repository-wide"
 fi
 
+# App-only release contract. Both merge paths must write the flash mode that
+# PlatformIO itself writes into the image headers: it maps a qio/qout board
+# setting to dio in every header (qio only selects the bootloader variant).
+assert_grep '^            .pio/build/local/firmware.bin$' "$WF" \
+    "build-release.yml attaches the app-only firmware.bin"
+assert_grep '^            .pio/build/local/release-info.json$' "$WF" \
+    "build-release.yml attaches release-info.json"
+FLASH_MODE="$(sed -n 's/^[[:space:]]*board_build\.flash_mode[[:space:]]*=[[:space:]]*\([^[:space:];]*\).*/\1/p' platformio.ini | head -n1)"
+case "$FLASH_MODE" in qio|qout) HEADER_MODE=dio ;; *) HEADER_MODE="$FLASH_MODE" ;; esac
+if [ -n "$HEADER_MODE" ] && grep -q -- "--flash_mode $HEADER_MODE" "$WF" && \
+   grep -q -- "--flash_mode $HEADER_MODE" scripts/merge_firmware.py; then
+    pass "both merge paths write the header mode PlatformIO builds ($FLASH_MODE -> $HEADER_MODE)"
+else
+    fail "merge flash modes do not match the header mode PlatformIO builds"
+fi
+printf 'small' > "$TMP/app-small.bin"
+if python scripts/release_image.py "$TMP/app-small.bin" > "$TMP/size-small.log" 2>&1; then
+    pass "app size gate accepts a small image"
+else
+    fail "app size gate rejected a small image"
+fi
+head -c 3276800 /dev/zero > "$TMP/app-limit.bin"
+if python scripts/release_image.py "$TMP/app-limit.bin" > "$TMP/size-limit.log" 2>&1 && \
+   grep -q 'Image size: 3276800 bytes' "$TMP/size-limit.log"; then
+    pass "app size gate accepts a 3,276,800-byte image (the threshold)"
+else
+    fail "app size gate rejected a 3,276,800-byte image (the threshold)"
+fi
+head -c 3276801 /dev/zero > "$TMP/app-large.bin"
+if python scripts/release_image.py "$TMP/app-large.bin" > "$TMP/size-large.log" 2>&1; then
+    fail "app size gate accepted a 3,276,801-byte image"
+elif grep -q 'Image size: 3276801 bytes' "$TMP/size-large.log"; then
+    pass "app size gate rejects a 3,276,801-byte image"
+else
+    fail "app size gate did not check the 3,276,801-byte image"
+fi
+
 # Deployed readers stop at the fw line; anything printed after it would be
 # taken as the reply to their next command.
 LAST_SYNCINFO="$(awk '/^void SerialCli::cmdSyncinfo\(/{f=1} f&&/\[cmd\] syncinfo\./{l=$0} f&&/^}/{print l; exit}' lib/SerialCli/SerialCli.cpp)"
