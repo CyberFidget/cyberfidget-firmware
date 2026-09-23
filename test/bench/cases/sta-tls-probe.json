@@ -1,0 +1,205 @@
+{
+  "name": "STA-only TLS feasibility: fresh boot with SDK-default TLS placement (measure only), fresh boot with PSRAM TLS (gated), after a Music Player scan with PSRAM TLS (must complete; measure only)",
+  "fw_min": "1.3.3",
+  "steps": [
+    {
+      "do": "reset"
+    },
+    {
+      "do": "wait_cli"
+    },
+    {
+      "do": "command",
+      "command": "info",
+      "contains": [
+        "[cmd] info.fw=",
+        "[cmd] info.git=",
+        "[cmd] info.mac="
+      ]
+    },
+    {
+      "do": "command",
+      "command": "heapstat",
+      "contains": [
+        "[cmd] heapstat.free_int=",
+        "min_free_int=",
+        "largest_int="
+      ]
+    },
+    {
+      "do": "command",
+      "command": "tlsprobe",
+      "until": "[cmd] tlsprobe.ok=",
+      "timeout_s": 25,
+      "contains": [
+        "[cmd] tlsprobe.started=1"
+      ]
+    },
+    {
+      "do": "reset"
+    },
+    {
+      "do": "wait_cli"
+    },
+    {
+      "do": "command",
+      "command": "tlsalloc psram",
+      "contains": [
+        "[cmd] tlsalloc.ok=psram"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "heapstat",
+      "contains": [
+        "[cmd] heapstat.free_int="
+      ]
+    },
+    {
+      "do": "command",
+      "command": "tlsprobe",
+      "until": "[cmd] tlsprobe.ok=",
+      "timeout_s": 25,
+      "contains": [
+        "[cmd] tlsprobe.started=1"
+      ],
+      "probe_limits": {
+        "heap_free_min": 24576,
+        "largest_min": 12288,
+        "stack_hw": 1024,
+        "join_ms": 10000,
+        "whole_ms": 20000,
+        "join_tls_ms": 4000
+      }
+    },
+    {
+      "do": "reset"
+    },
+    {
+      "do": "wait_cli"
+    },
+    {
+      "do": "nav_to_menu"
+    },
+    {
+      "do": "command",
+      "command": "apps",
+      "contains": [
+        "Music Player"
+      ]
+    },
+    {
+      "do": "launch",
+      "id": "Music Player"
+    },
+    {
+      "do": "command",
+      "command": "btn 1 tap",
+      "contains": [
+        "[cmd] btn.tap=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "btn 1 tap",
+      "contains": [
+        "[cmd] btn.tap=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "btn 1 tap",
+      "contains": [
+        "[cmd] btn.tap=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "btn 1 tap",
+      "contains": [
+        "[cmd] btn.tap=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "btn 1 tap",
+      "contains": [
+        "[cmd] btn.tap=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "btn 1 tap",
+      "contains": [
+        "[cmd] btn.tap=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "btn 1 tap",
+      "contains": [
+        "[cmd] btn.tap=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "btn 1 tap",
+      "contains": [
+        "[cmd] btn.tap=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "btn 1 tap",
+      "contains": [
+        "[cmd] btn.tap=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "btn 5 tap",
+      "contains": [
+        "[cmd] btn.tap=5"
+      ]
+    },
+    {
+      "do": "screencap",
+      "save": "music-scan",
+      "review": "human"
+    },
+    {
+      "do": "wait",
+      "ms": 10000
+    },
+    {
+      "do": "launch",
+      "id": "menu"
+    },
+    {
+      "do": "command",
+      "command": "heapstat",
+      "contains": [
+        "[cmd] heapstat.free_int=",
+        "min_free_int=",
+        "largest_int="
+      ]
+    },
+    {
+      "do": "command",
+      "command": "tlsalloc psram",
+      "contains": [
+        "[cmd] tlsalloc.ok=psram"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "tlsprobe",
+      "until": "[cmd] tlsprobe.ok=",
+      "timeout_s": 25,
+      "contains": [
+        "[cmd] tlsprobe.started=1",
+        "tlsprobe.ok=1"
+      ]
+    }
+  ]
+}

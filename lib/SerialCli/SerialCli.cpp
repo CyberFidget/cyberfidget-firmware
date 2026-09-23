@@ -37,12 +37,17 @@
 #ifdef CF_TEST_CLI
 #include <Preferences.h>
 #include <WiFi.h>
+#include <esp_crt_bundle.h>
+#include <esp_http_client.h>
+#include <mbedtls/platform.h>
+#include <esp_task_wdt.h>
 
 #include <esp_heap_caps.h>
 
 #include "AppDefs.h"
 #include "AppManager.h"
 #include "MicCapture.h"
+#include "TlsProbeSession.h"
 #endif
 
 namespace {
@@ -253,6 +258,155 @@ void clearWriteSession() {
     g_writeCrc  = 0;
     releasePayloadIfIdle();
 }
+
+#ifdef CF_TEST_CLI
+constexpr uint32_t kTlsProbeBudgetMs = 20000;
+constexpr uint32_t kTlsJoinBudgetMs = 10000;
+constexpr uint32_t kTlsCallMaxMs = 4000;  // below the configured 5 s task watchdog
+constexpr uint32_t kTlsStackBytes = 8192;
+constexpr char kTlsDefaultUrl[] = "https://cyberfidget.com/update/firmware.php?list=1";
+
+TlsProbeSession g_tlsSession;
+char g_tlsUrl[SerialCli::kBufferSize] = {0};
+char g_tlsSsid[33] = {0};
+char g_tlsPass[65] = {0};  // 64-char hex key + terminator
+
+struct TlsProbeResult {
+    const char* err = "none";
+    uint32_t joinMs = 0;
+    uint32_t tlsMs = 0;
+    uint32_t getMs = 0;
+    int http = 0;
+    uint32_t bytes = 0;
+    size_t heapFreeMin = SIZE_MAX;
+    size_t largestMin = SIZE_MAX;
+    size_t heapMinBefore = 0;  // since-boot low-water before the probe ran
+    size_t heapMinBoot = 0;
+    uint32_t stackHw = 0;
+};
+TlsProbeResult g_tlsResult;
+
+void sampleTlsHeap(TlsProbeResult& result) {
+    size_t freeBytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (freeBytes < result.heapFreeMin) result.heapFreeMin = freeBytes;
+    if (largest < result.largestMin) result.largestMin = largest;
+}
+
+bool tlsCallReady(esp_http_client_handle_t client, uint32_t start) {
+    uint32_t elapsed = millis() - start;
+    if (elapsed >= kTlsProbeBudgetMs) return false;
+    uint32_t remaining = kTlsProbeBudgetMs - elapsed;
+    int timeout = (int)(remaining < kTlsCallMaxMs ? remaining : kTlsCallMaxMs);
+    if (timeout < 1) timeout = 1;
+    esp_task_wdt_reset();
+    return esp_http_client_set_timeout_ms(client, timeout) == ESP_OK;
+}
+
+void tlsProbeTask(void*) {
+    TlsProbeResult result;
+    TlsProbeSession::State state = TlsProbeSession::State::Failed;
+    uint32_t start = millis();
+    esp_http_client_handle_t client = nullptr;
+    bool watched = (esp_task_wdt_add(nullptr) == ESP_OK);
+    // The handshake trough falls inside esp_http_client_open() where no sample
+    // can run; a drop in the since-boot low-water mark attributes it to us.
+    result.heapMinBefore = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    sampleTlsHeap(result);  // before STA join
+
+    do {
+        if (!watched) { result.err = "watchdog"; break; }
+        WiFi.persistent(false);
+        if (!WiFi.mode(WIFI_STA)) { result.err = "sta-mode"; break; }
+        uint32_t joinStart = millis();
+        WiFi.begin(g_tlsSsid, g_tlsPass);
+        while (WiFi.status() != WL_CONNECTED) {
+            if (millis() - joinStart >= kTlsJoinBudgetMs ||
+                millis() - start >= kTlsProbeBudgetMs) {
+                state = TlsProbeSession::State::Timeout;
+                result.err = "join-timeout";
+                break;
+            }
+            esp_task_wdt_reset();
+            vTaskDelay(pdMS_TO_TICKS(100));
+        }
+        result.joinMs = millis() - joinStart;
+        sampleTlsHeap(result);  // after join attempt
+        if (state == TlsProbeSession::State::Timeout) break;
+
+        esp_http_client_config_t config = {};
+        config.url = g_tlsUrl;
+        config.method = HTTP_METHOD_GET;
+        config.crt_bundle_attach = esp_crt_bundle_attach;
+        config.disable_auto_redirect = true;
+        config.timeout_ms = (int)kTlsCallMaxMs;
+        client = esp_http_client_init(&config);
+        if (!client) { result.err = "http-init"; break; }
+        uint32_t getStart = millis();
+        if (!tlsCallReady(client, start)) {
+            state = TlsProbeSession::State::Timeout;
+            result.err = "budget";
+            break;
+        }
+        uint32_t tlsStart = millis();
+        esp_err_t openErr = esp_http_client_open(client, 0);
+        result.tlsMs = millis() - tlsStart;  // DNS, TCP, TLS, and request headers
+        if (openErr != ESP_OK) {
+            result.err = "tls-connect";
+            break;
+        }
+        sampleTlsHeap(result);  // after verified handshake
+        if (!tlsCallReady(client, start)) {
+            state = TlsProbeSession::State::Timeout;
+            result.err = "budget";
+            break;
+        }
+        int64_t length = esp_http_client_fetch_headers(client);
+        if (length < 0) { result.err = "headers"; break; }
+        result.http = esp_http_client_get_status_code(client);
+        char body[256];
+        for (;;) {
+            if (!tlsCallReady(client, start)) {
+                state = TlsProbeSession::State::Timeout;
+                result.err = "budget";
+                break;
+            }
+            int n = esp_http_client_read(client, body, sizeof(body));
+            if (n < 0) { result.err = "body"; break; }
+            if (n == 0) {
+                if (!esp_http_client_is_complete_data_received(client)) result.err = "body-short";
+                break;
+            }
+            result.bytes += (uint32_t)n;
+        }
+        result.getMs = millis() - getStart;
+        sampleTlsHeap(result);  // after GET attempt
+        if (state == TlsProbeSession::State::Timeout ||
+            strcmp(result.err, "none") != 0) break;
+        if (result.http != 200) { result.err = "http-status"; break; }
+        if (result.bytes == 0) { result.err = "empty-body"; break; }
+        state = TlsProbeSession::State::Done;
+    } while (false);
+
+    if (client) esp_http_client_cleanup(client);
+    WiFi.disconnect(true);
+    if (!WiFi.mode(WIFI_OFF)) {
+        state = TlsProbeSession::State::Failed;
+        result.err = "wifi-off";
+    }
+    if (millis() - start >= kTlsProbeBudgetMs) {
+        state = TlsProbeSession::State::Timeout;
+        result.err = "budget";
+    }
+    result.heapMinBoot = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    result.stackHw = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
+    if (watched) esp_task_wdt_delete(nullptr);
+    memset(g_tlsPass, 0, sizeof(g_tlsPass));
+    g_tlsResult = result;
+    g_tlsSession.finish(state);
+    vTaskDelete(nullptr);
+}
+#endif
 }  // namespace
 
 SerialCli& SerialCli::instance() {
@@ -264,6 +418,7 @@ void SerialCli::poll() {
     pollScreenStream();
 #ifdef CF_TEST_CLI
     pollPendingTapReleases();
+    pollTlsprobeResult();
 #endif
     while (Serial.available() > 0) {
         int byte = Serial.read();
@@ -326,6 +481,10 @@ void SerialCli::dispatch(const char* line) {
     if (ieq(line, "apps")) { cmdApps(); return; }
     if (ieq(line, "app"))  { cmdApp();  return; }
     if (ieq(line, "net"))  { cmdNet();  return; }
+    if (ieq(line, "heapstat")) { cmdHeapstat(); return; }
+    if (verbWithArg(line, "tlsalloc", &arg)) { cmdTlsalloc(arg); return; }
+    if (ieq(line, "tlsprobe")) { cmdTlsprobe(kTlsDefaultUrl); return; }
+    if (verbWithArg(line, "tlsprobe", &arg)) { cmdTlsprobe(arg); return; }
     if (ieq(line, "mic"))  { cmdMic();  return; }
     if (ieq(line, "sleep")) { cmdSleep(); return; }
     if (verbWithArg(line, "launch", &arg)) { cmdLaunch(arg); return; }
@@ -589,7 +748,8 @@ void SerialCli::cmdHelp() {
     Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"
                    "fstat,fread,lget,lapply,syncinfo");
 #ifdef CF_TEST_CLI
-    Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,mic,"
+    Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,heapstat,"
+                   "tlsprobe [url],tlsalloc <psram|internal>,mic,"
                    "wifi <ssid>|<pass>,wasmstat,btn,sleep,rail,gauge,uvlo,"
                    "soak <app|off>");
 #endif
@@ -1280,6 +1440,112 @@ void SerialCli::cmdNet() {
             Serial.printf("[cmd] net.sta_ip=%s\n", WiFi.localIP().toString().c_str());
         }
     }
+}
+
+// The pinned SDK allocates every TLS buffer from internal RAM. This routes
+// mbedTLS allocations to PSRAM instead (falling back to internal), so the
+// probe can measure whether that placement makes a session fit. Switch only
+// while no TLS session is open; heap_caps_free releases either region.
+static void* tlsPsramCalloc(size_t n, size_t size) {
+    void* p = heap_caps_calloc(n, size, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    return p ? p : heap_caps_calloc(n, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+// Same placement as the SDK default (CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC).
+static void* tlsInternalCalloc(size_t n, size_t size) {
+    return heap_caps_calloc(n, size, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);
+}
+
+void SerialCli::cmdTlsalloc(const char* arg) {
+    if (g_tlsSession.current() != TlsProbeSession::State::Idle) {
+        Serial.println("[cmd] tlsalloc.error=busy");
+        return;
+    }
+    if (ieq(arg, "psram")) {
+        mbedtls_platform_set_calloc_free(tlsPsramCalloc, heap_caps_free);
+    } else if (ieq(arg, "internal")) {
+        mbedtls_platform_set_calloc_free(tlsInternalCalloc, heap_caps_free);
+    } else {
+        Serial.println("[cmd] tlsalloc.error=usage");
+        return;
+    }
+    Serial.printf("[cmd] tlsalloc.ok=%s psram_free=%u\n", arg,
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+}
+
+void SerialCli::cmdHeapstat() {
+    Serial.printf("[cmd] heapstat.free_int=%u min_free_int=%u largest_int=%u\n",
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
+
+void SerialCli::cmdTlsprobe(const char* url) {
+    if (g_tlsSession.current() != TlsProbeSession::State::Idle) {
+        Serial.println("[cmd] tlsprobe.error=busy");
+        return;
+    }
+    size_t urlLen = strlen(url);
+    if (urlLen >= sizeof(g_tlsUrl) || strncmp(url, "https://", 8) != 0 ||
+        url[8] == '\0' || strpbrk(url, " \t\r\n") != nullptr) {
+        Serial.println("[cmd] tlsprobe.error=invalid-url");
+        return;
+    }
+    if (WiFi.getMode() != WIFI_OFF) {
+        Serial.println("[cmd] tlsprobe.error=radio-busy");
+        return;
+    }
+    Preferences prefs;
+    if (!prefs.begin("wificfg", true)) {
+        Serial.println("[cmd] tlsprobe.error=no-credentials");
+        return;
+    }
+    memset(g_tlsSsid, 0, sizeof(g_tlsSsid));
+    memset(g_tlsPass, 0, sizeof(g_tlsPass));
+    size_t ssidLen = prefs.getString("ssid", g_tlsSsid, sizeof(g_tlsSsid));
+    prefs.getString("pass", g_tlsPass, sizeof(g_tlsPass));
+    prefs.end();
+    if (ssidLen == 0) {
+        Serial.println("[cmd] tlsprobe.error=no-credentials");
+        return;
+    }
+    if (!g_tlsSession.start()) {
+        Serial.println("[cmd] tlsprobe.error=busy");
+        return;
+    }
+    memcpy(g_tlsUrl, url, urlLen + 1);
+    if (xTaskCreate(tlsProbeTask, "tlsprobe", kTlsStackBytes, nullptr, 1, nullptr)
+            != pdPASS) {
+        memset(g_tlsPass, 0, sizeof(g_tlsPass));
+        g_tlsSession.finish(TlsProbeSession::State::Failed);
+        TlsProbeSession::State ignored;
+        g_tlsSession.consume(ignored);
+        Serial.println("[cmd] tlsprobe.error=task-create");
+        return;
+    }
+    Serial.println("[cmd] tlsprobe.started=1");
+}
+
+void SerialCli::pollTlsprobeResult() {
+    TlsProbeSession::State state;
+    if (!g_tlsSession.consume(state)) return;
+    const char* label = state == TlsProbeSession::State::Done ? "done" :
+                        state == TlsProbeSession::State::Timeout ? "timeout" : "failed";
+    Serial.printf("[cmd] tlsprobe.ok=%u state=%s err=%s join_ms=%lu tls_ms=%lu "
+                  "get_ms=%lu http=%d bytes=%lu heap_free_min=%u largest_min=%u "
+                  "heap_min_before=%u heap_min_boot=%u stack_size=%lu stack_hw=%lu url=%s\n",
+                  state == TlsProbeSession::State::Done ? 1u : 0u,
+                  label, g_tlsResult.err,
+                  (unsigned long)g_tlsResult.joinMs,
+                  (unsigned long)g_tlsResult.tlsMs,
+                  (unsigned long)g_tlsResult.getMs,
+                  g_tlsResult.http, (unsigned long)g_tlsResult.bytes,
+                  (unsigned)g_tlsResult.heapFreeMin,
+                  (unsigned)g_tlsResult.largestMin,
+                  (unsigned)g_tlsResult.heapMinBefore,
+                  (unsigned)g_tlsResult.heapMinBoot,
+                  (unsigned long)kTlsStackBytes,
+                  (unsigned long)g_tlsResult.stackHw, g_tlsUrl);
 }
 
 // Mic pipeline diagnostic: acquire the shared capture service in the
