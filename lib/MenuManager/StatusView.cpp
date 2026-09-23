@@ -27,6 +27,7 @@ constexpr int kBarTextY = 0;
 constexpr int kGlyphY   = 3;   // glyph rows match the capitals
 constexpr int kGlyphW   = 7;
 constexpr int kGap      = 3;
+constexpr int kBattGap  = 5;   // clear space between the message and the battery %
 
 // WiFi fan, 7x7, drawn one arc per freshness level (outer arc = checked in
 // within the hour). '#' = pixel.
@@ -76,10 +77,12 @@ int textWidth(const char *s) {
     return display.getStringWidth(s, (uint16_t)strlen(s));
 }
 
-// Bar marquee state: restarted whenever the shown line changes.
-ScrollLabel barLabel;
-uint32_t    barSeq = 0;
-char        barText[StatusEntry::kMaxText] = {0};
+// Bar marquee state: restarted only when a different entry is shown or the
+// shown entry's text changes (a refresh of the same line keeps scrolling).
+ScrollLabel        barLabel;
+const StatusEntry *barEntry = nullptr;
+StatusKind         barKind  = StatusKind::Info;
+char               barText[StatusEntry::kMaxText] = {0};
 
 // ---- popup ----
 StatusKind            popupKind = StatusKind::Info;
@@ -114,56 +117,78 @@ constexpr int kListY     = 16;
 constexpr int kRowH      = 12;
 constexpr int kRows      = 4;
 constexpr int kTextX     = 4;
-constexpr int kMaxLines  = 3 + StatusService::kMaxEntries;
 constexpr int kLineLen   = StatusEntry::kMaxText + 16;
 
-char             lines[kMaxLines][kLineLen];
-int              lineCount = 0;
 ModalPromptModel listModel;          // selection + window, wraps like the menu
 ScrollLabel      focusLabel;
 int              focusFor = -1;
 
-void buildLines(uint32_t nowSec) {
+// Rows: check-in, battery (+ trend when the reading is plausible), then one
+// per pending notification (or "No notifications"). Only visible rows are
+// formatted, each frame, into a stack buffer.
+int headerRows() { return batteryPlausible() ? 3 : 2; }
+
+int rowCount() {
+    const int n = StatusService::instance().count();
+    return headerRows() + (n > 0 ? n : 1);
+}
+
+void formatRow(int idx, uint32_t nowSec, const StatusEntry *const *list, int n,
+               char *out, int len) {
     StatusService &svc = StatusService::instance();
-    lineCount = 0;
-
-    // Last check-in: age, and whether the result was a cached one.
-    if (!svc.hasCheckIn()) {
-        snprintf(lines[lineCount++], kLineLen, "Checked in: never");
-    } else {
+    if (idx == 0) {
+        // Last check-in: age, and whether the result was a cached one.
+        if (!svc.hasCheckIn()) {
+            snprintf(out, len, "Checked in: never");
+            return;
+        }
         const uint32_t age = svc.checkInAgeSec(nowSec);
-        char when[16];
-        if (age < StatusService::kHourSec)      snprintf(when, sizeof(when), "%lum", (unsigned long)(age / 60));
-        else if (age < StatusService::kDaySec)  snprintf(when, sizeof(when), "%luh", (unsigned long)(age / StatusService::kHourSec));
-        else                                    snprintf(when, sizeof(when), "%lud", (unsigned long)(age / StatusService::kDaySec));
-        snprintf(lines[lineCount++], kLineLen, "Checked in: %s ago%s",
-                 when, svc.checkInCached() ? ", cached" : "");
+        unsigned long v;
+        char unit;
+        if (age < StatusService::kHourSec)     { v = age / 60;                     unit = 'm'; }
+        else if (age < StatusService::kDaySec) { v = age / StatusService::kHourSec; unit = 'h'; }
+        else                                   { v = age / StatusService::kDaySec;  unit = 'd'; }
+        snprintf(out, len, "Checked in: %lu%c ago%s", v, unit,
+                 svc.checkInCached() ? ", cached" : "");
+        return;
     }
+    const int header = headerRows();
+    if (idx < header) {
+        if (!batteryPlausible()) {
+            snprintf(out, len, "Battery: --");
+        } else if (idx == 1) {
+            // Fixed-point: millivolts -> "3.95 V" without float formatting.
+            const int cv = (int)(batteryVoltage * 100.0f + 0.5f);
+            snprintf(out, len, "Battery: %d%%, %d.%02d V",
+                     batteryPercent(), cv / 100, cv % 100);
+        } else {
+            const int tenths = (int)(batteryChangeRate * 10.0f +
+                                     (batteryChangeRate < 0 ? -0.5f : 0.5f));
+            const int mag = tenths < 0 ? -tenths : tenths;
+            snprintf(out, len, "Battery trend: %c%d.%d%%/h",
+                     tenths < 0 ? '-' : '+', mag / 10, mag % 10);
+        }
+        return;
+    }
+    const int i = idx - header;
+    if (n == 0 || i >= n) {
+        snprintf(out, len, "No notifications");
+        return;
+    }
+    // Most important first. '*' = needs attention.
+    const StatusEntry *e = list[i];
+    const char *extra = e->late() && e->cached() ? " (late, cached)"
+                      : e->late()                ? " (late)"
+                      : e->cached()              ? " (cached)" : "";
+    snprintf(out, len, "%s%s%s", e->attention ? "* " : "", e->text, extra);
+}
 
-    // Battery detail.
-    if (batteryPlausible()) {
-        snprintf(lines[lineCount++], kLineLen, "Battery: %d%%, %.2f V",
-                 batteryPercent(), batteryVoltage);
-        snprintf(lines[lineCount++], kLineLen, "Battery trend: %+.1f%%/h",
-                 batteryChangeRate);
-    } else {
-        snprintf(lines[lineCount++], kLineLen, "Battery: --");
-    }
-
-    // Pending notifications, most important first. '*' = needs attention.
-    const StatusEntry *list[StatusService::kMaxEntries];
-    const int n = svc.pending(list, StatusService::kMaxEntries);
-    if (n == 0) {
-        snprintf(lines[lineCount++], kLineLen, "No notifications");
-    }
-    for (int i = 0; i < n && lineCount < kMaxLines; i++) {
-        const StatusEntry *e = list[i];
-        const char *extra = e->late() && e->cached() ? " (late, cached)"
-                          : e->late()                ? " (late)"
-                          : e->cached()              ? " (cached)" : "";
-        snprintf(lines[lineCount++], kLineLen, "%s%s%s",
-                 e->attention ? "* " : "", e->text, extra);
-    }
+// Re-open the list for a new row count, keeping the selection (clamped).
+void resizeList(int count) {
+    const int keep = listModel.isOpen() ? listModel.selected() : 0;
+    listModel.open(count, kRows, (uint32_t)millis(), 0);
+    const int target = keep < count ? keep : count - 1;
+    for (int i = 0; i < target; i++) listModel.moveDown((uint32_t)millis());
 }
 
 void onStatusUp(const ButtonEvent &event) {
@@ -186,7 +211,9 @@ uint32_t nowSec()
 {
     // Uptime seconds (offset, see the header) until the check-in code
     // supplies a real clock; the service only needs posters and the bar to
-    // agree on one.
+    // agree on one. millis() wraps after ~49.7 days, so this clock jumps
+    // back then: replace it with the real clock (the check-in's server_time)
+    // when check-ins land.
     return kClockBaseSec + (uint32_t)(millis() / 1000UL);
 }
 
@@ -212,20 +239,21 @@ void drawBar()
     char batt[8];
     if (batteryPlausible()) snprintf(batt, sizeof(batt), "%d%%", batteryPercent());
     else                    snprintf(batt, sizeof(batt), "--%%");
-    const int rightStart = kScreenW - textWidth(batt) - kGap;
+    const int rightStart = kScreenW - textWidth(batt) - kBattGap;
 
     // Middle: the current line; restart the marquee when it changes.
     const StatusEntry *cur = svc.current();
     if (cur) {
-        if (cur->seq != barSeq || strcmp(cur->text, barText) != 0) {
-            barSeq = cur->seq;
+        if (cur != barEntry || cur->kind != barKind || strcmp(cur->text, barText) != 0) {
+            barEntry = cur;
+            barKind  = cur->kind;
             strncpy(barText, cur->text, sizeof(barText) - 1);
             barText[sizeof(barText) - 1] = '\0';
             barLabel.restart(nowMs);
         }
         barLabel.draw(leftEnd, kBarTextY, rightStart - leftEnd, cur->text, false);
     } else {
-        barSeq = 0;
+        barEntry = nullptr;
         barText[0] = '\0';
     }
 
@@ -286,8 +314,8 @@ void appBegin()
     buttons.registerCallback(button_DownIndex, onStatusDown);
     buttons.registerCallback(button_SelectIndex, onStatusBack);
     setColorsOff();
-    buildLines(nowSec());
-    listModel.open(lineCount, kRows, (uint32_t)millis(), 0);
+    listModel.dismiss();
+    resizeList(rowCount());
     focusFor = -1;
 }
 
@@ -305,12 +333,14 @@ void appEnd()
 
 void appUpdate()
 {
-    StatusService::instance().expire((uint32_t)millis());
-    buildLines(nowSec());
-    if (lineCount != listModel.optionCount()) {
-        listModel.open(lineCount, kRows, (uint32_t)millis(), 0);
-        focusFor = -1;
-    }
+    StatusService &svc = StatusService::instance();
+    svc.expire((uint32_t)millis());
+    const int count = rowCount();
+    if (count != listModel.optionCount()) resizeList(count);
+    const StatusEntry *list[StatusService::kMaxEntries];
+    const int n = svc.pending(list, StatusService::kMaxEntries);
+    const uint32_t sec = nowSec();
+    char line[kLineLen];
 
     display.clear();
     display.setFont(ArialMT_Plain_10);
@@ -333,15 +363,16 @@ void appUpdate()
     for (int r = 0; r < shown; r++) {
         const int idx = start + r;
         const int y = kListY + r * kRowH;
+        formatRow(idx, sec, list, n, line, sizeof(line));
         if (idx == listModel.selected()) {
             display.setColor(WHITE);
             display.fillRect(0, y, kScreenW, kRowH);
             display.setColor(BLACK);
-            focusLabel.draw(kTextX, y, kScreenW - 2 * kTextX, lines[idx], false);
+            focusLabel.draw(kTextX, y, kScreenW - 2 * kTextX, line, false);
             display.setColor(WHITE);
         } else {
             display.setTextAlignment(TEXT_ALIGN_LEFT);
-            display.drawString(kTextX, y, lines[idx]);
+            display.drawString(kTextX, y, line);
         }
     }
     display.setTextAlignment(TEXT_ALIGN_LEFT);

@@ -391,6 +391,53 @@ void test_glyph_names(void) {
     TEST_ASSERT_EQUAL_STRING("live",  StatusService::glyphName(StatusGlyph::Live));
 }
 
+// ---- refresh never weakens ----
+
+void test_ignored_popup_survives_transient_repost(void) {
+    svc.resolvePopup(StatusKind::UpdateReady, nullptr, false, 0);
+    // The checker re-posts the same state as a transient, lower-priority line.
+    svc.post(StatusKind::UpdateReady, nullptr, StatusPriority::Normal, false, 100);
+    const StatusEntry *e = svc.current();
+    TEST_ASSERT_NOT_NULL(e);
+    TEST_ASSERT_TRUE(e->sticky);
+    TEST_ASSERT_TRUE(e->attention);
+    TEST_ASSERT_EQUAL_UINT8(StatusPriority::High, e->priority);
+    svc.expire(100 + 10u * StatusService::kTransientMs);
+    TEST_ASSERT_TRUE(svc.has(StatusKind::UpdateReady));
+    TEST_ASSERT_TRUE(svc.badge());
+}
+
+void test_refresh_keeps_sticky_and_higher_priority(void) {
+    svc.post(StatusKind::Info, "note", StatusPriority::High, true, 0);
+    svc.markSeen();
+    svc.post(StatusKind::Info, "note", StatusPriority::Low, false, 1);
+    const StatusEntry *e = svc.current();
+    TEST_ASSERT_TRUE(e->sticky);
+    TEST_ASSERT_EQUAL_UINT8(StatusPriority::High, e->priority);
+    TEST_ASSERT_FALSE(e->attention);   // seen stays seen
+    // A stronger refresh does strengthen a weak entry.
+    svc.post(StatusKind::Warning, "w", StatusPriority::Low, false, 2);
+    svc.post(StatusKind::Warning, "w", StatusPriority::Normal, true, 3);
+    const StatusEntry *list[StatusService::kMaxEntries];
+    const int n = svc.pending(list, StatusService::kMaxEntries);
+    for (int i = 0; i < n; i++) {
+        if (list[i]->kind == StatusKind::Warning) {
+            TEST_ASSERT_TRUE(list[i]->sticky);
+            TEST_ASSERT_EQUAL_UINT8(StatusPriority::Normal, list[i]->priority);
+        }
+    }
+}
+
+void test_refresh_with_new_text_keeps_attention(void) {
+    svc.resolvePopup(StatusKind::ChangesWaiting, "2 app changes waiting", false, 0);
+    svc.post(StatusKind::ChangesWaiting, "3 app changes waiting", StatusPriority::Normal, false, 1);
+    TEST_ASSERT_TRUE(svc.badge());
+    TEST_ASSERT_TRUE(svc.current()->sticky);
+    TEST_ASSERT_EQUAL_STRING("3 app changes waiting", svc.current()->text);
+    svc.clear(StatusKind::ChangesWaiting);   // only clear/accept weakens
+    TEST_ASSERT_FALSE(svc.badge());
+}
+
 int main(int /*argc*/, char** /*argv*/) {
     UNITY_BEGIN();
     RUN_TEST(test_empty_store_has_no_line_and_no_badge);
@@ -430,5 +477,8 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_age_labels);
     RUN_TEST(test_cached_check_in_is_reported);
     RUN_TEST(test_glyph_names);
+    RUN_TEST(test_ignored_popup_survives_transient_repost);
+    RUN_TEST(test_refresh_keeps_sticky_and_higher_priority);
+    RUN_TEST(test_refresh_with_new_text_keeps_attention);
     return UNITY_END();
 }

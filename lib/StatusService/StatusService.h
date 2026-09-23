@@ -27,6 +27,9 @@
  *    so different subsystems can post side by side.
  *  - Sticky entries stay until cleared. Non-sticky entries expire
  *    kTransientMs after their last post (expire(nowMs)).
+ *  - A refresh (a post that lands on an existing entry) never weakens it:
+ *    sticky wins, the higher priority wins, and attention is kept. Only
+ *    clear() or an accepted popup weakens or removes an entry.
  *  - Flags: Late (the result arrived after the moment it was meant for,
  *    e.g. after the boot window closed) and Cached (a stored earlier result,
  *    not a fresh one) travel with the entry for the Status screen.
@@ -197,23 +200,32 @@ public:
         }
 
         StatusEntry &e = entries_[slot];
-        const bool wasAttention = e.attention;
-        const bool refresh = used_[slot] && sameText;
-        e.kind     = kind;
-        e.priority = priority;
-        e.flags    = flags;
-        e.sticky   = sticky;
-        e.postedMs = nowMs;
-        e.seq      = ++seq_;
-        copyText(e.text, body);
+        const bool existing = used_[slot];
         const bool wants = priority >= StatusPriority::High;
-        // An identical repost keeps its seen state; new or changed text asks again.
-        if (refresh) {
-            e.attention = !seen_[slot] && (wasAttention || wants);
+        if (existing) {
+            // A refresh never weakens an entry: it stays sticky if either
+            // post was, keeps the higher priority, and keeps attention. Only
+            // clear() or an accepted popup weakens or removes it.
+            e.sticky   = e.sticky || sticky;
+            if (priority > e.priority) e.priority = priority;
+            // An identical repost keeps its seen state; changed text asks again.
+            if (sameText) {
+                e.attention = e.attention || (wants && !seen_[slot]);
+            } else {
+                e.attention = e.attention || wants;
+                seen_[slot] = false;
+            }
         } else {
+            e.kind      = kind;
+            e.priority  = priority;
+            e.sticky    = sticky;
             e.attention = wants;
             seen_[slot] = false;
         }
+        e.flags    = flags;
+        e.postedMs = nowMs;
+        e.seq      = ++seq_;
+        copyText(e.text, body);
         used_[slot] = true;
         return true;
     }
