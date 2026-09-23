@@ -1,0 +1,8 @@
+{
+    "name": "OtaManifest",
+    "version": "1.0.0",
+    "description": "Pure update manifest hardware compatibility gate",
+    "dependencies": [
+        { "name": "BoardInfo" }
+    ]
+}
