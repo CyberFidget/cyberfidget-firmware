@@ -37,11 +37,6 @@
 
 static const char* TAG_VREC = "VoiceRec";
 
-// External fonts (thingpulse OLED lib, same pattern as ClockDisplay)
-extern const uint8_t ArialMT_Plain_10[];
-extern const uint8_t ArialMT_Plain_16[];
-extern const uint8_t ArialMT_Plain_24[];
-
 // --- Recording constants ---
 static const uint64_t      REC_RESERVE_BYTES    = 262144;     // auto-stop floor; sized to swallow a full ring drain
 // SD-less demo clip cap (PSRAM): ~30s at Standard (32KB/s), ~10s at High
