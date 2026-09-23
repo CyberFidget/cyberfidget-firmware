@@ -380,6 +380,15 @@ else
     fail "build-release.yml concurrency group is not repository-wide"
 fi
 
+# Deployed readers stop at the fw line; anything printed after it would be
+# taken as the reply to their next command.
+LAST_SYNCINFO="$(awk '/^void SerialCli::cmdSyncinfo\(/{f=1} f&&/\[cmd\] syncinfo\./{l=$0} f&&/^}/{print l; exit}' lib/SerialCli/SerialCli.cpp)"
+if echo "$LAST_SYNCINFO" | grep -q 'syncinfo\.fw='; then
+    pass "syncinfo prints its fw line last"
+else
+    fail "syncinfo prints a line after fw: $LAST_SYNCINFO"
+fi
+
 # ----------------------------------------------------------------------------
 echo ""
 echo "=================================================="
