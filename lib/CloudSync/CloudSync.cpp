@@ -41,6 +41,7 @@
 #include "DeviceIdentity.h"
 #include "DeviceLinkApp.h"
 #include "TrustedRoots.h"
+#include "PromptPolicy.h"
 #include "WasmHostImports.h"
 #include "globals.h"
 
@@ -70,6 +71,9 @@ bool available = false;
 std::atomic<bool> cancelRequested{false};
 Result result;
 Reason sessionReason = Reason::Manual;
+// "Get them now": this one session applies waiting app changes even with
+// app auto-apply off. Never affects firmware (always an offer).
+bool sessionApplyOnce = false;
 bool taskFailed = false;   // loop task only
 enum class WorkerKind : uint8_t { Cloud, Link, Unlink };
 WorkerKind workerKind = WorkerKind::Cloud;
@@ -1058,6 +1062,7 @@ void runWorker(Result& r) {
             }
             upd.end();
         }
+        autoapply = PromptPolicy::appBatch(autoapply, sessionApplyOnce) == PromptPolicy::AppBatch::Apply;
         if (backedOff && !revokeOnly) { setError(r, "backoff"); break; }
         if (!validBase(s.base.c_str())) { setError(r, "invalid-base"); break; }
         if (WiFi.getMode() != WIFI_OFF) { setError(r, "radio-busy"); break; }
@@ -1363,7 +1368,7 @@ const char* reasonName(Reason reason) {
     return "?";
 }
 
-bool runSession(Reason reason) {
+bool runSession(Reason reason, bool applyWaiting) {
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
     recoverClearBeforeSession();
@@ -1372,10 +1377,19 @@ bool runSession(Reason reason) {
     if (active == APP_MUSIC_PLAYER || active == APP_WEB_PORTAL) return false;
     CloudPlanner entry;
     if (entry.start(esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) == Step::Reboot) {
+        // The check continues after the restart; "Get them now" goes with it.
+        const PromptPolicy::RestartOneShot shot = PromptPolicy::restartForCheck(applyWaiting);
         Preferences prefs;
         if (!prefs.begin("bootcfg", false)) return false;
-        bool saved = prefs.putBool("bootcloud", true) != 0 &&
-                     prefs.putBool("skipanim", true) != 0;
+        // `bootcloud` is written last: it is what schedules the check, so a
+        // failed earlier write never leaves a check armed for a later boot.
+        bool saved = prefs.putBool("bootapply", shot.bootapply) != 0 &&
+                     prefs.putBool("skipanim", shot.skipanim) != 0 &&
+                     prefs.putBool("bootcloud", shot.bootcloud) != 0;
+        if (!saved) {
+            prefs.remove("bootcloud");
+            prefs.remove("bootapply");
+        }
         prefs.end();
         if (!saved) return false;
         esp_restart();
@@ -1384,6 +1398,7 @@ bool runSession(Reason reason) {
     if (WiFi.getMode() != WIFI_OFF) return false;
     workerKind = WorkerKind::Cloud;
     sessionReason = reason;
+    sessionApplyOnce = applyWaiting;
     cancelRequested = false;
     available = false;
     running = true;

@@ -24,8 +24,9 @@ void loop();
 
 /// The on-demand check (root and Settings "Check for updates"). Allowed
 /// when automatic checks are off; after Bluetooth use it restarts first.
-/// False when a session is already running.
-bool checkNow();
+/// False when a session is already running. `applyWaiting` is the
+/// prompt's "Get them now" (see CloudSync::runSession).
+bool checkNow(bool applyWaiting = false);
 
 /// A boot-window result that arrived while the start-up animation was still
 /// playing: the menu may show it as a popup once. A later result only goes

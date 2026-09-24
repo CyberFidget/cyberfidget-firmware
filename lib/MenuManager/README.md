@@ -5,6 +5,16 @@ highlight, cross-slide transitions, long-press reorder). The library also
 holds two small UI primitives other screens share: `ModalPrompt` and
 `ScrollLabel`.
 
+## Manifest changes while the menu is showing
+
+A loadout change (a check-in that delivers an app, a USB send) marks the menu
+dirty. Entering the menu rebuilds it; a menu that is already on screen
+rebuilds in place as soon as it is idle at the root (no submenu, no slide,
+no reorder, no prompt), keeping the highlight on the same root item when it
+still exists (`MenuIdentity.h`: a built-in app by its app index, a delivered
+app by its manifest id, a category by its label; two apps may share a name). Inside a submenu the rebuild waits until the person is back
+at the root.
+
 ## ModalPrompt
 
 A full-screen question with a title and one or more options, answered with
@@ -38,7 +48,8 @@ Behavior:
   its timeout expires. What an answer means, and anything that gets stored
   because of it, belongs to the caller. The prompt has no built-in strings.
 * **Menu only.** A prompt can only open while the menu (or the boot screen
-  that hands over to it) is the active app; `open()` returns false anywhere
+  that hands over to it, the Link screen, or the two update screens) is the
+  active app; `open()` returns false anywhere
   else. The prompt pauses the app underneath, and only the menu is written to
   be paused that way. An app that needs a prompt later must extend this
   deliberately (`appTakesPrompts()` in `AppManager.cpp`) and check that it

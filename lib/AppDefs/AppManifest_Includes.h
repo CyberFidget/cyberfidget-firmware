@@ -36,3 +36,4 @@
 #include "Timers.h"
 #include "StatusView.h"
 #include "DeviceLinkApp.h"
+#include "UpdatePrompt.h"

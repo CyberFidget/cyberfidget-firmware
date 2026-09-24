@@ -42,7 +42,11 @@ check-in and loadout answers, builds the check-in body, and picks waits.
    `lapply_cap=batch1`, manifest CRC, installed entries, and the last applied
    batch record when it belongs to the current pair identity.
 2. A 200 with `batch_id` and `upd.autoapply` on (default) fetches the offer.
-   Autoapply off posts "App changes waiting" and leaves the batch.
+   Autoapply off posts "App changes waiting" and leaves the batch, unless the
+   session was started with `applyWaiting` (the update prompt's "Get them
+   now", `runSession(reason, true)` / `CheckinScheduler::checkNow(true)`),
+   which applies it this once. That flag is not kept across the restart a
+   check takes after Bluetooth use.
 3. The offer's `doc` bytes (after JSON un-escaping) must hash to `doc_crc` and
    carry the check-in's batch id and a base. Every blob row must be a
    same-origin URL with a SHA-256 and size, hash prefixes must be unique, and

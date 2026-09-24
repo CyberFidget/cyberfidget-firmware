@@ -46,7 +46,10 @@ struct Result {
 
 // Starts one plain FreeRTOS worker or sets a boot one-shot and restarts if
 // Bluetooth has already initialized. Completion is consumed from loop().
-bool runSession(Reason reason);
+// `applyWaiting` applies waiting app changes in this session even when app
+// auto-apply is off (the prompt's "Get them now"); it is not kept across the
+// restart after Bluetooth use.
+bool runSession(Reason reason, bool applyWaiting = false);
 // True when a check-in session finished in this call; its result is then
 // lastResult() (consumeResult() still hands it to one other reader).
 bool poll();

@@ -64,3 +64,6 @@ APP_ENTRY(APP_WASM_HOST,             "",                    "",               []
 // detail, pending notifications. Appended last so existing indices stay put.
 APP_ENTRY(APP_STATUS,                "Status",              "",               StatusView::appBegin,                             StatusView::appEnd,                             StatusView::appUpdate                      )
 APP_ENTRY(APP_LINK,                  "Link",                "Settings",       DeviceLinkApp::begin,                            DeviceLinkApp::end,                            DeviceLinkApp::update                      )
+// Update prompt surfaces: the root "Check for updates" item and Settings > Updates.
+APP_ENTRY(APP_CHECK_UPDATES,         "Check for updates",   "",               UpdatePrompt::checkBegin,                        UpdatePrompt::checkEnd,                        UpdatePrompt::checkUpdate                  )
+APP_ENTRY(APP_UPDATES,               "Updates",             "Settings",       UpdatePrompt::settingsBegin,                     UpdatePrompt::settingsEnd,                     UpdatePrompt::settingsUpdate               )

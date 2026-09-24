@@ -487,6 +487,7 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
             m.label    = entry.name.empty() ? entry.id : entry.name;
             m.blobPath = entry.blobPath;
             m.abi      = parseAbiVersion(entry.abi);
+            m.id       = entry.id;
             out.push_back(m);
             continue;
         }
