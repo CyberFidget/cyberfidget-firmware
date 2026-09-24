@@ -193,6 +193,21 @@ class Result:
         print("  [ .. ] %-16s %s" % (do, detail[:120]))
 
 
+def _checks(st, out):
+    """contains (all present), matches (regex), order (substrings appear in
+    this order, each after the previous one)."""
+    ok = all(token in out for token in st.get("contains", []))
+    if "matches" in st:
+        ok = ok and re.search(st["matches"], out) is not None
+    at = 0
+    for token in st.get("order", []):
+        found = out.find(token, at)
+        if found < 0:
+            return False
+        at = found + len(token)
+    return ok
+
+
 def run_case(case, port, outdir):
     name = case.get("name", "unnamed")
     fixdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -204,8 +219,24 @@ def run_case(case, port, outdir):
         for st in case.get("steps", []):
             do = st.get("do")
             if do == "reset":
-                t.reset(); time.sleep(0.3); t.drain(2.5)
-                res.note("reset")
+                until = st.get("until")
+                if until:
+                    # Only output from this boot counts, not bytes queued
+                    # while an earlier step waited.
+                    t.s.reset_input_buffer()
+                t.reset(); time.sleep(0.3)
+                if until:
+                    # Keep the boot output: a case can assert on what the
+                    # device prints while it starts (e.g. a boot-time check).
+                    out = ""
+                    end = time.time() + float(st.get("timeout_s", 25.0))
+                    while time.time() < end and until not in out:
+                        out += t.drain(0.2)
+                    print(out, end="" if out.endswith("\n") else "\n")
+                    res.step("reset", until in out and _checks(st, out), out.strip())
+                else:
+                    t.drain(2.5)
+                    res.note("reset")
             elif do == "wait_cli":
                 v = t.wait_cli()
                 res.step("wait_cli", v is not None, v or "no CLI")
@@ -230,9 +261,7 @@ def run_case(case, port, outdir):
                 else:
                     out = t.cmd(command, float(st.get("timeout_s", 0.9)))
                 print(out, end="" if out.endswith("\n") else "\n")
-                ok = all(token in out for token in st.get("contains", []))
-                if "matches" in st:
-                    ok = ok and re.search(st["matches"], out) is not None
+                ok = _checks(st, out)
                 if until:
                     ok = ok and until in out
                 res.step("command", ok, out.strip())

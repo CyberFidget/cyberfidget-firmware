@@ -48,6 +48,12 @@ public:
     bool applyLoadoutOps(const char* opsJson, int* entriesOut = nullptr,
                          int* appliedOut = nullptr);
 
+#ifdef CF_TEST_CLI
+    // Bench only: skip the restart that normally separates WiFi use from
+    // the Music Player's Bluetooth (RAM only, lost at restart).
+    void setTestAllowBtAfterWifi(bool allow);
+#endif
+
 private:
     // Private constructor
     AppManager();

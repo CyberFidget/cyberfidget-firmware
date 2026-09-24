@@ -1,9 +1,11 @@
 # CloudSync
 
 `runSession(reason)` starts one STA-only worker on a plain FreeRTOS task. The
-main loop calls `poll()` and may read the result with `consumeResult()`. The
-same entry point is available to boot-window, daily, manual and development
-mode schedulers. A Bluetooth-tainted entry writes the `bootcfg.bootcloud`
+main loop calls `poll()`, which returns true when a check-in session has
+just finished (`lastResult()` then holds it); `consumeResult()` hands the
+same result to one other reader (the test CLI). The same entry point serves
+the boot-window, daily, awake, manual and development-mode schedulers; when
+each may start is decided in `lib/UpdatePolicy`. A Bluetooth-tainted entry writes the `bootcfg.bootcloud`
 one-shot and restarts; `AppManager` consumes it at boot. A session never
 starts while the Music Player or the portal is the active app.
 
@@ -62,6 +64,39 @@ queue: `offer-crc`, `offer-batch`, `blob-offer`, `blob-prefix`, `blob-path`,
 document path nothing provides), plus `rejected:apply` / `rejected:record` and
 `stale-revision` from `lapply`. Transport failures stay retryable and are not
 answered.
+
+## Scheduled sessions (Boot, Daily, Awake)
+
+A scheduled session never holds WiFi on to wait: a follow-up report that
+would have to wait out the server's floor, and any Retry-After, is deferred
+to the next session (`report-deferred` / `rate-limited`), exactly as a
+manual session does when its budget runs out. Its budget is 60 s instead of
+150 s. Manual, Dev and Recovery sessions keep the waiting behaviour below.
+
+Joining: the boot window allows 4 s (the start-up animation is 5 s;
+measured join + first TLS open on home WiFi was 3.2-3.8 s, so a slow join
+simply gives the cached result); Daily and Awake keep 10 s. Every scheduled
+session bails as soon as the station reports the saved network absent
+(`WL_NO_SSID_AVAIL`, error `no-network`). That is the connect's own scan,
+not an extra scan before connecting: it costs nothing when the network is
+present, where a separate scan-first pass would add a full channel sweep
+(~1-2 s) to every successful join inside the 4 s window. Measured on
+HIL-A (2026-09, LAN test site over plain HTTP, strong home network): with
+the saved network absent the boot-window session ended `no-network` at
+total 2.6 s (about 0.7 s of that is set-up before the join starts, as in
+every session), with WiFi off; with it present, joins took 1.1-1.6 s.
+Those joins do not include a TLS handshake (the production-site join +
+TLS open was 3.2-3.8 s in the earlier TLS measurement).
+
+Every check-in session prints one read-only line when it ends, before it
+counts as finished (so it precedes anything that waited for it, such as a
+Music Player start):
+
+    [checkin] reason=<boot|daily|awake|manual|dev|recovery> join_ms=.. total_ms=.. result=<ok|none|error> err=.. heap_min=.. largest_min=.. wifi=<off|on>
+
+`heap_min` / `largest_min` are the internal-heap low-water marks of the
+free total and the largest free block during the session; `wifi` is the
+radio mode after the worker's shutdown. The credential is never printed.
 
 ## Waits and deadline
 
