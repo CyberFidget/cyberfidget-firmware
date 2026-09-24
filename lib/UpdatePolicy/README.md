@@ -147,15 +147,22 @@ in `test/test_core_updatemenu`, `pio test -e test_core`). The device glue is
   (`MAJOR.MINOR.PATCH`, optional `-prerelease`, optional `+build`, at most
   31 characters), validated as a whole: anything else is never offered. A
   prerelease sorts below its final; build metadata does not count. An empty `avail` is no
-  notification, not an error. The check-in itself only says that a
-  firmware manifest exists (`offered=fw`, `upd.fw_url`); comparing that
-  manifest and writing `avail` belong to the update session, so until it
-  exists a real check-in never raises the firmware prompt (the bench uses
-  `upd offer`).
-- Install now: hands off to the update session (the `bootcfg` one-shot and
-  a restart) once that session exists. Until then it says "Installing on
-  your Fidget is coming soon. Update it from the website for now." and
-  stores nothing; the offer stays in the status bar.
+  notification, not an error. The check-in says that a firmware manifest
+  exists (`offered=fw`, `upd.fw_url`); the check-in worker then reads that
+  manifest, runs the install gates and writes (or removes) `avail`
+  (`UpdateSession::refreshOffer`, lib/OtaUpdate), in every check-in
+  session including the scheduled ones. The bench can also use
+  `upd offer`.
+- A version whose update did not keep itself on this Fidget (`upd.fail_ver`,
+  written by the previous image after the rollback) is not offered by the
+  post-boot popup again; a manual check still shows it with "It did not
+  finish last time". A newer version is offered as usual.
+- Install now: on a Fidget allowed to install (`upd.unsig_ok`, set over USB
+  serial with `upd allow-unsigned on` until updates are signed) it hands off
+  to the update session: the `bootcfg` one-shot (`bootupd`, `updver`,
+  `skipanim`) and a restart ("Restarting to update..."). Every other Fidget
+  says "Installing on your Fidget is coming soon. Update it from the website
+  for now." and stores nothing; the offer stays in the status bar.
 - Remind me later (or no answer): stores nothing; the offer stays in the
   status bar and the next start-up or check offers it again.
 - Skip this version: `upd.rej = <version>`. Only that exact version is

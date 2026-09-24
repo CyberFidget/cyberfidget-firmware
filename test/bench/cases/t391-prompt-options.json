@@ -4,6 +4,7 @@
   "steps": [
     {"do": "reset"},
     {"do": "wait_cli"},
+    {"do": "command", "command": "upd allow-unsigned off", "contains": ["[cmd] upd.unsig_ok=0"]},
     {"do": "wait", "ms": 6000},
     {"do": "launch", "id": "menu"},
     {"do": "assert_menutree", "has": "Check for updates"},

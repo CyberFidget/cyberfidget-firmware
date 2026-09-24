@@ -193,6 +193,21 @@ class Result:
         print("  [ .. ] %-16s %s" % (do, detail[:120]))
 
 
+def _expand(st):
+    """`expand_env` on a reset/command/ppk step also expands the texts it
+    waits for and checks (until, contains, matches, order)."""
+    if not st.get("expand_env"):
+        return st
+    st = dict(st)
+    for key in ("until", "matches"):
+        if isinstance(st.get(key), str):
+            st[key] = os.path.expandvars(st[key])
+    for key in ("contains", "order"):
+        if isinstance(st.get(key), list):
+            st[key] = [os.path.expandvars(v) for v in st[key]]
+    return st
+
+
 def _checks(st, out):
     """contains (all present), matches (regex), order (substrings appear in
     this order, each after the previous one)."""
@@ -208,16 +223,80 @@ def _checks(st, out):
     return ok
 
 
+class Ppk:
+    """Bench power (PPK2 source mode) for units that run only while it
+    sources (HIL-B). Imported lazily from cyberfidget-hil so cases without a
+    `ppk` step never need it; run those cases with the hil venv's python.
+    The output is always switched off when the case ends."""
+
+    def __init__(self):
+        self.bench = None
+
+    def _open(self):
+        if self.bench is None:
+            hil = os.environ.get("CF_HIL_PATH") or os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "cyberfidget-hil")
+            sys.path.insert(0, os.path.abspath(hil))
+            from cfhil.ppk2 import PPK2Bench
+            self.bench = PPK2Bench(os.environ.get("CF_PPK_PORT") or None)
+        return self.bench
+
+    def on(self, volts):
+        b = self._open()
+        b.set_source_voltage(volts)
+        b.output_on()
+
+    def off(self):
+        if self.bench is not None:
+            self.bench.output_off()
+
+    def close(self):
+        if self.bench is not None:
+            try:
+                self.bench.output_off()
+            finally:
+                try:
+                    self.bench.close()
+                finally:
+                    self.bench = None
+
+
 def run_case(case, port, outdir):
     name = case.get("name", "unnamed")
     fixdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
     print("=== CASE: %s  (port %s) ===" % (name, port))
     res = Result(name)
     t = Tunnel(port)
+    ppk = Ppk()
     caps = {}
     try:
         for st in case.get("steps", []):
             do = st.get("do")
+            if do in ("reset", "command", "ppk"):
+                st = _expand(st)
+            if do == "ppk":
+                # Power for PPK-sourced units. `on` may wait for boot output
+                # (`until`, checked like `command`); `off` is an instant cut.
+                action = st.get("action")
+                if action == "on":
+                    t.s.reset_input_buffer()
+                    ppk.on(float(st.get("voltage", 3.7)))
+                    until = st.get("until")
+                    if until:
+                        out = ""
+                        end = time.time() + float(st.get("timeout_s", 25.0))
+                        while time.time() < end and until not in out:
+                            out += t.drain(0.2)
+                        print(out, end="" if out.endswith("\n") else "\n")
+                        res.step("ppk", until in out and _checks(st, out), out.strip())
+                    else:
+                        res.note("ppk", "on %.2f V" % float(st.get("voltage", 3.7)))
+                elif action == "off":
+                    ppk.off()
+                    res.note("ppk", "off")
+                else:
+                    res.step("ppk", False, "action must be on or off")
+                continue
             if do == "reset":
                 until = st.get("until")
                 if until:
@@ -382,7 +461,10 @@ def run_case(case, port, outdir):
             else:
                 res.step(do or "?", False, "unknown step verb")
     finally:
-        t.close()
+        try:
+            ppk.close()
+        finally:
+            t.close()
 
     print("=== RESULT: %s ===" % ("PASS" if res.ok else "FAIL"))
     if outdir:
@@ -401,15 +483,34 @@ def main(argv):
     ap.add_argument("--port", default=os.environ.get("CF_BENCH_PORT"),
                     help="serial port (or set CF_BENCH_PORT); e.g. COM30 or /dev/ttyUSB0")
     ap.add_argument("--out", default=None, help="dir for screencaps + result.json")
+    ap.add_argument("--part", action="append", default=None,
+                    help="run only this part of a multi-part case (repeatable)")
     args = ap.parse_args(argv)
-    if not args.port:
-        ap.error("no serial port: pass --port or set CF_BENCH_PORT "
-                 "(Windows COMx, Linux /dev/ttyUSB0)")
     case = json.load(open(args.case))
     outdir = args.out
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-    ok = run_case(case, args.port, outdir)
+    if "parts" not in case:
+        if not args.port:
+            ap.error("no serial port: pass --port or set CF_BENCH_PORT "
+                     "(Windows COMx, Linux /dev/ttyUSB0)")
+        ok = run_case(case, args.port, outdir)
+        return 0 if ok else 1
+    # A multi-part case: each part names the env var holding its unit's port
+    # (`port_env`, default CF_BENCH_PORT), so one file can span two units.
+    ok = True
+    for part in case["parts"]:
+        if args.part and part.get("name") not in args.part:
+            continue
+        port = os.environ.get(part.get("port_env", "CF_BENCH_PORT")) or args.port
+        if not port:
+            ap.error("part %s: set %s or pass --port" % (part.get("name"), part.get("port_env", "CF_BENCH_PORT")))
+        sub = dict(part)
+        sub["name"] = "%s / %s" % (case.get("name", "case"), part.get("name", "part"))
+        partdir = os.path.join(outdir, part.get("name", "part")) if outdir else None
+        if partdir:
+            os.makedirs(partdir, exist_ok=True)
+        ok = run_case(sub, port, partdir) and ok
     return 0 if ok else 1
 
 

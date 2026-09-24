@@ -13,6 +13,7 @@
 #include <LittleFS.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
+#include <esp_ota_ops.h>
 #include "esp_log.h"
 
 static const char* TAG_LOADOUT = "LoadoutStore";
@@ -83,8 +84,17 @@ static void sweepPartFiles() {
 bool begin() {
     if (mounted) return true;
     // true = format on failed mount: first boot the `spiffs` partition
-    // holds no LittleFS image, so let it format itself once.
-    mounted = LittleFS.begin(true);
+    // holds no LittleFS image, so let it format itself once. Never while a
+    // just-installed update is unconfirmed: its failure must hand the
+    // previous image the filesystem exactly as it was.
+    bool formatOnFail = true;
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    if (running && esp_ota_get_state_partition(running, &state) == ESP_OK &&
+        state == ESP_OTA_IMG_PENDING_VERIFY) {
+        formatOnFail = false;
+    }
+    mounted = LittleFS.begin(formatOnFail);
     if (!mounted) {
         ESP_LOGE(TAG_LOADOUT, "LittleFS mount failed; loadout manifest unavailable");
         return mounted;
