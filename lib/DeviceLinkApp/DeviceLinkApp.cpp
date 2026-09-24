@@ -89,6 +89,8 @@ void onEnter(const ButtonEvent& event) {
 
 } // namespace
 
+void refreshStoredLink() { refreshLink(); }
+
 void begin() {
     CloudSync::resetLinkStatus();
     const DeviceIdentity::Fingerprint id = DeviceIdentity::readLive();

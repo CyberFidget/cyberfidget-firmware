@@ -417,19 +417,20 @@ void test_final_client_errors_drop_revoke_slot() {
     }
 }
 
-void test_revoke_slot_given_up_after_bounded_failures() {
+void test_revoke_slots_survive_repeated_transient_failures() {
     MemoryLinkStore store;
     TEST_ASSERT_TRUE(writeLink(store, record('a', "alice")));
     TEST_ASSERT_TRUE(writeLink(store, record('b', "bob")));
     TEST_ASSERT_TRUE(prepareUnlink(store));
-    for (uint32_t i = 1; i < kRevokeMaxFailures; ++i) {
-        TEST_ASSERT_FALSE(noteRevokeFailure(store, false));
-        TEST_ASSERT_EQUAL_UINT32(i, store.getUInt("rev_fail"));
+    const int transient[] = {0, 408, 429, 500, 503};
+    for (int i = 0; i < 30; ++i) {
+        TEST_ASSERT_FALSE(finishRevoke(store, transient[i % 5], false));
+        TEST_ASSERT_FALSE(finishRevoke(store, transient[i % 5], true));
+        TEST_ASSERT_TRUE(hasPendingRevoke(store));
+        TEST_ASSERT_FALSE(canBeginLink(store));
     }
-    TEST_ASSERT_FALSE(canBeginLink(store));
-    TEST_ASSERT_TRUE(noteRevokeFailure(store, false));
+    TEST_ASSERT_TRUE(finishRevoke(store, 200, false));
     TEST_ASSERT_TRUE(store.getString("rev_tok").empty());
-    TEST_ASSERT_TRUE(store.getString("rev_fail").empty());
     TEST_ASSERT_TRUE(canBeginLink(store));
     std::string token;
     bool relinked = true, second = false;
@@ -437,20 +438,91 @@ void test_revoke_slot_given_up_after_bounded_failures() {
     TEST_ASSERT_EQUAL_STRING(std::string(43, 'b').c_str(), token.c_str());
     TEST_ASSERT_TRUE(second);
 
-    // A credential newly placed in a slot starts with a fresh count.
-    MemoryLinkStore reused;
-    reused.values["rev_fail"] = "9";
-    TEST_ASSERT_TRUE(writeLink(reused, record('a', "alice")));
-    TEST_ASSERT_TRUE(prepareUnlink(reused));
-    TEST_ASSERT_TRUE(reused.getString("rev_fail").empty());
-    TEST_ASSERT_FALSE(noteRevokeFailure(reused, false));
-
     MemoryLinkStore wiped;
     wiped.values["rev_fail"] = "4";
     wiped.values["rev_fail2"] = "5";
     TEST_ASSERT_TRUE(wipeMismatchedLink(wiped));
     TEST_ASSERT_TRUE(wiped.getString("rev_fail").empty());
     TEST_ASSERT_TRUE(wiped.getString("rev_fail2").empty());
+}
+
+void test_revoke_retry_after_is_kept_until_final_answer() {
+    MemoryLinkStore store;
+    store.values["rev_tok"] = std::string(43, 'a');
+    TEST_ASSERT_TRUE(store.putUInt("rev_at", 1770000060));
+    TEST_ASSERT_TRUE(revokeRetryPending(store, false, 1770000000));
+    TEST_ASSERT_FALSE(revokeRetryPending(store, false, 1770000060));
+    TEST_ASSERT_FALSE(finishRevoke(store, 429));
+    TEST_ASSERT_TRUE(revokeRetryPending(store, false, 1770000000));
+    TEST_ASSERT_TRUE(finishRevoke(store, 401));
+    TEST_ASSERT_FALSE(revokeRetryPending(store, false, 1770000000));
+    TEST_ASSERT_FALSE(hasPendingRevoke(store));
+}
+
+bool successfulClear(void* context) {
+    ClearProbe& probe = *static_cast<ClearProbe*>(context);
+    LinkRecord active;
+    probe.sawConfirmed = readLink(*probe.store, active);
+    return true;
+}
+
+void test_clear_intent_survives_interruption_and_retries_failure() {
+    MemoryLinkStore store;
+    ClearProbe probe{&store};
+    TEST_ASSERT_EQUAL_INT((int)LinkCompletion::LinkedClearFailed,
+        (int)completeConfirmedLink(store, record('a', "alice"), true, failingClear, &probe));
+    TEST_ASSERT_TRUE(probe.sawConfirmed);
+    TEST_ASSERT_FALSE(store.getString("clr").empty());
+    LinkRecord active;
+    TEST_ASSERT_TRUE(readLink(store, active));
+    TEST_ASSERT_TRUE(recoverPendingClear(store, successfulClear, &probe));
+    TEST_ASSERT_TRUE(probe.sawConfirmed);
+    TEST_ASSERT_TRUE(store.getString("clr").empty());
+    TEST_ASSERT_TRUE(readLink(store, active));
+    TEST_ASSERT_TRUE(recoverPendingClear(store, successfulClear, &probe));
+
+    MemoryLinkStore interrupted;
+    ClearProbe interruptedProbe{&interrupted};
+    interrupted.values["clr"] = "previous-account";
+    TEST_ASSERT_TRUE(writeLink(interrupted, record('b', "bob")));
+    TEST_ASSERT_TRUE(recoverPendingClear(interrupted, successfulClear, &interruptedProbe));
+    TEST_ASSERT_TRUE(interruptedProbe.sawConfirmed);
+    TEST_ASSERT_TRUE(interrupted.getString("clr").empty());
+
+    MemoryLinkStore ordered;
+    ClearProbe orderedProbe{&ordered};
+    TEST_ASSERT_EQUAL_INT((int)LinkCompletion::Linked,
+        (int)completeConfirmedLink(ordered, record('c', "carol"), true,
+                                   successfulClear, &orderedProbe));
+    auto index = [&ordered](const char* name) {
+        return std::find(ordered.events.begin(), ordered.events.end(), name) - ordered.events.begin();
+    };
+    TEST_ASSERT_TRUE(index("put:clr") < index("put:ok"));
+    TEST_ASSERT_TRUE(index("put:ok") < index("remove:clr"));
+    TEST_ASSERT_TRUE(orderedProbe.sawConfirmed);
+}
+
+void test_server_unlink_preserves_previous_account_and_revoke() {
+    MemoryLinkStore store;
+    LinkRecord first = record('a', "alice");
+    first.accountRef = "0123456789abcdef";
+    TEST_ASSERT_TRUE(writeLink(store, first));
+    store.values["rev_tok"] = std::string(43, 'z');
+    TEST_ASSERT_TRUE(forgetServerUnlinkedLink(store));
+    LinkRecord active;
+    TEST_ASSERT_FALSE(readLink(store, active));
+    TEST_ASSERT_EQUAL_STRING("alice", store.getString("prev_acct").c_str());
+    TEST_ASSERT_EQUAL_STRING("0123456789abcdef", store.getString("prev_aref").c_str());
+    TEST_ASSERT_TRUE(hasPendingRevoke(store));
+    TEST_ASSERT_EQUAL_STRING("a1b2c3d4e5f6", store.getString("id").c_str());
+    TEST_ASSERT_EQUAL_INT((int)CredentialError::NotLinked,
+        (int)credentialError(401, "not_linked"));
+    TEST_ASSERT_EQUAL_INT((int)CredentialError::WrongDevice,
+        (int)credentialError(401, "wrong_device"));
+    TEST_ASSERT_EQUAL_INT((int)CredentialError::Other,
+        (int)credentialError(401, "sign_in_required"));
+    TEST_ASSERT_EQUAL_INT((int)CredentialError::Other,
+        (int)credentialError(500, "not_linked"));
 }
 
 void test_confirm_extends_session_limit_once_bounded() {
@@ -487,7 +559,10 @@ int main(int, char**) {
     RUN_TEST(test_app_clear_failure_keeps_confirmed_link);
     RUN_TEST(test_begin_needs_only_one_free_revoke_slot);
     RUN_TEST(test_final_client_errors_drop_revoke_slot);
-    RUN_TEST(test_revoke_slot_given_up_after_bounded_failures);
+    RUN_TEST(test_revoke_slots_survive_repeated_transient_failures);
+    RUN_TEST(test_revoke_retry_after_is_kept_until_final_answer);
+    RUN_TEST(test_clear_intent_survives_interruption_and_retries_failure);
+    RUN_TEST(test_server_unlink_preserves_previous_account_and_revoke);
     RUN_TEST(test_confirm_extends_session_limit_once_bounded);
     return UNITY_END();
 }

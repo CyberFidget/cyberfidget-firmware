@@ -158,6 +158,9 @@ struct Session {
     char flashId[17] = {0};
     char serial[9] = {0};
     bool credential = true;
+    mutable bool serverUnlinked = false;
+    mutable bool serverWrongDevice = false;
+    std::vector<std::string> attemptedRevokes;
     uint32_t limitMs = kSessionMs;
     const char* fw = "";
     char abi[12] = {0};
@@ -265,6 +268,26 @@ bool request(const Session& s, const std::string& url, const std::string* post,
     sampleHeap();
     esp_http_client_cleanup(client);
     TrustedRoots::freePem(roots);
+    if (s.credential && ok && reply.status == 401) {
+        cJSON* body = cJSON_Parse(reply.body.c_str());
+        const cJSON* item = body ? cJSON_GetObjectItemCaseSensitive(body, "error") : nullptr;
+        const CredentialError error = credentialError(reply.status,
+            cJSON_IsString(item) && item->valuestring ? item->valuestring : "");
+        cJSON_Delete(body);
+        if (error != CredentialError::Other) {
+            Preferences pair;
+            if (pair.begin("pair", false)) {
+                PrefsLinkStore store(pair);
+                const bool removed = error == CredentialError::WrongDevice
+                    ? wipeMismatchedLink(store) : forgetServerUnlinkedLink(store);
+                pair.end();
+                if (removed) {
+                    s.serverUnlinked = error == CredentialError::NotLinked;
+                    s.serverWrongDevice = error == CredentialError::WrongDevice;
+                }
+            }
+        }
+    }
     return ok;
 }
 
@@ -432,14 +455,34 @@ void drainRevoke(Session& s) {
         std::string old;
         bool relinked = false, second = false;
         if (!pendingRevoke(store, old, relinked, second)) { pair.end(); return; }
+        const time_t now = time(nullptr);
+        auto unavailable = [&](const std::string& token, bool slot) {
+            for (const std::string& prior : s.attemptedRevokes)
+                if (prior == token) return true;
+            return revokeRetryPending(store, slot, now > 1577836800 ? (uint32_t)now : 0);
+        };
+        if (unavailable(old, second) && !second) {
+            old = store.getString("rev_tok2");
+            relinked = store.getBool("rev_rel2");
+            second = true;
+        }
+        if (old.empty() || unavailable(old, second)) { pair.end(); return; }
         LinkRecord activeLink;
         readLink(store, activeLink);
+        if (!shouldSendRevoke(old, activeLink.token) && !second) {
+            const std::string other = store.getString("rev_tok2");
+            if (!other.empty() && !unavailable(other, true)) {
+                old = other;
+                relinked = store.getBool("rev_rel2");
+                second = true;
+            }
+        }
         if (!shouldSendRevoke(old, activeLink.token)) {
-            finishRevoke(store, 200, second);
             pair.end();
-            continue;
+            return;
         }
         pair.end();
+        s.attemptedRevokes.push_back(old);
         char active[sizeof(s.token)];
         memcpy(active, s.token, sizeof(active));
         strncpy(s.token, old.c_str(), sizeof(s.token) - 1);
@@ -447,17 +490,27 @@ void drainRevoke(Session& s) {
         const bool credential = s.credential;
         s.credential = false;
         HttpReply reply;
-        const bool sent = postPair(s, pairBody("revoke", nullptr, &s, relinked), reply);
+        bool answered = false;
+        for (int attempt = 0; attempt < 2 && !cancelRequested; ++attempt) {
+            reply = HttpReply();
+            const bool sent = postPair(s, pairBody("revoke", nullptr, &s, relinked), reply);
+            answered = sent && revokeIsFinal(reply.status);
+            if (answered || attempt == 1) break;
+            const uint32_t wait = reply.retry > 0 ? retryWaitMs(reply.retry) : 1000;
+            if (!wait || !sleepFor(s, wait)) break;
+        }
         s.credential = credential;
         memcpy(s.token, active, sizeof(active));
         memset(active, 0, sizeof(active));
-        const bool answered = sent && revokeIsFinal(reply.status);
         if (!answered && cancelRequested) return;
         if (!pair.begin("pair", false)) return;
         PrefsLinkStore done(pair);
-        // A slot that never drains is given up after a bounded number of tries.
         if (answered) finishRevoke(done, reply.status, second);
-        else noteRevokeFailure(done, second);
+        else if (reply.retry > 0 && reply.retry <= kMaxRetryAfterSec) {
+            const time_t at = time(nullptr);
+            if (at > 1577836800)
+                done.putUInt(second ? "rev_at2" : "rev_at", (uint32_t)at + reply.retry);
+        }
         pair.end();
         if (!answered) return;
     }
@@ -474,19 +527,29 @@ bool clearPreviousApps(bool& changed) {
     const size_t before = loadout.entries.size();
     const std::vector<std::string> blobs = LoadoutManifest::removeNonBuiltin(loadout);
     if (loadout.entries.size() == before) return true;
-    if (!LoadoutStore::save(LoadoutManifest::serializeManifest(loadout))) return false;
-    changed = true;
     bool removed = true;
     for (const auto& path : blobs) {
         if (path.compare(0, 6, "/apps/") == 0 &&
             SyncProtocol::pathConfined(path.c_str()) &&
-            !LittleFS.remove(path.c_str())) removed = false;
+            LittleFS.exists(path.c_str()) && !LittleFS.remove(path.c_str())) removed = false;
     }
-    return removed;
+    if (!removed || !LoadoutStore::save(LoadoutManifest::serializeManifest(loadout))) return false;
+    changed = true;
+    return true;
 }
 
 bool clearAppsForLink(void* context) {
     return clearPreviousApps(*static_cast<bool*>(context));
+}
+
+void recoverClearBeforeSession() {
+    Preferences pair;
+    if (!pair.begin("pair", false)) return;
+    PrefsLinkStore store(pair);
+    bool changed = false;
+    recoverPendingClear(store, clearAppsForLink, &changed);
+    pair.end();
+    if (changed) MenuManager::instance().markManifestDirty();
 }
 
 void runPairWorker(Result& r) {
@@ -1196,6 +1259,8 @@ void runWorker(Result& r) {
     const size_t bootLowAfter = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     if (bootLowAfter < bootLowBefore && bootLowAfter < heapLow) heapLow = bootLowAfter;
     r.heapMin = (uint32_t)heapLow;
+    r.unlinkedNotice = s.serverUnlinked;
+    r.mismatchNotice = s.serverWrongDevice;
     if (!r.ok && strcmp(r.err, "none") == 0 && s.elapsed() >= kSessionMs) setError(r, "deadline");
     if (plan.failure(radioOff) == Step::Reboot) {
         // A radio that did not switch off must not be followed by
@@ -1215,7 +1280,8 @@ void worker(void*) {
         Result r;
         if (workerKind == WorkerKind::Cloud) runWorker(r);
         else runPairWorker(r);
-        r.mismatchNotice = DeviceIdentity::takeMismatchNotice();
+        const bool mismatch = DeviceIdentity::takeMismatchNotice();
+        r.mismatchNotice = r.mismatchNotice || mismatch;
         result = r;
     }
     finished = true;
@@ -1228,6 +1294,7 @@ bool runSession(Reason reason) {
     (void)reason;
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
+    recoverClearBeforeSession();
     // Never under an app that owns a radio: it would share the power cycle.
     const AppIndex active = AppManager::instance().activeApp();
     if (active == APP_MUSIC_PLAYER || active == APP_WEB_PORTAL) return false;
@@ -1264,6 +1331,7 @@ bool runSession(Reason reason) {
 static bool beginPairWorker(WorkerKind kind) {
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
+    recoverClearBeforeSession();
     const AppIndex active = AppManager::instance().activeApp();
     if (active == APP_MUSIC_PLAYER || active == APP_WEB_PORTAL) return false;
     CloudPlanner entry;
@@ -1352,6 +1420,12 @@ void poll() {
         StatusService::instance().post(StatusKind::Warning,
             "This Fidget's link came from another Fidget. Link it again.",
             StatusPriority::High, true, millis());
+    if (result.unlinkedNotice) {
+        publishLink(LinkState::Unlinked);
+        DeviceLinkApp::refreshStoredLink();
+        StatusService::instance().post(StatusKind::Info, "Unlinked",
+            StatusPriority::Normal, false, millis());
+    }
     if (workerKind != WorkerKind::Cloud) {
         if (result.manifestChanged) MenuManager::instance().markManifestDirty();
         if (result.appsClearFailed)
@@ -1376,6 +1450,7 @@ void poll() {
 }
 
 void recoverFailure() {
+    recoverClearBeforeSession();
     Preferences boot;
     if (!boot.begin("bootcfg", false)) return;
     const String error = boot.getString("clderr", "");

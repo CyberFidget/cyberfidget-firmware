@@ -8,6 +8,7 @@ namespace DeviceLinkApp {
 void begin();
 void end();
 void update();
+void refreshStoredLink();
 void closeStalePrompt();
 }
 

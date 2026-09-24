@@ -99,9 +99,9 @@ bool recoverPendingRevoke(LinkStore& store) {
     if (held != first && held != second) {
         const char* tokenKey = first.empty() ? "rev_tok" : "rev_tok2";
         const char* flagKey = first.empty() ? "rev_rel" : "rev_rel2";
-        const char* failKey = first.empty() ? "rev_fail" : "rev_fail2";
         if (!first.empty() && !second.empty()) return false;
-        if (!store.remove(failKey) ||
+        if (!store.remove(first.empty() ? "rev_fail" : "rev_fail2") ||
+            !store.remove(first.empty() ? "rev_at" : "rev_at2") ||
             !store.putBool(flagKey, store.getBool("rev_hrel")) ||
             !store.putString(tokenKey, held)) return false;
     }
@@ -134,9 +134,24 @@ bool writeLink(LinkStore& store, const LinkRecord& next) {
 
 LinkCompletion completeConfirmedLink(LinkStore& store, const LinkRecord& next,
                                      bool clearRequested, bool (*clear)(void*), void* context) {
-    if (!writeLink(store, next)) return LinkCompletion::StorageFailed;
-    if (clearRequested && clear && !clear(context)) return LinkCompletion::LinkedClearFailed;
+    if (clearRequested) {
+        std::string previous = store.getString("aref");
+        if (previous.empty()) previous = store.getString("prev_aref");
+        if (previous.empty()) previous = "1";
+        if (!store.putString("clr", previous)) return LinkCompletion::StorageFailed;
+    }
+    if (!writeLink(store, next)) {
+        if (clearRequested) store.remove("clr");
+        return LinkCompletion::StorageFailed;
+    }
+    if (clearRequested && !recoverPendingClear(store, clear, context))
+        return LinkCompletion::LinkedClearFailed;
     return LinkCompletion::Linked;
+}
+
+bool recoverPendingClear(LinkStore& store, bool (*clear)(void*), void* context) {
+    if (store.getString("clr").empty()) return true;
+    return clear && clear(context) && store.remove("clr");
 }
 
 bool prepareUnlink(LinkStore& store) {
@@ -172,10 +187,16 @@ bool revokeIsFinal(int httpStatus) {
            (httpStatus >= 400 && httpStatus < 500 && httpStatus != 408 && httpStatus != 429);
 }
 
+bool revokeRetryPending(LinkStore& store, bool second, uint32_t now) {
+    const uint32_t until = store.getUInt(second ? "rev_at2" : "rev_at");
+    return now > 1577836800 && until > now;
+}
+
 namespace {
 bool dropRevokeSlot(LinkStore& store, bool second) {
     return store.remove(second ? "rev_tok2" : "rev_tok") &&
            store.remove(second ? "rev_rel2" : "rev_rel") &&
+           store.remove(second ? "rev_at2" : "rev_at") &&
            store.remove(second ? "rev_fail2" : "rev_fail");
 }
 }
@@ -183,14 +204,6 @@ bool dropRevokeSlot(LinkStore& store, bool second) {
 bool finishRevoke(LinkStore& store, int httpStatus, bool second) {
     if (!revokeIsFinal(httpStatus)) return false;
     return dropRevokeSlot(store, second);
-}
-
-bool noteRevokeFailure(LinkStore& store, bool second) {
-    const char* failKey = second ? "rev_fail2" : "rev_fail";
-    const uint32_t failures = store.getUInt(failKey) + 1;
-    if (failures >= kRevokeMaxFailures) return dropRevokeSlot(store, second);
-    store.putUInt(failKey, failures);
-    return false;
 }
 
 bool replaceTestToken(LinkStore& store, const std::string& token) {
@@ -207,11 +220,31 @@ bool wipeMismatchedLink(LinkStore& store) {
     if (readLink(store, active) && !rememberAccount(store, active)) return false;
     const char* const keys[] = {
         "ok", "tok", "acct", "aref", "at", "id", "fid", "ser", "unlk",
-        "rev_tok", "rev_rel", "rev_tok2", "rev_rel2", "rev_hold", "rev_hrel",
+        "rev_tok", "rev_rel", "rev_tok2", "rev_rel2", "rev_hold", "rev_hrel", "clr",
+        "rev_at", "rev_at2",
         "rev_fail", "rev_fail2"
     };
     for (const char* key : keys) if (!store.remove(key)) return false;
     return true;
+}
+
+bool forgetServerUnlinkedLink(LinkStore& store) {
+    LinkRecord active;
+    if (readLink(store, active) && !rememberAccount(store, active)) return false;
+    const char* const keys[] = {"ok", "tok", "acct", "aref", "at"};
+    for (const char* key : keys) if (!store.remove(key)) return false;
+    if (!hasPendingRevoke(store)) {
+        const char* const identity[] = {"id", "fid", "ser"};
+        for (const char* key : identity) if (!store.remove(key)) return false;
+    }
+    return true;
+}
+
+CredentialError credentialError(int httpStatus, const std::string& error) {
+    if (httpStatus != 401) return CredentialError::Other;
+    if (error == "not_linked") return CredentialError::NotLinked;
+    if (error == "wrong_device") return CredentialError::WrongDevice;
+    return CredentialError::Other;
 }
 
 bool revokeOnlySession(LinkStore& store) {

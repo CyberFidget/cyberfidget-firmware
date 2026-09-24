@@ -27,6 +27,7 @@ struct Result {
     bool manifestChanged = false;
     bool appsClearFailed = false;
     bool mismatchNotice = false;
+    bool unlinkedNotice = false;
     char err[32] = "none";
     char applied[41] = "-";
     char offered[8] = "-";

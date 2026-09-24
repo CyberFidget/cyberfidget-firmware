@@ -61,6 +61,7 @@ enum class LinkCompletion : uint8_t { StorageFailed, Linked, LinkedClearFailed }
 // The marker is committed last and removed before any replacement write.
 bool readLink(LinkStore& store, LinkRecord& out);
 bool writeLink(LinkStore& store, const LinkRecord& next);
+bool recoverPendingClear(LinkStore& store, bool (*clear)(void*), void* context);
 LinkCompletion completeConfirmedLink(LinkStore& store, const LinkRecord& next,
                                      bool clearRequested, bool (*clear)(void*), void* context);
 bool prepareUnlink(LinkStore& store);
@@ -71,10 +72,11 @@ bool pendingRevoke(LinkStore& store, std::string& token, bool& relinked, bool& s
 bool finishRevoke(LinkStore& store, int httpStatus, bool second);
 // A final answer ends a pending revoke: 200, or a 4xx other than 408/429.
 bool revokeIsFinal(int httpStatus);
-// Counts one failed drain of a slot; true when the slot was given up.
-constexpr uint32_t kRevokeMaxFailures = 10;
-bool noteRevokeFailure(LinkStore& store, bool second);
+bool revokeRetryPending(LinkStore& store, bool second, uint32_t now);
 bool replaceTestToken(LinkStore& store, const std::string& token);
+bool forgetServerUnlinkedLink(LinkStore& store);
+enum class CredentialError : uint8_t { Other, NotLinked, WrongDevice };
+CredentialError credentialError(int httpStatus, const std::string& error);
 bool wipeMismatchedLink(LinkStore& store);
 bool revokeOnlySession(LinkStore& store);
 // True while at least one pending-revoke slot is free.
