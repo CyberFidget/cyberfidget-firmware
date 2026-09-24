@@ -24,6 +24,8 @@
 #include "RGBController.h"
 #include "ScrollLabel.h"
 #include "StatusService.h"
+#include "OtaUpdate.h"
+#include "UpdateSession.h"
 #include "globals.h"
 
 namespace UpdatePrompt {
@@ -31,10 +33,6 @@ namespace {
 using namespace PromptPolicy;
 using CheckinPolicy::Policy;
 using CheckinPolicy::Verdict;
-
-// There is no update session on the device yet, so Install now explains
-// that instead of handing off (and stores nothing).
-constexpr bool kUpdateSessionAvailable = false;
 
 auto& display = HAL::displayProxy();
 
@@ -56,6 +54,7 @@ struct Stored {
     char avail[kMaxVersionLen + 1] = {0};
     char src[40] = {0};
     char chan[16] = {0};
+    char failVer[kMaxVersionLen + 1] = {0};   // an update that did not keep itself
     bool autoapply = true;
     DevMode dev = DevMode::Off;
     uint32_t devIdleMin = kDefaultDevIdleMin;
@@ -77,6 +76,7 @@ Stored readStored() {
     readText(upd, kKeyAvail, st.avail, sizeof(st.avail));
     readText(upd, kKeySrc, st.src, sizeof(st.src));
     readText(upd, kKeyChan, st.chan, sizeof(st.chan));
+    readText(upd, OtaUpdate::kKeyFailVer, st.failVer, sizeof(st.failVer));
     const bool hasApply = upd.isKey(kKeyAutoapply);
     st.autoapply = parseAutoapply(hasApply, hasApply && upd.getBool(kKeyAutoapply, true));
     st.dev = parseDevMode(upd.isKey(kKeyDev) ? upd.getUChar(kKeyDev, 0) : 0);
@@ -147,8 +147,27 @@ void openAppsIfPending() {
 
 void onComingSoonDone(int) { openAppsIfPending(); }
 
+// Install now: the update session runs after a restart (the start-up
+// animation is skipped), in a power cycle that never starts Bluetooth.
+bool handOff(const char* version) {
+    const char* why = "";
+    if (!UpdateSession::armInstall(version, &why)) {
+        Serial.printf("[upd] install=refused reason=%s\n", why);
+        return false;
+    }
+    Serial.printf("[upd] install=restarting version=%s\n", version);
+    drawMessage("Restarting to update...", "");
+    ModalPrompt::instance().closeForTeardown();
+    Serial.flush();
+    delay(300);
+    ESP.restart();
+    return true;
+}
+
 void onFirmwareDone(int result) {
-    const FwEffect e = firmwareChoice(result, kUpdateSessionAvailable);
+    // Until updates are signed, only a Fidget allowed over USB installs here;
+    // every other one keeps the "update from the website" message.
+    const FwEffect e = firmwareChoice(result, UpdateSession::installAllowed());
     StatusService& svc = StatusService::instance();
     bool stored = false;
     if (e.writeRej) {
@@ -166,8 +185,17 @@ void onFirmwareDone(int result) {
                   result == (int)FwChoice::Later ? "later" :
                   result == (int)FwChoice::Skip ? "skip" : "none",
                   offerVersion, e.writeRej ? (stored ? "ok" : "error") : "-");
-    // e.handoff: the one-shot restart into the update session belongs here
-    // once that session exists; until then kUpdateSessionAvailable is false.
+    // A refused hand-off (storage failed) says so like "coming soon" would
+    // not: the offer stays in the bar either way.
+    if (e.handoff && !handOff(offerVersion)) {
+        char text[48];
+        snprintf(text, sizeof(text), "Update %s ready", offerVersion);
+        svc.post(StatusKind::UpdateReady, text,
+                 StatusService::defaultPriority(StatusKind::UpdateReady), true, millis());
+        const char* const ok[] = {"OK"};
+        if (ModalPrompt::instance().open("The update could not start. Nothing changed.", ok, 1,
+                                         onComingSoonDone)) return;
+    }
     if (e.comingSoon) {
         const char* const ok[] = {"OK"};
         if (ModalPrompt::instance().open(kInstallComingSoon, ok, 1, onComingSoonDone)) return;
@@ -225,6 +253,9 @@ void finishCheck(const CloudSync::Result& r) {
         snprintf(checkLine, sizeof(checkLine), "App changes waiting");
     } else if (fw) {
         snprintf(checkLine, sizeof(checkLine), "Update %s ready", st.avail);
+        // Honest about a version that did not keep itself here before.
+        if (!OtaUpdate::automaticOfferAllowed(st.avail, st.failVer))
+            checkNote = "It did not finish last time";
     } else {
         snprintf(checkLine, sizeof(checkLine), "Your Fidget is up to date");
     }
@@ -429,10 +460,15 @@ void loop() {
     CloudSync::Result r;
     const bool have = CheckinScheduler::takeBootResult(r);
     const Stored st = readStored();
-    const PromptPlan plan = bootPlan(st.policy, offerEligible(st.avail, st.rej, running()),
+    // An update that already failed to keep itself here is not offered
+    // automatically again; a manual check still shows it.
+    const bool retryHeld = !OtaUpdate::automaticOfferAllowed(st.avail, st.failVer);
+    const PromptPlan plan = bootPlan(st.policy,
+                                     offerEligible(st.avail, st.rej, running()) && !retryHeld,
                                      have && r.waiting);
-    Serial.printf("[upd] boot-popup result=%d firmware=%d apps=%d\n",
-                  have ? 1 : 0, plan.firmware ? 1 : 0, plan.apps ? 1 : 0);
+    Serial.printf("[upd] boot-popup result=%d firmware=%d apps=%d failed_held=%d\n",
+                  have ? 1 : 0, plan.firmware ? 1 : 0, plan.apps ? 1 : 0,
+                  retryHeld && st.avail[0] ? 1 : 0);
     showPlan(plan, st);
 }
 

@@ -144,6 +144,23 @@ headers as specified by their lengths. Paths are confined to `/apps/` and
 `/assets/`. Whole-file and chunk CRC checks, retry behavior, loadout operations,
 and all error replies are documented in `lib/SyncProtocol/README.md`.
 
+### Installing updates
+
+```text
+upd slot                     -> [cmd] upd.slot=<label> state=<s> boot=<label> other=<label> other_state=<s> pend_img=<0|1> unsig_ok=<0|1>
+upd allow-unsigned on|off    -> [cmd] upd.unsig_ok=<1|0|error>
+bad arguments                -> [err] upd.usage=upd allow-unsigned on|off
+```
+
+`upd slot` reads the app slots (the running one, the one the next start
+uses, the other one) and their update states, whether an update record is
+stored, and whether installing is allowed; it changes nothing.
+`upd allow-unsigned` sets `upd.unsig_ok`, which lets the update prompt's
+Install now hand off to the update session (`lib/OtaUpdate/README.md`).
+Until updates are signed only a Fidget with it set installs updates; it is a
+USB serial command in every build so that holding the cable is the proof,
+and nothing on the network can set it.
+
 ## `CF_TEST_CLI` verbs
 
 ### Application and network controls
@@ -339,8 +356,24 @@ upd                          -> [cmd] upd.key=<key> type=<str|u8|u32|i32> value=
 upd offer <version> [source] -> [cmd] upd.offer=open version=<v> source=<source>
                                 [cmd] upd.offer=suppressed reason=<skipped|not-newer|invalid> version=<v>
                                 [err] upd.offer=busy | not-menu | refused
-bad arguments                -> [err] upd.usage=upd [offer <version> [source]]
+upd install <version>        -> [cmd] upd.install=restarting version=<v>   (then the update session)
+                                [cmd] upd.install=refused reason=<unsigned|version|storage>
+upd fault <name>             -> [cmd] upd.fault=<name|error>   (none|crash|hang|hal-hang|loop-crash|version|mount|session-hang)
+upd seen-clear               -> [cmd] upd.seen_clear=<count|error>
+bad arguments                -> [err] upd.usage=upd [offer <version> [source] | install <version> | fault <...> | slot | allow-unsigned on|off]
 ```
+
+`upd install` is the Install now hand-off for one version (no newer-version
+check: the version is the bench's explicit choice, as a person's choice
+would be); the session still runs every manifest gate. `upd fault` stores a
+one-shot fault in the test-only namespace `cftest`: `session-hang` stops the
+next update session mid-download without feeding the watchdog; `crash`,
+`hang`, `version` and `mount` make the next pending image crash, hang, see a
+wrong version, or fail its filesystem mount during its self-test; `hal-hang`
+hangs it before hardware start-up (right after it joins the watchdog);
+`loop-crash` crashes it in its first main-loop pass, after its checks
+passed; `none` clears it. `upd seen-clear` forgets the stored release freshness
+(`upd.seen_*`) so a case can start from no update history. Bench case: `test/bench/cases/t250-ota-ab.json`.
 
 `upd` lists every key in the NVS namespace `upd` (the update settings, see
 `lib/UpdatePolicy/README.md`) with its stored type and value, in storage

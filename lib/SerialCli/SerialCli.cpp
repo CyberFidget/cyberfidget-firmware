@@ -23,6 +23,7 @@
 #include "FerrySession.h"     // pure write session (fwrite..fwabort, lapply)
 #include "LittleFsFerryStorage.h"
 #include "CloudSync.h"
+#include "UpdateSession.h"   // upd allow-unsigned / slot (every build), install / fault (test)
 #include "DeviceIdentity.h"
 
 #include "HAL.h"              // displayProxy() for screencap (T-191)
@@ -554,6 +555,25 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "fstat", &arg))   { cmdFstat(arg);   return; }
     if (verbWithArg(line, "fread", &arg))   { cmdFread(arg);   return; }
     if (verbWithArg(line, "lapply", &arg))  { cmdLapply(arg);  return; }
+
+    // Installing updates (every build). Allowing unsigned installs is a USB
+    // serial command only: holding the cable is the proof, and nothing on
+    // the network can reach it.
+    if (verbWithArg(line, "upd", &arg)) {
+        const char* value = nullptr;
+        if (ieq(arg, "slot")) { UpdateSession::printSlots(); return; }
+        if (verbWithArg(arg, "allow-unsigned", &value)) {
+            const bool on = ieq(value, "on");
+            if (!on && !ieq(value, "off")) {
+                Serial.println("[err] upd.usage=upd allow-unsigned on|off");
+                return;
+            }
+            Serial.printf("[cmd] upd.unsig_ok=%s\n",
+                          UpdateSession::setAllowUnsigned(on) ? (on ? "1" : "0") : "error");
+            return;
+        }
+        // Test builds carry more `upd` verbs below.
+    }
 #ifdef CF_TEST_CLI
     if (ieq(line, "link start")) {
         if (!CloudSync::startLink()) Serial.println("[cmd] link.state=error reason=busy");
@@ -672,7 +692,33 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "upd", &arg)) {
         const char* value = nullptr;
         if (verbWithArg(arg, "offer", &value)) { UpdatePrompt::injectOffer(value); return; }
-        Serial.println("[err] upd.usage=upd [offer <version> [source]]");
+        if (verbWithArg(arg, "install", &value)) {
+            // The same hand-off as the prompt's Install now, for one version.
+            const char* why = "";
+            if (!UpdateSession::armInstall(value, &why)) {
+                Serial.printf("[cmd] upd.install=refused reason=%s\n", why);
+                return;
+            }
+            Serial.printf("[cmd] upd.install=restarting version=%s\n", value);
+            Serial.flush();
+            delay(50);
+            ESP.restart();
+            return;
+        }
+        if (ieq(arg, "seen-clear")) {
+            const int n = UpdateSession::clearSeen();
+            if (n < 0) Serial.println("[cmd] upd.seen_clear=error");
+            else Serial.printf("[cmd] upd.seen_clear=%d\n", n);
+            return;
+        }
+        if (verbWithArg(arg, "fault", &value)) {
+            Serial.printf("[cmd] upd.fault=%s\n", UpdateSession::setTestFault(value) ? value : "error");
+            return;
+        }
+        Serial.println("[err] upd.usage=upd [offer <version> [source] | install <version> | "
+                       "fault <none|crash|hang|hal-hang|loop-crash|version|mount|session-hang> | "
+                       "seen-clear | slot | "
+                       "allow-unsigned on|off]");
         return;
     }
 #endif
@@ -1185,6 +1231,7 @@ void SerialCli::cmdHelp() {
                    "screencap,screenstream <off|on [fps]>,diary [clear]");
     Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"
                    "fstat,fread,lget,lapply,syncinfo");
+    Serial.println("[cmd] help.update=upd slot,upd allow-unsigned <on|off>");
 #ifdef CF_TEST_CLI
     Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,heapstat,"
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"
@@ -1192,7 +1239,7 @@ void SerialCli::cmdHelp() {
                    "soak <app|off>,prompt <n> [timeout_ms],"
                    "status [post|popup|clear|checkin],cloud <base|token|check|autoapply|"
                    "interval|due|guard|press|ssid|btafterwifi>,btstat,"
-                   "upd [offer <version> [source]]");
+                   "upd [offer <version> [source]|install <version>|fault <name>]");
 #endif
 }
 

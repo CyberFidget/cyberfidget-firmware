@@ -135,9 +135,22 @@ deadline with the radio off is an ordinary error.
 ## Firmware offers
 
 The check-in always offers firmware. The session stores `firmware.url` in
-`upd.fw_url` for the update lane and posts nothing; comparing against the
-firmware manifest and asking the user belong to that lane. This library never
-installs firmware.
+`upd.fw_url` and then - in every session, the scheduled Boot, Daily
+(including the headless daily wake, which is what the post-boot popup's
+cached result comes from) and Awake ones too - reads the update manifest when
+the remaining budget covers one more call (4 s) plus the usual reserve. It is
+one call, never a wait, so a scheduled session still never holds WiFi on to
+wait. It then runs the install gates (`UpdateSession::refreshOffer`, rules in
+`lib/OtaUpdate`): a release that passes is stored in `upd.avail` for the
+prompt, a refused one is removed from it, a failed read leaves it. Nothing is
+downloaded in a check-in. A 204 check-in carries no offer, so it leaves
+`avail` as it was.
+
+Installing is the update session (`UpdateSession.cpp`, described in
+`lib/OtaUpdate/README.md`): its own boot after "Install now", station only,
+never Bluetooth. It uses `fetchPublic()` here (one GET without the device
+credential, the trusted root list, PSRAM TLS via `useExternalTlsMemory()`,
+plain HTTP only in test builds, no redirects) and `siteBase()`.
 
 ## Tests
 

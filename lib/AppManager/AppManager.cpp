@@ -14,6 +14,7 @@
 #include "LoadoutStore.h"
 #include "CloudSync.h"
 #include "CheckinScheduler.h"
+#include "UpdateSession.h"
 #include "DeviceIdentity.h"
 #include "UpdatePrompt.h"
 #include "PromptPolicy.h"
@@ -68,10 +69,22 @@ AppManager::AppManager() {
 }
 
 void AppManager::setup() {
+    // A freshly installed image checks itself before anything else runs:
+    // nothing below may start while it is still unconfirmed.
+    UpdateSession::beginSelfTest();
     HAL::configureWakeupPins();
     esp_log_level_set("*", ESP_LOG_VERBOSE);
     esp_log_level_set(TAG_MAIN, ESP_LOG_VERBOSE);
     HAL::initHardware();
+    // Pending image: pass, or restart into the previous image.
+    UpdateSession::finishBoot();
+    {
+        // "Install now" restarted into the update session: it never
+        // returns (it restarts), and nothing else starts in this power cycle.
+        char version[32];
+        if (UpdateSession::takeSessionRequest(version, sizeof(version)))
+            UpdateSession::runSession(version);
+    }
     int32_t wakeVcellMv = -1, wakeSocPct = -1;
     if (HAL::timerCheckinWake(wakeVcellMv, wakeSocPct)) {
         // A timer wake with a check-in due: headless, then back to sleep.
@@ -167,6 +180,11 @@ void AppManager::setup() {
 }
 
 void AppManager::loop() {
+    // A just-installed image is kept only after one full pass that ran the
+    // active app (its first frame); a crash before that returns to the
+    // previous image.
+    static bool frameDrawn = false;
+    UpdateSession::loopTick(frameDrawn);
     HAL::loopHardware();
 
     if (bootWindowPending) {
@@ -190,6 +208,7 @@ void AppManager::loop() {
     if ((millis_NOW - millis_APP_TASK_20MS) >= TASK_20MS) {
         millis_APP_TASK_20MS = millis_NOW;
         runActiveApp();
+        frameDrawn = true;
     }
 
     if ((millis_NOW - millis_APP_TASK_200MS) >= TASK_200MS) {

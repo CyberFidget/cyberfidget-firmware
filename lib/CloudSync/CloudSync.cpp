@@ -42,6 +42,7 @@
 #include "DeviceLinkApp.h"
 #include "TrustedRoots.h"
 #include "PromptPolicy.h"
+#include "UpdateSession.h"
 #include "WasmHostImports.h"
 #include "globals.h"
 
@@ -1149,6 +1150,13 @@ void runWorker(Result& r) {
                 offered.putString("fw_url", s.reply.firmwareUrl.c_str());
                 offered.end();
             }
+            // What the prompt may offer: the manifest, through every gate
+            // (UpdateSession). Every session reads it, scheduled ones too
+            // (the post-boot popup shows what the daily wake cached): one
+            // call, never a wait, and only when the remaining budget still
+            // leaves the usual reserve.
+            if (budgetCovers(kCallMs, s.elapsed(), s.limitMs, kReserveMs))
+                UpdateSession::refreshOffer(s.started + s.limitMs - kReserveMs);
         }
         if (step == Step::Done) { r.ok = true; r.none = true; break; }
         if (step == Step::Waiting) { r.ok = true; r.none = true; r.waiting = true; break; }
@@ -1577,6 +1585,84 @@ bool cancelPending() {
 void requestCancel() { cancelRequested = true; }
 bool busy() { return running; }
 bool radioUsedThisPowerCycle() { return radioUsed; }
+
+// A full update URL (the site plus a path and query): longer than a site
+// base, same scheme rules.
+static bool validFetchUrl(const char* url) {
+    if (strlen(url) > 600 || strpbrk(url, " \t\r\n#@")) return false;
+    if (strncmp(url, "https://", 8) == 0) return url[8] != '\0';
+#ifdef CF_TEST_CLI
+    if (strncmp(url, "http://", 7) == 0) return url[7] != '\0';
+#endif
+    return false;
+}
+
+bool useExternalTlsMemory() {
+    return mbedtls_platform_set_calloc_free(tlsPsramCalloc, heap_caps_free) == 0;
+}
+
+bool siteBase(char* out, size_t len) {
+    char base[128];
+    strcpy(base, kDefaultBase);
+#ifdef CF_TEST_CLI
+    Preferences upd;
+    if (upd.begin("upd", true)) {
+        if (upd.isKey("base")) upd.getString("base", base, sizeof(base));
+        upd.end();
+    }
+#endif
+    const size_t n = strlen(base);
+    if (!validBase(base) || n >= len) return false;
+    memcpy(out, base, n + 1);
+    return true;
+}
+
+bool fetchPublic(const char* url, uint32_t callTimeoutMs, uint32_t deadlineMs,
+                 ChunkSink sink, void* arg, FetchReply& reply) {
+    reply = FetchReply();
+    if (!url || !validFetchUrl(url) || !sink) return false;
+    char* roots = TrustedRoots::newPem();
+    if (!roots) return false;
+    // A partial parse would trust fewer roots: never connect on one.
+    if (!TrustedRoots::pemParsesCompletely(roots)) {
+        TrustedRoots::freePem(roots);
+        return false;
+    }
+    esp_http_client_config_t config = {};
+    config.url = url;
+    config.method = HTTP_METHOD_GET;
+    config.cert_pem = roots;
+    config.disable_auto_redirect = true;
+    config.timeout_ms = (int)callTimeoutMs;
+    config.buffer_size = 4096;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    if (!client) { TrustedRoots::freePem(roots); return false; }
+    // PSRAM: this buffer must not come out of the internal heap.
+    uint8_t* buf = (uint8_t*)heap_caps_malloc(4096, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    bool ok = buf && esp_http_client_open(client, 0) == ESP_OK;
+    if (ok) {
+        reply.length = esp_http_client_fetch_headers(client);
+        ok = reply.length >= 0;
+    }
+    if (ok) {
+        reply.status = esp_http_client_get_status_code(client);
+        while ((int32_t)(millis() - deadlineMs) < 0) {
+            const int n = esp_http_client_read(client, (char*)buf, 4096);
+            if (n < 0) { ok = false; break; }
+            if (n == 0) {
+                reply.complete = esp_http_client_is_complete_data_received(client);
+                break;
+            }
+            reply.received += (uint32_t)n;
+            if (!sink(arg, buf, (size_t)n)) { ok = false; break; }
+        }
+        if (!reply.complete) ok = false;
+    }
+    heap_caps_free(buf);
+    esp_http_client_cleanup(client);
+    TrustedRoots::freePem(roots);
+    return ok;
+}
 
 #ifdef CF_TEST_CLI
 bool setBase(const char* url) {

@@ -4,6 +4,7 @@
 #ifndef CLOUD_SYNC_H
 #define CLOUD_SYNC_H
 
+#include <stddef.h>
 #include <stdint.h>
 
 namespace CloudSync {
@@ -73,6 +74,28 @@ bool linked(char account[40]);
 bool linkStatus(char account[40], bool& fingerprint);
 bool hadPreviousAccount();
 void resetLinkStatus();
+
+// ---- For the update session (lib/CloudSync/UpdateSession) ----------------
+// Routes mbedTLS allocations to PSRAM (internal RAM cannot hold a TLS
+// session beside the rest of the firmware); call before the first handshake
+// of the power cycle.
+bool useExternalTlsMemory();
+// The update site: the compiled https site, or (test builds) `upd.base`.
+bool siteBase(char* out, size_t len);
+
+struct FetchReply {
+    int status = 0;          // HTTP status, 0 when no answer arrived
+    int64_t length = -1;     // Content-Length (0 or -1 when not sent)
+    uint32_t received = 0;   // body bytes handed to the sink
+    bool complete = false;   // the whole body arrived
+};
+using ChunkSink = bool (*)(void* arg, const uint8_t* data, size_t len);
+// One GET without the device credential: the server must end in the
+// trusted root list (test builds also allow a plain-HTTP LAN site). Every
+// body piece goes to `sink` (false stops). True only when the whole body
+// arrived before `deadlineMs` (a millis() value). No redirects.
+bool fetchPublic(const char* url, uint32_t callTimeoutMs, uint32_t deadlineMs,
+                 ChunkSink sink, void* arg, FetchReply& reply);
 
 #ifdef CF_TEST_CLI
 bool setBase(const char* url);
