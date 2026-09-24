@@ -46,11 +46,14 @@
 #include <esp_http_client.h>
 #include <mbedtls/platform.h>
 #include <esp_task_wdt.h>
+#include <esp_bt.h>
+#include <esp_bt_main.h>
 
 #include <esp_heap_caps.h>
 
 #include "AppDefs.h"
 #include "AppManager.h"
+#include "CheckinScheduler.h"
 #include "MicCapture.h"
 #include "TlsProbeSession.h"
 #include "TrustedRoots.h"
@@ -579,7 +582,7 @@ void SerialCli::dispatch(const char* line) {
         return;
     }
     if (ieq(line, "cloud check")) {
-        if (!CloudSync::runSession(CloudSync::Reason::Manual))
+        if (!CheckinScheduler::checkNow())
             Serial.println("[cmd] cloud.result=error err=busy applied=- offered=- next_ms=0 heap_min=0");
         return;
     }
@@ -602,6 +605,40 @@ void SerialCli::dispatch(const char* line) {
                           (on || off) && CloudSync::setAutoapply(on) ? "ok" : "error");
             return;
         }
+        // Check-in scheduling bench hooks (see lib/UpdatePolicy/README.md).
+        if (verbWithArg(arg, "interval", &value)) {
+            Serial.printf("[cmd] cloud.interval=%s\n",
+                          CheckinScheduler::setIntervalHours(strtoul(value, nullptr, 10)) ? "ok" : "error");
+            return;
+        }
+        if (verbWithArg(arg, "due", &value)) {
+            Serial.printf("[cmd] cloud.due=%s\n",
+                          CheckinScheduler::setDueIn(strtoul(value, nullptr, 10)) ? "ok" : "error");
+            return;
+        }
+        if (verbWithArg(arg, "guard", &value)) {
+            Serial.printf("[cmd] cloud.guard=%s\n",
+                          CheckinScheduler::setGuardMs(strtoul(value, nullptr, 10)) ? "ok" : "error");
+            return;
+        }
+        if (ieq(arg, "press")) {
+            Serial.printf("[cmd] cloud.press=%s\n", CheckinScheduler::setPressTest() ? "ok" : "error");
+            return;
+        }
+        if (verbWithArg(arg, "ssid", &value)) {
+            const bool absent = ieq(value, "absent");
+            const bool saved = ieq(value, "saved");
+            Serial.printf("[cmd] cloud.ssid=%s\n",
+                          (absent || saved) && CloudSync::setAbsentSsidTest(absent) ? value : "error");
+            return;
+        }
+        if (verbWithArg(arg, "btafterwifi", &value)) {
+            const bool allow = ieq(value, "allow");
+            if (!allow && !ieq(value, "block")) { Serial.println("[cmd] cloud.btafterwifi=error"); return; }
+            AppManager::instance().setTestAllowBtAfterWifi(allow);
+            Serial.printf("[cmd] cloud.btafterwifi=%s\n", allow ? "allow" : "block");
+            return;
+        }
         Serial.println("[cmd] cloud.error=usage");
         return;
     }
@@ -609,6 +646,7 @@ void SerialCli::dispatch(const char* line) {
     if (ieq(line, "app"))  { cmdApp();  return; }
     if (ieq(line, "net"))  { cmdNet();  return; }
     if (ieq(line, "heapstat")) { cmdHeapstat(); return; }
+    if (ieq(line, "btstat")) { cmdBtstat(); return; }
     if (verbWithArg(line, "tlsalloc", &arg)) { cmdTlsalloc(arg); return; }
     if (ieq(line, "tlsprobe")) { cmdTlsprobe(kTlsDefaultUrl); return; }
     if (verbWithArg(line, "tlsprobe", &arg)) { cmdTlsprobe(arg); return; }
@@ -1144,7 +1182,8 @@ void SerialCli::cmdHelp() {
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"
                    "wifi <ssid>|<pass>,wasmstat,btn,sleep,rail,gauge,uvlo,"
                    "soak <app|off>,prompt <n> [timeout_ms],"
-                   "status [post|popup|clear|checkin],cloud <base|token|check|autoapply>");
+                   "status [post|popup|clear|checkin],cloud <base|token|check|autoapply|"
+                   "interval|due|guard|press|ssid|btafterwifi>,btstat");
 #endif
 }
 
@@ -1656,6 +1695,24 @@ void SerialCli::cmdTlsalloc(const char* arg) {
 
 void SerialCli::cmdHeapstat() {
     Serial.printf("[cmd] heapstat.free_int=%u min_free_int=%u largest_int=%u\n",
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+}
+
+// Bluetooth controller / host state with the internal heap, for the
+// WiFi-then-Bluetooth bench.
+void SerialCli::cmdBtstat() {
+    const esp_bt_controller_status_t ctl = esp_bt_controller_get_status();
+    const esp_bluedroid_status_t host = esp_bluedroid_get_status();
+    Serial.printf("[cmd] btstat.controller=%s bluedroid=%s wifi_mode=%d free_int=%u "
+                  "min_free_int=%u largest_int=%u\n",
+                  ctl == ESP_BT_CONTROLLER_STATUS_IDLE ? "idle" :
+                  ctl == ESP_BT_CONTROLLER_STATUS_INITED ? "inited" :
+                  ctl == ESP_BT_CONTROLLER_STATUS_ENABLED ? "enabled" : "other",
+                  host == ESP_BLUEDROID_STATUS_ENABLED ? "enabled" :
+                  host == ESP_BLUEDROID_STATUS_INITIALIZED ? "initialized" : "off",
+                  (int)WiFi.getMode(),
                   (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
                   (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL),
                   (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));

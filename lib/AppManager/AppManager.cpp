@@ -13,6 +13,7 @@
 #include "LoadoutManifest.h"
 #include "LoadoutStore.h"
 #include "CloudSync.h"
+#include "CheckinScheduler.h"
 #include "DeviceIdentity.h"
 #include <Preferences.h>
 
@@ -31,6 +32,18 @@ static void showRadioNotice(const char* text) {
     screen.display();
 }
 static PowerManager powerManager(buttonManager);
+
+// Set in setup(); the boot-window check starts on the first loop pass, once
+// the battery has been read.
+static bool bootWindowPending = false;
+static bool bootWasOneShot = false;
+
+#ifdef CF_TEST_CLI
+// Bench only: lets the Music Player start after WiFi in the same power
+// cycle, to measure whether that works. Never compiled into a release.
+static bool testAllowBtAfterWifi = false;
+void AppManager::setTestAllowBtAfterWifi(bool allow) { testAllowBtAfterWifi = allow; }
+#endif
 
 // Prompts pause the menu only (and the boot screen that hands over to it).
 // Apps that need a prompt must extend this deliberately: the prompt pauses
@@ -55,6 +68,12 @@ void AppManager::setup() {
     esp_log_level_set("*", ESP_LOG_VERBOSE);
     esp_log_level_set(TAG_MAIN, ESP_LOG_VERBOSE);
     HAL::initHardware();
+    int32_t wakeVcellMv = -1, wakeSocPct = -1;
+    if (HAL::timerCheckinWake(wakeVcellMv, wakeSocPct)) {
+        // A timer wake with a check-in due: headless, then back to sleep.
+        CheckinScheduler::runHeadless(wakeVcellMv, wakeSocPct);
+    }
+    HAL::setBeforeSleep(CheckinScheduler::armBeforeSleep);
     DeviceIdentity::checkStored();
 
     // Mount the filesystem before the first menu build: MenuManager::begin
@@ -121,6 +140,9 @@ void AppManager::setup() {
     if (bootLink && !CloudSync::busy()) CloudSync::startLink();
     if (bootCloud && !bootPortal && !bootMusic) CloudSync::runSession(CloudSync::Reason::Recovery);
     if (bootUnlink && !bootPortal && !bootMusic) CloudSync::startUnlink();
+    bootWindowPending = true;
+    bootWasOneShot = skipBootAnimation || bootPortal || bootMusic || bootLink ||
+                     bootUnlink || bootCloud;
 
     ESP_LOGI(TAG_MAIN, "Returned from beginFunc() for appActive=%d", (int)appActive);
 }
@@ -128,7 +150,13 @@ void AppManager::setup() {
 void AppManager::loop() {
     HAL::loopHardware();
 
-    CloudSync::poll();
+    if (bootWindowPending) {
+        // loopHardware() has read the battery by now. Starting the check
+        // only creates its task: the animation and menu never wait for it.
+        bootWindowPending = false;
+        CheckinScheduler::startBootWindow(bootWasOneShot);
+    }
+    CheckinScheduler::loop();
 
     processButtonEvents();
     SerialCli::instance().poll();
@@ -291,8 +319,15 @@ void AppManager::switchToApp(AppIndex newApp)
         const bool checking = CloudSync::busy();
         if (checking) showRadioNotice("Finishing check...");
         const bool stopped = CloudSync::cancelPending();
-        const bool btAfterWifi = newApp == APP_MUSIC_PLAYER &&
-                                 CloudSync::radioUsedThisPowerCycle();
+        bool btAfterWifi = newApp == APP_MUSIC_PLAYER &&
+                           CloudSync::radioUsedThisPowerCycle();
+#ifdef CF_TEST_CLI
+        if (btAfterWifi && testAllowBtAfterWifi) {
+            Serial.println("[checkin] bt-after-wifi=allowed-by-test");
+            btAfterWifi = false;
+        }
+#endif
+        if (checking) Serial.printf("[checkin] cancel-for-radio-app stopped=%d\n", stopped ? 1 : 0);
         if (!stopped || btAfterWifi) {
             Preferences boot;
             if (boot.begin("bootcfg", false)) {

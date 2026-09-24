@@ -111,6 +111,7 @@ private:
     void cmdApp();
     void cmdNet();
     void cmdHeapstat();
+    void cmdBtstat();
     void cmdTlsalloc(const char* arg);
     void cmdTlsprobe(const char* url);
     void pollTlsprobeResult();

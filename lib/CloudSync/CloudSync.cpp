@@ -47,6 +47,12 @@
 namespace CloudSync {
 namespace {
 constexpr uint32_t kJoinMs = 10000;
+// The boot window's join budget: the start-up animation is 5 s and the
+// menu never waits for it.
+constexpr uint32_t kBootJoinMs = 4000;
+// Scheduled sessions never wait out the server's spacing, so they need far
+// less than a manual one. The headless wake's own guard sits above this.
+constexpr uint32_t kScheduledSessionMs = 60000;
 constexpr uint32_t kCallMs = 4000;
 constexpr uint32_t kSessionMs = 150000; // includes the server's 60 s check-in floor
 constexpr uint32_t kLinkSessionMs = 660000;
@@ -63,6 +69,8 @@ std::atomic<bool> radioUsed{false};
 bool available = false;
 std::atomic<bool> cancelRequested{false};
 Result result;
+Reason sessionReason = Reason::Manual;
+bool taskFailed = false;   // loop task only
 enum class WorkerKind : uint8_t { Cloud, Link, Unlink };
 WorkerKind workerKind = WorkerKind::Cloud;
 std::atomic<int> linkChoice{-1};
@@ -80,13 +88,20 @@ void publishLink(LinkState state, const char* code = nullptr,
     portEXIT_CRITICAL(&linkViewLock);
 }
 
-// Internal-heap low-water mark of this session (worker task only).
+// Internal-heap low-water marks of this session (worker task only).
 size_t heapLow = SIZE_MAX;
+size_t largestLow = SIZE_MAX;
 // The trusted root list failed to parse completely (worker task only).
 bool rootsRejected = false;
 void sampleHeap() {
     const size_t freeBytes = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     if (freeBytes < heapLow) heapLow = freeBytes;
+    const size_t largest = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+    if (largest < largestLow) largestLow = largest;
+}
+
+bool scheduled(Reason reason) {
+    return reason == Reason::Boot || reason == Reason::Daily || reason == Reason::Awake;
 }
 
 void* tlsPsramCalloc(size_t n, size_t size) {
@@ -162,6 +177,7 @@ struct Session {
     mutable bool serverWrongDevice = false;
     std::vector<std::string> attemptedRevokes;
     uint32_t limitMs = kSessionMs;
+    bool mayWait = true;          // false: never sleep through a server wait
     const char* fw = "";
     char abi[12] = {0};
     char board[16] = {0};
@@ -170,6 +186,7 @@ struct Session {
 
     uint32_t elapsed() const { return millis() - started; }
     bool covers(uint32_t waitMs) const {
+        if (!mayWait && waitMs) return false;
         return budgetCovers(waitMs, elapsed(), limitMs, kReserveMs);
     }
 };
@@ -967,7 +984,14 @@ void runWorker(Result& r) {
     plan.start(true);
     Session s;
     s.started = millis();
+    // Scheduled sessions defer a report instead of holding WiFi on to wait
+    // out the server's spacing, and have a shorter budget.
+    const bool automatic = scheduled(sessionReason);
+    s.mayWait = !automatic;
+    s.limitMs = automatic ? kScheduledSessionMs : kSessionMs;
+    r.reason = sessionReason;
     heapLow = SIZE_MAX;
+    largestLow = SIZE_MAX;
     rootsRejected = false;
     const size_t bootLowBefore = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     sampleHeap();
@@ -1004,6 +1028,18 @@ void runWorker(Result& r) {
         wifi.getString("pass", s.pass, sizeof(s.pass));
         wifi.end();
         if (!s.ssid[0]) { setError(r, "no-wifi"); break; }
+#ifdef CF_TEST_CLI
+        {
+            // Bench: a network name that is not in range, so the absent-
+            // network bail can be measured without touching saved settings.
+            Preferences test;
+            if (test.begin("cftest", true)) {
+                if (test.getBool("badssid", false))
+                    strcpy(s.ssid, "cf-bench-absent-network");
+                test.end();
+            }
+        }
+#endif
         s.base = kDefaultBase;
         bool autoapply = true;
         bool backedOff = false;
@@ -1031,12 +1067,22 @@ void runWorker(Result& r) {
         if (!WiFi.mode(WIFI_STA)) { setError(r, "sta-mode"); break; }
         WiFi.begin(s.ssid, s.pass);
         const uint32_t join = millis();
+        const uint32_t joinLimit = sessionReason == Reason::Boot ? kBootJoinMs : kJoinMs;
+        bool absent = false;
         while (WiFi.status() != WL_CONNECTED) {
-            if (cancelRequested || millis() - join >= kJoinMs || s.elapsed() >= kSessionMs) break;
+            if (cancelRequested || millis() - join >= joinLimit || s.elapsed() >= s.limitMs) break;
+            // The connect's own scan reports a saved network that is not in
+            // range; a scheduled session stops there instead of running out
+            // its join budget. A manual check keeps trying.
+            if (automatic && WiFi.status() == WL_NO_SSID_AVAIL) { absent = true; break; }
             vTaskDelay(pdMS_TO_TICKS(100));
         }
         sampleHeap();
-        if (WiFi.status() != WL_CONNECTED) { setError(r, cancelRequested ? "cancelled" : "join"); break; }
+        if (WiFi.status() != WL_CONNECTED) {
+            setError(r, cancelRequested ? "cancelled" : absent ? "no-network" : "join");
+            break;
+        }
+        r.joinMs = millis() - join;
 
         const DeviceIdentity::Fingerprint live = DeviceIdentity::readLive();
         strcpy(s.id, live.id);
@@ -1242,6 +1288,8 @@ void runWorker(Result& r) {
             r.ok = false;
         }
     } while (false);
+    // A cancelled request surfaces as a transport error; name the cause.
+    if (!r.ok && cancelRequested) setError(r, "cancelled");
     // Reported over the transport error the failed request left behind.
     if (rootsRejected) { r.ok = false; setError(r, "roots-parse"); }
 
@@ -1261,7 +1309,9 @@ void runWorker(Result& r) {
     r.heapMin = (uint32_t)heapLow;
     r.unlinkedNotice = s.serverUnlinked;
     r.mismatchNotice = s.serverWrongDevice;
-    if (!r.ok && strcmp(r.err, "none") == 0 && s.elapsed() >= kSessionMs) setError(r, "deadline");
+    r.largestMin = largestLow == SIZE_MAX ? 0 : (uint32_t)largestLow;
+    r.totalMs = s.elapsed();
+    if (!r.ok && strcmp(r.err, "none") == 0 && s.elapsed() >= s.limitMs) setError(r, "deadline");
     if (plan.failure(radioOff) == Step::Reboot) {
         // A radio that did not switch off must not be followed by
         // Bluetooth in this power cycle. Deliver the error after restart.
@@ -1283,6 +1333,17 @@ void worker(void*) {
         const bool mismatch = DeviceIdentity::takeMismatchNotice();
         r.mismatchNotice = r.mismatchNotice || mismatch;
         result = r;
+        if (workerKind == WorkerKind::Cloud) {
+            // One read-only timing line per check-in, written before the
+            // session counts as finished, so it precedes anything that
+            // waited for this session to end (such as Bluetooth start-up).
+            Serial.printf("[checkin] reason=%s join_ms=%u total_ms=%u result=%s err=%s "
+                          "heap_min=%u largest_min=%u wifi=%s\n",
+                          reasonName(r.reason), (unsigned)r.joinMs, (unsigned)r.totalMs,
+                          r.ok ? (r.none ? "none" : "ok") : "error", r.err,
+                          (unsigned)r.heapMin, (unsigned)r.largestMin,
+                          WiFi.getMode() == WIFI_OFF ? "off" : "on");
+        }
     }
     finished = true;
     running = false;
@@ -1290,8 +1351,19 @@ void worker(void*) {
 }
 } // namespace
 
+const char* reasonName(Reason reason) {
+    switch (reason) {
+        case Reason::Boot:     return "boot";
+        case Reason::Daily:    return "daily";
+        case Reason::Manual:   return "manual";
+        case Reason::Dev:      return "dev";
+        case Reason::Recovery: return "recovery";
+        case Reason::Awake:    return "awake";
+    }
+    return "?";
+}
+
 bool runSession(Reason reason) {
-    (void)reason;
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
     recoverClearBeforeSession();
@@ -1311,6 +1383,7 @@ bool runSession(Reason reason) {
     }
     if (WiFi.getMode() != WIFI_OFF) return false;
     workerKind = WorkerKind::Cloud;
+    sessionReason = reason;
     cancelRequested = false;
     available = false;
     running = true;
@@ -1322,7 +1395,9 @@ bool runSession(Reason reason) {
         result = Result();
         setError(result, "task-create");
         result.heapMin = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        result.reason = reason;
         available = true;
+        taskFailed = true;
         return true;
     }
     return true;
@@ -1407,13 +1482,18 @@ void resetLinkStatus() {
     if (!running) publishLink(LinkState::Idle, "", "", "");
 }
 
-void poll() {
+bool poll() {
+    if (taskFailed) {
+        // A session that could not start still finished (with an error).
+        taskFailed = false;
+        return true;
+    }
     if (!running && DeviceIdentity::takeMismatchNotice())
         StatusService::instance().post(StatusKind::Warning,
             "This Fidget's link came from another Fidget. Link it again.",
             StatusPriority::High, true, millis());
     DeviceLinkApp::closeStalePrompt();
-    if (!finished) return;
+    if (!finished) return false;
     finished = false;
     available = workerKind == WorkerKind::Cloud;
     if (result.mismatchNotice)
@@ -1432,7 +1512,7 @@ void poll() {
             StatusService::instance().post(StatusKind::Warning,
                 "Linked, but could not clear the previous apps.",
                 StatusPriority::High, true, millis());
-        return;
+        return false;
     }
     StatusService::instance().clear(StatusKind::Checking);
     if (result.checkInSec) StatusService::instance().setCheckIn(result.checkInSec, false);
@@ -1447,7 +1527,10 @@ void poll() {
     if (result.appliedNow)
         StatusService::instance().post(StatusKind::Info, "App changes applied",
             StatusPriority::Normal, false, millis());
+    return true;
 }
+
+const Result& lastResult() { return result; }
 
 void recoverFailure() {
     recoverClearBeforeSession();
@@ -1512,6 +1595,14 @@ bool setAutoapply(bool enabled) {
     Preferences prefs;
     if (!prefs.begin("upd", false)) return false;
     const bool ok = prefs.putBool("autoapply", enabled) != 0;
+    prefs.end(); return ok;
+}
+bool setAbsentSsidTest(bool enabled) {
+    if (running) return false;
+    Preferences prefs;
+    if (!prefs.begin("cftest", false)) return false;
+    const bool ok = enabled ? prefs.putBool("badssid", true) != 0
+                            : (!prefs.isKey("badssid") || prefs.remove("badssid"));
     prefs.end(); return ok;
 }
 #endif

@@ -8,7 +8,11 @@
 
 namespace CloudSync {
 
-enum class Reason : uint8_t { Boot, Daily, Manual, Dev, Recovery };
+// Boot, Daily and Awake are the scheduled sessions: they never hold WiFi on
+// to wait out the server's spacing (the report is deferred to the next
+// session) and they give up early when the saved network is not in range.
+enum class Reason : uint8_t { Boot, Daily, Manual, Dev, Recovery, Awake };
+const char* reasonName(Reason reason);
 
 enum class LinkState : uint8_t { Idle, Starting, Code, Confirm, ClearApps, Confirming, Linked, Unlinked, Declined, Expired, Error };
 struct LinkSnapshot {
@@ -34,12 +38,19 @@ struct Result {
     uint32_t nextMs = 0;
     uint32_t checkInSec = 0;
     uint32_t heapMin = 0;
+    uint32_t largestMin = 0;   // smallest largest-free internal block seen
+    uint32_t joinMs = 0;       // 0 when the join did not finish
+    uint32_t totalMs = 0;
+    Reason reason = Reason::Manual;
 };
 
 // Starts one plain FreeRTOS worker or sets a boot one-shot and restarts if
 // Bluetooth has already initialized. Completion is consumed from loop().
 bool runSession(Reason reason);
-void poll();
+// True when a check-in session finished in this call; its result is then
+// lastResult() (consumeResult() still hands it to one other reader).
+bool poll();
+const Result& lastResult();
 void recoverFailure();
 bool consumeResult(Result& out);
 // Stops a running session and waits for WiFi to be off. False when it did
@@ -65,6 +76,8 @@ bool setBase(const char* url);
 bool setToken(const char* token);
 bool forgetLink();
 bool setAutoapply(bool enabled);
+// Bench only: scheduled sessions look for a network that is not there.
+bool setAbsentSsidTest(bool enabled);
 #endif
 
 } // namespace CloudSync

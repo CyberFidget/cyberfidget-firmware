@@ -39,6 +39,7 @@ scopes which directories run for each test environment.
 | `test_voicerecorder` | `test/test_voicerecorder_*/`  | `pio test -e test_voicerecorder` |
 | `test_loadout`       | `test/test_loadout_*/`        | `pio test -e test_loadout` |
 | `test_cfgraphics`    | `test/test_cfgraphics_*/`     | `pio test -e test_cfgraphics` |
+| `test_upd_policy`    | `test/test_upd_policy_*/`     | `pio test -e test_upd_policy` |
 
 To add a new app's tests:
 

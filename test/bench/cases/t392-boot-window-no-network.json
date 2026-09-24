@@ -1,0 +1,14 @@
+{
+  "name": "Boot-window check-in when the saved network is not in range: gives up early with WiFi off, then the saved network is used again",
+  "reviewer_setup": "Same setup as t392-boot-window-bt-after.json (local_test build, saved WiFi, linked, cloud base on a LAN test-mode site, battery above 3.6 V and 20 %). The test-only `cloud ssid absent` makes scheduled sessions look for a network name that does not exist, without touching the saved settings; `cloud ssid saved` undoes it. Run python test/bench/cf_replay.py test/bench/cases/t392-boot-window-no-network.json --port <PORT>. The reported total_ms is the absent-network bail time.",
+  "steps": [
+    {"do": "reset", "until": "[checkin] reason=boot", "timeout_s": 25},
+    {"do": "wait_cli"},
+    {"do": "command", "command": "cloud ssid absent", "contains": ["[cmd] cloud.ssid=absent"]},
+    {"do": "reset", "until": "[checkin] reason=boot", "timeout_s": 25,
+     "matches": "\\[checkin\\] reason=boot join_ms=0 total_ms=[0-9]+ result=error err=(no-network|join) heap_min=[0-9]+ largest_min=[0-9]+ wifi=off"},
+    {"do": "wait_cli"},
+    {"do": "command", "command": "net", "contains": ["[cmd] net.mode=0"]},
+    {"do": "command", "command": "cloud ssid saved", "contains": ["[cmd] cloud.ssid=saved"]}
+  ]
+}

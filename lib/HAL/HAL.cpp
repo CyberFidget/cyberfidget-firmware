@@ -150,6 +150,42 @@ namespace {
         return (int32_t)(volts * 1000.0f + 0.5f);
     }
 
+    // When the next background check-in is due, as a time() value (the
+    // clock keeps running through deep sleep). Written before every deep
+    // sleep, so the hourly timer wake decides from RTC memory alone and
+    // never opens storage unless a check-in is due. 0 = none.
+    constexpr uint32_t kCheckinArmMagic = 0x43484B31u;
+    RTC_DATA_ATTR uint32_t s_checkinArmMagic;
+    RTC_DATA_ATTR uint32_t s_checkinDueSec;
+    void (*s_beforeSleep)() = nullptr;
+
+    // Set when this timer wake continues into a background check-in.
+    bool s_timerCheckin = false;
+    int32_t s_timerVcellMv = -1;
+    int32_t s_timerSocPct = -1;
+    uint32_t s_timerStartedMs = 0;
+
+    bool timerCheckinDue()
+    {
+        return s_checkinArmMagic == kCheckinArmMagic && s_checkinDueSec != 0 &&
+               (uint32_t)time(nullptr) >= s_checkinDueSec;
+    }
+
+    [[noreturn]] void resleepTimerWake(int32_t vcellMv, uint32_t startedAtMs,
+                                       bool flushDiary = true)
+    {
+        if (flushDiary && BatteryDiary::timerFlushDue()) BatteryDiary::flushTimerCheckins();
+        esp_sleep_enable_timer_wakeup(UvloLogic::checkIntervalUs());
+        gpio_deep_sleep_hold_en();
+        Serial.printf(
+            "[uvlo] wake=timer vcell_mv=%ld threshold_mv=%d verdict=resleep time_ms=%lu fw=%s\n",
+            (long)vcellMv, CF_UVLO_SLEEP_THRESHOLD_MV,
+            (unsigned long)(millis() - startedAtMs), FW_VERSION_FULL_STRING);
+        Serial.flush();
+        esp_deep_sleep_start();
+        for (;;) {}
+    }
+
     void timerWakeBatteryCheck(uint32_t startedAtMs)
     {
         Serial.begin(921600);
@@ -168,6 +204,9 @@ namespace {
         }
 
         const int32_t vcellMv = plausible ? vcellToMillivolts(vcell) : -1;
+        // Only a wake with a check-in due reads the charge too (battery gate).
+        const bool checkinDue = timerCheckinDue();
+        const float soc = checkinDue && gaugeReady ? fastGauge.getSOC() : -1.0f;
 
         // Hibernate can self-clear after a cell-voltage change, so every
         // timer-wake re-entry writes the hibernate setting again.
@@ -205,16 +244,17 @@ namespace {
             for (;;) {}
         }
 
-        if (BatteryDiary::timerFlushDue()) BatteryDiary::flushTimerCheckins();
-        esp_sleep_enable_timer_wakeup(UvloLogic::checkIntervalUs());
-        gpio_deep_sleep_hold_en();
-        Serial.printf(
-            "[uvlo] wake=timer vcell_mv=%ld threshold_mv=%d verdict=resleep time_ms=%lu fw=%s\n",
-            (long)vcellMv, CF_UVLO_SLEEP_THRESHOLD_MV,
-            (unsigned long)(millis() - startedAtMs), FW_VERSION_FULL_STRING);
-        Serial.flush();
-        esp_deep_sleep_start();
-        for (;;) {}
+        if (checkinDue) {
+            // A background check-in is due: hand over to it. The display,
+            // LEDs and audio stay off; it returns to sleep through
+            // resleepAfterTimerCheckin() whatever the outcome.
+            s_timerCheckin = true;
+            s_timerVcellMv = vcellMv;
+            s_timerSocPct = soc >= 0.0f && soc <= 110.0f ? (int32_t)soc : -1;
+            s_timerStartedMs = startedAtMs;
+            return;
+        }
+        resleepTimerWake(vcellMv, startedAtMs);
     }
 }
 
@@ -227,6 +267,9 @@ namespace HAL
         s_bootWakeupCause = esp_sleep_get_wakeup_cause();
         if (s_bootWakeupCause == ESP_SLEEP_WAKEUP_TIMER) {
             timerWakeBatteryCheck(startedAtMs);
+            // Returns only for a due background check-in, which needs none
+            // of the hardware below.
+            return;
         }
 
         // Release GPIO holds latched across the previous deep sleep before
@@ -324,8 +367,33 @@ namespace HAL
         esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, LOW);
     }
 
+    void setBeforeSleep(void (*hook)())
+    {
+        s_beforeSleep = hook;
+    }
+
+    void setTimerCheckinDue(uint32_t dueSec)
+    {
+        s_checkinDueSec = dueSec;
+        s_checkinArmMagic = kCheckinArmMagic;
+    }
+
+    bool timerCheckinWake(int32_t& vcellMv, int32_t& socPct)
+    {
+        vcellMv = s_timerVcellMv;
+        socPct = s_timerSocPct;
+        return s_timerCheckin;
+    }
+
+    void resleepAfterTimerCheckin(bool flushDiary)
+    {
+        resleepTimerWake(s_timerVcellMv, s_timerStartedMs, flushDiary);
+    }
+
     void enterDeepSleep(bool hardShutdown)
     {
+        // Arms the next background check-in (only a timer wake can run one).
+        if (!hardShutdown && s_beforeSleep) s_beforeSleep();
         if (!hardShutdown) {
             BatteryDiary::onSleepEnter(batteryVoltage,
                                        batteryVoltagePercentage,
