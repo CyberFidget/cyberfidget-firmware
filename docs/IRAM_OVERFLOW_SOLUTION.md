@@ -395,7 +395,7 @@ void MusicPlayerApp::end() {
 
 ## Partition Table
 
-We use `huge_app.csv` which gives a single 3.1MB app partition with no OTA:
+Previously, we used `huge_app.csv`, which gave a single 3.1MB app partition with no OTA:
 
 ```
 # Name,   Type, SubType, Offset,   Size, Flags
@@ -405,11 +405,13 @@ app0,     app,  ota_0,   0x10000, 0x300000,
 spiffs,   data, spiffs,  0x310000,0xF0000,
 ```
 
-With the music player using only 51.6% of flash, there's plenty of room for future features. We could switch to a partition with OTA support later if needed, but for a BT audio device, OTA over WiFi is awkward anyway (WiFi and BT Classic can't run simultaneously on ESP32).
+That was the partition layout during the original IRAM investigation. The current `platformio.ini` selects `default_8MB.csv`, with two 0x330000-byte app slots for OTA. The release build reserves 64KB in each slot as a size margin. The 51.6% flash figure above is historical, not a measurement of today's firmware.
 
 ## Build Configuration Reference
 
 ### platformio.ini Key Settings
+
+This snapshot records the original IRAM build settings; the partition line below reflects the current `platformio.ini`. Consult that file for the current values of the other flags.
 
 ```ini
 [env:adafruit_feather_esp32_v2]
@@ -417,7 +419,7 @@ platform = https://github.com/pioarduino/platform-espressif32/releases/download/
 board = adafruit_feather_esp32_v2
 framework = arduino
 
-board_build.partitions = huge_app.csv
+board_build.partitions = default_8MB.csv
 board_build.flash_mode = qio
 board_build.f_cpu = 240000000L
 board_build.flash_size = 8MB
@@ -467,7 +469,7 @@ extra_scripts =
 | `-DAUDIOTOOLS_NO_*` | Flash | Prevents compilation of unused audio drivers |
 | `-DCONFIG_ESP32_WIFI_IRAM_OPT=0` | IRAM | WiFi fast-path code stays in flash |
 | `-DCONFIG_NEWLIB_NANO_FORMAT=1` | Flash + IRAM | Smaller printf/scanf family |
-| `huge_app.csv` | Usable flash | 3.1MB app vs 1.3MB with default partitions |
+| `default_8MB.csv` | Usable flash | Two 0x330000-byte OTA app slots in the current build |
 
 ## Tools
 
@@ -515,7 +517,7 @@ Runs as a post-build step. Creates a single `merged_firmware.bin` that includes 
 
 7. **PlatformIO pre-build scripts are powerful.** `extra_scripts = pre:script.py` lets you modify the build environment, patch files, add flags, etc. before compilation starts. It's the right hook for framework-level modifications.
 
-8. **The partition table matters.** `huge_app.csv` gives 3.1MB vs 1.3MB default. If you don't need OTA, use it. (And on a BT audio device, WiFi OTA is awkward since WiFi and BT Classic can't coexist on ESP32.)
+8. **The partition table matters.** We previously used `huge_app.csv` for one large app slot. The current `default_8MB.csv` provides two OTA app slots; check `platformio.ini` before relying on a historical layout.
 
 ## Appendix: IRAM Budget Breakdown (Post-Fix)
 
