@@ -15,6 +15,7 @@ constexpr int kOffFlags   = 20;
 constexpr int kOffMonth   = 21;
 constexpr int kOffLot     = 22;
 constexpr int kOffVariant = 24;
+constexpr int kOffSerial  = 25;
 }  // namespace
 
 Info defaults() {
@@ -45,6 +46,10 @@ Info parseBoardBlock(const uint8_t blk[32]) {
     info.month     = blk[kOffMonth];
     info.lot       = blk[kOffLot];
     info.variant   = blk[kOffVariant];
+    info.serial    = ((uint32_t)blk[kOffSerial] << 24) |
+                     ((uint32_t)blk[kOffSerial + 1] << 16) |
+                     ((uint32_t)blk[kOffSerial + 2] << 8) |
+                     (uint32_t)blk[kOffSerial + 3];
     return info;
 }
 

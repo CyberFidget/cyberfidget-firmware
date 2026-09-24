@@ -19,6 +19,7 @@
  *   21  manufacturing month (1-12)
  *   22  batch/lot id (0 = unknown)
  *   24  variant/population bitfield
+ *   25-28 unit serial (zero = not burned)
  *
  * A board without the magic byte (every board built before provisioning
  * began, and any read failure) reports the defaults: rev 1.2, no flags.
@@ -59,6 +60,7 @@ struct Info {
     uint8_t month;
     uint8_t lot;
     uint8_t variant;
+    uint32_t serial;
     uint8_t layoutVersion;  // raw byte 8 when the magic is present, else 0
 };
 

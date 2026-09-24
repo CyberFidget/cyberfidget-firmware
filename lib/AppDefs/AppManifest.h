@@ -63,3 +63,4 @@ APP_ENTRY(APP_WASM_HOST,             "",                    "",               []
 // Status screen behind the main-menu status bar: last check-in, battery
 // detail, pending notifications. Appended last so existing indices stay put.
 APP_ENTRY(APP_STATUS,                "Status",              "",               StatusView::appBegin,                             StatusView::appEnd,                             StatusView::appUpdate                      )
+APP_ENTRY(APP_LINK,                  "Link",                "Settings",       DeviceLinkApp::begin,                            DeviceLinkApp::end,                            DeviceLinkApp::update                      )

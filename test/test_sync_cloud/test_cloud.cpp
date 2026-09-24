@@ -430,6 +430,21 @@ void test_checkin_body_omits_unacceptable_answer() {
     cJSON_Delete(root);
 }
 
+void test_checkin_body_carries_hardware_fields_when_present() {
+    CheckinFields f;
+    f.deviceId = "aabbccddeeff";
+    f.flashId = "0123456789abcdef";
+    f.serial = "1234abcd";
+    const std::string body = buildCheckinBody(f);
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, body.find("\"flash_id\":\"0123456789abcdef\""));
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, body.find("\"serial\":\"1234abcd\""));
+    f.flashId = "";
+    f.serial = "";
+    const std::string absent = buildCheckinBody(f);
+    TEST_ASSERT_EQUAL(std::string::npos, absent.find("\"flash_id\""));
+    TEST_ASSERT_EQUAL(std::string::npos, absent.find("\"serial\""));
+}
+
 void test_budget_selection() {
     TEST_ASSERT_TRUE(budgetCovers(61000, 10000, 150000, 12000));
     TEST_ASSERT_FALSE(budgetCovers(61000, 80000, 150000, 12000));
@@ -501,6 +516,7 @@ int main(int, char**) {
     RUN_TEST(test_rejection_strings_match_server_rule);
     RUN_TEST(test_checkin_body_carries_answer_and_report);
     RUN_TEST(test_checkin_body_omits_unacceptable_answer);
+    RUN_TEST(test_checkin_body_carries_hardware_fields_when_present);
     RUN_TEST(test_budget_selection);
     RUN_TEST(test_backoff_retention);
     RUN_TEST(test_applied_notice_only_for_this_sessions_apply);

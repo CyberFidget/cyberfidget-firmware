@@ -85,6 +85,8 @@ bool validResult(const char* result);
 
 struct CheckinFields {
     const char* deviceId = "";
+    const char* flashId = "";
+    const char* serial = "";
     const char* fw = "";
     const char* abi = "";
     const char* board = "";

@@ -96,7 +96,7 @@ enum class StatusGlyph : uint8_t {
 };
 
 struct StatusEntry {
-    static constexpr int kMaxText = 48;   // bytes including the terminator
+    static constexpr int kMaxText = 80;   // bytes including the terminator
 
     StatusKind kind      = StatusKind::Info;
     uint8_t    priority  = StatusPriority::Normal;

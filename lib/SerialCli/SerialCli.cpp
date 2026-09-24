@@ -23,6 +23,7 @@
 #include "FerrySession.h"     // pure write session (fwrite..fwabort, lapply)
 #include "LittleFsFerryStorage.h"
 #include "CloudSync.h"
+#include "DeviceIdentity.h"
 
 #include "HAL.h"              // displayProxy() for screencap (T-191)
 #include "DisplayProxy.h"     // frameBuffer()
@@ -443,6 +444,29 @@ void SerialCli::poll() {
                       cloudResult.err, cloudResult.applied, cloudResult.offered,
                       (unsigned)cloudResult.nextMs, (unsigned)cloudResult.heapMin);
     }
+    static uint32_t linkGeneration = 0;
+    const CloudSync::LinkSnapshot link = CloudSync::linkSnapshot();
+    if (link.generation != linkGeneration) {
+        linkGeneration = link.generation;
+        if (link.state == CloudSync::LinkState::Code)
+            Serial.printf("[cmd] link.code=%s\n", link.code);
+        else if (link.state == CloudSync::LinkState::Confirm)
+            Serial.printf("[cmd] link.state=confirm account=%s\n", link.account);
+        else if (link.state == CloudSync::LinkState::ClearApps)
+            Serial.println("[cmd] link.state=clear_apps");
+        else if (link.state == CloudSync::LinkState::Linked)
+            Serial.printf("[cmd] link.state=linked account=%s%s\n", link.account,
+                          link.error[0] ? " apps_clear=failed" : "");
+        else if (link.state == CloudSync::LinkState::Declined)
+            Serial.println("[cmd] link.state=declined");
+        else if (link.state == CloudSync::LinkState::Expired)
+            Serial.println("[cmd] link.state=expired");
+        else if (link.state == CloudSync::LinkState::Error)
+            Serial.printf("[cmd] link.state=error reason=%s\n", link.error);
+        else if (link.state == CloudSync::LinkState::Idle ||
+                 link.state == CloudSync::LinkState::Unlinked)
+            Serial.println("[cmd] link.state=unlinked");
+    }
 #endif
     while (Serial.available() > 0) {
         int byte = Serial.read();
@@ -527,6 +551,33 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "fread", &arg))   { cmdFread(arg);   return; }
     if (verbWithArg(line, "lapply", &arg))  { cmdLapply(arg);  return; }
 #ifdef CF_TEST_CLI
+    if (ieq(line, "link start")) {
+        if (!CloudSync::startLink()) Serial.println("[cmd] link.state=error reason=busy");
+        return;
+    }
+    if (ieq(line, "link ok")) { CloudSync::answerLink(true); Serial.println("[cmd] link.answer=ok"); return; }
+    if (ieq(line, "link no")) { CloudSync::answerLink(false); Serial.println("[cmd] link.answer=no"); return; }
+    if (ieq(line, "link clear")) { CloudSync::answerClearApps(true); Serial.println("[cmd] link.answer=clear"); return; }
+    if (ieq(line, "link keep")) { CloudSync::answerClearApps(false); Serial.println("[cmd] link.answer=keep"); return; }
+    if (ieq(line, "link unlink")) {
+        if (!CloudSync::startUnlink()) Serial.println("[cmd] link.state=error reason=busy");
+        return;
+    }
+    if (ieq(line, "link forget")) {
+        Serial.printf("[cmd] link.forget=%s\n", CloudSync::forgetLink() ? "ok" : "error");
+        return;
+    }
+    if (ieq(line, "link status")) {
+        char account[40];
+        bool fingerprint = true;
+        const bool has = CloudSync::busy() ? CloudSync::linkStatus(account, fingerprint) :
+                         (fingerprint = DeviceIdentity::checkStored(), CloudSync::linked(account));
+        Serial.printf("[cmd] link.status=linked:%s account:%s fingerprint:%s previous:%s\n",
+                       has ? "yes" : "no", has ? account : "-",
+                       fingerprint ? "ok" : "mismatch",
+                       CloudSync::hadPreviousAccount() ? "yes" : "no");
+        return;
+    }
     if (ieq(line, "cloud check")) {
         if (!CloudSync::runSession(CloudSync::Reason::Manual))
             Serial.println("[cmd] cloud.result=error err=busy applied=- offered=- next_ms=0 heap_min=0");
@@ -1076,6 +1127,9 @@ void SerialCli::cmdInfo() {
                   BoardInfo::sourceName(board.source),
                   board.hil ? 1 : 0, board.engSample ? 1 : 0,
                   static_cast<unsigned>(board.layoutVersion));
+    const DeviceIdentity::Fingerprint identity = DeviceIdentity::readLive();
+    Serial.printf("[cmd] info.flash_id=%s\n", identity.flashId[0] ? identity.flashId : "none");
+    Serial.printf("[cmd] info.serial=%s\n", identity.serial[0] ? identity.serial : "none");
     // info.wake.cause is the reply terminator: new keys go above it.
     Serial.printf("[cmd] info.wake.cause=%s\n", HAL::bootWakeupCauseName());
 }

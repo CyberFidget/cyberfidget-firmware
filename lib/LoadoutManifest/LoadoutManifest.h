@@ -158,6 +158,9 @@ bool applyAdd(Loadout& loadout, const LoadoutEntry& entry);
 /// Remove the entry with `id`. Fails if not present.
 bool applyRemove(Loadout& loadout, const char* id);
 
+/// Drop every non-builtin entry and return the blob paths it referenced.
+std::vector<std::string> removeNonBuiltin(Loadout& loadout);
+
 /// Set the hidden flag on the entry with `id`. Fails if not present.
 bool applyHide(Loadout& loadout, const char* id, bool hidden);
 

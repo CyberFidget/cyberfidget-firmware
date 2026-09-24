@@ -214,6 +214,8 @@ std::string buildCheckinBody(const CheckinFields& f) {
     char crcText[9];
     snprintf(crcText, sizeof(crcText), "%08x", (unsigned)f.manifestCrc);
     cJSON_AddStringToObject(root, "device_id", f.deviceId);
+    if (f.flashId && *f.flashId) cJSON_AddStringToObject(root, "flash_id", f.flashId);
+    if (f.serial && *f.serial) cJSON_AddStringToObject(root, "serial", f.serial);
     cJSON_AddStringToObject(root, "fw", f.fw);
     cJSON_AddStringToObject(root, "abi", f.abi);
     cJSON_AddStringToObject(root, "board_rev", f.board);
