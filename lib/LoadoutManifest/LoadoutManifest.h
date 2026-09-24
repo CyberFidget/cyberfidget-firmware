@@ -85,6 +85,7 @@ struct MergedApp {
     std::string label;     ///< blob: menu label (builtin uses registry name)
     std::string blobPath;  ///< blob: confined /apps/... path to the .wasm
     int         abi = 0;   ///< blob: required HAL ABI; 0 = unversioned
+    std::string id;        ///< blob: manifest entry id; empty for builtin rows
 };
 
 /// Parse a manifest ABI string. Empty or invalid values are unversioned (0).

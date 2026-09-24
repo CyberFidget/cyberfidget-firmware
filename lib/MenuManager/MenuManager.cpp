@@ -9,6 +9,8 @@
 #include "WasmFsApp.h"    // T-183: stage a ferried wasm app before launch
 #include "StatusView.h"   // status bar across the top, Status item badge
 #include "CategoryPath.h" // splitCategoryPath (no <sstream>)
+#include "LoadoutStore.h"  // manifest lock for the in-place rebuild
+#include "MenuIdentity.h"  // same item across a rebuild
 
 #include <algorithm>  // for std::min/max if needed
 #include <string>
@@ -280,11 +282,53 @@ void MenuManager::update()
 {
     if (!menuActive) return; // If an app is running, do nothing
 
+    // A manifest change while the menu is showing (an app delivered by a
+    // check-in) is picked up here once the menu is idle at the root: no
+    // submenu, no slide, no reorder. (An open prompt pauses this update.)
+    if (manifestDirty && navigationStack.empty() &&
+        crossSlideState == CROSS_SLIDE_NONE && !moveMode) {
+        rebuildInPlace();
+    }
+
     // Update (animate) highlight, etc.
     tweenAll();        // from your UITween.cpp
     updateTmp();         // if needed from your code
     handleCrossSlide();  // Process the cross slide transition if needed
     drawMenu();          // Redraw the menu each frame (or only if something changed).
+}
+
+// Rebuilds the root list from the manifest while it is on screen, keeping
+// the highlight on the same item (MenuIdentity.h: app index or manifest id,
+// label only for categories) when it still exists. Only called at the root,
+// so no saved navigation state points into the old lists.
+void MenuManager::rebuildInPlace()
+{
+    const bool keep = currentIndex >= 0 && currentIndex < (int)rootMenuItems.size();
+    const MenuItem kept = keep ? rootMenuItems[currentIndex] : MenuItem("", true, APP_COUNT);
+    {
+        // The network worker writes the manifest under the same lock.
+        LoadoutStore::Guard manifestGuard;
+        manifestDirty = false;
+        rootMenuItems.clear();
+        buildNestedMenu();
+    }
+    currentItemList = &rootMenuItems;
+    const int found = keep ? findSameMenuItem(rootMenuItems, kept) : -1;
+    currentIndex = found >= 0 ? found : 0;
+
+    // Snap the scroll and highlight to the (possibly moved) item.
+    auto scrollTween = tweensInt.find(&scrollOffset);
+    if (scrollTween != tweensInt.end()) {
+        delete scrollTween->second;
+        tweensInt.erase(scrollTween);
+    }
+    finalizeHighlightAnimation(&highlightElement);
+    const int itemTop = currentIndex * MENU_ITEM_HEIGHT;
+    const int bottomY = MENU_AREA_HEIGHT - MENU_ITEM_HEIGHT;
+    if (itemTop < scrollOffset) scrollOffset = itemTop;
+    else if (itemTop - scrollOffset > bottomY) scrollOffset = itemTop - bottomY;
+    highlightElement.setY(itemTop - scrollOffset);
+    ESP_LOGI(TAG_MAIN, "Menu rebuilt in place (%d root items)", (int)rootMenuItems.size());
 }
 
 // Called by an app to hand control back to the menu
@@ -320,7 +364,8 @@ void MenuManager::registerApp(const std::string &path,
 void MenuManager::registerBlobApp(const std::string &path,
                                     const std::string &label,
                                     const std::string &blobPath,
-                                    int blobAbi)
+                                    int blobAbi,
+                                    const std::string &blobId)
 {
     auto categories = parseCategoryPath(path);
     std::vector<MenuItem> *level = &rootMenuItems;
@@ -333,6 +378,7 @@ void MenuManager::registerBlobApp(const std::string &path,
     leaf.blobPath  = blobPath;
     leaf.blobLabel = label;
     leaf.blobAbi   = blobAbi;
+    leaf.blobId    = blobId;
     level->push_back(leaf);
 }
 

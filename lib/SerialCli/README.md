@@ -25,7 +25,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 | `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary` | `apps`, `app`, `launch`, `soak` |
 | `menutree`, `screencap`, `screenstream` | `net`, `heapstat`, `tlsprobe`, `tlsalloc`, `mic`, `wifi`, `wasmstat` |
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
-| `lget`, `lapply`, `syncinfo` | `prompt`, `status` |
+| `lget`, `lapply`, `syncinfo` | `prompt`, `status`, `upd` |
 
 The `local_test` PlatformIO environment defines `CF_TEST_CLI`. A normal
 `local` build does not compile the gated dispatch arms or implementations.
@@ -330,6 +330,28 @@ answer `[err] sync.busy`. A refused `fwdata` or `lapply` still drains the
 payload length from its header first, so the stream stays in frame.
 `tlsprobe` answers `radio-busy` during a session, and a session will not start
 while a probe runs.
+
+### Update settings (test build only)
+
+```text
+upd                          -> [cmd] upd.key=<key> type=<str|u8|u32|i32> value=<value>   (one per stored key)
+                                [cmd] upd.done=<count>
+upd offer <version> [source] -> [cmd] upd.offer=open version=<v> source=<source>
+                                [cmd] upd.offer=suppressed reason=<skipped|not-newer|invalid> version=<v>
+                                [err] upd.offer=busy | not-menu | refused
+bad arguments                -> [err] upd.usage=upd [offer <version> [source]]
+```
+
+`upd` lists every key in the NVS namespace `upd` (the update settings, see
+`lib/UpdatePolicy/README.md`) with its stored type and value, in storage
+order, and changes nothing. `upd offer` opens the update prompt ("Update
+<version> ready (<source>)" / Install now / Remind me later / Skip this
+version) for a stand-in offer held in RAM, through the same rules as a real
+one: a skipped or not-newer version is refused. Only the answer stores
+anything. Answer with `btn` (Down = 1, Enter = 5); the device logs
+`[upd] prompt=firmware choice=<install|later|skip|none> version=<v> rej_write=<ok|error|->`.
+The source defaults to `cyberfidget.com`. Bench case:
+`test/bench/cases/t391-prompt-options.json`.
 
 ### Device link controls (test build only)
 

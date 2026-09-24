@@ -15,6 +15,8 @@
 #include "CloudSync.h"
 #include "CheckinScheduler.h"
 #include "DeviceIdentity.h"
+#include "UpdatePrompt.h"
+#include "PromptPolicy.h"
 #include <Preferences.h>
 
 void (*keep_functions[])() = {menuBegin, menuEnd, menuRun};
@@ -48,9 +50,11 @@ void AppManager::setTestAllowBtAfterWifi(bool allow) { testAllowBtAfterWifi = al
 // Prompts pause the menu only (and the boot screen that hands over to it).
 // Apps that need a prompt must extend this deliberately: the prompt pauses
 // whatever app is underneath, and most apps are not written to be paused.
+// The update screens only draw and wait for buttons, so pausing them is safe.
 static bool appTakesPrompts(AppIndex app)
 {
-    return app == APP_MENU || app == APP_BOOT_ANIMATION || app == APP_LINK;
+    return app == APP_MENU || app == APP_BOOT_ANIMATION || app == APP_LINK ||
+           app == APP_CHECK_UPDATES || app == APP_UPDATES;
 }
 
 // Singleton instance
@@ -94,6 +98,7 @@ void AppManager::setup() {
     bool skipBootAnimation = false;
     bool bootPortal = false;
     bool bootCloud = false;
+    bool bootApply = false;
     bool bootMusic = false;
     bool bootLink = false;
     bool bootUnlink = false;
@@ -101,12 +106,14 @@ void AppManager::setup() {
         skipBootAnimation = bootPrefs.getBool("skipanim", false);
         bootPortal = bootPrefs.getBool("bootapp", false);
         bootCloud = bootPrefs.getBool("bootcloud", false);
+        bootApply = bootPrefs.getBool("bootapply", false);
         bootMusic = bootPrefs.getBool("bootmusic", false);
         bootLink = bootPrefs.getBool("bootlink", false);
         bootUnlink = bootPrefs.getBool("bootunlink", false);
         bootPrefs.remove("skipanim");
         bootPrefs.remove("bootapp");
         bootPrefs.remove("bootcloud");
+        bootPrefs.remove("bootapply");
         bootPrefs.remove("bootmusic");
         bootPrefs.remove("bootlink");
         bootPrefs.remove("bootunlink");
@@ -115,12 +122,17 @@ void AppManager::setup() {
         ESP_LOGW(TAG_MAIN, "Failed to open boot preferences");
     }
     CloudSync::recoverFailure();
+    // A manual check that restarted after Bluetooth use continues here.
+    const PromptPolicy::CheckResume resume =
+        PromptPolicy::resumeAfterRestart(bootCloud, bootApply, bootPortal || bootMusic);
 
     // A Bluetooth app relaunched across the reboot that followed a network
-    // check starts in a clean power cycle.
+    // check starts in a clean power cycle. A check asked for after Bluetooth
+    // use continues on the Check for updates screen, which shows its result.
     appActive     = bootPortal ? APP_WEB_PORTAL
                   : bootMusic  ? APP_MUSIC_PLAYER
                   : bootLink   ? APP_LINK
+                  : resume.openCheckScreen ? APP_CHECK_UPDATES
                                : (skipBootAnimation ? APP_MENU : APP_BOOT_ANIMATION);
     appPreviously = APP_MENU;
 
@@ -138,11 +150,18 @@ void AppManager::setup() {
     appDefs[appActive].beginFunc();
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
     if (bootLink && !CloudSync::busy()) CloudSync::startLink();
-    if (bootCloud && !bootPortal && !bootMusic) CloudSync::runSession(CloudSync::Reason::Recovery);
+    if (resume.runCheck) {
+        const bool started = CloudSync::runSession(CloudSync::Reason::Recovery, resume.applyWaiting);
+        // The screen shows this session's result once and never starts
+        // another check for it, however fast it finishes.
+        if (appActive == APP_CHECK_UPDATES) UpdatePrompt::resumeCheck(started);
+    }
     if (bootUnlink && !bootPortal && !bootMusic) CloudSync::startUnlink();
     bootWindowPending = true;
     bootWasOneShot = skipBootAnimation || bootPortal || bootMusic || bootLink ||
                      bootUnlink || bootCloud;
+    // The update popup follows the start-up animation only.
+    if (appActive == APP_BOOT_ANIMATION) UpdatePrompt::armBootPopup();
 
     ESP_LOGI(TAG_MAIN, "Returned from beginFunc() for appActive=%d", (int)appActive);
 }
@@ -157,6 +176,7 @@ void AppManager::loop() {
         CheckinScheduler::startBootWindow(bootWasOneShot);
     }
     CheckinScheduler::loop();
+    UpdatePrompt::loop();
 
     processButtonEvents();
     SerialCli::instance().poll();

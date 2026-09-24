@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception -->
 # UpdatePolicy
 
-When the Fidget checks in with the site. `CheckinPolicy` is the pure rule
+When the Fidget checks in with the site, and what the update prompt offers. `CheckinPolicy` is the pure rule
 set (host-tested in `test/test_upd_policy_checkin`, `pio test -e
 test_upd_policy`); `CheckinScheduler` (in `lib/CloudSync`, so the
 library graph gains no new cycle through `AppManager`) is the device glue
@@ -25,7 +25,7 @@ is reported absent, and the boot window's join budget is 4 s (see
 
 ## Stored settings
 
-NVS namespace `upd` (shared with the update prompt work):
+NVS namespace `upd` (the prompt's keys are under "Update prompt" below):
 
 - `policy` (string): `never` turns automatic check-ins off; anything else,
   or no key, is `auto`.
@@ -126,3 +126,83 @@ changes). A headless wake ends with
   wake runs a headless check-in. For a power-profiler capture of a daily
   check-in, run this build on the profiler bench unit and log the serial
   port with a no-reset open.
+
+## Update prompt
+
+`PromptPolicy` is the pure rule set for the prompt and Settings > Updates
+(host-tested in `test/test_upd_policy_prompt`; menu placement and row labels
+in `test/test_core_updatemenu`, `pio test -e test_core`). The device glue is
+`lib/UpdatePrompt`: it reads and writes NVS `upd`, opens the prompts
+(`ModalPrompt`, long labels scroll) and runs two screens.
+
+### Prompts
+
+    Update 1.4.0 ready (cyberfidget.com)      App changes waiting
+    > Install now                             > Get them now
+      Remind me later                           Later
+      Skip this version
+
+- A firmware offer is shown when `upd.avail` holds a version that is newer
+  than the running one and is not `upd.rej`. Versions are semantic versions
+  (`MAJOR.MINOR.PATCH`, optional `-prerelease`, optional `+build`, at most
+  31 characters), validated as a whole: anything else is never offered. A
+  prerelease sorts below its final; build metadata does not count. An empty `avail` is no
+  notification, not an error. The check-in itself only says that a
+  firmware manifest exists (`offered=fw`, `upd.fw_url`); comparing that
+  manifest and writing `avail` belong to the update session, so until it
+  exists a real check-in never raises the firmware prompt (the bench uses
+  `upd offer`).
+- Install now: hands off to the update session (the `bootcfg` one-shot and
+  a restart) once that session exists. Until then it says "Installing on
+  your Fidget is coming soon. Update it from the website for now." and
+  stores nothing; the offer stays in the status bar.
+- Remind me later (or no answer): stores nothing; the offer stays in the
+  status bar and the next start-up or check offers it again.
+- Skip this version: `upd.rej = <version>`. Only that exact version is
+  suppressed; a newer one is offered again. Settings > Updates can unskip.
+- App changes waiting (only when "Apply app changes automatically" is off):
+  Get them now runs a check that applies them this once; Later leaves them
+  waiting in the status bar. The check-in carries no count, so the title
+  has none.
+
+### When they appear
+
+- After the start-up animation, once: the boot-window result
+  (`CheckinScheduler::takeBootResult()`) and the stored offer. Auto-check Off
+  silences this popup. A result that arrives after the animation only
+  reaches the status bar. A restart that relaunches something (portal,
+  Music Player, link, a check) shows no popup.
+- After a manual check (root "Check for updates", Settings > Updates >
+  Check now): the result screen, then the same prompts. With Auto-check Off
+  it also says "Automatic check-ins are off. Remote changes wait for a
+  manual check."
+- A manual check after Bluetooth use says "Restarting to check...", sets
+  `bootcfg.bootcloud` (plus `bootcfg.bootapply` when it came from "Get them
+  now") and restarts (`CloudSync::runSession`, `PromptPolicy::restartForCheck`).
+  The next start consumes both (`resumeAfterRestart`), runs the check as a
+  recovery session with the same apply choice, and opens the Check for
+  updates screen already watching that session (`checkEntry`): it shows
+  that session's result once, even if it finished before the screen's first
+  pass, and never starts a second check.
+
+### Settings > Updates
+
+Check now, Auto-check On/Off (`upd.policy` `auto`/`never`; turning it off
+explains the choice), Apply app changes automatically On/Off
+(`upd.autoapply`, default on; it never installs firmware), Channel and Source
+(shown only: `upd.chan`, default `stable`; `upd.src`, default
+`cyberfidget.com`), Skip/Unskip the current version (Unskip when the offered
+version is the skipped one, or when nothing is offered; a newer offer shows
+Skip, which replaces the older skip), Link / Unlink this
+Fidget (opens the Link screen), Dev mode Off / On / Always on, and the status
+line the bar is showing (opens the Status screen). Dev mode stores
+`upd.dev` (0/1/2) and `upd.dev_idle_min` (60 when first set) and restarts
+with the start-up animation skipped; nothing else acts on it yet.
+
+Keys the prompt work writes: `policy`, `rej`, `autoapply`, `dev`,
+`dev_idle_min`. It reads `avail`, `src`, `chan`. "Forget WiFi" in the portal
+clears only `wificfg`, never `upd`.
+
+Bench: `upd` (read-only list of every `upd` key) and `upd offer <version>`
+(test builds; see `lib/SerialCli/README.md`), case
+`test/bench/cases/t391-prompt-options.json`.

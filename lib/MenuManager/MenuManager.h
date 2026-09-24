@@ -45,6 +45,7 @@ struct MenuItem {
     std::string  blobPath;
     std::string  blobLabel;
     int          blobAbi = 0;
+    std::string  blobId;          // manifest entry id of a ferried app
 
     MenuItem(const std::string &lbl, bool cat, AppIndex idx)
         : label(lbl), isCategory(cat), appIndex(idx)
@@ -89,7 +90,8 @@ public:
     void registerBlobApp(const std::string &path,
                          const std::string &label,
                          const std::string &blobPath,
-                         int blobAbi);
+                         int blobAbi,
+                         const std::string &blobId = std::string());
 
     /**
      * @brief Initialize the menu system. 
@@ -138,8 +140,9 @@ public:
 
     /**
      * @brief Mark the menu stale after a loadout manifest change (T-183).
-     * The next begin() rebuilds the tree once. Safe to call from the sync
-     * path; the rebuild itself happens only on menu entry.
+     * The next begin() rebuilds the tree once; a menu already showing
+     * rebuilds in place as soon as it is idle at the root. Safe to call
+     * from the sync path; the rebuild itself happens on the loop.
      */
     void markManifestDirty() { manifestDirty = true; }
 
@@ -194,6 +197,9 @@ private:
 
     // We'll store the highlight shape
     HighlightShape highlightShape = HIGHLIGHT_RECTANGLE;
+
+    // Rebuild the root list while it is showing (manifest changed).
+    void rebuildInPlace();
 
     // Cross-slide transitions
     void crossSlideForward(const MenuItem &child);

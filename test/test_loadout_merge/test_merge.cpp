@@ -192,6 +192,26 @@ void test_migration_dedup_keeps_slug_at_earlier_position(void) {
     TEST_ASSERT_EQUAL_STRING("snake", l.entries[1].id.c_str());
 }
 
+// Two delivered apps may share a name; the menu keeps a selection on the
+// right one across a rebuild by the manifest id each merged row carries.
+void test_blob_rows_carry_their_manifest_id(void) {
+    Loadout l;
+    l.entries.push_back(makeEntry("timer-a", "Tools"));
+    l.entries.push_back(makeEntry("timer-b", "Tools"));
+    for (auto& e : l.entries) {
+        e.format = "wasm";
+        e.name = "Timer";
+        e.blobPath = "/apps/" + e.id + "-0123abcd.wasm";
+    }
+    l.entries.push_back(makeEntry("APP_SNAKE", "Games"));
+    auto merged = mergeWithRegistry(l, kRegistry, kRegistryCount);
+    TEST_ASSERT_EQUAL_INT(-1, merged[0].appIndex);
+    TEST_ASSERT_EQUAL_STRING("timer-a", merged[0].id.c_str());
+    TEST_ASSERT_EQUAL_STRING("timer-b", merged[1].id.c_str());
+    TEST_ASSERT_EQUAL_STRING(merged[0].label.c_str(), merged[1].label.c_str());
+    TEST_ASSERT_EQUAL_STRING("", merged[2].id.c_str());   // builtin rows use the index
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -209,5 +229,6 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_empty_registry_yields_empty_merge);
     RUN_TEST(test_slug_and_legacy_migration);
     RUN_TEST(test_migration_dedup_keeps_slug_at_earlier_position);
+    RUN_TEST(test_blob_rows_carry_their_manifest_id);
     return UNITY_END();
 }

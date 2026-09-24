@@ -38,6 +38,7 @@
 #include "UvloLogic.h"
 #include "ModalPrompt.h"     // prompt (sample modal for bench screenshots)
 #include "StatusView.h"      // status (menu status bar bench states)
+#include "UpdatePrompt.h"    // upd (update settings read-back, stand-in offer)
 #endif
 
 #ifdef CF_TEST_CLI
@@ -667,6 +668,13 @@ void SerialCli::dispatch(const char* line) {
     if (verbWithArg(line, "prompt", &arg)) { cmdPrompt(arg); return; }
     if (ieq(line, "status"))                { cmdStatus("");  return; }
     if (verbWithArg(line, "status", &arg)) { cmdStatus(arg); return; }
+    if (ieq(line, "upd"))                   { UpdatePrompt::printState(); return; }
+    if (verbWithArg(line, "upd", &arg)) {
+        const char* value = nullptr;
+        if (verbWithArg(arg, "offer", &value)) { UpdatePrompt::injectOffer(value); return; }
+        Serial.println("[err] upd.usage=upd [offer <version> [source]]");
+        return;
+    }
 #endif
     Serial.printf("[err] unknown command: %s\n", line);
 }
@@ -1183,7 +1191,8 @@ void SerialCli::cmdHelp() {
                    "wifi <ssid>|<pass>,wasmstat,btn,sleep,rail,gauge,uvlo,"
                    "soak <app|off>,prompt <n> [timeout_ms],"
                    "status [post|popup|clear|checkin],cloud <base|token|check|autoapply|"
-                   "interval|due|guard|press|ssid|btafterwifi>,btstat");
+                   "interval|due|guard|press|ssid|btafterwifi>,btstat,"
+                   "upd [offer <version> [source]]");
 #endif
 }
 

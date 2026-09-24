@@ -212,13 +212,13 @@ void loop() {
     CloudSync::runSession(CloudSync::Reason::Awake);
 }
 
-bool checkNow() {
+bool checkNow(bool applyWaiting) {
     Inputs in;
     in.sessionRunning = CloudSync::busy();
     in.btIdle = esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE;
     if (decide(Session::Manual, in) == Verdict::Busy) return false;
     // After Bluetooth use runSession restarts through the one-shot first.
-    return CloudSync::runSession(CloudSync::Reason::Manual);
+    return CloudSync::runSession(CloudSync::Reason::Manual, applyWaiting);
 }
 
 bool takeBootResult(CloudSync::Result& out) {
