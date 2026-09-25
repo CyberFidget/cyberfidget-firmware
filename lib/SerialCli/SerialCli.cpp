@@ -40,6 +40,7 @@
 #include "ModalPrompt.h"     // prompt (sample modal for bench screenshots)
 #include "StatusView.h"      // status (menu status bar bench states)
 #include "UpdatePrompt.h"    // upd (update settings read-back, stand-in offer)
+#include "AwakeMode.h"       // awake (Awake & dev mode bench verbs)
 #endif
 
 #ifdef CF_TEST_CLI
@@ -56,6 +57,7 @@
 #include "AppDefs.h"
 #include "AppManager.h"
 #include "CheckinScheduler.h"
+#include "CheckinPolicy.h"
 #include "MicCapture.h"
 #include "TlsProbeSession.h"
 #include "TrustedRoots.h"
@@ -505,8 +507,9 @@ void SerialCli::poll() {
 
 void SerialCli::dispatch(const char* line) {
     const char* arg = nullptr;
-    if (CloudSync::busy()) {
-        // Refuse writes while a network pull owns the store. A refused
+    if (CloudSync::storeBusy()) {
+        // Refuse writes while a network pull owns the store (dev mode
+        // listening only while it is inside a check-in). A refused
         // fwdata/lapply still drains its payload first, as FerrySession
         // does on its own early refusals, so the stream stays in frame.
         uint32_t offset = 0, len = 0, crc = 0;
@@ -653,6 +656,17 @@ void SerialCli::dispatch(const char* line) {
                           (absent || saved) && CloudSync::setAbsentSsidTest(absent) ? value : "error");
             return;
         }
+        if (verbWithArg(arg, "bootcheck", &value)) {
+            // "Check at start-up" (Settings > Updates), for the bench.
+            const bool on = ieq(value, "on");
+            if (!on && !ieq(value, "off")) { Serial.println("[cmd] cloud.bootcheck=error"); return; }
+            Preferences upd;
+            const bool ok = upd.begin("upd", false) &&
+                            upd.putUChar(CheckinPolicy::kKeyBootCheck, on ? 1 : 0) != 0;
+            upd.end();
+            Serial.printf("[cmd] cloud.bootcheck=%s\n", ok ? (on ? "on" : "off") : "error");
+            return;
+        }
         if (verbWithArg(arg, "btafterwifi", &value)) {
             const bool allow = ieq(value, "allow");
             if (!allow && !ieq(value, "block")) { Serial.println("[cmd] cloud.btafterwifi=error"); return; }
@@ -663,10 +677,31 @@ void SerialCli::dispatch(const char* line) {
         Serial.println("[cmd] cloud.error=usage");
         return;
     }
+    if (ieq(line, "awake")) { AwakeMode::cliCommand(""); return; }
+    if (verbWithArg(line, "awake", &arg)) { AwakeMode::cliCommand(arg); return; }
     if (ieq(line, "apps")) { cmdApps(); return; }
     if (ieq(line, "app"))  { cmdApp();  return; }
     if (ieq(line, "net"))  { cmdNet();  return; }
     if (ieq(line, "heapstat")) { cmdHeapstat(); return; }
+    if (ieq(line, "heapmap")) {
+        // Where the internal heap is split: the stacks of the tasks the
+        // network leaves behind, then every internal block (rom printf).
+        static const char* const names[] = {"tiT", "sys_evt", "arduino_events", "wifi",
+                                            "esp_timer", "cloudsync", "wasm_guest", "loopTask",
+                                            "async_tcp", "Tmr Svc", "ipc0", "ipc1"};
+        for (const char* n : names) {
+            TaskHandle_t h = xTaskGetHandle(n);
+            Serial.printf("[cmd] heapmap.task=%s stack=%p\n", n,
+                          h ? (void*)pxTaskGetStackStart(h) : nullptr);
+        }
+        Serial.printf("[cmd] heapmap.largest=%u free=%u\n",
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+        Serial.flush();
+        heap_caps_dump(MALLOC_CAP_INTERNAL);
+        Serial.println("[cmd] heapmap.done=1");
+        return;
+    }
     if (ieq(line, "btstat")) { cmdBtstat(); return; }
     if (verbWithArg(line, "tlsalloc", &arg)) { cmdTlsalloc(arg); return; }
     if (ieq(line, "tlsprobe")) { cmdTlsprobe(kTlsDefaultUrl); return; }
@@ -1636,7 +1671,8 @@ bool SerialCli::launchResolved(const char* arg, const char* replyVerb,
                     (ieq(arg, e.id.c_str()) || ieq(arg, e.name.c_str()))) {
                     int abi = LoadoutManifest::parseAbiVersion(e.abi);
                     WasmFsApp::setPending(e.blobPath.c_str(),
-                                          e.name.empty() ? e.id.c_str() : e.name.c_str(), abi);
+                                          e.name.empty() ? e.id.c_str() : e.name.c_str(), abi,
+                                          e.id.c_str());
                     bool abiSupported = WasmFsApp::pendingAbiSupported();
                     AppManager::instance().switchToApp(APP_WASM_HOST);
                     if (!abiSupported) {

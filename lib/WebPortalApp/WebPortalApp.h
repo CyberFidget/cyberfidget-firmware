@@ -29,6 +29,10 @@ public:
     static void onButtonEnter(const ButtonEvent& event);
     static void onButtonUp(const ButtonEvent& event);   // caption font toggle
     static bool bluetoothReleasedThisPowerCycle();
+    // Dev mode start-up (lib/UpdatePrompt/AwakeMode): frees the Bluetooth
+    // memory exactly as the portal does, for a power cycle that uses the
+    // network and never Bluetooth.
+    static void releaseBluetoothForNetwork() { releaseBluetoothMemory(); }
 
 private:
     static WebPortalApp* instance;
@@ -147,7 +151,7 @@ private:
     // Shared lifecycle body for AppManager-driven exit and confirmed reboot.
     void teardown();
     void confirmExitAndRestart();
-    void releaseBluetoothMemory();
+    static void releaseBluetoothMemory();
 
     // Web server setup
     void setupRoutes();

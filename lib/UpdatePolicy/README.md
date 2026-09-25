@@ -12,9 +12,13 @@ that reads stored settings, the battery and the radio state, asks the policy, an
 
 | Session | Started from | Needs |
 |---|---|---|
-| Boot | first `AppManager::loop` pass while the start-up animation plays | Auto-check on, saved WiFi, a link, a normal start (not a restart that relaunches the portal, Music Player, linking, a check or a skipped animation), at least an hour since the last check-in (`kBootMinGapSec`: every button wake is a start; only a set clock with a stored check-in time, or a success earlier this power-on, counts as a recent check-in, so a cold start after a reset or a flat battery always gets its boot check), no backoff running, VBAT >= 3.6 V and SOC >= 20 % |
+| Boot | first `AppManager::loop` pass while the start-up animation plays | Auto-check on, "Check at start-up" on (`upd.boot_chk`, u8, missing = on), saved WiFi, a link, a normal start (not a restart that relaunches the portal, Music Player, linking, a check or a skipped animation), at least an hour since the last check-in (`kBootMinGapSec`: every button wake is a start; only a set clock with a stored check-in time, or a success earlier this power-on, counts as a recent check-in, so a cold start after a reset or a flat battery always gets its boot check), no backoff running, VBAT >= 3.6 V and SOC >= 20 % |
 | Daily | an hourly battery timer wake whose check-in is due | the same, plus the interval passed, no backoff running; one session per due wake (the headless path runs once) |
 | Awake | `CheckinScheduler::loop`, every 30 s | the same as Daily, plus the menu in front, no prompt open, Bluetooth never started this power cycle |
+
+Stay awake (Awake & dev mode, `upd.awake` = 1) starts no automatic session:
+Boot and Awake answer `stay-awake`, and the Fidget never sleeps, so no Daily
+wake runs either. A manual check still works.
 | Manual | `CheckinScheduler::checkNow()` (test CLI `cloud check`) | nothing: works with Auto-check off and at any battery level; after Bluetooth use the device restarts first (`bootcfg.bootcloud`) |
 
 Boot, Daily and Awake never wait with WiFi on for the site's 60 s spacing
@@ -195,20 +199,137 @@ in `test/test_core_updatemenu`, `pio test -e test_core`). The device glue is
 ### Settings > Updates
 
 Check now, Auto-check On/Off (`upd.policy` `auto`/`never`; turning it off
-explains the choice), Apply app changes automatically On/Off
+explains the choice), Check at start-up On/Off (`upd.boot_chk`; Off stops only
+the boot session - the daily sleep check-in, a Fidget kept awake past its
+interval, a manual check and dev mode are unaffected; changing it shows
+"Checks for updates when you wake your Fidget. Turning it off avoids a short
+restart when you open a new app."), Apply app changes automatically On/Off
 (`upd.autoapply`, default on; it never installs firmware), Channel and Source
 (shown only: `upd.chan`, default `stable`; `upd.src`, default
 `cyberfidget.com`), Skip/Unskip the current version (Unskip when the offered
 version is the skipped one, or when nothing is offered; a newer offer shows
 Skip, which replaces the older skip), Link / Unlink this
-Fidget (opens the Link screen), Dev mode Off / On / Always on, and the status
-line the bar is showing (opens the Status screen). Dev mode stores
-`upd.dev` (0/1/2) and `upd.dev_idle_min` (60 when first set) and restarts
-with the start-up animation skipped; nothing else acts on it yet.
+Fidget (opens the Link screen), "Awake & dev mode: <mode>" (opens that
+screen, below), and the status line the bar is showing (opens the Status
+screen).
 
-Keys the prompt work writes: `policy`, `rej`, `autoapply`, `dev`,
-`dev_idle_min`. It reads `avail`, `src`, `chan`. "Forget WiFi" in the portal
-clears only `wificfg`, never `upd`.
+Keys the prompt work writes: `policy`, `boot_chk`, `rej`, `autoapply`. It reads `avail`,
+`src`, `chan`. "Forget WiFi" in the portal clears only `wificfg`, never `upd`.
+
+## Awake & dev mode
+
+`AwakePolicy` is the pure rule set (host-tested in `test/test_upd_policy_awake`);
+the device glue is `lib/UpdatePrompt/AwakeMode` (the setting, the screen, the
+exits, dev mode listening's start-up and relaunch, the Bluetooth prompt).
+
+| Mode | Behavior |
+|---|---|
+| Off (default) | Sleeps after 60 s without use; daily check-in |
+| Stay awake | Never sleeps on its own; Bluetooth works; no network |
+| Dev mode | Stays awake and listens for sent apps (CloudSync's dev worker, `lib/CloudSync/README.md`); the Bluetooth memory is released at start-up exactly as the setup portal does |
+
+Both awake modes are a latch in NVS `upd`: `awake` (u8: 0 off, 1 stay
+awake, 2 dev mode) and `awake_stop` (u8: 0 "After 30 min without use",
+1 "Until I stop it"). They end by themselves, and the stored mode is then Off:
+
+- **After 30 min without use** (only that stop setting): use is a button
+  press or an app delivered in dev mode.
+- **48 h without a button press** (either stop setting): the safety net for
+  a Fidget left on a desk or a booth table. Deliveries do not count. The
+  clock is RAM only, so it restarts at every restart.
+- **Battery floor** (either): VBAT under 3.6 V or charge under 20 % while
+  not charging, held for 60 s. An unreadable gauge never counts as low (the
+  runtime empty-battery guard still applies).
+
+Stay awake ending leaves a status line ("Stay awake is off: battery low")
+and normal sleep resumes. Dev mode ending shows "Dev mode is off" and the
+reason, restarts (animation skipped), and says why in the status bar after
+the restart (`bootcfg.awk_end`).
+
+Changing the mode: entering or leaving Dev mode restarts (animation
+skipped), and so does a new stop setting inside Dev mode (the listening
+worker tells the site "dev" or "always" when it starts); Off <-> Stay awake
+and a Stay awake stop change only save. When the write that ends a mode
+fails twice, the Fidget does not restart into the same mode: it stops
+listening and keeping awake and says "Could not turn Dev mode off. Restart
+to try again."
+
+**Restart loop**: three abnormal resets in a row (panic, watchdog, brownout)
+while an awake mode is stored turn it Off before anything starts ("Dev mode
+is off: it kept restarting"). The count lives in memory that survives a
+reset (not a power cycle); a normal start clears it, and so does a clean
+stretch (5 min of uptime, or dev mode's first successful check-in). Only this counter
+survives a reset - the use, press and low-battery clocks restart with every
+start. Bench: `awake crash <n>`.
+
+**Screen** (Settings > Awake & dev mode, also opened from Settings >
+Updates): a `< Mode >` selector (Left / Right, wraps) over five choices -
+Off, Stay awake / Dev mode each with "After 30 min without use" or "Until I
+stop it" on the line below - then the choice's description scrolling
+(`ScrollLabel`), then "In use" or "Enter: use this". Enter applies, Back
+leaves without changing anything.
+
+**Bluetooth apps** (the Music Player is the only one): while dev mode
+listens, the menu shows a small Bluetooth mark after the name, and choosing
+it asks "Music uses Bluetooth. Restart without dev mode? Dev mode comes back
+next restart." Restart sets `bootcfg.bootmusic` + `skipanim` and restarts;
+that one power cycle has no listening and keeps Bluetooth; the next restart
+listens again. Cancel stays on the menu.
+
+**Visible state**: the status bar draws an eye left of the battery in both
+awake modes; dev mode listening also shows the inverted WiFi glyph and "Dev
+mode" (StatusKind::Listening). After three failed check-ins in a row the bar
+says "Dev mode: not connected" instead (and "Dev mode: link this Fidget
+first" / "Dev mode: no saved network" when listening cannot start). While
+the menu is in front, the back LED breathes (blue, 4 s); any app owns the
+LEDs and the breathing comes back when it ends.
+
+**Delivered apps**: every delivery applies at once (whatever "Apply app
+changes automatically" says) and is use.
+
+**Which apps listening runs beside** (`AwakePolicy::listensDuring`, an
+allow-list by manifest name): the menu, the boot animation, Status, Updates,
+Check for updates, Awake & dev mode, Particle Sim and Snake - what was
+measured to leave a network session at least 24 KB of internal heap. Every
+other app pauses listening until it ends: the portal, Music Player and Link
+need the radio or the worker, a delivered (WASM) app and the network do not
+fit together (bench: 2 KB free, every check-in failed), Voice Notes dipped to
+13 KB. An app added to the firmware pauses listening until it is measured
+and listed. Opening a paused app first shows "Pausing dev mode..." while
+WiFi goes off; if the worker does not stop in time (a stuck network call),
+the app is not opened beside it: a delivered app opens in a fresh start, a
+built-in one waits and the bar says "Dev mode is busy. Try again in a
+moment." A send made meanwhile arrives when
+the person goes back to the menu; when it carries a new file for the app last
+run this power cycle, that app opens again (through the restart below).
+Anything else just appears in the menu.
+
+**Opening a delivered app after the network was used** (any power cycle, any
+mode): a delivered app's task needs one contiguous 64 KB block of internal
+RAM, and after the network has been used in a power cycle the heap no longer
+has one, even with WiFi off (bench: 61 KB largest after one check-in). The app
+then opens through a restart: "Opening <app>...", `bootcfg.wasmid` (+
+`wasmcat`, the menu category it was opened from) and `skipanim`, restart, and
+the app starts straight after boot before anything uses the network. The
+one-shot is removed before the app starts (a failing app never loops; an id
+no longer in the menu falls back to the menu), counts as a one-shot boot (no
+boot check-in), and Back returns to the category with the app selected
+(`MenuManager::restoreAfterRestart`). `AppManager::switchToApp` and
+`relaunchActive` decide it from `WasmFsApp::guestStackFits()`.
+
+**Migration**: the earlier Settings > Updates "Dev mode" row stored `upd.dev`
+(0/1/2) and `upd.dev_idle_min`. At start-up, with no `awake` key, `dev` 1
+becomes Dev mode "After 30 min without use", 2 becomes Dev mode "Until I
+stop it", anything else Off, and the new keys are written (`[awake] migrated
+...`). The old keys are left in place, so an image that rolls back still
+reads its own setting; once `awake` exists they are ignored. The idle
+minutes are dropped: the idle stop is fixed at 30 min.
+
+Check-ins carry `mode` (`normal` for Off and Stay awake, `dev` / `always`
+for Dev mode after 30 min / until stopped), read from the stored setting.
+
+Bench: `awake` verbs (`lib/SerialCli/README.md`), case
+`test/bench/cases/t379-devmode-poll.json`.
 
 Bench: `upd` (read-only list of every `upd` key) and `upd offer <version>`
 (test builds; see `lib/SerialCli/README.md`), case

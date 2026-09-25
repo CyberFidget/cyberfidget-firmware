@@ -18,7 +18,11 @@
 #include "DeviceIdentity.h"
 #include "UpdatePrompt.h"
 #include "PromptPolicy.h"
+#include "AwakeMode.h"
+#include "WasmFsApp.h"
 #include <Preferences.h>
+#include <esp_heap_caps.h>
+#include <string>
 
 void (*keep_functions[])() = {menuBegin, menuEnd, menuRun};
 
@@ -35,6 +39,39 @@ static void showRadioNotice(const char* text) {
     screen.display();
 }
 static PowerManager powerManager(buttonManager);
+
+// A delivered (WASM) app runs on its own task whose stack must be one
+// contiguous block of internal RAM. Once the network has been used in a
+// power cycle the internal heap no longer has such a block, even with WiFi
+// off again, so the app opens in a fresh start instead: the one-shot
+// `bootcfg.wasmid` (+ `wasmcat`, the menu category it was opened from)
+// relaunches it straight after boot, animation skipped, before anything
+// uses the network. Never returns.
+[[noreturn]] static void restartIntoWasmApp(const std::string& id, const std::string& label)
+{
+    Serial.printf("[wasm] reopen=restart id=%s largest_int=%u radio_used=%d\n", id.c_str(),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                  CloudSync::radioUsedThisPowerCycle() ? 1 : 0);
+    char text[64];
+    snprintf(text, sizeof(text), "Opening %s...", label.empty() ? "app" : label.c_str());
+    showRadioNotice(text);
+    // Dev mode listening (or any check) switches WiFi off first.
+    CloudSync::cancelPending();
+    const std::string category = MenuManager::instance().currentCategory();
+    Preferences boot;
+    if (boot.begin("bootcfg", false)) {
+        boot.putBool("skipanim", true);
+        boot.putString("wasmcat", category.c_str());
+        // Written last: it is what reopens the app.
+        boot.putString("wasmid", id.c_str());
+        boot.end();
+    }
+    ModalPrompt::instance().closeForTeardown();
+    Serial.flush();
+    delay(200);
+    ESP.restart();
+    for (;;) {}
+}
 
 // Set in setup(); the boot-window check starts on the first loop pass, once
 // the battery has been read.
@@ -115,6 +152,8 @@ void AppManager::setup() {
     bool bootMusic = false;
     bool bootLink = false;
     bool bootUnlink = false;
+    std::string bootWasmId;
+    std::string bootWasmCat;
     if (bootPrefs.begin("bootcfg", false)) {
         skipBootAnimation = bootPrefs.getBool("skipanim", false);
         bootPortal = bootPrefs.getBool("bootapp", false);
@@ -123,6 +162,11 @@ void AppManager::setup() {
         bootMusic = bootPrefs.getBool("bootmusic", false);
         bootLink = bootPrefs.getBool("bootlink", false);
         bootUnlink = bootPrefs.getBool("bootunlink", false);
+        if (bootPrefs.isKey("wasmid")) bootWasmId = bootPrefs.getString("wasmid", "").c_str();
+        if (bootPrefs.isKey("wasmcat")) bootWasmCat = bootPrefs.getString("wasmcat", "").c_str();
+        // Consumed before the app starts: a failing app never loops.
+        bootPrefs.remove("wasmid");
+        bootPrefs.remove("wasmcat");
         bootPrefs.remove("skipanim");
         bootPrefs.remove("bootapp");
         bootPrefs.remove("bootcloud");
@@ -135,9 +179,33 @@ void AppManager::setup() {
         ESP_LOGW(TAG_MAIN, "Failed to open boot preferences");
     }
     CloudSync::recoverFailure();
+    // Awake & dev mode: a dev mode power cycle frees the Bluetooth memory
+    // here, before anything starts (not in the restart that runs the Music
+    // Player; dev mode comes back at the next restart).
+    AwakeMode::beginBoot(bootMusic);
     // A manual check that restarted after Bluetooth use continues here.
     const PromptPolicy::CheckResume resume =
         PromptPolicy::resumeAfterRestart(bootCloud, bootApply, bootPortal || bootMusic);
+
+    // A delivered app reopened in a fresh start (see restartIntoWasmApp).
+    bool bootWasm = false;
+    if (!bootWasmId.empty() && !bootPortal && !bootMusic) {
+        LoadoutManifest::Loadout lo;
+        if (loadLoadoutManifest(lo, nullptr)) {
+            for (const auto& e : lo.entries) {
+                if (e.id != bootWasmId || e.blobPath.empty() || e.format == "builtin") continue;
+                WasmFsApp::setPending(e.blobPath.c_str(), e.name.empty() ? e.id.c_str() : e.name.c_str(),
+                                      LoadoutManifest::parseAbiVersion(e.abi), e.id.c_str());
+                bootWasm = true;
+                break;
+            }
+        }
+        // Back from the app returns to where it was opened.
+        MenuManager::instance().restoreAfterRestart(bootWasmCat, bootWasmId);
+        Serial.printf("[wasm] reopen=boot id=%s found=%d largest_int=%u\n", bootWasmId.c_str(),
+                      bootWasm ? 1 : 0,
+                      (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
+    }
 
     // A Bluetooth app relaunched across the reboot that followed a network
     // check starts in a clean power cycle. A check asked for after Bluetooth
@@ -145,6 +213,7 @@ void AppManager::setup() {
     appActive     = bootPortal ? APP_WEB_PORTAL
                   : bootMusic  ? APP_MUSIC_PLAYER
                   : bootLink   ? APP_LINK
+                  : bootWasm   ? APP_WASM_HOST
                   : resume.openCheckScreen ? APP_CHECK_UPDATES
                                : (skipBootAnimation ? APP_MENU : APP_BOOT_ANIMATION);
     appPreviously = APP_MENU;
@@ -172,7 +241,7 @@ void AppManager::setup() {
     if (bootUnlink && !bootPortal && !bootMusic) CloudSync::startUnlink();
     bootWindowPending = true;
     bootWasOneShot = skipBootAnimation || bootPortal || bootMusic || bootLink ||
-                     bootUnlink || bootCloud;
+                     bootUnlink || bootCloud || !bootWasmId.empty();
     // The update popup follows the start-up animation only.
     if (appActive == APP_BOOT_ANIMATION) UpdatePrompt::armBootPopup();
 
@@ -191,8 +260,12 @@ void AppManager::loop() {
         // loopHardware() has read the battery by now. Starting the check
         // only creates its task: the animation and menu never wait for it.
         bootWindowPending = false;
-        CheckinScheduler::startBootWindow(bootWasOneShot);
+        // Dev mode listening checks in by itself from the start.
+        if (!AwakeMode::listening()) CheckinScheduler::startBootWindow(bootWasOneShot);
     }
+    // Keeps the Fidget awake in the awake modes, ends them, and runs dev
+    // mode listening.
+    AwakeMode::loop();
     CheckinScheduler::loop();
     UpdatePrompt::loop();
 
@@ -267,6 +340,9 @@ void AppManager::processButtonEvents()
     {
         // The tail (Held/Release) of a press that began inside a prompt
         // stays out of the app the prompt was covering.
+        // Any button is use: it restarts the awake modes' idle stop and
+        // their 48 h safety net.
+        AwakeMode::noteButton();
         if (ModalPrompt::instance().swallowEvent(ev)) continue;
         if (HAL::buttonManager().hasCallback(ev.buttonIndex)) {
             auto cb = HAL::buttonManager().getCallback(ev.buttonIndex);
@@ -350,6 +426,12 @@ void AppManager::switchToApp(AppIndex newApp)
 {
     ESP_LOGI(TAG_MAIN, "Switching to app %d", newApp);
     if (newApp == appActive) return;
+    // Dev mode listening: a Bluetooth app asks to restart first.
+    if (AwakeMode::interceptSwitch(newApp)) return;
+    if (newApp == APP_WASM_HOST && !WasmFsApp::guestStackFits()) {
+        std::string id, label;
+        if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
+    }
     if (newApp == APP_MUSIC_PLAYER || newApp == APP_WEB_PORTAL) {
         // Radio apps: a network check must be over (WiFi off) before they
         // start. Bluetooth after any WiFi use this power cycle, or a check
@@ -394,6 +476,26 @@ void AppManager::switchToApp(AppIndex newApp)
     appActive     = newApp;
 
     // begin new
+    appDefs[appActive].beginFunc();
+    ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
+}
+
+void AppManager::restartIntoPendingApp()
+{
+    std::string id, label;
+    if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
+}
+
+void AppManager::relaunchActive()
+{
+    // The same app, begun again (dev mode: a new version of the running app
+    // arrived). An open prompt closes first, as for any switch.
+    ModalPrompt::instance().closeForTeardown();
+    appDefs[appActive].endFunc();
+    if (appActive == APP_WASM_HOST && !WasmFsApp::guestStackFits()) {
+        std::string id, label;
+        if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
+    }
     appDefs[appActive].beginFunc();
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
 }

@@ -6,6 +6,7 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <string>
 
 // Runs a ferried .wasm app from the LittleFS loadout storage through the
 // standard begin/update/end lifecycle. This is the single registry slot
@@ -21,14 +22,28 @@
 namespace WasmFsApp {
 
 // Stage the next launch. Safe from any context; takes effect at the next
-// wasmFsAppBegin(). Path must be a confined loadout path (/apps/...).
-void setPending(const char* blobPath, const char* label, int abi);
+// wasmFsAppBegin(). Path must be a confined loadout path (/apps/...). `id`
+// is the manifest id (dev mode relaunches a new version of the same id).
+void setPending(const char* blobPath, const char* label, int abi, const char* id = "");
+
+// The last app begun in this power cycle (it may have ended since): its
+// manifest id and file. False when none was, or it had no id.
+bool lastLaunch(std::string& id, std::string& path);
 
 // True if a pending launch is staged (used by the test CLI for reporting).
 bool hasPending();
 
 // Whether the currently staged blob ABI is provided by this firmware.
 bool pendingAbiSupported();
+
+// The staged launch's manifest id and label (false when nothing is staged).
+bool pendingLaunch(std::string& id, std::string& label);
+
+// Whether the guest task's stack (one contiguous internal block) can be
+// allocated right now. After the network has been used in a power cycle
+// the internal heap no longer has such a block, and the app has to open in
+// a fresh start (AppManager).
+bool guestStackFits();
 
 // Registry glue (wired via APP_ENTRY in AppManifest.h).
 void wasmFsAppBegin();

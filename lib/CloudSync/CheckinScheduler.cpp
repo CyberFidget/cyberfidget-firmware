@@ -6,6 +6,7 @@
 
 #include "CheckinScheduler.h"
 #include "CheckinPolicy.h"
+#include "AwakePolicy.h"
 
 #include <Arduino.h>
 #include <Preferences.h>
@@ -63,6 +64,10 @@ Schedule readStored() {
         char policy[8] = {0};
         if (upd.isKey("policy")) upd.getString("policy", policy, sizeof(policy));
         st.policy = parsePolicy(policy);
+        const bool hasBootCheck = upd.isKey(kKeyBootCheck);
+        st.bootCheck = parseBootCheck(hasBootCheck, hasBootCheck ? upd.getUChar(kKeyBootCheck, 1) : 1);
+        st.stayAwake = upd.isKey(AwakePolicy::kKeyMode) &&
+                       upd.getUChar(AwakePolicy::kKeyMode, 0) == (uint8_t)AwakePolicy::Mode::StayAwake;
         st.intervalH = sanitizeInterval(upd.getUInt("interval_h", kDefaultIntervalH));
         st.lastChk = upd.getUInt("last_chk", 0);
         st.serverBackoffTo = upd.getUInt("backoff_to", 0);

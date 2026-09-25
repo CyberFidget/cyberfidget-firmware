@@ -35,6 +35,9 @@ const char *const kFanOuter[]  = { ".#####.", "#.....#" };
 const char *const kFanMiddle[] = { "..###..", ".#...#." };
 const char *const kFanDot      = "...#...";
 
+// Awake & dev mode marker, 7x5: an open eye (the Fidget stays awake).
+const char *const kEye[] = { "..###..", ".#...#.", "#..#..#", ".#...#.", "..###.." };
+
 void drawRows(int x, int y, const char *const *rows, int n) {
     for (int r = 0; r < n; r++) {
         for (int c = 0; rows[r][c]; c++) {
@@ -239,7 +242,10 @@ void drawBar()
     char batt[8];
     if (batteryPlausible()) snprintf(batt, sizeof(batt), "%d%%", batteryPercent());
     else                    snprintf(batt, sizeof(batt), "--%%");
-    const int rightStart = kScreenW - textWidth(batt) - kBattGap;
+    // An awake mode (Stay awake, Dev mode) shows an eye left of the battery.
+    const bool awake = svc.awakeMarker() != AwakeMarker::None;
+    const int markX = kScreenW - textWidth(batt) - kGap - kGlyphW;
+    const int rightStart = awake ? markX - kBattGap : kScreenW - textWidth(batt) - kBattGap;
 
     // Middle: the current line; restart the marquee when it changes.
     const StatusEntry *cur = svc.current();
@@ -268,6 +274,7 @@ void drawBar()
     if (age[0]) {
         display.drawString(kGlyphW + (g == StatusGlyph::Live ? 2 : 0) + kGap, kBarTextY, age);
     }
+    if (awake) drawRows(markX, kGlyphY + 1, kEye, 5);
     display.setTextAlignment(TEXT_ALIGN_RIGHT);
     display.drawString(kScreenW - 1, kBarTextY, batt);
     display.setTextAlignment(TEXT_ALIGN_LEFT);

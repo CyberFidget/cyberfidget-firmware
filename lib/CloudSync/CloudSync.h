@@ -62,9 +62,34 @@ bool consumeResult(Result& out);
 bool cancelPending();
 void requestCancel();
 bool busy();
+// True while a session may be changing the app store: any session except
+// dev mode listening between its check-ins. Serial transfers wait for it.
+bool storeBusy();
 // True once a session has switched WiFi on in this power cycle; Bluetooth
 // must then wait for a reboot.
 bool radioUsedThisPowerCycle();
+
+// ---- Dev mode listening (lib/UpdatePrompt/AwakeMode) ------------------------
+// runSession(Reason::Dev) starts a worker that stays joined to the saved
+// network and checks in at the site's pace (next_poll_ms, with jitter and a
+// backoff after failures) until cancelled. It applies deliveries as they
+// arrive, whatever "Apply app changes automatically" says.
+struct DevSnapshot {
+    bool connected = false;      // joined at the last check-in
+    uint32_t polls = 0;          // check-ins this worker has sent
+    uint32_t deliveries = 0;     // applies that changed the menu
+    uint8_t failures = 0;        // consecutive failed check-ins
+    uint32_t lastPollMs = 0;     // millis() when the last check-in ended
+    uint32_t heapMin = 0;        // lowest internal free heap over the worker
+    uint32_t largestMin = 0;     // smallest largest free block over the worker
+    char lastBatch[41] = "-";    // the last delivered batch
+    Result last;                 // the last check-in's result
+};
+// The dev worker is running.
+bool devListening();
+DevSnapshot devSnapshot();
+// Ends the wait between check-ins: the next one starts now.
+void devPollNow();
 bool startLink();
 bool startUnlink();
 void answerLink(bool accept);
@@ -104,6 +129,12 @@ bool forgetLink();
 bool setAutoapply(bool enabled);
 // Bench only: scheduled sessions look for a network that is not there.
 bool setAbsentSsidTest(bool enabled);
+// Bench only (RAM): dev mode listening also GETs this public https URL after
+// every check-in and prints the internal heap ("" = off).
+bool setDevTlsProbe(const char* url);
+// Bench only (RAM): the next dev check-in first blocks this long without
+// looking at cancellation (a stuck network call); 0 = off.
+bool setDevStallMs(uint32_t ms);
 #endif
 
 } // namespace CloudSync

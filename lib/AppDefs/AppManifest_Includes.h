@@ -37,3 +37,4 @@
 #include "StatusView.h"
 #include "DeviceLinkApp.h"
 #include "UpdatePrompt.h"
+#include "AwakeMode.h"

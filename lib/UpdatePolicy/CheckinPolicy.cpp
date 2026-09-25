@@ -11,6 +11,8 @@ Policy parsePolicy(const char* stored) {
     return stored && strcmp(stored, "never") == 0 ? Policy::Never : Policy::Auto;
 }
 
+bool parseBootCheck(bool present, uint8_t stored) { return !present || stored != 0; }
+
 bool batteryEligible(int32_t vbatMv, int32_t socPct) {
     return vbatMv >= kMinVbatMv && socPct >= kMinSocPct;
 }
@@ -24,7 +26,12 @@ Verdict decide(Session session, const Inputs& in) {
         return in.btIdle ? Verdict::Start : Verdict::RebootFirst;
     }
     if (in.policy == Policy::Never) return Verdict::PolicyOff;
+    // Stay awake never starts the network by itself; a manual check still
+    // does (above), and it never sleeps, so no timer wake runs either.
+    if (in.stayAwake && (session == Session::Boot || session == Session::Awake))
+        return Verdict::StayAwake;
     if (session == Session::Boot) {
+        if (!in.bootCheck) return Verdict::BootCheckOff;
         if (in.timerWake) return Verdict::TimerWake;
         if (in.oneShotBoot) return Verdict::OneShotBoot;
     }
@@ -43,6 +50,8 @@ const char* verdictName(Verdict verdict) {
         case Verdict::Start:        return "start";
         case Verdict::RebootFirst:  return "reboot-first";
         case Verdict::PolicyOff:    return "policy-off";
+        case Verdict::BootCheckOff: return "boot-check-off";
+        case Verdict::StayAwake:    return "stay-awake";
         case Verdict::NoWifi:       return "no-wifi";
         case Verdict::NotLinked:    return "not-linked";
         case Verdict::OneShotBoot:  return "one-shot-boot";
@@ -129,6 +138,8 @@ Timing timing(const Schedule& schedule, const Backoff& backoff, uint32_t nowSec)
 void applySchedule(Inputs& in, const Schedule& schedule, const Backoff& backoff,
                    uint32_t nowSec) {
     in.policy = schedule.policy;
+    in.bootCheck = schedule.bootCheck;
+    in.stayAwake = schedule.stayAwake;
     in.wifiSaved = schedule.wifiSaved;
     in.linked = schedule.linked;
     const Timing t = timing(schedule, backoff, nowSec);

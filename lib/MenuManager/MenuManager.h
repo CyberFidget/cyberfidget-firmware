@@ -146,6 +146,19 @@ public:
      */
     void markManifestDirty() { manifestDirty = true; }
 
+    /**
+     * @brief Where the person is: the top-level category the current list
+     * belongs to ("" at the root). Saved before a restart that reopens an app.
+     */
+    std::string currentCategory() const;
+
+    /**
+     * @brief After a restart that reopened an app: the next menu entry
+     * shows this category with this delivered app (manifest id) selected,
+     * so Back returns to where the app was opened from.
+     */
+    void restoreAfterRestart(const std::string &category, const std::string &blobId);
+
 private:
     // Private constructor: we use the singleton pattern above
     MenuManager();
@@ -174,6 +187,10 @@ private:
     // menu entry rebuilds the tree once, surfacing ferried apps without a
     // reboot. Consumed in begin().
     bool manifestDirty = false;
+    bool restorePending = false;
+    std::string restoreCategory;
+    std::string restoreBlobId;
+    void applyRestore();
 
     // If we navigate into a sub-menu, we push state here so we can go back
     struct MenuNavState {

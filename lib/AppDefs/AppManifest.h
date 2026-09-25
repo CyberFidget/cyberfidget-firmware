@@ -67,3 +67,5 @@ APP_ENTRY(APP_LINK,                  "Link",                "Settings",       De
 // Update prompt surfaces: the root "Check for updates" item and Settings > Updates.
 APP_ENTRY(APP_CHECK_UPDATES,         "Check for updates",   "",               UpdatePrompt::checkBegin,                        UpdatePrompt::checkEnd,                        UpdatePrompt::checkUpdate                  )
 APP_ENTRY(APP_UPDATES,               "Updates",             "Settings",       UpdatePrompt::settingsBegin,                     UpdatePrompt::settingsEnd,                     UpdatePrompt::settingsUpdate               )
+// Off / Stay awake / Dev mode (lib/UpdatePrompt/AwakeMode).
+APP_ENTRY(APP_AWAKE,                 "Awake & dev mode",    "Settings",       AwakeMode::screenBegin,                          AwakeMode::screenEnd,                          AwakeMode::screenUpdate                    )

@@ -2,6 +2,7 @@
 // Copyright (c) 2023-2026 Dismo Industries LLC
 
 #include <unity.h>
+#include <string.h>
 
 #include "CheckinPolicy.h"
 
@@ -363,6 +364,58 @@ void test_manual_ignores_policy_and_battery(void) {
     expect(Verdict::Busy, Session::Manual, in);
 }
 
+// "Check at start-up" Off: the boot session never starts; every other
+// session is unaffected, and Auto-check Off still wins.
+void test_boot_check_off_stops_only_the_boot_session(void) {
+    TEST_ASSERT_TRUE(parseBootCheck(false, 0));    // missing reads as on
+    TEST_ASSERT_TRUE(parseBootCheck(true, 1));
+    TEST_ASSERT_FALSE(parseBootCheck(true, 0));
+    TEST_ASSERT_TRUE(strlen(kKeyBootCheck) <= 15);
+    Inputs in = eligible();
+    in.bootCheck = false;
+    expect(Verdict::BootCheckOff, Session::Boot, in);
+    TEST_ASSERT_EQUAL_STRING("boot-check-off", verdictName(Verdict::BootCheckOff));
+    in.due = true;
+    expect(Verdict::Start, Session::Daily, in);
+    in.atIdleMenu = true;
+    expect(Verdict::Start, Session::Awake, in);
+    expect(Verdict::Start, Session::Manual, in);
+    in.policy = Policy::Never;
+    expect(Verdict::PolicyOff, Session::Boot, in);
+    // The stored setting reaches the decision through the schedule.
+    Schedule st;
+    st.policy = Policy::Auto;
+    st.wifiSaved = true;
+    st.linked = true;
+    st.bootCheck = false;
+    Inputs fromStore;
+    applySchedule(fromStore, st, Backoff(), 1790000000u);
+    TEST_ASSERT_FALSE(fromStore.bootCheck);
+    st.bootCheck = true;
+    applySchedule(fromStore, st, Backoff(), 1790000000u);
+    TEST_ASSERT_TRUE(fromStore.bootCheck);
+}
+
+// Stay awake: no automatic network (boot and awake-deadline sessions); a
+// manual check still runs.
+void test_stay_awake_starts_no_automatic_session(void) {
+    Inputs in = eligible();
+    in.stayAwake = true;
+    in.due = true;
+    in.atIdleMenu = true;
+    expect(Verdict::StayAwake, Session::Boot, in);
+    expect(Verdict::StayAwake, Session::Awake, in);
+    expect(Verdict::Start, Session::Manual, in);
+    TEST_ASSERT_EQUAL_STRING("stay-awake", verdictName(Verdict::StayAwake));
+    Schedule st;
+    st.wifiSaved = true;
+    st.linked = true;
+    st.stayAwake = true;
+    Inputs fromStore;
+    applySchedule(fromStore, st, Backoff(), 1790000000u);
+    TEST_ASSERT_TRUE(fromStore.stayAwake);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_policy_text_defaults_to_auto);
@@ -388,5 +441,7 @@ int main(int, char**) {
     RUN_TEST(test_cold_start_does_not_suppress_boot_window);
     RUN_TEST(test_low_battery_wake_keeps_following_wakes_storage_free);
     RUN_TEST(test_arm_gating_and_server_backoff);
+    RUN_TEST(test_boot_check_off_stops_only_the_boot_session);
+    RUN_TEST(test_stay_awake_starts_no_automatic_session);
     return UNITY_END();
 }

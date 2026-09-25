@@ -95,6 +95,13 @@ enum class StatusGlyph : uint8_t {
     Live         // Dev mode listening right now
 };
 
+// The bar's marker for the Awake & dev mode setting.
+enum class AwakeMarker : uint8_t {
+    None = 0,    // Off: sleeps on its own
+    Awake,       // Stay awake (or Dev mode not listening this power cycle)
+    Listening    // Dev mode listening
+};
+
 struct StatusEntry {
     static constexpr int kMaxText = 80;   // bytes including the terminator
 
@@ -237,6 +244,16 @@ public:
             if (used_[i] && entries_[i].kind == kind) { drop(i); n++; }
         }
         return n;
+    }
+
+    /** Remove the one entry with this kind and text (default text when
+     *  empty). Returns true when it existed. */
+    bool clearEntry(StatusKind kind, const char *text) {
+        const char *body = (text && text[0]) ? text : defaultText(kind);
+        const int slot = find(kind, body);
+        if (slot < 0) return false;
+        drop(slot);
+        return true;
     }
 
     /** Remove every entry (the check-in record is kept). */
@@ -412,11 +429,23 @@ public:
         }
     }
 
+    // ---- Awake & dev mode ----
+    // What the menu shows for the mode (lib/UpdatePrompt/AwakeMode sets it):
+    // a marker in the bar, and a marker after each Bluetooth app while a
+    // Bluetooth app would need a restart.
+
+    void setAwakeMarker(AwakeMarker marker) { awakeMarker_ = marker; }
+    AwakeMarker awakeMarker() const { return awakeMarker_; }
+    void setBluetoothNeedsRestart(bool needs) { bluetoothNeedsRestart_ = needs; }
+    bool bluetoothNeedsRestart() const { return bluetoothNeedsRestart_; }
+
     /** Back to empty (tests; also a clean slate for bench runs). */
     void reset() {
         clearAll();
         clearCheckIn();
         seq_ = 0;
+        awakeMarker_ = AwakeMarker::None;
+        bluetoothNeedsRestart_ = false;
     }
 
 private:
@@ -482,6 +511,8 @@ private:
     bool        hasCheckIn_ = false;
     bool        checkInCached_ = false;
     uint32_t    checkInSec_ = 0;
+    AwakeMarker awakeMarker_ = AwakeMarker::None;
+    bool        bluetoothNeedsRestart_ = false;
 };
 
 #endif

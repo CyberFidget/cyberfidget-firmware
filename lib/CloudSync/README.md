@@ -132,6 +132,49 @@ WiFi is turned fully off at every worker exit. Only a radio that failed to
 switch off restarts the device (error delivered after boot); a passed
 deadline with the radio off is an ordinary error.
 
+## Dev mode listening
+
+`runSession(Reason::Dev)` (started by `lib/UpdatePrompt/AwakeMode` in a dev
+mode power cycle) joins the saved network once and stays joined: it runs the
+same check-in cycle as any session (check-in, offer, blobs, apply, follow-up)
+over and over until it is cancelled. Between check-ins it waits
+`devPollWaitMs()` (CloudProtocol, host-tested): the site's `next_poll_ms`
+held to 2-30 s, doubled from 2 s up to 60 s after consecutive failures (an
+error reply's own `next_poll_ms` when longer), any `Retry-After` up to 5 min,
+plus 0-10 % jitter. When the answer shows the site has not taken the
+sent mode yet - a 200 naming another mode, or a normal-mode pace (an hour or
+more; a 204 has no body) - the next check-in comes after 11 s at most (the
+site takes a mode change at most once per 10 s). A stored backoff is waited out inside the loop instead of
+failing the start. A dropped connection is rejoined (5 s for the station's
+own reconnect, then a fresh join).
+
+- Deliveries apply whatever "Apply app changes automatically" says.
+  `devSnapshot()` counts them as soon as the apply commits (before the
+  follow-up report), so the running app relaunches at once.
+- Every check-in carries `mode` from the stored setting (`AwakePolicy::wireMode`).
+- Flash wear: the check-in time is stored only when the site sends its clock
+  or every 10 min, and `next_ms` only when it changes. The firmware manifest
+  is read at most once an hour, never ahead of an app waiting to be delivered.
+- `busy()` stays true for the whole worker (radio apps cancel it, and idle
+  sleep is held off, as for any session). `storeBusy()` is true only inside a
+  check-in, so serial transfers work between check-ins; a check-in is skipped
+  while a serial transfer is open.
+- `lib/UpdatePrompt/AwakeMode` cancels the worker while any app outside its
+  allow-list is in front (the portal, Music Player, Link, delivered apps,
+  Voice Notes ...; see `lib/UpdatePolicy/README.md`) and starts it again
+  after.
+- A check-in claims the store (`storeBusy()`) before it looks for an open
+  serial transfer, and looks again after a rejoin, so a transfer and a
+  delivery never overlap.
+- The worker ends when the site says the link is gone (401), and
+  `devPollNow()` ends a wait early (Check for updates in dev mode shows the
+  next check-in's result).
+- No "Checking for updates..." status: dev mode has its own marker.
+
+Test builds print one `[dev] poll=...` line per check-in (see
+`lib/SerialCli/README.md`); release builds print only `[dev] delivered`,
+`[dev] poll failing` and `[dev] poll ok again`.
+
 ## Firmware offers
 
 The check-in always offers firmware. The session stores `firmware.url` in

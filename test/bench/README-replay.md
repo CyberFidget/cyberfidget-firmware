@@ -51,6 +51,8 @@ exchange. `link forget` also erases a `cloud token` credential.
 | `fdelete` | `path` | delete a ferried file |
 | `launch` | `id` | launch a builtin name/index, `menu`, or a manifest blob id |
 | `screencap` | `save`,`review`(auto/human) | capture the OLED; `human` renders it inline as ASCII |
+| `watch` | `until`,`timeout_s`, optional `count` + `max_count`/`min_count`, `expect_absent`, the `command` checks | read what the device prints (no command) until `until`; `count` bounds how often a token appeared before it; `expect_absent` passes when `until` did NOT appear |
+| `host` | `command`,`expand_env`,`timeout_s`,`contains` | run a host command between device steps (e.g. a send through the reviewer's site fixture); passes on exit code 0 |
 
 ## Assertions (the analyze layer)
 

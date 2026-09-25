@@ -165,6 +165,9 @@ void drawOneMenu(std::vector<MenuItem>* items,
     if (!items) return;
 
     const bool badge = StatusService::instance().badge();
+    // Dev mode listening: Bluetooth apps carry a small Bluetooth mark (they
+    // ask to restart first). No strikethrough: that reads as broken.
+    const bool btMark = StatusService::instance().bluetoothNeedsRestart();
 
     // Draw each item with horizontal offset. yPos is list-relative; the
     // list area starts below the status bar (MENU_TOP). Rows scrolling up
@@ -187,6 +190,15 @@ void drawOneMenu(std::vector<MenuItem>* items,
                 const int w = display.getStringWidth(mi.label.c_str(),
                                                      (uint16_t)mi.label.size());
                 display.fillCircle(drawX + w + 5, drawY + 6, 2);
+            }
+            if (btMark && !mi.isCategory && mi.appIndex == APP_MUSIC_PLAYER) {
+                static const char *const kRune[] = {
+                    "..#..", "..##.", "#.#.#", ".###.", "#.#.#", "..##.", "..#.."};
+                const int w = display.getStringWidth(mi.label.c_str(),
+                                                     (uint16_t)mi.label.size());
+                for (int r = 0; r < 7; r++)
+                    for (int c = 0; c < 5; c++)
+                        if (kRune[r][c] == '#') display.setPixel(drawX + w + 4 + c, drawY + 3 + r);
             }
         }
     }
@@ -245,6 +257,7 @@ void MenuManager::begin()
         ESP_LOGI(TAG_MAIN, "Menu already built; not rebuilding");
         registerMenuCallbacks();
         menuActive = true;
+        if (restorePending) applyRestore();
         return;
     }
     manifestDirty = false;
@@ -263,6 +276,7 @@ void MenuManager::begin()
     ESP_LOGI(TAG_MAIN, "MenuManager.cpp - Pre buildNestedMenu");
     buildNestedMenu(); 
     ESP_LOGI(TAG_MAIN, "MenuManager.cpp - Post buildNestedMenu");
+    if (restorePending) applyRestore();
     // buildNestedMenu calls something like:
     // for i in [0..APP_COUNT-1]:
     //    addAppToMenu(appDefs[i].name, appDefs[i].categoryPath, i);
@@ -329,6 +343,60 @@ void MenuManager::rebuildInPlace()
     else if (itemTop - scrollOffset > bottomY) scrollOffset = itemTop - bottomY;
     highlightElement.setY(itemTop - scrollOffset);
     ESP_LOGI(TAG_MAIN, "Menu rebuilt in place (%d root items)", (int)rootMenuItems.size());
+}
+
+std::string MenuManager::currentCategory() const
+{
+    if (navigationStack.empty()) return std::string();
+    const MenuNavState &top = navigationStack.front();
+    if (!top.itemList || top.index < 0 || top.index >= (int)top.itemList->size())
+        return std::string();
+    return (*top.itemList)[top.index].label;
+}
+
+void MenuManager::restoreAfterRestart(const std::string &category, const std::string &blobId)
+{
+    restoreCategory = category;
+    restoreBlobId = blobId;
+    restorePending = true;
+}
+
+// Opens the saved category (one level: manifest categories are flat) and
+// selects the saved app; anything no longer there falls back to the top.
+void MenuManager::applyRestore()
+{
+    restorePending = false;
+    navigationStack.clear();
+    currentItemList = &rootMenuItems;
+    currentIndex = 0;
+    scrollOffset = 0;
+    const int bottomY = MENU_AREA_HEIGHT - MENU_ITEM_HEIGHT;
+    auto scrollFor = [bottomY](int index) {
+        const int top = index * MENU_ITEM_HEIGHT;
+        return top > bottomY ? top - bottomY : 0;
+    };
+    if (!restoreCategory.empty()) {
+        for (int i = 0; i < (int)rootMenuItems.size(); i++) {
+            if (rootMenuItems[i].isCategory && rootMenuItems[i].label == restoreCategory) {
+                MenuNavState s;
+                s.itemList = &rootMenuItems;
+                s.index = i;
+                s.savedScrollOffset = scrollFor(i);
+                navigationStack.push_back(s);
+                currentItemList = &rootMenuItems[i].children;
+                break;
+            }
+        }
+    }
+    for (int i = 0; i < (int)currentItemList->size(); i++) {
+        if (!(*currentItemList)[i].isCategory && (*currentItemList)[i].blobId == restoreBlobId) {
+            currentIndex = i;
+            break;
+        }
+    }
+    scrollOffset = scrollFor(currentIndex);
+    highlightElement.setY(currentIndex * MENU_ITEM_HEIGHT - scrollOffset);
+    ESP_LOGI(TAG_MAIN, "Menu restored to %s / %d", restoreCategory.c_str(), currentIndex);
 }
 
 // Called by an app to hand control back to the menu
@@ -611,7 +679,8 @@ void MenuManager::selectCurrentItem()
         // A ferried wasm leaf stages its file, then launches the shared
         // WASM_HOST slot; builtins launch by their own AppIndex (T-183).
         if (!mi.blobPath.empty()) {
-            WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str(), mi.blobAbi);
+            WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str(), mi.blobAbi,
+                                  mi.blobId.c_str());
         }
         AppManager::instance().switchToApp(mi.appIndex);
     }

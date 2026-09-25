@@ -489,6 +489,84 @@ void test_applied_notice_only_for_this_sessions_apply() {
     TEST_ASSERT_FALSE(plan.appliedNow());
 }
 
+// ---------------------------------------------------------------------------
+// Dev mode listening: the mode the site records, and the pace of check-ins
+// ---------------------------------------------------------------------------
+
+void test_checkin_body_carries_the_mode() {
+    CheckinFields f;
+    f.deviceId = "aabbccddeeff";
+    f.mode = "always";
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, buildCheckinBody(f).find("\"mode\":\"always\""));
+    f.mode = "normal";
+    TEST_ASSERT_NOT_EQUAL(std::string::npos, buildCheckinBody(f).find("\"mode\":\"normal\""));
+    f.mode = nullptr;   // no setting known: no mode sent (the site keeps its record)
+    TEST_ASSERT_EQUAL(std::string::npos, buildCheckinBody(f).find("\"mode\""));
+    f.mode = "";
+    TEST_ASSERT_EQUAL(std::string::npos, buildCheckinBody(f).find("\"mode\""));
+}
+
+void test_dev_poll_follows_the_site_pace() {
+    // No jitter (0): the site's next_poll_ms, held to [2 s, 30 s].
+    TEST_ASSERT_EQUAL_UINT32(2000, devPollWaitMs(2000, 0, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(2000, devPollWaitMs(0, 0, 0, 0));        // missing: the 2 s default
+    TEST_ASSERT_EQUAL_UINT32(2000, devPollWaitMs(500, 0, 0, 0));      // never faster than 2 s
+    TEST_ASSERT_EQUAL_UINT32(5000, devPollWaitMs(5000, 0, 0, 0));
+    // A normal-mode answer (a day) while the mode change settles: 30 s.
+    TEST_ASSERT_EQUAL_UINT32(kDevMaxPollMs, devPollWaitMs(86400000, 0, 0, 0));
+}
+
+void test_dev_poll_jitter_is_bounded() {
+    // 0-10 % on top, whatever the random number.
+    const uint32_t seeds[] = {0u, 1u, 199u, 200u, 201u, 12345u, 0xFFFFFFFFu};
+    for (uint32_t seed : seeds) {
+        const uint32_t w = devPollWaitMs(2000, 0, 0, seed);
+        TEST_ASSERT_TRUE(w >= 2000 && w <= 2200);
+    }
+    bool varied = false;
+    for (uint32_t seed = 0; seed < 50; ++seed)
+        if (devPollWaitMs(2000, 0, 0, seed) != 2000) varied = true;
+    TEST_ASSERT_TRUE(varied);
+}
+
+void test_dev_poll_backs_off_after_failures() {
+    // Doubling from 2 s, capped at 60 s.
+    TEST_ASSERT_EQUAL_UINT32(4000, devPollWaitMs(0, 1, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(8000, devPollWaitMs(0, 2, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(16000, devPollWaitMs(0, 3, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(32000, devPollWaitMs(0, 4, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(kDevMaxBackoffMs, devPollWaitMs(0, 5, 0, 0));
+    TEST_ASSERT_EQUAL_UINT32(kDevMaxBackoffMs, devPollWaitMs(0, 250, 0, 0));
+    // An authenticated error reply's own next_poll_ms is honoured when longer.
+    TEST_ASSERT_EQUAL_UINT32(20000, devPollWaitMs(20000, 1, 0, 0));
+    // A success right after resets to the site's pace (failures = 0).
+    TEST_ASSERT_EQUAL_UINT32(2000, devPollWaitMs(2000, 0, 0, 0));
+}
+
+void test_dev_poll_settles_a_mode_the_site_has_not_taken() {
+    // The site still answers "normal" (a day's pace, held to 30 s): check
+    // again after 11 s so the mode change lands.
+    TEST_ASSERT_EQUAL_UINT32(kDevModeSettleMs, devPollWaitMs(86400000, 0, 0, 0, true));
+    TEST_ASSERT_EQUAL_UINT32(2000, devPollWaitMs(2000, 0, 0, 0, true));   // already fast
+    // Never shortens a failure backoff or a Retry-After.
+    TEST_ASSERT_EQUAL_UINT32(16000, devPollWaitMs(0, 3, 0, 0, true));
+    TEST_ASSERT_EQUAL_UINT32(60000, devPollWaitMs(2000, 0, 60, 0, true));
+    // Recognising it: a 200 with another mode, or a normal-mode pace on a
+    // 204 (no body, only X-Next-Poll-Ms).
+    TEST_ASSERT_TRUE(devModeNotTaken(200, "normal", "always", 86400000));
+    TEST_ASSERT_TRUE(devModeNotTaken(204, "", "always", 86400000));
+    TEST_ASSERT_FALSE(devModeNotTaken(204, "", "always", 2000));
+    TEST_ASSERT_FALSE(devModeNotTaken(200, "always", "always", 2000));
+    TEST_ASSERT_FALSE(devModeNotTaken(429, "", "always", 86400000));
+    TEST_ASSERT_FALSE(devModeNotTaken(200, "", "dev", 30000));   // a slow dev pace is fine
+}
+
+void test_dev_poll_honours_retry_after() {
+    TEST_ASSERT_EQUAL_UINT32(2000, devPollWaitMs(2000, 0, 1, 0));     // shorter than the pace
+    TEST_ASSERT_EQUAL_UINT32(60000, devPollWaitMs(2000, 1, 60, 0));   // a 503's 60 s
+    TEST_ASSERT_EQUAL_UINT32(kDevMaxRetryMs, devPollWaitMs(2000, 1, 3600, 0));   // capped
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_bt_tainted_entry_reboots_before_checkin);
@@ -520,5 +598,11 @@ int main(int, char**) {
     RUN_TEST(test_budget_selection);
     RUN_TEST(test_backoff_retention);
     RUN_TEST(test_applied_notice_only_for_this_sessions_apply);
+    RUN_TEST(test_checkin_body_carries_the_mode);
+    RUN_TEST(test_dev_poll_follows_the_site_pace);
+    RUN_TEST(test_dev_poll_jitter_is_bounded);
+    RUN_TEST(test_dev_poll_backs_off_after_failures);
+    RUN_TEST(test_dev_poll_honours_retry_after);
+    RUN_TEST(test_dev_poll_settles_a_mode_the_site_has_not_taken);
     return UNITY_END();
 }
