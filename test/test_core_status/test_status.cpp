@@ -438,6 +438,36 @@ void test_refresh_with_new_text_keeps_attention(void) {
     TEST_ASSERT_FALSE(svc.badge());
 }
 
+// ---- Awake & dev mode ----
+
+void test_clear_entry_removes_only_that_line(void) {
+    svc.post(StatusKind::Warning, "Dev mode: not connected", StatusPriority::Normal, true, 0);
+    svc.post(StatusKind::Warning, "Battery low", StatusPriority::High, true, 1);
+    TEST_ASSERT_TRUE(svc.clearEntry(StatusKind::Warning, "Dev mode: not connected"));
+    TEST_ASSERT_EQUAL_INT(1, svc.count());
+    TEST_ASSERT_EQUAL_STRING("Battery low", svc.current()->text);
+    TEST_ASSERT_FALSE(svc.clearEntry(StatusKind::Warning, "Dev mode: not connected"));
+    // An empty text names the kind's default line.
+    svc.post(StatusKind::Listening, nullptr, StatusPriority::Normal, true, 2);
+    TEST_ASSERT_TRUE(svc.clearEntry(StatusKind::Listening, nullptr));
+    TEST_ASSERT_FALSE(svc.has(StatusKind::Listening));
+}
+
+void test_awake_marker_and_bluetooth_mark(void) {
+    TEST_ASSERT_EQUAL_INT((int)AwakeMarker::None, (int)svc.awakeMarker());
+    TEST_ASSERT_FALSE(svc.bluetoothNeedsRestart());
+    svc.setAwakeMarker(AwakeMarker::Listening);
+    svc.setBluetoothNeedsRestart(true);
+    TEST_ASSERT_EQUAL_INT((int)AwakeMarker::Listening, (int)svc.awakeMarker());
+    TEST_ASSERT_TRUE(svc.bluetoothNeedsRestart());
+    // The marker is not a notification: no entry, no badge.
+    TEST_ASSERT_EQUAL_INT(0, svc.count());
+    TEST_ASSERT_FALSE(svc.badge());
+    svc.reset();
+    TEST_ASSERT_EQUAL_INT((int)AwakeMarker::None, (int)svc.awakeMarker());
+    TEST_ASSERT_FALSE(svc.bluetoothNeedsRestart());
+}
+
 int main(int /*argc*/, char** /*argv*/) {
     UNITY_BEGIN();
     RUN_TEST(test_empty_store_has_no_line_and_no_badge);
@@ -480,5 +510,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_ignored_popup_survives_transient_repost);
     RUN_TEST(test_refresh_keeps_sticky_and_higher_priority);
     RUN_TEST(test_refresh_with_new_text_keeps_attention);
+    RUN_TEST(test_clear_entry_removes_only_that_line);
+    RUN_TEST(test_awake_marker_and_bluetooth_mark);
     return UNITY_END();
 }

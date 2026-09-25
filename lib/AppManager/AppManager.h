@@ -21,6 +21,13 @@ public:
     // Switch apps
     void switchToApp(AppIndex newApp);
 
+    // End and begin the active app again (dev mode relaunch).
+    void relaunchActive();
+
+    // Opens the staged delivered app in a fresh start (the "Opening <app>..."
+    // restart). Returns only when nothing is staged.
+    void restartIntoPendingApp();
+
     // Currently running app (read-only; used by the test-mode Serial CLI)
     AppIndex activeApp() const { return appActive; }
 

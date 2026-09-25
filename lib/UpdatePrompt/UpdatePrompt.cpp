@@ -12,6 +12,7 @@
 
 #include "AppDefs.h"
 #include "AppManager.h"
+#include "AwakeMode.h"
 #include "CheckinPolicy.h"
 #include "CheckinScheduler.h"
 #include "CloudSync.h"
@@ -50,14 +51,13 @@ const char* running() { return getFirmwareVersionString(); }
 
 struct Stored {
     Policy policy = Policy::Auto;
+    bool bootCheck = true;
     char rej[kMaxVersionLen + 1] = {0};
     char avail[kMaxVersionLen + 1] = {0};
     char src[40] = {0};
     char chan[16] = {0};
     char failVer[kMaxVersionLen + 1] = {0};   // an update that did not keep itself
     bool autoapply = true;
-    DevMode dev = DevMode::Off;
-    uint32_t devIdleMin = kDefaultDevIdleMin;
 };
 
 void readText(Preferences& p, const char* key, char* out, size_t len) {
@@ -72,6 +72,9 @@ Stored readStored() {
     char policy[8];
     readText(upd, kKeyPolicy, policy, sizeof(policy));
     st.policy = CheckinPolicy::parsePolicy(policy);
+    const bool hasBootCheck = upd.isKey(CheckinPolicy::kKeyBootCheck);
+    st.bootCheck = CheckinPolicy::parseBootCheck(
+        hasBootCheck, hasBootCheck ? upd.getUChar(CheckinPolicy::kKeyBootCheck, 1) : 1);
     readText(upd, kKeyRej, st.rej, sizeof(st.rej));
     readText(upd, kKeyAvail, st.avail, sizeof(st.avail));
     readText(upd, kKeySrc, st.src, sizeof(st.src));
@@ -79,8 +82,6 @@ Stored readStored() {
     readText(upd, OtaUpdate::kKeyFailVer, st.failVer, sizeof(st.failVer));
     const bool hasApply = upd.isKey(kKeyAutoapply);
     st.autoapply = parseAutoapply(hasApply, hasApply && upd.getBool(kKeyAutoapply, true));
-    st.dev = parseDevMode(upd.isKey(kKeyDev) ? upd.getUChar(kKeyDev, 0) : 0);
-    st.devIdleMin = sanitizeDevIdleMin(upd.isKey(kKeyDevIdle) ? upd.getUInt(kKeyDevIdle, 0) : 0);
     upd.end();
     return st;
 }
@@ -157,6 +158,8 @@ bool handOff(const char* version) {
     }
     Serial.printf("[upd] install=restarting version=%s\n", version);
     drawMessage("Restarting to update...", "");
+    // Dev mode listening (or any check) switches WiFi off before the restart.
+    CloudSync::cancelPending();
     ModalPrompt::instance().closeForTeardown();
     Serial.flush();
     delay(300);
@@ -225,8 +228,13 @@ bool bootArmed = false;
 
 // ---- Check for updates screen ------------------------------------------------------
 
-enum class CheckState : uint8_t { Start, Waiting, Done };
+enum class CheckState : uint8_t { Start, Waiting, WaitingDev, Done };
 CheckState checkState = CheckState::Start;
+// Dev mode listening checks in every few seconds: a manual check asks for
+// its next check-in now and shows that one's result.
+uint32_t devPollsAtStart = 0;
+uint32_t devCheckAt = 0;
+constexpr uint32_t kDevCheckTimeoutMs = 20000;
 char checkLine[48] = {0};
 const char* checkNote = "";
 bool checkExplainOff = false;
@@ -236,6 +244,11 @@ const char* errorNote(const char* err) {
     if (strcmp(err, "not-linked") == 0) return "Link this Fidget first";
     if (strcmp(err, "join") == 0 || strcmp(err, "no-network") == 0) return "Network not in range";
     return "Try again later";
+}
+
+void setErrorText(CloudSync::Result& r, const char* err) {
+    strncpy(r.err, err, sizeof(r.err) - 1);
+    r.err[sizeof(r.err) - 1] = '\0';
 }
 
 void finishCheck(const CloudSync::Result& r) {
@@ -267,6 +280,14 @@ void finishCheck(const CloudSync::Result& r) {
 }
 
 void startCheck() {
+    if (CloudSync::devListening()) {
+        devPollsAtStart = CloudSync::devSnapshot().polls;
+        devCheckAt = millis();
+        CloudSync::devPollNow();
+        checkState = CheckState::WaitingDev;
+        Serial.println("[upd] check=dev-poll");
+        return;
+    }
     if (checkEntry(false, CloudSync::busy()) == CheckEntry::WatchSession) {
         // A check is already running (the start-up one): show its result.
         checkState = CheckState::Waiting;
@@ -331,6 +352,7 @@ void refresh() {
 SettingsState settingsState() {
     SettingsState s;
     s.policy = cache.policy;
+    s.bootCheck = cache.bootCheck;
     s.autoapply = cache.autoapply;
     s.channel = cache.chan;
     s.source = cache.src;
@@ -338,38 +360,10 @@ SettingsState settingsState() {
     s.rej = cache.rej;
     s.running = running();
     s.linked = cacheLinked;
-    s.dev = cache.dev;
+    s.awake = AwakeMode::setting();
     const StatusEntry* cur = StatusService::instance().current();
     s.status = cur ? cur->text : "";
     return s;
-}
-
-void restartForDevMode() {
-    Preferences boot;
-    if (boot.begin("bootcfg", false)) {
-        boot.putBool("skipanim", true);
-        boot.end();
-    }
-    drawMessage("Restarting...", "");
-    ModalPrompt::instance().closeForTeardown();
-    Serial.flush();
-    delay(300);
-    ESP.restart();
-}
-
-void onDevChosen(int result) {
-    if (result < 0) return;
-    const DevMode chosen = parseDevMode((uint8_t)result);
-    if (!devRestartNeeded(cache.dev, chosen)) return;
-    Preferences upd;
-    if (!upd.begin(kNamespace, false)) return;
-    bool ok = upd.putUChar(kKeyDev, (uint8_t)chosen) != 0;
-    if (!upd.isKey(kKeyDevIdle)) ok = upd.putUInt(kKeyDevIdle, kDefaultDevIdleMin) != 0 && ok;
-    upd.end();
-    Serial.printf("[upd] dev=%u write=%s restart=1\n", (unsigned)chosen, ok ? "ok" : "error");
-    // Dev mode is chosen per power cycle: the change takes effect after a
-    // restart (with the start-up animation skipped).
-    restartForDevMode();
 }
 
 void activate(Row row) {
@@ -385,6 +379,18 @@ void activate(Row row) {
                 const char* const ok[] = {"OK"};
                 ModalPrompt::instance().open(kOffExplanation, ok, 1, nullptr);
             }
+            return;
+        }
+        case Row::BootCheck: {
+            Preferences upd;
+            if (upd.begin(kNamespace, false)) {
+                upd.putUChar(CheckinPolicy::kKeyBootCheck, cache.bootCheck ? 0 : 1);
+                upd.end();
+            }
+            Serial.printf("[upd] boot_check=%d\n", cache.bootCheck ? 0 : 1);
+            refresh();
+            const char* const ok[] = {"OK"};
+            ModalPrompt::instance().open(kBootCheckExplanation, ok, 1, nullptr);
             return;
         }
         case Row::AutoApply: {
@@ -409,14 +415,9 @@ void activate(Row row) {
         case Row::Link:
             AppManager::instance().switchToApp(APP_LINK);
             return;
-        case Row::DevMode: {
-            static char onLabel[32];
-            snprintf(onLabel, sizeof(onLabel), "On (off after %lu min idle)",
-                     (unsigned long)cache.devIdleMin);
-            const char* const options[] = {"Off", onLabel, "Always on"};
-            ModalPrompt::instance().open("Dev mode", options, 3, onDevChosen);
+        case Row::Awake:
+            AppManager::instance().switchToApp(APP_AWAKE);
             return;
-        }
         case Row::Status:
             AppManager::instance().switchToApp(APP_STATUS);
             return;
@@ -504,6 +505,21 @@ void checkEnd() {
 
 void checkUpdate() {
     if (checkState == CheckState::Start) startCheck();
+    if (checkState == CheckState::WaitingDev) {
+        const CloudSync::DevSnapshot snap = CloudSync::devSnapshot();
+        if (snap.polls > devPollsAtStart) {
+            finishCheck(snap.last);
+            if (ModalPrompt::instance().isOpen()) return;
+        } else if (!CloudSync::devListening() || millis() - devCheckAt > kDevCheckTimeoutMs) {
+            CloudSync::Result none;
+            setErrorText(none, "join");
+            finishCheck(none);
+            if (ModalPrompt::instance().isOpen()) return;
+        } else {
+            drawMessage(kChecking, "");
+            return;
+        }
+    }
     if (checkState == CheckState::Waiting) {
         if (!CloudSync::busy()) {
             finishCheck(CloudSync::lastResult());

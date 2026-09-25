@@ -96,6 +96,9 @@ struct CheckinFields {
     const char* appliedBatch = nullptr;   ///< with result, or both null
     const char* result = nullptr;
     const LoadoutManifest::Loadout* installed = nullptr;  ///< null = no report
+    /// "normal", "dev" or "always" (what the Awake & dev mode setting says);
+    /// null or empty sends no mode.
+    const char* mode = nullptr;
 };
 
 /// The check-in POST body. Empty on an allocation failure.
@@ -109,6 +112,29 @@ bool devMode(const std::string& mode, uint32_t nextPollMs);
 
 /// Minimum wait between a check-in and the follow-up that answers it.
 uint32_t followupFloorMs(const CheckinReply& reply);
+
+/// Dev mode listening: the wait before the next check-in. A success uses the
+/// site's next_poll_ms held to [kDevPollMs, kDevMaxPollMs] (a missing value
+/// is kDevPollMs). After `failures` consecutive failures the wait doubles
+/// from kDevPollMs up to kDevMaxBackoffMs, and an error reply's own
+/// next_poll_ms is honoured when it is longer. A Retry-After is honoured up
+/// to kDevMaxRetryMs. `jitter` (any number; the device passes a random one)
+/// adds 0-10 % so many Fidgets do not poll in step.
+constexpr uint32_t kDevMaxPollMs = 30000;
+constexpr uint32_t kDevMaxBackoffMs = 60000;
+constexpr uint32_t kDevMaxRetryMs = 300000;
+uint32_t devPollWaitMs(uint32_t serverNextMs, uint8_t failures, int retryAfterSec,
+                       uint32_t jitter, bool modeNotTaken = false);
+/// `modeNotTaken`: the site answered with a mode other than the one sent (it
+/// takes a mode change at most once per 10 s, and answers the old mode's
+/// pace until then). The next check-in comes after kDevModeSettleMs at most,
+/// so switching dev mode on is not held up by a normal-mode pace.
+constexpr uint32_t kDevModeSettleMs = 11000;
+/// Whether a dev check-in's answer shows the site has not taken the sent
+/// mode yet: a 200 naming another mode, or any answer at a normal-mode pace
+/// (an hour or more; a 204 carries no mode, only X-Next-Poll-Ms).
+bool devModeNotTaken(int status, const std::string& replyMode, const char* sentMode,
+                     uint32_t nextPollMs);
 
 /// Sleep for a Retry-After value, or 0 when it is not one to wait through.
 uint32_t retryWaitMs(int retryAfterSec);

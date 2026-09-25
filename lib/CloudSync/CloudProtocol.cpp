@@ -223,6 +223,7 @@ std::string buildCheckinBody(const CheckinFields& f) {
     cJSON_AddNumberToObject(root, "fs_used", f.fsUsed);
     cJSON_AddStringToObject(root, "lapply_cap", SyncProtocol::kLapplyCapability);
     cJSON_AddStringToObject(root, "manifest_crc", crcText);
+    if (f.mode && *f.mode) cJSON_AddStringToObject(root, "mode", f.mode);
     if (f.appliedBatch && f.result && validBatchId(f.appliedBatch) && validResult(f.result)) {
         cJSON_AddStringToObject(root, "applied_batch", f.appliedBatch);
         cJSON_AddStringToObject(root, "result", f.result);
@@ -258,6 +259,34 @@ bool devMode(const std::string& mode, uint32_t nextPollMs) {
 
 uint32_t followupFloorMs(const CheckinReply& reply) {
     return devMode(reply.mode, reply.nextPollMs) ? kDevFloorMs : kNormalFloorMs;
+}
+
+uint32_t devPollWaitMs(uint32_t serverNextMs, uint8_t failures, int retryAfterSec,
+                       uint32_t jitter, bool modeNotTaken) {
+    uint32_t wait = serverNextMs ? serverNextMs : kDevPollMs;
+    if (wait < kDevPollMs) wait = kDevPollMs;
+    if (wait > kDevMaxPollMs) wait = kDevMaxPollMs;
+    if (failures) {
+        const uint8_t doublings = failures > 5 ? 5 : failures;
+        uint32_t backoff = kDevPollMs << doublings;
+        if (backoff > kDevMaxBackoffMs) backoff = kDevMaxBackoffMs;
+        if (backoff > wait) wait = backoff;
+    }
+    if (retryAfterSec > 0) {
+        const uint64_t retryMs = (uint64_t)retryAfterSec * 1000u;
+        const uint32_t capped = retryMs > kDevMaxRetryMs ? kDevMaxRetryMs : (uint32_t)retryMs;
+        if (capped > wait) wait = capped;
+    }
+    if (modeNotTaken && !failures && retryAfterSec <= 0 && wait > kDevModeSettleMs)
+        wait = kDevModeSettleMs;
+    return wait + jitter % (wait / 10 + 1);
+}
+
+bool devModeNotTaken(int status, const std::string& replyMode, const char* sentMode,
+                     uint32_t nextPollMs) {
+    if (status != 200 && status != 204) return false;
+    if (status == 200 && !replyMode.empty() && sentMode && replyMode != sentMode) return true;
+    return nextPollMs >= 3600000u;
 }
 
 uint32_t retryWaitMs(int retryAfterSec) {

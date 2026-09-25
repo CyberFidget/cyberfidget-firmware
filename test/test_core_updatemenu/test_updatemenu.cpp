@@ -16,6 +16,7 @@
 
 #include "../../lib/MenuManager/CategoryPath.h"
 #include "../../lib/MenuManager/MenuIdentity.h"
+#include "AwakePolicy.h"
 #include "PromptPolicy.h"
 
 using namespace PromptPolicy;
@@ -53,6 +54,27 @@ void labels(const SettingsState& s, std::vector<std::string>& out) {
 void setUp(void) {}
 void tearDown(void) {}
 
+void test_awake_screen_sits_in_settings(void) {
+    const ManifestRow* awake = find("APP_AWAKE");
+    const ManifestRow* updates = find("APP_UPDATES");
+    TEST_ASSERT_NOT_NULL(awake);
+    TEST_ASSERT_EQUAL_STRING("Awake & dev mode", awake->label);
+    TEST_ASSERT_EQUAL_STRING(updates->path, awake->path);
+    // Only the Music Player uses Bluetooth today (the marker and the
+    // restart prompt key on it).
+    TEST_ASSERT_NOT_NULL(find("APP_MUSIC_PLAYER"));
+}
+
+// Every name on dev mode's listening allow-list is a real app entry (a
+// renamed entry would silently pause listening).
+void test_listening_allow_list_names_real_apps(void) {
+    int allowed = 0;
+    for (const ManifestRow& r : kRows) if (AwakePolicy::listensDuring(r.id)) allowed++;
+    TEST_ASSERT_EQUAL_INT(8, allowed);
+    TEST_ASSERT_FALSE(AwakePolicy::listensDuring("APP_VOICE_RECORDER"));
+    TEST_ASSERT_NOT_NULL(find("APP_VOICE_RECORDER"));
+}
+
 void test_check_for_updates_is_a_root_item(void) {
     const ManifestRow* r = find("APP_CHECK_UPDATES");
     TEST_ASSERT_NOT_NULL(r);
@@ -80,12 +102,13 @@ void test_settings_rows_fresh_device(void) {
     const char* want[kSettingsRows] = {
         "Check now",
         "Auto-check: On",
+        "Check at start-up: On",
         "Apply app changes automatically: On",
         "Channel: stable",
         "Source: cyberfidget.com",
         "Skip: no update waiting",
         "Link this Fidget",
-        "Dev mode: Off",
+        "Awake & dev mode: Off",
         "Status: nothing waiting",
     };
     for (int i = 0; i < kSettingsRows; i++) TEST_ASSERT_EQUAL_STRING(want[i], l[i].c_str());
@@ -97,38 +120,42 @@ void test_settings_rows_follow_state(void) {
     s.avail = "1.4.0";
     s.linked = true;
     s.autoapply = false;
-    s.dev = DevMode::Always;
+    s.awake.mode = AwakePolicy::Mode::Dev;
+    s.awake.stop = AwakePolicy::Stop::UntilStopped;
     s.status = "Update 1.4.0 ready";
     std::vector<std::string> l;
     labels(s, l);
-    TEST_ASSERT_EQUAL_STRING("Apply app changes automatically: Off", l[2].c_str());
-    TEST_ASSERT_EQUAL_STRING("Skip 1.4.0", l[5].c_str());
-    TEST_ASSERT_EQUAL_STRING("Unlink this Fidget", l[6].c_str());
-    TEST_ASSERT_EQUAL_STRING("Dev mode: Always on", l[7].c_str());
-    TEST_ASSERT_EQUAL_STRING("Status: Update 1.4.0 ready", l[8].c_str());
+    TEST_ASSERT_EQUAL_STRING("Apply app changes automatically: Off", l[3].c_str());
+    TEST_ASSERT_EQUAL_STRING("Skip 1.4.0", l[6].c_str());
+    TEST_ASSERT_EQUAL_STRING("Unlink this Fidget", l[7].c_str());
+    TEST_ASSERT_EQUAL_STRING("Awake & dev mode: Dev mode", l[8].c_str());
+    TEST_ASSERT_EQUAL_STRING("Status: Update 1.4.0 ready", l[9].c_str());
     TEST_ASSERT_EQUAL_INT((int)SkipAction::Skip, (int)skipAction(s));
 
     s.rej = "1.4.0";   // skipped: the row undoes it
     labels(s, l);
-    TEST_ASSERT_EQUAL_STRING("Unskip 1.4.0", l[5].c_str());
+    TEST_ASSERT_EQUAL_STRING("Unskip 1.4.0", l[6].c_str());
     TEST_ASSERT_EQUAL_INT((int)SkipAction::Unskip, (int)skipAction(s));
 
     // A newer offer arrives while 1.4.0 is skipped: the row skips the new
     // version (replacing the old skip), it does not offer to unskip 1.4.0.
     s.avail = "1.5.0";
     labels(s, l);
-    TEST_ASSERT_EQUAL_STRING("Skip 1.5.0", l[5].c_str());
+    TEST_ASSERT_EQUAL_STRING("Skip 1.5.0", l[6].c_str());
     TEST_ASSERT_EQUAL_INT((int)SkipAction::Skip, (int)skipAction(s));
     // Nothing offered at all: the old skip can still be undone.
     s.avail = "";
     labels(s, l);
-    TEST_ASSERT_EQUAL_STRING("Unskip 1.4.0", l[5].c_str());
+    TEST_ASSERT_EQUAL_STRING("Unskip 1.4.0", l[6].c_str());
     s.avail = "1.4.0";
 
     s.policy = CheckinPolicy::Policy::Never;
     labels(s, l);
     TEST_ASSERT_EQUAL_STRING("Auto-check: Off", l[1].c_str());
-    TEST_ASSERT_EQUAL_STRING(kOffExplanation, l[8].c_str());
+    TEST_ASSERT_EQUAL_STRING(kOffExplanation, l[9].c_str());
+    s.bootCheck = false;
+    labels(s, l);
+    TEST_ASSERT_EQUAL_STRING("Check at start-up: Off", l[2].c_str());
 }
 
 // The menu's in-place rebuild keeps the highlight on "the same item"
@@ -214,6 +241,7 @@ void test_user_copy_has_no_jargon(void) {
     for (const char* t : kFwOptions) shown.push_back(t);
     for (const char* t : kAppOptions) shown.push_back(t);
     shown.push_back(kOffExplanation);
+    shown.push_back(kBootCheckExplanation);
     shown.push_back(kRestartingToCheck);
     shown.push_back(kChecking);
     shown.push_back(kInstallComingSoon);
@@ -228,6 +256,8 @@ void test_user_copy_has_no_jargon(void) {
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_check_for_updates_is_a_root_item);
+    RUN_TEST(test_awake_screen_sits_in_settings);
+    RUN_TEST(test_listening_allow_list_names_real_apps);
     RUN_TEST(test_updates_sits_in_settings_next_to_link);
     RUN_TEST(test_settings_rows_fresh_device);
     RUN_TEST(test_settings_rows_follow_state);

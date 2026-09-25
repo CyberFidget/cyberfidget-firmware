@@ -194,8 +194,8 @@ class Result:
 
 
 def _expand(st):
-    """`expand_env` on a reset/command/ppk step also expands the texts it
-    waits for and checks (until, contains, matches, order)."""
+    """`expand_env` on a reset/command/ppk/watch step also expands the texts
+    it waits for and checks (until, contains, matches, order)."""
     if not st.get("expand_env"):
         return st
     st = dict(st)
@@ -374,6 +374,47 @@ def run_case(case, port, outdir):
                     res.step("gate.boot", not boot_failed,
                              "join_tls_ms=%d limit=%d failures=%s" %
                              (join_tls, limits["join_tls_ms"], boot_failed or "none"))
+            elif do == "watch":
+                # Read what the device prints (no command) until `until`
+                # appears; `count` + `max_count` / `min_count` bound how
+                # often a token appeared before it (e.g. check-ins before a
+                # delivery).
+                st = _expand(st)
+                until = st.get("until")
+                out = ""
+                started = time.time()
+                end = started + float(st.get("timeout_s", 25.0))
+                while time.time() < end and not (until and until in out):
+                    out += t.drain(0.2)
+                print(out, end="" if out.endswith("\n") else "\n")
+                found = bool(until) and until in out
+                # `expect_absent`: passes when `until` did NOT appear in time.
+                ok = _checks(st, out) and (not until or found != bool(st.get("expect_absent")))
+                detail = "elapsed_s=%.1f" % (time.time() - started)
+                if "count" in st:
+                    head = out.split(until, 1)[0] if until and until in out else out
+                    n = head.count(st["count"])
+                    detail += " count(%s)=%d" % (st["count"], n)
+                    if "max_count" in st:
+                        ok = ok and n <= st["max_count"]
+                    if "min_count" in st:
+                        ok = ok and n >= st["min_count"]
+                res.step("watch", ok, detail + " " + out.strip()[-200:])
+            elif do == "host":
+                # A host-side step between device steps (e.g. a studio send
+                # through the reviewer's site fixture). Passes on exit code 0
+                # and any `contains` in its output.
+                import subprocess
+                command = os.path.expandvars(st["command"]) if st.get("expand_env") else st["command"]
+                try:
+                    proc = subprocess.run(command, shell=True, capture_output=True, text=True,
+                                          timeout=float(st.get("timeout_s", 60.0)))
+                    out = (proc.stdout or "") + (proc.stderr or "")
+                    ok = proc.returncode == 0 and all(tok in out for tok in st.get("contains", []))
+                except subprocess.TimeoutExpired:
+                    out, ok = "timeout", False
+                print(out, end="" if out.endswith("\n") else "\n")
+                res.step("host", ok, out.strip()[-160:])
             elif do == "btn":
                 out = t.cmd("btn %d %s" % (st["index"], st.get("action", "tap")), 0.5)
                 res.note("btn", out.strip().splitlines()[-1] if out.strip() else "")

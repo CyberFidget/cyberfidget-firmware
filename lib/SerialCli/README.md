@@ -343,7 +343,8 @@ limit can make a successful session last over one minute. `err=` carries a
 override is read only by test builds.
 
 While a session runs, `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete` and `lapply`
-answer `[err] sync.busy`. A refused `fwdata` or `lapply` still drains the
+answer `[err] sync.busy` (dev mode listening only while it is inside a
+check-in, not in the wait between check-ins). A refused `fwdata` or `lapply` still drains the
 payload length from its header first, so the stream stays in frame.
 `tlsprobe` answers `radio-busy` during a session, and a session will not start
 while a probe runs.
@@ -385,6 +386,37 @@ anything. Answer with `btn` (Down = 1, Enter = 5); the device logs
 `[upd] prompt=firmware choice=<install|later|skip|none> version=<v> rej_write=<ok|error|->`.
 The source defaults to `cyberfidget.com`. Bench case:
 `test/bench/cases/t391-prompt-options.json`.
+
+### Awake & dev mode (test build only)
+
+```text
+awake                         -> [cmd] awake.mode=<off|stay|dev> stop=<idle|until> listen=<0|1> worker=<0|1>
+                                 polls=<n> deliveries=<n> failures=<n> connected=<0|1> since_use_ms=<ms>
+                                 since_press_ms=<ms> low_ms=<ms> idle_ms=<ms> safety_ms=<ms> heap_min=<B>
+                                 largest_min=<B> free_int=<B> largest_int=<B> bt_restart=<0|1>
+awake set off|stay|dev [until|idle] -> [cmd] awake.set=<mode> stop=<stop>   (then [awake] set ... effect=<none|save|restart>)
+awake idle <s>                -> [cmd] awake.idle_ms=<ms>     (RAM: "After 30 min without use" becomes <s>; 0 = built-in)
+awake safety <s>              -> [cmd] awake.safety_ms=<ms>   (RAM: the 48 h safety net becomes <s>; 0 = built-in)
+awake battery low|real        -> [cmd] awake.battery=<low|real>   (RAM: the battery reads below the floor)
+awake tls <https-url>|off     -> [cmd] awake.tls=<on|off|error>   (RAM: one extra public GET per dev check-in)
+awake poll                    -> [cmd] awake.poll=now          (the next dev check-in starts now)
+awake legacy <0|1|2>          -> [cmd] awake.legacy=<v>        (writes the old upd.dev key only; migration bench)
+awake stall <ms>              -> [cmd] awake.stall=<ms>        (RAM: the next dev check-in blocks <ms> ignoring cancellation)
+awake crash <n>               -> [cmd] awake.crash=<n>         (cftest: panic <n> times, once per start, when dev mode starts listening)
+```
+
+`awake set` goes through the same path as the screen: entering or leaving
+Dev mode restarts. Dev mode listening prints one line per check-in in test
+builds (`[dev] poll=<n> http=<status> result=<ok|none|error> err=<code>
+ms=<cycle> wait_ms=<next wait> heap_min=<B> largest_min=<B> free=<B>
+at_ms=<ms>`), `[dev] delivered batch=<id>` when an apply changed the menu,
+and `[dev] relaunch id=<id> path=<file> from=<app|menu>` when a new version
+of the running (or last-run) app starts. With `awake tls` set, each check-in
+is followed by `[dev] tls ok=<0|1> http=<status> ms=<ms> free=<B> largest=<B>
+min_boot_before=<B> min_boot=<B>`. The mode logs `[awake] boot ...`,
+`[awake] end=<idle|safety-net|battery|restart-loop> ...`, `[awake] abnormal-reset count=<n> reason=<code>`, `[awake] bluetooth=<ask|restart|cancel>`
+and `[awake] shown=<listening|not-connected|not-linked|no-wifi|none>`.
+Bench case: `test/bench/cases/t379-devmode-poll.json`.
 
 ### Device link controls (test build only)
 

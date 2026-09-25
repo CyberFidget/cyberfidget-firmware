@@ -227,28 +227,10 @@ void appsTitle(char* out, size_t len, uint32_t count) {
                   count == 1 ? "" : "s");
 }
 
-DevMode parseDevMode(uint8_t stored) {
-    return stored == 1 ? DevMode::On : stored == 2 ? DevMode::Always : DevMode::Off;
-}
-
-const char* devModeLabel(DevMode mode) {
-    switch (mode) {
-        case DevMode::On:     return "On";
-        case DevMode::Always: return "Always on";
-        default:              return "Off";
-    }
-}
-
-uint32_t sanitizeDevIdleMin(uint32_t stored) {
-    return stored == 0 || stored > 7u * 24u * 60u ? kDefaultDevIdleMin : stored;
-}
-
-bool devRestartNeeded(DevMode before, DevMode after) { return before != after; }
-
 Row settingsRow(int index) {
     static const Row order[kSettingsRows] = {
-        Row::CheckNow, Row::AutoCheck, Row::AutoApply, Row::Channel, Row::Source,
-        Row::Skip, Row::Link, Row::DevMode, Row::Status,
+        Row::CheckNow, Row::AutoCheck, Row::BootCheck, Row::AutoApply, Row::Channel, Row::Source,
+        Row::Skip, Row::Link, Row::Awake, Row::Status,
     };
     return index >= 0 && index < kSettingsRows ? order[index] : Row::Status;
 }
@@ -273,6 +255,9 @@ void settingsLabel(Row row, const SettingsState& s, char* out, size_t len) {
         case Row::AutoCheck:
             snprintf(out, len, "Auto-check: %s", s.policy == Policy::Never ? "Off" : "On");
             break;
+        case Row::BootCheck:
+            snprintf(out, len, "Check at start-up: %s", s.bootCheck ? "On" : "Off");
+            break;
         case Row::AutoApply:
             snprintf(out, len, "Apply app changes automatically: %s", s.autoapply ? "On" : "Off");
             break;
@@ -292,8 +277,8 @@ void settingsLabel(Row row, const SettingsState& s, char* out, size_t len) {
         case Row::Link:
             snprintf(out, len, s.linked ? "Unlink this Fidget" : "Link this Fidget");
             break;
-        case Row::DevMode:
-            snprintf(out, len, "Dev mode: %s", devModeLabel(s.dev));
+        case Row::Awake:
+            snprintf(out, len, "Awake & dev mode: %s", AwakePolicy::modeName(s.awake.mode));
             break;
         case Row::Status:
             if (s.policy == Policy::Never) snprintf(out, len, "%s", kOffExplanation);

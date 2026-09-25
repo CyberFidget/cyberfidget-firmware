@@ -295,22 +295,27 @@ void test_settings_are_independent_and_firmware_stays_an_offer(void) {
 
 // ---- dev mode --------------------------------------------------------------------
 
+// Dev mode moved to its own "Awake & dev mode" screen (AwakePolicy, tested in
+// test_upd_policy_awake); Settings > Updates keeps a row that opens it.
 void test_dev_mode_values(void) {
-    TEST_ASSERT_EQUAL_INT((int)DevMode::Off, (int)parseDevMode(0));
-    TEST_ASSERT_EQUAL_INT((int)DevMode::On, (int)parseDevMode(1));
-    TEST_ASSERT_EQUAL_INT((int)DevMode::Always, (int)parseDevMode(2));
-    TEST_ASSERT_EQUAL_INT((int)DevMode::Off, (int)parseDevMode(9));
-    TEST_ASSERT_EQUAL_STRING("Always on", devModeLabel(DevMode::Always));
-    TEST_ASSERT_EQUAL_UINT32(60, sanitizeDevIdleMin(0));
-    TEST_ASSERT_EQUAL_UINT32(30, sanitizeDevIdleMin(30));
-    TEST_ASSERT_EQUAL_UINT32(60, sanitizeDevIdleMin(999999));
-    TEST_ASSERT_TRUE(devRestartNeeded(DevMode::Off, DevMode::On));
-    TEST_ASSERT_FALSE(devRestartNeeded(DevMode::Always, DevMode::Always));
+    SettingsState s;
+    char label[kRowText];
+    settingsLabel(Row::Awake, s, label, sizeof(label));
+    TEST_ASSERT_EQUAL_STRING("Awake & dev mode: Off", label);
+    s.awake.mode = AwakePolicy::Mode::Dev;
+    s.awake.stop = AwakePolicy::Stop::UntilStopped;
+    settingsLabel(Row::Awake, s, label, sizeof(label));
+    TEST_ASSERT_EQUAL_STRING("Awake & dev mode: Dev mode", label);
+    s.awake.mode = AwakePolicy::Mode::StayAwake;
+    settingsLabel(Row::Awake, s, label, sizeof(label));
+    TEST_ASSERT_EQUAL_STRING("Awake & dev mode: Stay awake", label);
 }
 
 void test_nvs_keys_fit(void) {
     const char* keys[] = {kKeyPolicy, kKeyRej, kKeyAvail, kKeyAvailN, kKeySrc, kKeyChan,
-                          kKeyAutoapply, kKeyDev, kKeyDevIdle, "interval_h", "last_chk",
+                          kKeyAutoapply, AwakePolicy::kKeyMode, AwakePolicy::kKeyStop,
+                          AwakePolicy::kLegacyKeyDev, AwakePolicy::kLegacyKeyDevIdle,
+                          "interval_h", "last_chk",
                           "seen_ts", "pend"};
     for (const char* k : keys) TEST_ASSERT_TRUE(strlen(k) <= kMaxKeyLen);
 }

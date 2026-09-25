@@ -28,6 +28,10 @@ namespace {
 std::string s_pendingPath;
 std::string s_pendingLabel;
 int         s_pendingAbi = 0;
+std::string s_pendingId;
+// The last launch (kept after it ends, for dev mode's relaunch).
+std::string s_lastId;
+std::string s_lastPath;
 
 // Live launch state. The shell parses/executes the module IN PLACE, so the
 // byte buffer must outlive it - both are torn down together in end().
@@ -151,15 +155,36 @@ constexpr size_t kMaxModuleBytes = 512 * 1024;
 
 }  // namespace
 
-void setPending(const char* blobPath, const char* label, int abi) {
+void setPending(const char* blobPath, const char* label, int abi, const char* id) {
     s_pendingPath  = blobPath ? blobPath : "";
     s_pendingLabel = label ? label : "app";
     s_pendingAbi   = abi;
+    s_pendingId    = id ? id : "";
+}
+
+bool lastLaunch(std::string& id, std::string& path) {
+    if (s_lastId.empty() || s_lastPath.empty()) return false;
+    id = s_lastId;
+    path = s_lastPath;
+    return true;
 }
 
 bool hasPending() { return !s_pendingPath.empty(); }
 
 bool pendingAbiSupported() { return s_pendingAbi <= kDeviceHalAbi; }
+
+bool pendingLaunch(std::string& id, std::string& label) {
+    if (s_pendingPath.empty()) return false;
+    id = s_pendingId;
+    label = s_pendingLabel;
+    return true;
+}
+
+bool guestStackFits() {
+    // The stack plus a little room for the task's own control block.
+    return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >=
+           (size_t)CF_WASM_GUEST_STACK_SIZE + 512;
+}
 
 void wasmFsAppBegin() {
     s_loadErr[0] = '\0';
@@ -167,9 +192,12 @@ void wasmFsAppBegin() {
     std::string path  = s_pendingPath;
     std::string label = s_pendingLabel;
     int abi = s_pendingAbi;
+    s_lastId = s_pendingId;
+    s_lastPath = path;
     // Consume the staged launch so a return-to-menu can't accidentally
     // relaunch the same blob.
     s_pendingPath.clear();
+    s_pendingId.clear();
     s_pendingAbi = 0;
 
     if (path.empty()) {

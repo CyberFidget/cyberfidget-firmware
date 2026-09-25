@@ -17,12 +17,12 @@
 //   avail_n       short notes for that version
 //   src, chan     where updates come from, and the release channel
 //   autoapply     app changes apply at check-in (default on)
-//   dev           dev mode: 0 off, 1 on (idle timeout), 2 always on
-//   dev_idle_min  dev mode idle timeout in minutes (default 60)
+// The Awake & dev mode keys (`awake`, `awake_stop`) are AwakePolicy's.
 
 #include <stddef.h>
 #include <stdint.h>
 
+#include "AwakePolicy.h"
 #include "CheckinPolicy.h"
 
 namespace PromptPolicy {
@@ -37,14 +37,12 @@ constexpr const char* kKeyAvailN   = "avail_n";
 constexpr const char* kKeySrc      = "src";
 constexpr const char* kKeyChan     = "chan";
 constexpr const char* kKeyAutoapply = "autoapply";
-constexpr const char* kKeyDev      = "dev";
-constexpr const char* kKeyDevIdle  = "dev_idle_min";
 
 /// NVS keys are limited to 15 characters.
 constexpr size_t kMaxKeyLen = 15;
 constexpr size_t keyLen(const char* k) { return *k ? 1 + keyLen(k + 1) : 0; }
-static_assert(keyLen(kKeyDevIdle) <= kMaxKeyLen, "NVS key too long");
 static_assert(keyLen(kKeyAutoapply) <= kMaxKeyLen, "NVS key too long");
+static_assert(keyLen(AwakePolicy::kLegacyKeyDevIdle) <= kMaxKeyLen, "NVS key too long");
 
 constexpr const char* kPolicyAuto  = "auto";
 constexpr const char* kPolicyNever = "never";
@@ -57,6 +55,10 @@ constexpr const char* kFwOptions[3]  = {"Install now", "Remind me later", "Skip 
 constexpr const char* kAppOptions[2] = {"Get them now", "Later"};
 constexpr const char* kOffExplanation =
     "Automatic check-ins are off. Remote changes wait for a manual check.";
+/// Shown (scrolling) when "Check at start-up" is changed.
+constexpr const char* kBootCheckExplanation =
+    "Checks for updates when you wake your Fidget. Turning it off avoids a short "
+    "restart when you open a new app.";
 constexpr const char* kRestartingToCheck = "Restarting to check...";
 constexpr const char* kChecking = "Checking for updates...";
 constexpr const char* kAlreadyChecking = "A check is already running";
@@ -192,27 +194,15 @@ void firmwareTitle(char* out, size_t len, const char* version, const char* sourc
 /// "App changes waiting".
 void appsTitle(char* out, size_t len, uint32_t count);
 
-// ---- Dev mode ------------------------------------------------------------------
-
-enum class DevMode : uint8_t { Off = 0, On = 1, Always = 2 };
-constexpr uint32_t kDefaultDevIdleMin = 60;
-
-DevMode parseDevMode(uint8_t stored);   ///< unknown values read as Off
-const char* devModeLabel(DevMode mode); ///< "Off", "On", "Always on"
-/// 0 or implausible (> one week) reads as the default.
-uint32_t sanitizeDevIdleMin(uint32_t stored);
-/// Changing dev mode restarts the device (animation skipped); the same
-/// value does nothing.
-bool devRestartNeeded(DevMode before, DevMode after);
-
 // ---- Settings > Updates ---------------------------------------------------------
 
 enum class Row : uint8_t {
-    CheckNow, AutoCheck, AutoApply, Channel, Source, Skip, Link, DevMode, Status,
+    CheckNow, AutoCheck, BootCheck, AutoApply, Channel, Source, Skip, Link, Awake, Status,
 };
 
 struct SettingsState {
     CheckinPolicy::Policy policy = CheckinPolicy::Policy::Auto;
+    bool bootCheck = true;      ///< "Check at start-up"
     bool autoapply = true;
     const char* channel = "";   ///< empty reads as the default
     const char* source = "";    ///< empty reads as the default
@@ -220,11 +210,11 @@ struct SettingsState {
     const char* rej = "";
     const char* running = "";
     bool linked = false;
-    DevMode dev = DevMode::Off;
+    AwakePolicy::Setting awake;   ///< the Awake & dev mode setting (row opens its screen)
     const char* status = "";    ///< the status bar's current line, "" = none
 };
 
-constexpr int kSettingsRows = 9;
+constexpr int kSettingsRows = 10;
 constexpr int kRowText = 96;
 
 /// Row kinds in screen order (always kSettingsRows of them).

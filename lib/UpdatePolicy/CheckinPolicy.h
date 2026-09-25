@@ -43,10 +43,19 @@ enum class Policy : uint8_t { Auto, Never };
 /// else (missing, "auto", unknown) is Auto.
 Policy parsePolicy(const char* stored);
 
+/// "Check at start-up" (NVS `upd.boot_chk`, u8): missing reads as on, 0 is
+/// off. Off only stops the boot session; the daily sleep check-in, a
+/// Fidget kept awake past its interval, a manual check and dev mode are
+/// unaffected.
+constexpr const char* kKeyBootCheck = "boot_chk";
+bool parseBootCheck(bool present, uint8_t stored);
+
 enum class Verdict : uint8_t {
     Start,        ///< start the session now
     RebootFirst,  ///< Bluetooth is not idle: restart through the one-shot first
     PolicyOff,    ///< automatic check-ins are off
+    BootCheckOff, ///< Boot: "Check at start-up" is off
+    StayAwake,    ///< Boot / Awake: Stay awake is on (no automatic network)
     NoWifi,       ///< no saved network
     NotLinked,    ///< nothing to check in for (no link, no pending revoke)
     OneShotBoot,  ///< a restart that relaunches something else
@@ -65,6 +74,8 @@ struct Inputs {
     bool linked = false;        ///< a link, or a revoke still to send
     bool oneShotBoot = false;   ///< Boot: a restart that relaunches something
     bool timerWake = false;     ///< Boot: this start is a deep-sleep timer wake
+    bool bootCheck = true;      ///< Boot: "Check at start-up" (upd.boot_chk) is on
+    bool stayAwake = false;     ///< Stay awake is latched (Awake & dev mode)
     int32_t vbatMv = -1;        ///< -1 = unreadable
     int32_t socPct = -1;        ///< -1 = unreadable
     bool due = false;           ///< Daily / Awake: the interval has passed
@@ -137,6 +148,8 @@ constexpr uint32_t kLowBatteryHoldSec = 86400;
 /// Stored settings the timing rules read (NVS `upd`, `wificfg`, `pair`).
 struct Schedule {
     Policy policy = Policy::Auto;
+    bool bootCheck = true;         ///< "Check at start-up" (upd.boot_chk; missing = on)
+    bool stayAwake = false;        ///< Stay awake latched (upd.awake == 1)
     bool wifiSaved = false;
     bool linked = false;
     uint16_t intervalH = kDefaultIntervalH;

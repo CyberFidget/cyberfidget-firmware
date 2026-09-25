@@ -41,6 +41,7 @@
 #include "DeviceIdentity.h"
 #include "DeviceLinkApp.h"
 #include "TrustedRoots.h"
+#include "AwakePolicy.h"
 #include "PromptPolicy.h"
 #include "UpdateSession.h"
 #include "WasmHostImports.h"
@@ -188,6 +189,7 @@ struct Session {
     char board[16] = {0};
     uint32_t lastCheckinAt = 0;   // millis() when the last check-in finished
     CheckinReply reply;           // the first check-in's answer
+    const char* mode = "normal";  // the Awake & dev mode setting, as the site names it
 
     uint32_t elapsed() const { return millis() - started; }
     bool covers(uint32_t waitMs) const {
@@ -318,7 +320,8 @@ bool request(const Session& s, const std::string& url, const std::string* post,
 void rememberPoll(uint32_t ms, int status, int retry) {
     Preferences prefs;
     if (!prefs.begin("upd", false)) return;
-    if (ms) prefs.putUInt("next_ms", ms);
+    // Only a change is written (dev mode checks in every few seconds).
+    if (ms && prefs.getUInt("next_ms", 0) != ms) prefs.putUInt("next_ms", ms);
     switch (backoffFor(status, retry)) {
         case BackoffAction::Store: {
             const time_t now = time(nullptr);
@@ -403,6 +406,7 @@ std::string checkinBody(const Session& s, const char* answerBatch, const char* a
     fields.fsUsed = (uint32_t)LittleFS.usedBytes();
     fields.manifestCrc = present ? SyncProtocol::crc32(manifest.data(), manifest.size()) : 0;
     fields.installed = &loadout;
+    fields.mode = s.mode;
     if (answerBatch && answer) {
         fields.appliedBatch = answerBatch;
         fields.result = answer;
@@ -982,6 +986,409 @@ Step checkinWithRetry(Session& s, CloudPlanner& plan, const std::string& body,
     }
 }
 
+// ---- Dev mode listening: state shared with the loop task --------------------
+// The worker writes, the loop task reads a copy (devSnapshot()).
+portMUX_TYPE devLock = portMUX_INITIALIZER_UNLOCKED;
+DevSnapshot devView;
+std::atomic<bool> devWake{false};
+// Inside a check-in (not waiting between them): the store may change.
+std::atomic<bool> devInCycle{false};
+#ifdef CF_TEST_CLI
+char devTlsUrl[160] = {0};   // bench: an extra public HTTPS GET per poll
+std::atomic<uint32_t> devStallMs{0};   // bench: one stuck call
+#endif
+// Worker only.
+uint32_t devRecordedAt = 0;
+bool devOfferRead = false;
+uint32_t devOfferAt = 0;
+constexpr uint32_t kDevRecordEveryMs = 600000;
+constexpr uint32_t kDevOfferEveryMs = 3600000;
+// Rejoin: wait this long for the station to reconnect by itself first.
+constexpr uint32_t kDevReconnectMs = 5000;
+
+bool devRecordDue() {
+    if (devRecordedAt && millis() - devRecordedAt < kDevRecordEveryMs) return false;
+    devRecordedAt = millis();
+    return true;
+}
+
+bool devOfferDue() {
+    if (devOfferRead && millis() - devOfferAt < kDevOfferEveryMs) return false;
+    devOfferRead = true;
+    devOfferAt = millis();
+    return true;
+}
+
+void devPublishDelivery(const char* batchId) {
+    portENTER_CRITICAL(&devLock);
+    ++devView.deliveries;
+    strncpy(devView.lastBatch, batchId, sizeof(devView.lastBatch) - 1);
+    devView.lastBatch[sizeof(devView.lastBatch) - 1] = '\0';
+    portEXIT_CRITICAL(&devLock);
+    Serial.printf("[dev] delivered batch=%s at_ms=%lu\n", batchId, (unsigned long)millis());
+}
+
+// One check-in and what follows from it: the offer, the blobs, the apply
+// and the follow-up that answers it. A plain session runs it once; dev mode
+// listening runs it at the site's pace. `out` carries the first check-in's
+// HTTP status and Retry-After for the dev mode pacing.
+struct CycleOut {
+    int status = 0;
+    int retry = 0;
+    bool modeNotTaken = false;   // a 200 naming another mode than the one sent
+};
+void checkinCycle(Session& s, bool autoapply, const String& account, String& linkedAt,
+                  Result& r, CycleOut& out) {
+    const bool dev = sessionReason == Reason::Dev;
+    CloudPlanner plan;
+    plan.start(true);
+    // ---- 1. check-in -------------------------------------------------
+    std::string body = checkinBody(s, nullptr, nullptr);
+    if (body.empty()) { setError(r, "checkin-body"); return; }
+    HttpReply check;
+    Step step = checkinWithRetry(s, plan, body, check, s.reply, autoapply, false, r);
+    out.status = check.status;
+    out.retry = check.retry;
+    out.modeNotTaken = devModeNotTaken(check.status, s.reply.mode, s.mode, s.reply.nextPollMs);
+    r.nextMs = plan.nextMs();
+    if (step == Step::Error || step == Step::Deferred) return;
+    // Dev mode checks in every few seconds: the check-in time is stored
+    // (a flash write) only when the site sends its clock, or every 10 min.
+    if (!dev || s.reply.serverEpoch || devRecordDue()) recordCheckIn(r, s.reply.serverEpoch);
+    if (s.reply.serverEpoch && linkedAt == "0") {
+        linkedAt = String(s.reply.serverEpoch);
+        setSessionFingerprint(s, account.c_str(), linkedAt.c_str());
+    }
+    if (s.reply.firmwareOffer) {
+        // Only an offer: the update lane compares the manifest and asks.
+        strcpy(r.offered, "fw");
+        Preferences offered;
+        if (offered.begin("upd", false)) {
+            offered.putString("fw_url", s.reply.firmwareUrl.c_str());
+            offered.end();
+        }
+        // What the prompt may offer: the manifest, through every gate
+        // (UpdateSession). Every session reads it, scheduled ones too
+        // (the post-boot popup shows what the daily wake cached): one
+        // call, never a wait, and only when the remaining budget still
+        // leaves the usual reserve.
+        // Dev mode reads it at most once an hour, never ahead of an app
+        // that is waiting to be delivered.
+        if (budgetCovers(kCallMs, s.elapsed(), s.limitMs, kReserveMs) &&
+            (!dev || (!s.reply.hasBatch && devOfferDue())))
+            UpdateSession::refreshOffer(s.started + s.limitMs - kReserveMs);
+    }
+    if (step == Step::Done) { r.ok = true; r.none = true; return; }
+    if (step == Step::Waiting) { r.ok = true; r.none = true; r.waiting = true; return; }
+    if (step != Step::Loadout) { setError(r, "planner"); return; }
+    const std::string batchId = s.reply.batchId;
+
+    // ---- 2. offer ----------------------------------------------------
+    const std::string loadoutUrl = s.base + "/api/device-loadout.php?" + s.query;
+    HttpReply offerReply;
+    Offer offer;
+    OfferError offerError = OfferError::None;
+    for (;;) {
+        offerReply = HttpReply();
+        if (!request(s, loadoutUrl, nullptr, offerReply, jsonSink, &offerReply)) {
+            setError(r, "offer-transport"); step = Step::Error; break;
+        }
+        offerError = offerReply.status == 200
+            ? parseOffer(offerReply.body.c_str(), batchId.c_str(), offer) : OfferError::None;
+        OfferVerdict verdict = OfferVerdict::Ok;
+        if (offerError == OfferError::Json) verdict = OfferVerdict::Retryable;
+        else if (offerErrorPermanent(offerError)) verdict = OfferVerdict::Permanent;
+        else if (offerReply.status == 200) {
+            LoadoutManifest::AppliedRecord prior;
+            bool have = false;
+            {
+                LoadoutStore::Guard guard;
+                have = readAppliedRecord(prior);
+            }
+            if (have && prior.batch == batchId && prior.docCrc == offer.docCrc &&
+                prior.result == "applied") verdict = OfferVerdict::AlreadyApplied;
+        }
+        step = plan.loadout(offerReply.status, verdict);
+        if (step != Step::Backoff) break;
+        r.nextMs = errorNextMs(offerReply);
+        rememberPoll(r.nextMs, offerReply.status, offerReply.retry);
+        const uint32_t wait = retryWaitMs(offerReply.retry);
+        step = plan.retry(wait != 0 && s.covers(wait));
+        if (step == Step::Deferred) { setError(r, "rate-limited"); break; }
+        if (!sleepFor(s, wait)) {
+            setError(r, cancelRequested ? "cancelled" : "deadline");
+            step = Step::Error; break;
+        }
+    }
+    if (offerReply.status == 200 && offer.nextPollMs) {
+        r.nextMs = offer.nextPollMs;
+        rememberPoll(r.nextMs, offerReply.status, offerReply.retry);
+    } else if (offerReply.status == 204) {
+        r.nextMs = offerReply.nextMs ? offerReply.nextMs : r.nextMs;
+        rememberPoll(r.nextMs, offerReply.status, offerReply.retry);
+    } else if (offerReply.status >= 400 && offerReply.status != 429) {
+        r.nextMs = errorNextMs(offerReply);
+        rememberPoll(r.nextMs, offerReply.status, offerReply.retry);
+    }
+    if (step == Step::Deferred) return;
+    if (step == Step::Done) { r.ok = true; r.none = true; return; }
+    if (step == Step::Error) {
+        if (strcmp(r.err, "none") == 0)
+            setError(r, offerError == OfferError::Json ? "offer-body" : "offer-http");
+        return;
+    }
+
+    // ---- 3. blobs + apply ----------------------------------------------
+    const char* answer = nullptr;
+    bool appliedOk = false;
+    if (step == Step::Ack) {
+        answer = plan.rejected() ? offerRejection(offerError) : "already-applied";
+    } else {
+        SyncProtocol::LittleFsFerryStorage storage;
+        SyncProtocol::FerrySession ferry(storage);
+        const char* rejection = nullptr;
+        step = plan.blob(fetchBlobs(s, offer, ferry, r, rejection));
+        if (step == Step::Error) return;
+        if (step == Step::Ack) answer = rejection;
+        if (step == Step::Apply) {
+            // The exact decoded doc bytes, with the server's CRC in the
+            // header. No reserialization or local op interpretation.
+            MemoryBytes bytes((const uint8_t*)offer.doc.data(), offer.doc.size());
+            char applyHeader[32];
+            snprintf(applyHeader, sizeof(applyHeader), "%u %08x",
+                     (unsigned)offer.doc.size(), (unsigned)offer.docCrc);
+            SyncProtocol::FerryReply applied;
+            {
+                LoadoutStore::Guard guard;
+                applied = ferry.applyManifest(applyHeader, bytes);
+            }
+            step = plan.applied(applied.ok);
+            appliedOk = applied.ok;
+            r.appliedNow = plan.appliedNow();
+            const bool stale = strstr(applied.text, "lapply.stale=") != nullptr;
+            const bool recordFailure = strstr(applied.text, "lapply.record") != nullptr;
+            answer = applied.ok ? "applied" :
+                     stale ? "stale-revision" :
+                     recordFailure ? "rejected:record" : "rejected:apply";
+        }
+    }
+    if (step != Step::Ack || !answer) { setError(r, "planner"); return; }
+    // Dev mode: the menu and a running copy of the app follow the committed
+    // apply at once; the follow-up report does not hold them up.
+    if (dev && appliedOk && r.appliedNow) devPublishDelivery(batchId.c_str());
+    if (appliedOk || strcmp(answer, "already-applied") == 0) {
+        Preferences ack;
+        if (ack.begin("upd", false)) {
+            ack.putString("ack_fp", s.fingerprint.c_str());
+            ack.end();
+        }
+        strncpy(r.applied, batchId.c_str(), sizeof(r.applied) - 1);
+        r.ok = true;
+        setError(r, "none");
+    } else {
+        r.ok = false;
+        setError(r, answer);
+    }
+
+    // ---- 4. follow-up check-in carrying the answer ----------------------
+    const uint32_t floorMs = followupFloorMs(s.reply);
+    const uint32_t since = millis() - s.lastCheckinAt;
+    const uint32_t wait = since >= floorMs ? 0 : floorMs - since;
+    step = plan.report(s.covers(wait));
+    if (step == Step::Deferred) {
+        // An applied batch is reported from its record next session; a
+        // rejection is found and answered again when it is re-offered.
+        if (r.ok) setError(r, "report-deferred");
+        return;
+    }
+    if (!sleepFor(s, wait)) {
+        setError(r, cancelRequested ? "cancelled" : "deadline");
+        r.ok = false;
+        return;
+    }
+    body = checkinBody(s, batchId.c_str(), answer);
+    if (body.empty()) { setError(r, "ack-body"); r.ok = false; return; }
+    HttpReply follow;
+    CheckinReply followParsed;
+    const bool wasOk = r.ok;
+    char answered[sizeof(r.err)];
+    memcpy(answered, r.err, sizeof(answered));
+    step = checkinWithRetry(s, plan, body, follow, followParsed, autoapply, true, r);
+    r.nextMs = plan.nextMs();
+    if (step == Step::Done) {
+        recordCheckIn(r, followParsed.serverEpoch);
+    } else if (step == Step::Deferred) {
+        // Same as a deferral before sending: the next session answers.
+        setError(r, wasOk ? "report-deferred" : answered);
+    } else {
+        r.ok = false;
+    }
+}
+
+// Dev mode: sleeps in short steps until `ms` has passed. False when
+// cancelled; returns early (true) when devPollNow() asks for a check now.
+bool devSleep(uint32_t ms) {
+    const uint32_t since = millis();
+    while (millis() - since < ms) {
+        if (cancelRequested) return false;
+        if (devWake.exchange(false)) return true;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    return !cancelRequested;
+}
+
+// Dev mode: back on the saved network. The station usually reconnects by
+// itself; after kDevReconnectMs it is asked to join again.
+bool devRejoin(const Session& s) {
+    uint32_t at = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - at < kDevReconnectMs) {
+        if (cancelRequested) return false;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (WiFi.status() == WL_CONNECTED) return true;
+    WiFi.disconnect(false);
+    WiFi.begin(s.ssid, s.pass);
+    at = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - at < kJoinMs) {
+        if (cancelRequested) return false;
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    return WiFi.status() == WL_CONNECTED;
+}
+
+#ifdef CF_TEST_CLI
+bool discardSink(void*, const uint8_t*, size_t) { return true; }
+
+// Bench: one public HTTPS GET in the listening context, to measure the
+// internal heap under a TLS handshake while an app runs.
+void devTlsProbe() {
+    char url[sizeof(devTlsUrl)];
+    portENTER_CRITICAL(&devLock);
+    memcpy(url, devTlsUrl, sizeof(url));
+    portEXIT_CRITICAL(&devLock);
+    if (!url[0]) return;
+    const size_t bootLowBefore = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    const uint32_t at = millis();
+    FetchReply reply;
+    const bool ok = fetchPublic(url, kCallMs, millis() + 8000, discardSink, nullptr, reply);
+    Serial.printf("[dev] tls ok=%d http=%d bytes=%u ms=%u free=%u largest=%u "
+                  "min_boot_before=%u min_boot=%u\n",
+                  ok ? 1 : 0, reply.status, (unsigned)reply.received, (unsigned)(millis() - at),
+                  (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                  (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL),
+                  (unsigned)bootLowBefore,
+                  (unsigned)heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL));
+}
+#endif
+
+// Dev mode listening: stays joined and checks in at the site's pace until
+// cancelled (the mode is turned off, a radio app starts, or the Fidget
+// restarts). Deliveries apply whatever "Apply app changes automatically"
+// says: sending an app is the person asking for it. `total` is the
+// worker's result when it ends.
+void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
+             uint32_t firstWaitMs) {
+    uint8_t failures = 0;
+    uint32_t polls = 0;
+    devOfferRead = false;
+    devRecordedAt = 0;
+    if (firstWaitMs) {
+        // A backoff the site asked for is still running.
+        if (firstWaitMs > kDevMaxRetryMs) firstWaitMs = kDevMaxRetryMs;
+        if (!devSleep(firstWaitMs)) return;
+    }
+    for (;;) {
+        if (cancelRequested) break;
+        // Claim the store before looking at the serial side: from here a
+        // new serial transfer is refused (storeBusy), and one already open
+        // makes this poll skip.
+        devInCycle = true;
+        if (SerialCli::instance().ferryActive()) {
+            devInCycle = false;
+            if (!devSleep(kDevPollMs)) break;
+            continue;
+        }
+        Result r;
+        r.reason = Reason::Dev;
+        CycleOut out;
+        heapLow = SIZE_MAX;
+        largestLow = SIZE_MAX;
+        rootsRejected = false;
+        sampleHeap();
+        bool connected = WiFi.status() == WL_CONNECTED;
+        const uint32_t cycleAt = millis();
+        if (!connected) connected = devRejoin(s);
+        if (cancelRequested) { devInCycle = false; break; }
+        // A rejoin can take seconds: a transfer that opened meanwhile wins.
+        if (SerialCli::instance().ferryActive()) {
+            devInCycle = false;
+            if (!devSleep(kDevPollMs)) break;
+            continue;
+        }
+        if (!connected) {
+            devInCycle = false;
+            setError(r, "join");
+        } else {
+            s.started = millis();
+            s.limitMs = kSessionMs;
+            s.mayWait = true;
+#ifdef CF_TEST_CLI
+            const uint32_t stall = devStallMs.exchange(0);
+            if (stall) {
+                Serial.printf("[dev] stall ms=%u\n", (unsigned)stall);
+                vTaskDelay(pdMS_TO_TICKS(stall));
+            }
+#endif
+            checkinCycle(s, true, account, linkedAt, r, out);
+            devInCycle = false;
+            if (!r.ok && cancelRequested) setError(r, "cancelled");
+            if (rootsRejected) { r.ok = false; setError(r, "roots-parse"); }
+        }
+        sampleHeap();
+        r.heapMin = heapLow == SIZE_MAX ? 0 : (uint32_t)heapLow;
+        r.largestMin = largestLow == SIZE_MAX ? 0 : (uint32_t)largestLow;
+        r.totalMs = millis() - cycleAt;
+        r.unlinkedNotice = s.serverUnlinked;
+        r.mismatchNotice = s.serverWrongDevice;
+        ++polls;
+        const uint8_t failedBefore = failures;
+        failures = r.ok ? 0 : (failures < 250 ? failures + 1 : failures);
+        const uint32_t wait = devPollWaitMs(r.nextMs, failures, out.retry, esp_random(),
+                                            out.modeNotTaken);
+        portENTER_CRITICAL(&devLock);
+        devView.connected = WiFi.status() == WL_CONNECTED;
+        devView.polls = polls;
+        devView.failures = failures;
+        devView.lastPollMs = millis();
+        devView.last = r;
+        if (r.heapMin && (devView.heapMin == 0 || r.heapMin < devView.heapMin))
+            devView.heapMin = r.heapMin;
+        if (r.largestMin && (devView.largestMin == 0 || r.largestMin < devView.largestMin))
+            devView.largestMin = r.largestMin;
+        portEXIT_CRITICAL(&devLock);
+#ifdef CF_TEST_CLI
+        Serial.printf("[dev] poll=%u http=%d result=%s err=%s ms=%u wait_ms=%u heap_min=%u "
+                      "largest_min=%u free=%u at_ms=%lu\n",
+                      (unsigned)polls, out.status, r.ok ? (r.none ? "none" : "ok") : "error", r.err,
+                      (unsigned)r.totalMs, (unsigned)wait, (unsigned)r.heapMin,
+                      (unsigned)r.largestMin,
+                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+                      (unsigned long)millis());
+        devTlsProbe();
+#else
+        // Release builds print only the changes.
+        if (failures == 1) Serial.printf("[dev] poll failing err=%s\n", r.err);
+        if (failures == 0 && failedBefore) Serial.println("[dev] poll ok again");
+#endif
+        (void)failedBefore;
+        total = r;
+        if (s.serverUnlinked || s.serverWrongDevice) break;   // the link is gone
+        if (!devSleep(wait)) break;
+    }
+    total.reason = Reason::Dev;
+    if (cancelRequested) { total.ok = true; total.none = true; setError(total, "cancelled"); }
+}
+
 // The whole session. Every object with heap storage lives in this frame and
 // is destroyed on return, before the task deletes itself.
 void runWorker(Result& r) {
@@ -1055,6 +1462,14 @@ void runWorker(Result& r) {
             s.base = upd.getString("base", kDefaultBase).c_str();
 #endif
             autoapply = upd.getBool("autoapply", true);
+            AwakePolicy::Stored awake;
+            awake.hasMode = upd.isKey(AwakePolicy::kKeyMode);
+            awake.mode = awake.hasMode ? upd.getUChar(AwakePolicy::kKeyMode, 0) : 0;
+            awake.hasStop = upd.isKey(AwakePolicy::kKeyStop);
+            awake.stop = awake.hasStop ? upd.getUChar(AwakePolicy::kKeyStop, 0) : 0;
+            awake.hasLegacyDev = upd.isKey(AwakePolicy::kLegacyKeyDev);
+            awake.legacyDev = awake.hasLegacyDev ? upd.getUChar(AwakePolicy::kLegacyKeyDev, 0) : 0;
+            s.mode = AwakePolicy::wireMode(AwakePolicy::parseStored(awake).setting);
             const uint32_t until = upd.getUInt("backoff_to", 0);
             const time_t now = time(nullptr);
             if (until && now > 1577836800 && (uint32_t)now < until) {
@@ -1064,7 +1479,9 @@ void runWorker(Result& r) {
             upd.end();
         }
         autoapply = PromptPolicy::appBatch(autoapply, sessionApplyOnce) == PromptPolicy::AppBatch::Apply;
-        if (backedOff && !revokeOnly) { setError(r, "backoff"); break; }
+        // Dev mode waits a running backoff out inside its loop instead.
+        const bool dev = sessionReason == Reason::Dev;
+        if (backedOff && !revokeOnly && !dev) { setError(r, "backoff"); break; }
         if (!validBase(s.base.c_str())) { setError(r, "invalid-base"); break; }
         if (WiFi.getMode() != WIFI_OFF) { setError(r, "radio-busy"); break; }
         WiFi.persistent(false);
@@ -1084,11 +1501,12 @@ void runWorker(Result& r) {
             vTaskDelay(pdMS_TO_TICKS(100));
         }
         sampleHeap();
-        if (WiFi.status() != WL_CONNECTED) {
+        // Dev mode keeps trying to join inside its loop.
+        if (WiFi.status() != WL_CONNECTED && (!dev || cancelRequested || revokeOnly)) {
             setError(r, cancelRequested ? "cancelled" : absent ? "no-network" : "join");
             break;
         }
-        r.joinMs = millis() - join;
+        if (WiFi.status() == WL_CONNECTED) r.joinMs = millis() - join;
 
         const DeviceIdentity::Fingerprint live = DeviceIdentity::readLive();
         strcpy(s.id, live.id);
@@ -1130,176 +1548,13 @@ void runWorker(Result& r) {
         s.checkinUrl = s.base + "/api/device-checkin.php";
         drainRevoke(s);
 
-        // ---- 1. check-in -------------------------------------------------
-        std::string body = checkinBody(s, nullptr, nullptr);
-        if (body.empty()) { setError(r, "checkin-body"); break; }
-        HttpReply check;
-        Step step = checkinWithRetry(s, plan, body, check, s.reply, autoapply, false, r);
-        r.nextMs = plan.nextMs();
-        if (step == Step::Error || step == Step::Deferred) break;
-        recordCheckIn(r, s.reply.serverEpoch);
-        if (s.reply.serverEpoch && linkedAt == "0") {
-            linkedAt = String(s.reply.serverEpoch);
-            setSessionFingerprint(s, account.c_str(), linkedAt.c_str());
-        }
-        if (s.reply.firmwareOffer) {
-            // Only an offer: the update lane compares the manifest and asks.
-            strcpy(r.offered, "fw");
-            Preferences offered;
-            if (offered.begin("upd", false)) {
-                offered.putString("fw_url", s.reply.firmwareUrl.c_str());
-                offered.end();
-            }
-            // What the prompt may offer: the manifest, through every gate
-            // (UpdateSession). Every session reads it, scheduled ones too
-            // (the post-boot popup shows what the daily wake cached): one
-            // call, never a wait, and only when the remaining budget still
-            // leaves the usual reserve.
-            if (budgetCovers(kCallMs, s.elapsed(), s.limitMs, kReserveMs))
-                UpdateSession::refreshOffer(s.started + s.limitMs - kReserveMs);
-        }
-        if (step == Step::Done) { r.ok = true; r.none = true; break; }
-        if (step == Step::Waiting) { r.ok = true; r.none = true; r.waiting = true; break; }
-        if (step != Step::Loadout) { setError(r, "planner"); break; }
-        const std::string batchId = s.reply.batchId;
-
-        // ---- 2. offer ----------------------------------------------------
-        const std::string loadoutUrl = s.base + "/api/device-loadout.php?" + s.query;
-        HttpReply offerReply;
-        Offer offer;
-        OfferError offerError = OfferError::None;
-        for (;;) {
-            offerReply = HttpReply();
-            if (!request(s, loadoutUrl, nullptr, offerReply, jsonSink, &offerReply)) {
-                setError(r, "offer-transport"); step = Step::Error; break;
-            }
-            offerError = offerReply.status == 200
-                ? parseOffer(offerReply.body.c_str(), batchId.c_str(), offer) : OfferError::None;
-            OfferVerdict verdict = OfferVerdict::Ok;
-            if (offerError == OfferError::Json) verdict = OfferVerdict::Retryable;
-            else if (offerErrorPermanent(offerError)) verdict = OfferVerdict::Permanent;
-            else if (offerReply.status == 200) {
-                LoadoutManifest::AppliedRecord prior;
-                bool have = false;
-                {
-                    LoadoutStore::Guard guard;
-                    have = readAppliedRecord(prior);
-                }
-                if (have && prior.batch == batchId && prior.docCrc == offer.docCrc &&
-                    prior.result == "applied") verdict = OfferVerdict::AlreadyApplied;
-            }
-            step = plan.loadout(offerReply.status, verdict);
-            if (step != Step::Backoff) break;
-            r.nextMs = errorNextMs(offerReply);
-            rememberPoll(r.nextMs, offerReply.status, offerReply.retry);
-            const uint32_t wait = retryWaitMs(offerReply.retry);
-            step = plan.retry(wait != 0 && s.covers(wait));
-            if (step == Step::Deferred) { setError(r, "rate-limited"); break; }
-            if (!sleepFor(s, wait)) {
-                setError(r, cancelRequested ? "cancelled" : "deadline");
-                step = Step::Error; break;
-            }
-        }
-        if (offerReply.status == 200 && offer.nextPollMs) {
-            r.nextMs = offer.nextPollMs;
-            rememberPoll(r.nextMs, offerReply.status, offerReply.retry);
-        } else if (offerReply.status == 204) {
-            r.nextMs = offerReply.nextMs ? offerReply.nextMs : r.nextMs;
-            rememberPoll(r.nextMs, offerReply.status, offerReply.retry);
-        } else if (offerReply.status >= 400 && offerReply.status != 429) {
-            r.nextMs = errorNextMs(offerReply);
-            rememberPoll(r.nextMs, offerReply.status, offerReply.retry);
-        }
-        if (step == Step::Deferred) break;
-        if (step == Step::Done) { r.ok = true; r.none = true; break; }
-        if (step == Step::Error) {
-            if (strcmp(r.err, "none") == 0)
-                setError(r, offerError == OfferError::Json ? "offer-body" : "offer-http");
+        if (dev) {
+            const uint32_t firstWait = backedOff ? r.nextMs : 0;
+            devLoop(s, account, linkedAt, r, firstWait);
             break;
         }
-
-        // ---- 3. blobs + apply ----------------------------------------------
-        const char* answer = nullptr;
-        bool appliedOk = false;
-        if (step == Step::Ack) {
-            answer = plan.rejected() ? offerRejection(offerError) : "already-applied";
-        } else {
-            SyncProtocol::LittleFsFerryStorage storage;
-            SyncProtocol::FerrySession ferry(storage);
-            const char* rejection = nullptr;
-            step = plan.blob(fetchBlobs(s, offer, ferry, r, rejection));
-            if (step == Step::Error) break;
-            if (step == Step::Ack) answer = rejection;
-            if (step == Step::Apply) {
-                // The exact decoded doc bytes, with the server's CRC in the
-                // header. No reserialization or local op interpretation.
-                MemoryBytes bytes((const uint8_t*)offer.doc.data(), offer.doc.size());
-                char applyHeader[32];
-                snprintf(applyHeader, sizeof(applyHeader), "%u %08x",
-                         (unsigned)offer.doc.size(), (unsigned)offer.docCrc);
-                SyncProtocol::FerryReply applied;
-                {
-                    LoadoutStore::Guard guard;
-                    applied = ferry.applyManifest(applyHeader, bytes);
-                }
-                step = plan.applied(applied.ok);
-                appliedOk = applied.ok;
-                r.appliedNow = plan.appliedNow();
-                const bool stale = strstr(applied.text, "lapply.stale=") != nullptr;
-                const bool recordFailure = strstr(applied.text, "lapply.record") != nullptr;
-                answer = applied.ok ? "applied" :
-                         stale ? "stale-revision" :
-                         recordFailure ? "rejected:record" : "rejected:apply";
-            }
-        }
-        if (step != Step::Ack || !answer) { setError(r, "planner"); break; }
-        if (appliedOk || strcmp(answer, "already-applied") == 0) {
-            Preferences ack;
-            if (ack.begin("upd", false)) {
-                ack.putString("ack_fp", s.fingerprint.c_str());
-                ack.end();
-            }
-            strncpy(r.applied, batchId.c_str(), sizeof(r.applied) - 1);
-            r.ok = true;
-            setError(r, "none");
-        } else {
-            r.ok = false;
-            setError(r, answer);
-        }
-
-        // ---- 4. follow-up check-in carrying the answer ----------------------
-        const uint32_t floorMs = followupFloorMs(s.reply);
-        const uint32_t since = millis() - s.lastCheckinAt;
-        const uint32_t wait = since >= floorMs ? 0 : floorMs - since;
-        step = plan.report(s.covers(wait));
-        if (step == Step::Deferred) {
-            // An applied batch is reported from its record next session; a
-            // rejection is found and answered again when it is re-offered.
-            if (r.ok) setError(r, "report-deferred");
-            break;
-        }
-        if (!sleepFor(s, wait)) {
-            setError(r, cancelRequested ? "cancelled" : "deadline");
-            r.ok = false;
-            break;
-        }
-        body = checkinBody(s, batchId.c_str(), answer);
-        if (body.empty()) { setError(r, "ack-body"); r.ok = false; break; }
-        HttpReply follow;
-        CheckinReply followParsed;
-        const bool wasOk = r.ok;
-        char answered[sizeof(r.err)];
-        memcpy(answered, r.err, sizeof(answered));
-        step = checkinWithRetry(s, plan, body, follow, followParsed, autoapply, true, r);
-        r.nextMs = plan.nextMs();
-        if (step == Step::Done) {
-            recordCheckIn(r, followParsed.serverEpoch);
-        } else if (step == Step::Deferred) {
-            // Same as a deferral before sending: the next session answers.
-            setError(r, wasOk ? "report-deferred" : answered);
-        } else {
-            r.ok = false;
-        }
+        CycleOut out;
+        checkinCycle(s, autoapply, account, linkedAt, r, out);
     } while (false);
     // A cancelled request surfaces as a transport error; name the cause.
     if (!r.ok && cancelRequested) setError(r, "cancelled");
@@ -1410,8 +1665,18 @@ bool runSession(Reason reason, bool applyWaiting) {
     cancelRequested = false;
     available = false;
     running = true;
-    StatusService::instance().post(StatusKind::Checking, nullptr,
-            StatusPriority::Normal, true, millis());
+    // Dev mode listening runs for as long as the mode is on: it is shown by
+    // its own marker, not as a check.
+    if (reason != Reason::Dev) {
+        StatusService::instance().post(StatusKind::Checking, nullptr,
+                StatusPriority::Normal, true, millis());
+    } else {
+        portENTER_CRITICAL(&devLock);
+        devView = DevSnapshot();
+        portEXIT_CRITICAL(&devLock);
+        devWake = false;
+        devInCycle = false;
+    }
     if (xTaskCreate(worker, "cloudsync", kStackBytes, nullptr, 1, nullptr) != pdPASS) {
         running = false;
         StatusService::instance().clear(StatusKind::Checking);
@@ -1584,7 +1849,24 @@ bool cancelPending() {
 }
 void requestCancel() { cancelRequested = true; }
 bool busy() { return running; }
+bool storeBusy() {
+    if (!running) return false;
+    return workerKind != WorkerKind::Cloud || sessionReason != Reason::Dev || devInCycle;
+}
 bool radioUsedThisPowerCycle() { return radioUsed; }
+
+bool devListening() {
+    return running && workerKind == WorkerKind::Cloud && sessionReason == Reason::Dev;
+}
+
+DevSnapshot devSnapshot() {
+    portENTER_CRITICAL(&devLock);
+    DevSnapshot copy = devView;
+    portEXIT_CRITICAL(&devLock);
+    return copy;
+}
+
+void devPollNow() { devWake = true; }
 
 // A full update URL (the site plus a path and query): longer than a site
 // base, same scheme rules.
@@ -1697,6 +1979,18 @@ bool setAutoapply(bool enabled) {
     if (!prefs.begin("upd", false)) return false;
     const bool ok = prefs.putBool("autoapply", enabled) != 0;
     prefs.end(); return ok;
+}
+bool setDevStallMs(uint32_t ms) {
+    devStallMs = ms;
+    return true;
+}
+bool setDevTlsProbe(const char* url) {
+    if (!url || strlen(url) >= sizeof(devTlsUrl)) return false;
+    if (url[0] && strncmp(url, "https://", 8) != 0) return false;
+    portENTER_CRITICAL(&devLock);
+    strcpy(devTlsUrl, url);
+    portEXIT_CRITICAL(&devLock);
+    return true;
 }
 bool setAbsentSsidTest(bool enabled) {
     if (running) return false;
