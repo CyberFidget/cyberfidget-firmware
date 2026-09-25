@@ -19,6 +19,9 @@
 #include "globals.h"
 #include "RecNaming.h"   // shared index.csv row parser (lib/VoiceRecorderApp)
 #include "SDManager.h"
+#include "SavedWifi.h"   // the saved networks (lib/CloudSync)
+#include "WifiRequest.h" // their request bodies (lib/CloudSync)
+
 
 #include <SD.h>
 #include <WiFi.h>
@@ -319,7 +322,17 @@ static void collectMP3Paths(const char* dir, String& json, bool& first) {
 // ---------------------------------------------------------------------------
 WebPortalApp* WebPortalApp::instance = nullptr;
 bool WebPortalApp::btReleasedThisPowerCycle = false;
+bool WebPortalApp::wifiLanding = false;
 WebPortalApp webPortalApp(HAL::buttonManager());
+
+void WebPortalApp::requestWifiLanding() {
+    wifiLanding = true;
+    Preferences prefs;
+    if (prefs.begin("bootcfg", false)) {
+        if (prefs.putBool("bootwifi", true) == 0) WP_LOG("wifi landing: failed to write one-shot");
+        prefs.end();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -366,6 +379,7 @@ void WebPortalApp::begin() {
     }
 
     WP_LOG("begin: enter");
+    Serial.printf("[portal] start wifi_page=%d\n", wifiLanding ? 1 : 0);
     instance = this;
 
     // Register portal controls + the caption-screen font toggle
@@ -621,6 +635,8 @@ void WebPortalApp::update() {
         if (WiFi.status() == WL_CONNECTED) {
             staConnected = true;
             WP_LOGF("STA connected, IP=%s", WiFi.localIP().toString().c_str());
+            // It worked: tried first next time, at this access point.
+            SavedWifi::noteJoined(staSSID.c_str());
             tryStartMDNS();
         } else if (millis() - staConnectStart > STA_TIMEOUT_MS) {
             WP_LOG("STA connect timeout");
@@ -720,47 +736,29 @@ void WebPortalApp::invalidateMusicCache() {
 // WiFi STA helpers
 // ---------------------------------------------------------------------------
 void WebPortalApp::loadWifiCreds() {
-    Preferences prefs;
-    prefs.begin("wificfg", true);  // read-only
-    staSSID = prefs.getString("ssid", "");
-    String pass = prefs.getString("pass", "");
-    prefs.end();
-    if (staSSID.length()) {
+    // The first saved network (the last one that worked). No scan here: the
+    // portal's own network must stay responsive while it starts.
+    WifiList::List list;
+    SavedWifi::load(list);
+    staSSID = "";
+    if (list.count > 0) {
+        staSSID = list.nets[0].name;
         WP_LOGF("auto-connecting to: %s", staSSID.c_str());
-        WiFi.begin(staSSID.c_str(), pass.c_str());
+        WiFi.begin(list.nets[0].name, list.nets[0].pass);
         staConnectStart = millis();
     }
+    WifiList::wipe(list);
 }
 
-void WebPortalApp::connectSTA(const String& ssid, const String& pass, bool save) {
+void WebPortalApp::connectSTA(const char* ssid, const char* pass) {
     stopMDNS();
     WiFi.disconnect(false);  // disconnect STA only, keep AP
     delay(100);
-    WiFi.begin(ssid.c_str(), pass.c_str());
+    WiFi.begin(ssid, pass);
     staSSID = ssid;
     staConnectStart = millis();
     staConnected = false;
-    WP_LOGF("connecting to: %s", ssid.c_str());
-    if (save) {
-        Preferences prefs;
-        prefs.begin("wificfg", false);
-        prefs.putString("ssid", ssid);
-        prefs.putString("pass", pass);
-        prefs.end();
-        WP_LOG("saved WiFi credentials");
-    }
-}
-
-void WebPortalApp::disconnectSTA() {
-    stopMDNS();
-    WiFi.disconnect(false);
-    staSSID = "";
-    staConnected = false;
-    Preferences prefs;
-    prefs.begin("wificfg", false);
-    prefs.clear();
-    prefs.end();
-    WP_LOG("WiFi credentials cleared");
+    WP_LOGF("connecting to: %s", ssid);
 }
 
 void WebPortalApp::tryStartMDNS() {
@@ -805,6 +803,41 @@ void WebPortalApp::confirmExitAndRestart() {
 // ---------------------------------------------------------------------------
 // Web server routes
 // ---------------------------------------------------------------------------
+// The saved-network routes' small JSON bodies. Each request collects its own
+// body (hung on the request, freed with it) - never a shared buffer - and it
+// is wiped as soon as it is read, or when the client goes away, because it
+// can hold a password. Rules: lib/CloudSync/WifiRequest.h.
+static void collectWifiBody(AsyncWebServerRequest* req, uint8_t* data, size_t len,
+                            size_t index, size_t total) {
+    WifiRequest::Body* body = static_cast<WifiRequest::Body*>(req->_tempObject);
+    if (!body) {
+        if (index != 0) return;   // no start seen: the reply is a 400
+        body = static_cast<WifiRequest::Body*>(malloc(sizeof(WifiRequest::Body)));
+        if (!body) return;
+        WifiRequest::begin(*body);
+        req->_tempObject = body;
+        req->onDisconnect([req]() {
+            if (req->_tempObject) WifiRequest::wipe(*static_cast<WifiRequest::Body*>(req->_tempObject));
+        });
+    }
+    WifiRequest::collect(*body, data, len, index, total);
+}
+
+// Reads the collected body for this route; replies 400/413 itself and
+// returns false when it cannot. The body is wiped either way.
+static bool takeWifiBody(AsyncWebServerRequest* req, WifiRequest::Kind kind,
+                         char* name, char* pass) {
+    WifiRequest::Body* body = static_cast<WifiRequest::Body*>(req->_tempObject);
+    const bool tooBig = req->contentLength() > WifiRequest::kBodyMax;
+    const bool whole = body && !body->failed && body->total > 0 && body->len == body->total;
+    const bool ok = whole && WifiRequest::parse(body->text, body->len, kind, name, pass);
+    if (body) WifiRequest::wipe(*body);
+    if (ok) return true;
+    if (tooBig) req->send(413, "application/json", "{\"error\":\"too-big\"}");
+    else req->send(400, "application/json", "{\"error\":\"invalid\"}");
+    return false;
+}
+
 void WebPortalApp::setupRoutes() {
     // Main portal page, gzipped in flash (~87 KB raw -> ~23 KB stored).
     //
@@ -950,13 +983,9 @@ void WebPortalApp::setupRoutes() {
 
     // API: WiFi connect (POST with JSON body)
     server->on("/api/wifi/connect", HTTP_POST,
-        [](AsyncWebServerRequest* req) {
-            // Handled in body callback
-        },
+        [this](AsyncWebServerRequest* req) { handleWifiConnect(req); },
         nullptr,
-        [this](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
-            handleWifiConnect(req, data, len, index, total);
-        }
+        collectWifiBody
     );
 
     // API: WiFi status
@@ -964,10 +993,19 @@ void WebPortalApp::setupRoutes() {
         handleWifiStatus(req);
     });
 
-    // API: WiFi forget
-    server->on("/api/wifi/forget", HTTP_POST, [this](AsyncWebServerRequest* req) {
-        handleWifiForget(req);
-    });
+    // API: WiFi forget one saved network (POST {"ssid":"..."})
+    server->on("/api/wifi/forget", HTTP_POST,
+        [this](AsyncWebServerRequest* req) { handleWifiForget(req); },
+        nullptr,
+        collectWifiBody
+    );
+
+    // API: "Use this first" for a saved network (POST {"ssid":"..."})
+    server->on("/api/wifi/first", HTTP_POST,
+        [this](AsyncWebServerRequest* req) { handleWifiFirst(req); },
+        nullptr,
+        collectWifiBody
+    );
 
     // Catch-all: serves the companion from SD (with correct content-types)
     // and is the captive-portal redirect for everything else.
@@ -1050,7 +1088,9 @@ void WebPortalApp::setupRoutes() {
             req->send(404, "text/plain", "not found");
             return;
         }
-        req->redirect("http://192.168.4.1/");
+        // Opened from Setup WiFi: a joining phone or laptop lands straight
+        // on the WiFi settings (the page also opens them when asked for "/").
+        req->redirect(wifiLanding ? "http://192.168.4.1/#settings" : "http://192.168.4.1/");
     });
 }
 
@@ -1844,36 +1884,27 @@ void WebPortalApp::handleWifiScan(AsyncWebServerRequest* req) {
     req->send(200, "application/json", json);
 }
 
-void WebPortalApp::handleWifiConnect(AsyncWebServerRequest* req, uint8_t* data,
-                                      size_t len, size_t index, size_t total) {
-    static String body;
-    if (index == 0) body = "";
-    body += String((char*)data, len);
+void WebPortalApp::handleWifiConnect(AsyncWebServerRequest* req) {
+    char name[WifiList::kNameMax + 1];
+    char pass[WifiList::kPassMax + 1];
+    if (!takeWifiBody(req, WifiRequest::Kind::Connect, name, pass)) return;
 
-    if (index + len >= total) {
-        // Parse JSON: {"ssid":"...","pass":"..."}
-        String ssid, pass;
-        int ssidStart = body.indexOf("\"ssid\"");
-        if (ssidStart >= 0) {
-            int valStart = body.indexOf('"', body.indexOf(':', ssidStart) + 1);
-            int valEnd = body.indexOf('"', valStart + 1);
-            if (valStart >= 0 && valEnd > valStart) ssid = body.substring(valStart + 1, valEnd);
-        }
-        int passStart = body.indexOf("\"pass\"");
-        if (passStart >= 0) {
-            int valStart = body.indexOf('"', body.indexOf(':', passStart) + 1);
-            int valEnd = body.indexOf('"', valStart + 1);
-            if (valStart >= 0 && valEnd > valStart) pass = body.substring(valStart + 1, valEnd);
-        }
-
-        if (!ssid.length()) {
-            req->send(400, "application/json", "{\"error\":\"Missing ssid\"}");
-            return;
-        }
-
-        connectSTA(ssid, pass, true);
-        req->send(200, "application/json", "{\"status\":\"connecting\"}");
+    // Saved first, as the first network to try; a fourth is refused so
+    // nothing is dropped without the person choosing which.
+    const WifiList::AddResult saved = SavedWifi::add(name, pass);
+    if (saved == WifiList::AddResult::Full) {
+        memset(pass, 0, sizeof(pass));
+        req->send(409, "application/json", "{\"error\":\"full\"}");
+        return;
     }
+    if (saved == WifiList::AddResult::Invalid) {
+        memset(pass, 0, sizeof(pass));
+        req->send(400, "application/json", "{\"error\":\"invalid\"}");
+        return;
+    }
+    connectSTA(name, pass);
+    memset(pass, 0, sizeof(pass));
+    req->send(200, "application/json", "{\"status\":\"connecting\"}");
 }
 
 void WebPortalApp::handleWifiStatus(AsyncWebServerRequest* req) {
@@ -1890,12 +1921,51 @@ void WebPortalApp::handleWifiStatus(AsyncWebServerRequest* req) {
         json += ",\"status\":\"connecting\"";
     }
     json += ",\"ap_ip\":\"" + WiFi.softAPIP().toString() + "\"";
+    // The saved networks, names only, in the order they are tried.
+    char names[WifiList::kMax][WifiList::kNameMax + 1];
+    const int count = SavedWifi::names(names, WifiList::kMax);
+    json += ",\"saved\":[";
+    for (int i = 0; i < count; i++) {
+        if (i) json += ",";
+        json += "\"" + escJSON(String(names[i])) + "\"";
+    }
+    json += "],\"max\":" + String(WifiList::kMax);
+    json += ",\"landing\":" + String(wifiLanding ? "true" : "false");
     json += "}";
     req->send(200, "application/json", json);
 }
 
 void WebPortalApp::handleWifiForget(AsyncWebServerRequest* req) {
-    disconnectSTA();
+    char name[WifiList::kNameMax + 1];
+    if (!takeWifiBody(req, WifiRequest::Kind::NameOnly, name, nullptr)) return;
+    if (!SavedWifi::forget(name)) {
+        req->send(404, "application/json", "{\"error\":\"not-saved\"}");
+        return;
+    }
+    if (staSSID == name) {
+        // Forgetting the network the portal is on (or joining) leaves it.
+        stopMDNS();
+        WiFi.disconnect(false);
+        staSSID = "";
+        staConnected = false;
+    }
+    WP_LOG("saved network forgotten");
+    req->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+void WebPortalApp::handleWifiFirst(AsyncWebServerRequest* req) {
+    char name[WifiList::kNameMax + 1];
+    if (!takeWifiBody(req, WifiRequest::Kind::NameOnly, name, nullptr)) return;
+    // Already first is fine too.
+    bool ok = SavedWifi::useFirst(name);
+    if (!ok) {
+        char first[1][WifiList::kNameMax + 1];
+        ok = SavedWifi::names(first, 1) == 1 && strcmp(first[0], name) == 0;
+    }
+    if (!ok) {
+        req->send(404, "application/json", "{\"error\":\"not-saved\"}");
+        return;
+    }
     req->send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
@@ -2372,8 +2442,31 @@ void WebPortalApp::render() {
     display.setColor(BLACK);
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(64, 1, "CyberFidget Web");
+    display.drawString(64, 1, wifiLanding ? "Setup WiFi" : "CyberFidget Web");
     display.setColor(WHITE);
+
+    if (wifiLanding) {
+        // Setup WiFi needs no memory card: say what to do on the phone.
+        display.setFont(ArialMT_Plain_10);
+        display.setTextAlignment(TEXT_ALIGN_CENTER);
+        if (!apReady) {
+            display.drawString(64, 22, "Could not start");
+            display.drawString(64, 34, "Exit and try again");
+        } else if (staConnected) {
+            display.drawString(64, 18, "Connected to");
+            display.drawString(64, 30, staSSID);
+            display.drawString(64, 46, "BACK to finish");
+        } else {
+            display.drawString(64, 16, "On your phone, join");
+            char line[40];
+            snprintf(line, sizeof(line), "the WiFi \"%s\"", AP_SSID);
+            display.drawString(64, 28, line);
+            display.drawString(64, 40, staSSID.length() ? "Connecting..." : "then pick your network");
+            display.drawString(64, 52, "BACK to finish");
+        }
+        display.display();
+        return;
+    }
 
     if (!sdReady) {
         display.setTextAlignment(TEXT_ALIGN_CENTER);

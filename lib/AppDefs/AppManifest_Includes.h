@@ -38,3 +38,4 @@
 #include "DeviceLinkApp.h"
 #include "UpdatePrompt.h"
 #include "AwakeMode.h"
+#include "SavedWifiScreen.h"
