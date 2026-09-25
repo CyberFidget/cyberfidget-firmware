@@ -22,7 +22,8 @@ if it switched it on.
 
 ## Credentials and endpoints
 
-The worker reads `wificfg.ssid/pass` and `pair.tok/acct/at`. The site is the
+The worker reads the saved WiFi networks (`wificfg`, see "Saved networks and
+join order" below) and `pair.tok/acct/at`. The site is the
 compiled `https://cyberfidget.com`; test builds (`CF_TEST_CLI`) read an
 `upd.base` override and permit an HTTP LAN server. Release builds use HTTPS,
 and the server's chain must end in the short trusted root list
@@ -101,6 +102,59 @@ Music Player start):
 `heap_min` / `largest_min` are the internal-heap low-water marks of the
 free total and the largest free block during the session; `wifi` is the
 radio mode after the worker's shutdown. The credential is never printed.
+
+## Saved networks and join order
+
+Up to 3 networks are saved (`WifiList.h` for the rules and stored keys,
+`SavedWifi.h` for the device side; host tests in `test/test_sync_wifilist`).
+The portal's WiFi page adds them (a fourth is refused until one is
+forgotten), and both the portal and Settings > Saved WiFi offer "Use this
+first" and "Forget". The older single-network keys `wificfg.ssid/pass` are
+migrated into the list on first read and then kept as a copy of the first
+network, so an older image after a return to the previous version still
+finds one; a network an older image saved there becomes first.
+
+A power cut in the middle of a save never leaves a mixed list: the list is
+kept twice (two copies, each with a checksum written last), a save writes
+the copy that is not current and then switches to it with one write, and a
+marker (`lsync`) is set for the whole save. While the marker is set the
+older keys are not trusted - the list is rebuilt into them at the next read
+- so a half-written older pair never overrides the list. A save never
+writes over the only whole copy: if the current copy is damaged, the read
+uses the other one and the next save writes over the damaged one. Host tests cut a
+save after every single write (add, password change, Use this first,
+Forget, a remembered join, the migration) and check the next read gives the
+whole earlier or the whole new list.
+
+The portal's saved-network requests are read strictly (`WifiRequest.h`):
+each request collects its own body, which is wiped as soon as it is read;
+the whole body must be one JSON object with only the route's fields, and a
+connect must carry `pass` ("" for an open network, as the portal page
+sends it).
+
+Every session that needs the station (check-ins of every reason, dev mode's
+rejoin, linking, the update session) joins through `SavedWifi::join`:
+
+1. The first network (the last one that worked), at its remembered channel
+   and access point, so the connect does not sweep the band. Scheduled
+   sessions, a remembered place and more than one saved network all end
+   this attempt as soon as the network is reported absent.
+2. If that fails: one scan, then a join of the strongest saved network it
+   saw. If the radio will not start the scan, a plain join of the first
+   network (its own connect looks on every channel) stands in for it. A
+   single saved network with no remembered place skips this step - its
+   connect already looked everywhere (the scan-less early bail above).
+3. A join that worked moves that network first and remembers where it was
+   (written only when something changed). A remembered place that led
+   nowhere is dropped, so the next session starts with a plain join.
+
+The boot window gives each attempt its 4 s budget; the fallback path may run
+past it and its result reaches the status bar like any late boot result.
+Every join prints one line (no names, no passwords):
+
+    [wifi] join saved=<n> first=<remembered|plain> first_result=<ok|absent|timeout|stopped> first_ms=.. scan=<0|1|2> scan_starts=.. scan_ms=.. fallback_ms=.. result=.. slot=<i|-1> total_ms=..
+
+(`scan=2`: the scan did not start and the plain join stood in.)
 
 ## Waits and deadline
 

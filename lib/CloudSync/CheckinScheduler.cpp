@@ -22,6 +22,7 @@
 #include "HAL.h"
 #include "LoadoutStore.h"
 #include "ModalPrompt.h"
+#include "SavedWifi.h"
 
 namespace CheckinScheduler {
 namespace {
@@ -73,13 +74,7 @@ Schedule readStored() {
         st.serverBackoffTo = upd.getUInt("backoff_to", 0);
         upd.end();
     }
-    Preferences wifi;
-    if (wifi.begin("wificfg", true)) {
-        char ssid[33] = {0};
-        if (wifi.isKey("ssid")) wifi.getString("ssid", ssid, sizeof(ssid));
-        st.wifiSaved = ssid[0] != '\0';
-        wifi.end();
-    }
+    st.wifiSaved = SavedWifi::anySaved();
     // Read-only check (no clean-up writes): this runs on every awake tick.
     char account[40];
     bool fingerprint = false;

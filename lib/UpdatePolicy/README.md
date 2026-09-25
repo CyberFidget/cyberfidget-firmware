@@ -214,7 +214,8 @@ screen, below), and the status line the bar is showing (opens the Status
 screen).
 
 Keys the prompt work writes: `policy`, `boot_chk`, `rej`, `autoapply`. It reads `avail`,
-`src`, `chan`. "Forget WiFi" in the portal clears only `wificfg`, never `upd`.
+`src`, `chan`. "Forget" on a saved network (portal or Settings > Saved WiFi)
+changes only `wificfg`, never `upd`.
 
 ## Awake & dev mode
 

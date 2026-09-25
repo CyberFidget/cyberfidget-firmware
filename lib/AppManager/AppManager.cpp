@@ -20,6 +20,7 @@
 #include "PromptPolicy.h"
 #include "AwakeMode.h"
 #include "WasmFsApp.h"
+#include "WebPortalApp.h"
 #include <Preferences.h>
 #include <esp_heap_caps.h>
 #include <string>
@@ -92,7 +93,7 @@ void AppManager::setTestAllowBtAfterWifi(bool allow) { testAllowBtAfterWifi = al
 static bool appTakesPrompts(AppIndex app)
 {
     return app == APP_MENU || app == APP_BOOT_ANIMATION || app == APP_LINK ||
-           app == APP_CHECK_UPDATES || app == APP_UPDATES;
+           app == APP_CHECK_UPDATES || app == APP_UPDATES || app == APP_SAVED_WIFI;
 }
 
 // Singleton instance
@@ -152,6 +153,7 @@ void AppManager::setup() {
     bool bootMusic = false;
     bool bootLink = false;
     bool bootUnlink = false;
+    bool bootWifiPage = false;
     std::string bootWasmId;
     std::string bootWasmCat;
     if (bootPrefs.begin("bootcfg", false)) {
@@ -162,6 +164,7 @@ void AppManager::setup() {
         bootMusic = bootPrefs.getBool("bootmusic", false);
         bootLink = bootPrefs.getBool("bootlink", false);
         bootUnlink = bootPrefs.getBool("bootunlink", false);
+        bootWifiPage = bootPrefs.getBool("bootwifi", false);
         if (bootPrefs.isKey("wasmid")) bootWasmId = bootPrefs.getString("wasmid", "").c_str();
         if (bootPrefs.isKey("wasmcat")) bootWasmCat = bootPrefs.getString("wasmcat", "").c_str();
         // Consumed before the app starts: a failing app never loops.
@@ -174,6 +177,7 @@ void AppManager::setup() {
         bootPrefs.remove("bootmusic");
         bootPrefs.remove("bootlink");
         bootPrefs.remove("bootunlink");
+        if (bootPrefs.isKey("bootwifi")) bootPrefs.remove("bootwifi");
         bootPrefs.end();
     } else {
         ESP_LOGW(TAG_MAIN, "Failed to open boot preferences");
@@ -210,6 +214,8 @@ void AppManager::setup() {
     // A Bluetooth app relaunched across the reboot that followed a network
     // check starts in a clean power cycle. A check asked for after Bluetooth
     // use continues on the Check for updates screen, which shows its result.
+    // Setup WiFi that went through a restart still opens on the WiFi page.
+    if (bootPortal && bootWifiPage) WebPortalApp::resumeWifiLanding();
     appActive     = bootPortal ? APP_WEB_PORTAL
                   : bootMusic  ? APP_MUSIC_PLAYER
                   : bootLink   ? APP_LINK
@@ -425,6 +431,11 @@ bool AppManager::applyLoadoutOps(const char* opsJson, int* entriesOut, int* appl
 void AppManager::switchToApp(AppIndex newApp)
 {
     ESP_LOGI(TAG_MAIN, "Switching to app %d", newApp);
+    // Settings > Setup WiFi is the portal, opening on its WiFi page.
+    if (newApp == APP_SETUP_WIFI) {
+        WebPortalApp::requestWifiLanding();
+        newApp = APP_WEB_PORTAL;
+    }
     if (newApp == appActive) return;
     // Dev mode listening: a Bluetooth app asks to restart first.
     if (AwakeMode::interceptSwitch(newApp)) return;

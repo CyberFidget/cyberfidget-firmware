@@ -44,6 +44,7 @@
 #include "AwakePolicy.h"
 #include "PromptPolicy.h"
 #include "UpdateSession.h"
+#include "SavedWifi.h"
 #include "WasmHostImports.h"
 #include "globals.h"
 
@@ -164,13 +165,11 @@ bool jsonSink(void* arg, const uint8_t* data, size_t len) {
     return true;
 }
 
-// Everything one worker run needs; the credential and WiFi password are
-// wiped at exit.
+// Everything one worker run needs; the credential is wiped at exit (the
+// WiFi passwords stay inside SavedWifi::join).
 struct Session {
     uint32_t started = 0;
     char token[96] = {0};
-    char ssid[33] = {0};
-    char pass[65] = {0};
     std::string base;
     std::string query;
     std::string checkinUrl;
@@ -197,6 +196,12 @@ struct Session {
         return budgetCovers(waitMs, elapsed(), limitMs, kReserveMs);
     }
 };
+
+// A join ends early when the session is cancelled or out of time.
+bool sessionStop(void* ctx) {
+    const Session& s = *static_cast<const Session*>(ctx);
+    return cancelRequested || s.elapsed() >= s.limitMs;
+}
 
 void setSessionFingerprint(Session& s, const char* account, const char* linkedAt) {
     unsigned char hash[32];
@@ -608,12 +613,7 @@ void runPairWorker(Result& r) {
         hooks.malloc_fn = jsonPsramMalloc;
         hooks.free_fn = heap_caps_free;
         cJSON_InitHooks(&hooks);
-        Preferences wifi;
-        if (!wifi.begin("wificfg", true)) { setError(r, "no-wifi"); break; }
-        wifi.getString("ssid", s.ssid, sizeof(s.ssid));
-        wifi.getString("pass", s.pass, sizeof(s.pass));
-        wifi.end();
-        if (!s.ssid[0]) { setError(r, "no-wifi"); break; }
+        if (!SavedWifi::anySaved()) { setError(r, "no-wifi"); break; }
         s.base = kDefaultBase;
 #ifdef CF_TEST_CLI
         Preferences upd;
@@ -635,11 +635,12 @@ void runPairWorker(Result& r) {
         radioStarted = true;
         radioUsed = true;
         if (!WiFi.mode(WIFI_STA)) { setError(r, "sta-mode"); break; }
-        WiFi.begin(s.ssid, s.pass);
-        const uint32_t join = millis();
-        while (WiFi.status() != WL_CONNECTED && !cancelRequested &&
-               millis() - join < kJoinMs) vTaskDelay(pdMS_TO_TICKS(100));
-        if (WiFi.status() != WL_CONNECTED) { setError(r, "join"); break; }
+        SavedWifi::JoinOptions joinOpt;
+        joinOpt.firstMs = kJoinMs;
+        joinOpt.fallbackMs = kJoinMs;
+        joinOpt.stop = [](void*) { return cancelRequested.load(); };
+        SavedWifi::JoinResult joined;
+        if (!SavedWifi::join(joinOpt, joined)) { setError(r, "join"); break; }
 
         drainRevoke(s);
         Preferences pendingPair;
@@ -797,7 +798,6 @@ void runPairWorker(Result& r) {
         if (!WiFi.mode(WIFI_OFF) || WiFi.getMode() != WIFI_OFF) esp_restart();
     }
     memset(s.token, 0, sizeof(s.token));
-    memset(s.pass, 0, sizeof(s.pass));
     if (!r.ok && !locallyUnlinked)
         publishLink(LinkState::Error, nullptr, nullptr, r.err);
 }
@@ -1239,7 +1239,7 @@ bool devSleep(uint32_t ms) {
 
 // Dev mode: back on the saved network. The station usually reconnects by
 // itself; after kDevReconnectMs it is asked to join again.
-bool devRejoin(const Session& s) {
+bool devRejoin() {
     uint32_t at = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - at < kDevReconnectMs) {
         if (cancelRequested) return false;
@@ -1247,13 +1247,13 @@ bool devRejoin(const Session& s) {
     }
     if (WiFi.status() == WL_CONNECTED) return true;
     WiFi.disconnect(false);
-    WiFi.begin(s.ssid, s.pass);
-    at = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - at < kJoinMs) {
-        if (cancelRequested) return false;
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-    return WiFi.status() == WL_CONNECTED;
+    // A fresh join in the same order as any session's.
+    SavedWifi::JoinOptions joinOpt;
+    joinOpt.firstMs = kJoinMs;
+    joinOpt.fallbackMs = kJoinMs;
+    joinOpt.stop = [](void*) { return cancelRequested.load(); };
+    SavedWifi::JoinResult joined;
+    return SavedWifi::join(joinOpt, joined);
 }
 
 #ifdef CF_TEST_CLI
@@ -1317,7 +1317,7 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         sampleHeap();
         bool connected = WiFi.status() == WL_CONNECTED;
         const uint32_t cycleAt = millis();
-        if (!connected) connected = devRejoin(s);
+        if (!connected) connected = devRejoin();
         if (cancelRequested) { devInCycle = false; break; }
         // A rejoin can take seconds: a transfer that opened meanwhile wins.
         if (SerialCli::instance().ferryActive()) {
@@ -1434,24 +1434,7 @@ void runWorker(Result& r) {
         if (!s.token[0] && !revokeOnly) { setError(r, "not-linked"); break; }
         if (!revokeOnly) setSessionFingerprint(s, account.c_str(), linkedAt.c_str());
 
-        Preferences wifi;
-        if (!wifi.begin("wificfg", true)) { setError(r, "no-wifi"); break; }
-        wifi.getString("ssid", s.ssid, sizeof(s.ssid));
-        wifi.getString("pass", s.pass, sizeof(s.pass));
-        wifi.end();
-        if (!s.ssid[0]) { setError(r, "no-wifi"); break; }
-#ifdef CF_TEST_CLI
-        {
-            // Bench: a network name that is not in range, so the absent-
-            // network bail can be measured without touching saved settings.
-            Preferences test;
-            if (test.begin("cftest", true)) {
-                if (test.getBool("badssid", false))
-                    strcpy(s.ssid, "cf-bench-absent-network");
-                test.end();
-            }
-        }
-#endif
+        if (!SavedWifi::anySaved()) { setError(r, "no-wifi"); break; }
         s.base = kDefaultBase;
         bool autoapply = true;
         bool backedOff = false;
@@ -1488,25 +1471,38 @@ void runWorker(Result& r) {
         radioStarted = true;
         radioUsed = true;
         if (!WiFi.mode(WIFI_STA)) { setError(r, "sta-mode"); break; }
-        WiFi.begin(s.ssid, s.pass);
-        const uint32_t join = millis();
+        // The last network that worked first, at its remembered place; then
+        // one scan and the strongest saved network present (SavedWifi). The
+        // connect's own scan reports a saved network that is not in range; a
+        // scheduled session stops there instead of running out its join
+        // budget. A manual check keeps trying.
         const uint32_t joinLimit = sessionReason == Reason::Boot ? kBootJoinMs : kJoinMs;
-        bool absent = false;
-        while (WiFi.status() != WL_CONNECTED) {
-            if (cancelRequested || millis() - join >= joinLimit || s.elapsed() >= s.limitMs) break;
-            // The connect's own scan reports a saved network that is not in
-            // range; a scheduled session stops there instead of running out
-            // its join budget. A manual check keeps trying.
-            if (automatic && WiFi.status() == WL_NO_SSID_AVAIL) { absent = true; break; }
-            vTaskDelay(pdMS_TO_TICKS(100));
+        SavedWifi::JoinOptions joinOpt;
+        joinOpt.firstMs = joinLimit;
+        joinOpt.fallbackMs = joinLimit;
+        joinOpt.scheduled = automatic;
+        joinOpt.stop = sessionStop;
+        joinOpt.ctx = &s;
+#ifdef CF_TEST_CLI
+        {
+            // Bench: a network name that is not in range, so the absent-
+            // network bail can be measured without touching saved settings.
+            Preferences test;
+            if (test.begin("cftest", true)) {
+                if (test.getBool("badssid", false)) joinOpt.benchFirstName = "cf-bench-absent-network";
+                test.end();
+            }
         }
+#endif
+        SavedWifi::JoinResult joined;
+        SavedWifi::join(joinOpt, joined);
         sampleHeap();
         // Dev mode keeps trying to join inside its loop.
         if (WiFi.status() != WL_CONNECTED && (!dev || cancelRequested || revokeOnly)) {
-            setError(r, cancelRequested ? "cancelled" : absent ? "no-network" : "join");
+            setError(r, cancelRequested ? "cancelled" : joined.absent ? "no-network" : "join");
             break;
         }
-        if (WiFi.status() == WL_CONNECTED) r.joinMs = millis() - join;
+        if (WiFi.status() == WL_CONNECTED) r.joinMs = joined.totalMs;
 
         const DeviceIdentity::Fingerprint live = DeviceIdentity::readLive();
         strcpy(s.id, live.id);
@@ -1568,7 +1564,6 @@ void runWorker(Result& r) {
         if (!radioOff) { r.ok = false; setError(r, "wifi-off"); }
     }
     memset(s.token, 0, sizeof(s.token));
-    memset(s.pass, 0, sizeof(s.pass));
     sampleHeap();
     // The handshake trough falls inside esp_http_client_open() where no
     // sample runs; a drop in the since-boot low-water mark is ours.

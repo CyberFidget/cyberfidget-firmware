@@ -24,6 +24,7 @@
 #include "DisplayProxy.h"
 #include "HAL.h"
 #include "OtaUpdate.h"
+#include "SavedWifi.h"
 #include "StatusService.h"
 #include "globals.h"
 
@@ -642,32 +643,20 @@ void runSession(const char* wanted) {
 
     char base[128];
     if (!CloudSync::siteBase(base, sizeof(base))) endSession(false, "invalid-base", nullptr, started);
-    char ssid[33] = {0}, pass[65] = {0};
-    {
-        Preferences wifi;
-        if (wifi.begin("wificfg", true)) {
-            if (wifi.isKey("ssid")) wifi.getString("ssid", ssid, sizeof(ssid));
-            if (wifi.isKey("pass")) wifi.getString("pass", pass, sizeof(pass));
-            wifi.end();
-        }
-    }
-    if (!ssid[0]) endSession(false, "no-wifi", "No saved network yet.", started);
+    if (!SavedWifi::anySaved()) endSession(false, "no-wifi", "No saved network yet.", started);
 
     // Station only; Bluetooth is never started in this power cycle.
     WiFi.persistent(false);
-    if (!WiFi.mode(WIFI_STA)) {
-        memset(pass, 0, sizeof(pass));
-        endSession(false, "sta-mode", nullptr, started);
-    }
-    WiFi.begin(ssid, pass);
-    memset(pass, 0, sizeof(pass));
-    const uint32_t joinStart = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - joinStart < kJoinMs) {
-        delay(100);
-        feed();
-    }
-    if (WiFi.status() != WL_CONNECTED) endSession(false, "join", "Network not in range.", started);
-    Serial.printf("[update] joined ms=%lu\n", (unsigned long)(millis() - joinStart));
+    if (!WiFi.mode(WIFI_STA)) endSession(false, "sta-mode", nullptr, started);
+    // The same join order as every session: the last network that worked,
+    // then one scan for the strongest saved network present.
+    SavedWifi::JoinOptions joinOpt;
+    joinOpt.firstMs = kJoinMs;
+    joinOpt.fallbackMs = kJoinMs;
+    joinOpt.tick = [](void*) { feed(); };
+    SavedWifi::JoinResult joined;
+    if (!SavedWifi::join(joinOpt, joined)) endSession(false, "join", "Network not in range.", started);
+    Serial.printf("[update] joined ms=%lu\n", (unsigned long)joined.totalMs);
 
     // ---- manifest (the update site first) ----
     ManifestCheck mc;

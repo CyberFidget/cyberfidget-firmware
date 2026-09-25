@@ -34,9 +34,18 @@ public:
     // network and never Bluetooth.
     static void releaseBluetoothForNetwork() { releaseBluetoothMemory(); }
 
+    // Settings > Setup WiFi: the next portal start lands on its WiFi page
+    // (the captive-portal redirect and the page itself open it). Stored as
+    // the `bootcfg` one-shot `bootwifi` too, so a start that goes through a
+    // restart (Bluetooth used, or a check that would not stop) still lands
+    // there; AppManager consumes it at boot and calls resumeWifiLanding().
+    static void requestWifiLanding();
+    static void resumeWifiLanding() { wifiLanding = true; }
+
 private:
     static WebPortalApp* instance;
     static bool btReleasedThisPowerCycle;
+    static bool wifiLanding;
     ButtonManager& buttonManager;
 
     static constexpr const char* AP_SSID = "CyberFidget";
@@ -143,8 +152,7 @@ private:
 
     // WiFi STA helpers
     void loadWifiCreds();
-    void connectSTA(const String& ssid, const String& pass, bool save);
-    void disconnectSTA();
+    void connectSTA(const char* ssid, const char* pass);
     void tryStartMDNS();
     void stopMDNS();
 
@@ -176,9 +184,11 @@ private:
 
     // WiFi route handlers
     void handleWifiScan(AsyncWebServerRequest* req);
-    void handleWifiConnect(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total);
+    // The POST routes run once the body is in (collected per request).
+    void handleWifiConnect(AsyncWebServerRequest* req);
     void handleWifiStatus(AsyncWebServerRequest* req);
     void handleWifiForget(AsyncWebServerRequest* req);
+    void handleWifiFirst(AsyncWebServerRequest* req);
 
     // OLED rendering
     void render();

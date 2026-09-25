@@ -253,8 +253,28 @@ void test_user_copy_has_no_jargon(void) {
     }
 }
 
+// Setup WiFi (the portal on its WiFi page) and the saved-network list sit in
+// Settings next to Updates, under the product's own word for the setting.
+void test_wifi_items_sit_in_settings(void) {
+    const ManifestRow* setup = find("APP_SETUP_WIFI");
+    const ManifestRow* saved = find("APP_SAVED_WIFI");
+    const ManifestRow* updates = find("APP_UPDATES");
+    TEST_ASSERT_NOT_NULL(setup);
+    TEST_ASSERT_NOT_NULL(saved);
+    TEST_ASSERT_EQUAL_STRING("Setup WiFi", setup->label);
+    TEST_ASSERT_EQUAL_STRING("Saved WiFi", saved->label);
+    TEST_ASSERT_EQUAL_STRING(updates->path, setup->path);
+    TEST_ASSERT_EQUAL_STRING(updates->path, saved->path);
+    const char* banned[] = {"SSID", "BSSID", "channel", "portal"};
+    for (const char* b : banned) {
+        TEST_ASSERT_NULL(strstr(setup->label, b));
+        TEST_ASSERT_NULL(strstr(saved->label, b));
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_wifi_items_sit_in_settings);
     RUN_TEST(test_check_for_updates_is_a_root_item);
     RUN_TEST(test_awake_screen_sits_in_settings);
     RUN_TEST(test_listening_allow_list_names_real_apps);

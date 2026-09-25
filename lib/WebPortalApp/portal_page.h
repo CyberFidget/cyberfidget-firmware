@@ -433,6 +433,12 @@ input[type="file"]{display:none}
 .wifi-input{width:100%;padding:9px 11px;background:var(--bg-sunk);border:1px solid var(--border);color:var(--text-primary);font-family:var(--f-m);font-size:0.86em;margin:8px 0}
 .wifi-input:focus{border-color:var(--accent);outline:none}
 .wifi-actions{display:flex;gap:8px;margin-top:12px}
+/* Saved networks: name, then its actions on the right. Not clickable as a row. */
+.saved-list li{cursor:default;flex-wrap:wrap}
+.saved-list li:hover{background:none}
+.saved-list .btn-sm{margin-left:4px}
+.wifi-note{font-size:0.8em;color:var(--text-secondary);line-height:1.5;margin-top:8px}
+.wifi-note.landing{margin:0 0 14px;color:var(--text-primary)}
 .wifi-spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
 
@@ -618,11 +624,22 @@ input[type="file"]{display:none}
       </div>
     </div>
 
+    <!-- Shown when the portal was opened from Setup WiFi on the device. -->
+    <div class="wifi-note landing" id="landingNote" style="display:none">Pick your WiFi network below and enter its password. Your Cyber Fidget remembers up to 3 networks.</div>
+
     <div class="wifi-card" id="wifiStatusCard">
       <h3>WiFi Connection</h3>
       <div id="wifiStatusContent">
         <div class="info-row"><span class="label">Status</span><span class="val" id="wifiStatusText">Not connected</span></div>
       </div>
+    </div>
+
+    <!-- Names only, never passwords. The first is tried first; after that the
+         strongest one nearby. -->
+    <div class="wifi-card">
+      <h3>Saved networks</h3>
+      <ul class="network-list saved-list" id="savedList"><li class="empty" style="padding:12px">Loading...</li></ul>
+      <div class="wifi-note">Up to 3. Your Cyber Fidget tries the network that worked last, then the strongest saved one nearby.</div>
     </div>
 
     <div class="wifi-card">
@@ -1953,6 +1970,10 @@ function addToNewPl(){
 
 // ─── WiFi Settings ───
 let selectedSSID='';
+let savedNames=[],scanNets=[],landingSeen=false;
+// The address as first opened, before showPage() rewrites the hash: Setup
+// WiFi's captive redirect asks for #settings, a typed address asks for nothing.
+const startHash=location.hash;
 async function loadWifiStatus(){
   try{
     const r=await fetch('/api/wifi/status');
@@ -1968,15 +1989,61 @@ async function loadWifiStatus(){
       // is described by what it does rather than by the protocol that serves it.
       sc.innerHTML='<div class="info-row"><span class="label">Status</span><span class="val" style="color:var(--success)">Connected &#183; '+esc(s.ssid)+'</span></div>'+
         '<div class="info-row"><span class="label">Address</span><span class="val accent">'+s.ip+'</span></div>'+
-        (mdns?'<div class="info-row"><span class="label">Also reachable at</span><span class="val accent">'+mdns+'</span></div>':'')+
-        '<div style="margin-top:12px"><button class="btn btn-del" onclick="forgetWifi()">Forget network</button></div>';
+        (mdns?'<div class="info-row"><span class="label">Also reachable at</span><span class="val accent">'+mdns+'</span></div>':'');
     }else if(s.ssid&&s.status==='connecting'){
       sc.innerHTML='<div class="info-row"><span class="label">Status</span><span class="val"><span class="wifi-spinner"></span>Connecting to '+esc(s.ssid)+'...</span></div>';
       setTimeout(loadWifiStatus,2000);
     }else{
       sc.innerHTML='<div class="info-row"><span class="label">Status</span><span class="val">Not connected</span></div>';
     }
+    renderSaved(Array.isArray(s.saved)?s.saved:[]);
+    if(s.landing&&!landingSeen){
+      // Opened from Setup WiFi on the device: straight to the WiFi settings,
+      // with nearby networks already listed.
+      landingSeen=true;
+      $('landingNote').style.display='';
+      if(!startHash||startHash==='#')showPage('settings');
+      scanWifi();
+    }
   }catch(e){}
+}
+
+// Saved networks: names only. Actions go by position, so a name never has
+// to survive being quoted inside an attribute.
+function renderSaved(names){
+  savedNames=names;
+  const ul=$('savedList');
+  if(!names.length){ul.innerHTML='<li class="empty" style="padding:12px">No saved WiFi yet. Pick a network below.</li>';return}
+  ul.innerHTML=names.map((n,i)=>
+    '<li><span class="ssid">'+esc(n)+'</span>'+
+    (i===0?'<span class="lock">Tried first</span>':'<button class="btn btn-sm" onclick="useFirst('+i+')">Use this first</button>')+
+    '<button class="btn btn-del btn-sm" onclick="forgetSaved('+i+')">Forget</button></li>'
+  ).join('');
+}
+
+async function postWifi(path,name){
+  return fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid:name})});
+}
+
+async function useFirst(i){
+  const n=savedNames[i];
+  if(n===undefined)return;
+  try{
+    const r=await postWifi('/api/wifi/first',n);
+    toast(r.ok?n+' is tried first now':'Could not change the order');
+  }catch(e){toast('Could not change the order')}
+  loadWifiStatus();
+}
+
+async function forgetSaved(i){
+  const n=savedNames[i];
+  if(n===undefined)return;
+  if(!confirm('Forget '+n+'?'))return;
+  try{
+    const r=await postWifi('/api/wifi/forget',n);
+    toast(r.ok?'Forgot '+n:'Could not forget it');
+  }catch(e){toast('Could not forget it')}
+  loadWifiStatus();
 }
 
 async function scanWifi(){
@@ -2000,13 +2067,14 @@ async function scanWifi(){
       if(data.status){$('networkList').innerHTML='<li class="empty" style="padding:12px">Scan timed out</li>';return}
     }
     const nets=Array.isArray(data)?data:[];
+    scanNets=nets;
     if(!nets.length){$('networkList').innerHTML='<li class="empty" style="padding:12px">No networks found</li>';return}
     // Strength is four CSS bars from the kit and "locked" is a text chip. Both
     // were emoji, which are fixed multi-colour and cannot be tinted to match the
     // surface - the defect class the design brief singled out, and this list was
     // its last live instance.
-    $('networkList').innerHTML=nets.map(n=>
-      '<li onclick="selectNetwork(\''+esc(n.ssid)+'\')">'+
+    $('networkList').innerHTML=nets.map((n,i)=>
+      '<li onclick="selectNetwork('+i+')">'+
       '<span class="ssid">'+esc(n.ssid)+'</span>'+
       (n.secure?'<span class="lock">Locked</span>':'')+
       CFK.sig(n.rssi)+
@@ -2016,21 +2084,22 @@ async function scanWifi(){
   finally{btn.disabled=false;btn.textContent='Scan again'}
 }
 
-function selectNetwork(ssid){
+function selectNetwork(i){
+  const n=scanNets[i];
+  if(!n)return;
+  const ssid=n.ssid;
   selectedSSID=ssid;
   $('selectedSSID').textContent=ssid;
   $('wifiPass').value='';
   $('wifiConnectForm').style.display='';
   $('wifiPass').focus();
-  document.querySelectorAll('.network-list li').forEach(li=>{
-    li.classList.toggle('selected',li.querySelector('.ssid')?.textContent===ssid);
-  });
+  document.querySelectorAll('#networkList li').forEach((li,j)=>li.classList.toggle('selected',j===i));
 }
 
 function cancelWifiConnect(){
   $('wifiConnectForm').style.display='none';
   selectedSSID='';
-  document.querySelectorAll('.network-list li').forEach(li=>li.classList.remove('selected'));
+  document.querySelectorAll('#networkList li').forEach(li=>li.classList.remove('selected'));
 }
 
 async function doWifiConnect(){
@@ -2038,9 +2107,13 @@ async function doWifiConnect(){
   const btn=$('connectBtn');
   btn.disabled=true;btn.innerHTML='<span class="wifi-spinner"></span>Connecting...';
   try{
-    await fetch('/api/wifi/connect',{method:'POST',headers:{'Content-Type':'application/json'},
+    const res=await fetch('/api/wifi/connect',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({ssid:selectedSSID,pass:$('wifiPass').value})});
+    // Three saved already: nothing is dropped without the person choosing.
+    if(res.status===409){toast('3 networks are saved. Forget one first.');return}
+    if(!res.ok){toast('Could not save that network');return}
     $('wifiConnectForm').style.display='none';
+    loadWifiStatus();
     toast('Connecting to '+selectedSSID+'...');
     // Poll for connection status
     let attempts=0;
@@ -2054,13 +2127,6 @@ async function doWifiConnect(){
     setTimeout(poll,2000);
   }catch(e){toast('Connection failed')}
   finally{btn.disabled=false;btn.textContent='Connect'}
-}
-
-async function forgetWifi(){
-  if(!confirm('Forget saved WiFi network?'))return;
-  await fetch('/api/wifi/forget',{method:'POST'});
-  toast('WiFi network forgotten');
-  loadWifiStatus();
 }
 
 $('wifiPass').addEventListener('keydown',e=>{if(e.key==='Enter')doWifiConnect()});

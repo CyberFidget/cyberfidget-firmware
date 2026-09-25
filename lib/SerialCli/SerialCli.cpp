@@ -60,6 +60,7 @@
 #include "CheckinPolicy.h"
 #include "MicCapture.h"
 #include "TlsProbeSession.h"
+#include "SavedWifi.h"
 #include "TrustedRoots.h"
 #endif
 
@@ -1920,9 +1921,14 @@ void SerialCli::cmdMic() {
 
 void SerialCli::cmdWifi(const char* arg) {
     // `wifi <ssid>|<pass>` - '|' separates because SSIDs may contain spaces.
-    // An omitted pass ("wifi MyNet|") saves an open network.
+    // An omitted pass ("wifi MyNet|") saves an open network. Without a '|'
+    // it is one of the saved-network verbs (list, first, forget, hint-bad).
     const char* sep = strchr(arg, '|');
-    if (sep == nullptr || sep == arg) {
+    if (sep == nullptr) {
+        SavedWifi::cliCommand(arg);
+        return;
+    }
+    if (sep == arg) {
         Serial.println("[err] usage: wifi <ssid>|<pass>");
         return;
     }
@@ -1933,16 +1939,17 @@ void SerialCli::cmdWifi(const char* arg) {
     ssid[n] = '\0';
     const char* pass = sep + 1;
 
-    // Same NVS keys the web portal reads at startup (loadWifiCreds), so the
-    // next `launch` of the portal auto-connects to this network.
-    Preferences prefs;
-    if (!prefs.begin("wificfg", false)) {
+    // Saved as the first network to try, like the portal's Connect (the
+    // portal and every session read the same list).
+    const WifiList::AddResult r = SavedWifi::add(ssid, pass);
+    if (r == WifiList::AddResult::Full) {
+        Serial.println("[err] wifi.full=1 (forget one first)");
+        return;
+    }
+    if (r == WifiList::AddResult::Invalid) {
         Serial.println("[err] wifi store failed");
         return;
     }
-    prefs.putString("ssid", ssid);
-    prefs.putString("pass", pass);
-    prefs.end();
     Serial.printf("[cmd] wifi.saved=%s\n", ssid);
 }
 #endif  // CF_TEST_CLI

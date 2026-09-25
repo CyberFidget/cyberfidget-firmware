@@ -180,19 +180,31 @@ tlsprobe [url] -> [cmd] tlsprobe.started=1
                   [cmd] tlsprobe.ok=<0|1> state=<done|failed|timeout> err=<code> join_ms=<n> tls_ms=<n> get_ms=<n> http=<status> bytes=<n> heap_free_min=<B> largest_min=<B> heap_min_before=<B> heap_min_boot=<B> stack_size=<B> stack_hw=<B> url=<url>
 tlsalloc <psram|internal> -> [cmd] tlsalloc.ok=<mode> psram_free=<B>
 mic  -> [cmd] mic.heap_free=... ... [cmd] mic.released=1
-wifi <ssid>|<pass> -> [cmd] wifi.saved=<ssid>
+wifi <ssid>|<pass> -> [cmd] wifi.saved=<ssid>   ([err] wifi.full=1 when 3 are saved)
+wifi list          -> [cmd] wifi.count=<n> place=<0|1>, then [cmd] wifi.net=<i> name=<ssid> per network
+wifi first <ssid>  -> [cmd] wifi.first=<0|1>
+wifi forget <ssid> -> [cmd] wifi.forget=<0|1>
+wifi hint-bad      -> [cmd] wifi.hint_bad=<0|1>
+wifi hint-clear    -> [cmd] wifi.hint_clear=<0|1>
 wasmstat -> [cmd] wasmstat....
 ```
 
 `apps` lists compiled applications. `launch` switches immediately to a compiled
 app or stages a manifest-backed WASM app. `net` reports fields applicable to the
 current Wi-Fi mode. `mic` runs a short capture diagnostic and releases it.
-`wifi` persists credentials for later portal use. `wasmstat` delegates its
+`wifi <ssid>|<pass>` saves a network as the first one to try (the saved list
+of up to 3 in `lib/CloudSync/SavedWifi.h`, the same one the portal and every
+session use); `list`, `first` and `forget` read and reorder it (names only,
+never passwords). `hint-bad` points the remembered place of the first network
+at an access point that is not there, so the quick join fails the way it does
+when that network is out of range and the fallback scan can be measured;
+`hint-clear` drops the remembered place so the next join is a plain one.
+`wasmstat` delegates its
 tagged runtime report to `WasmFsApp`.
 
 `heapstat` only reads the internal heap counters. `tlsprobe` starts one plain
-task and reports the result later from the main loop. It reads `wificfg`
-credentials without changing them, uses STA only, verifies the host against
+task and reports the result later from the main loop. It reads the first
+saved network (`wificfg.ssid/pass`, always a copy of it) without changing it, uses STA only, verifies the host against
 the trusted root list (`lib/TrustedRoots`, the same list the check-in client
 uses), and turns Wi-Fi off before reporting. A host whose chain does not end
 in that list fails with `err=tls-connect`. The list's PEM text is held in

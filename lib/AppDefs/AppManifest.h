@@ -69,3 +69,8 @@ APP_ENTRY(APP_CHECK_UPDATES,         "Check for updates",   "",               Up
 APP_ENTRY(APP_UPDATES,               "Updates",             "Settings",       UpdatePrompt::settingsBegin,                     UpdatePrompt::settingsEnd,                     UpdatePrompt::settingsUpdate               )
 // Off / Stay awake / Dev mode (lib/UpdatePrompt/AwakeMode).
 APP_ENTRY(APP_AWAKE,                 "Awake & dev mode",    "Settings",       AwakeMode::screenBegin,                          AwakeMode::screenEnd,                          AwakeMode::screenUpdate                    )
+// Settings > Setup WiFi: the portal, opening on its WiFi page (switchToApp
+// turns it into APP_WEB_PORTAL, so the radio rules for the portal apply).
+APP_ENTRY(APP_SETUP_WIFI,            "Setup WiFi",          "Settings",       [](){ WebPortalApp::requestWifiLanding(); webPortalApp.begin(); }, [](){ webPortalApp.end(); }, [](){ webPortalApp.update(); })
+// Settings > Saved WiFi: names in the order tried, Use this first / Forget.
+APP_ENTRY(APP_SAVED_WIFI,            "Saved WiFi",          "Settings",       SavedWifiScreen::begin,                          SavedWifiScreen::end,                          SavedWifiScreen::update                    )
