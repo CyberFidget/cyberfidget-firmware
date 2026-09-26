@@ -28,9 +28,10 @@ struct UploadWindow {
     bool complete = true;
 };
 
-// Input is the chronological tail returned by readLastRecords. Gaps before
-// that tail cannot be recovered after ring rotation and make it partial.
-inline UploadWindow uploadWindow(const Record* records, size_t count,
+// Input is the chronological tail returned by readLastRecords. The selected
+// records are compacted in place to remove repeated or decreasing sequences.
+// Gaps before that tail cannot be recovered after ring rotation.
+inline UploadWindow uploadWindow(Record* records, size_t count,
                                  uint32_t ackedSeq, bool tailTruncated,
                                  size_t maxRecords = kUploadRecords) {
     UploadWindow out;
@@ -46,9 +47,19 @@ inline UploadWindow uploadWindow(const Record* records, size_t count,
         out.count = maxRecords;
         out.complete = false;
     }
-    if (ackedSeq && records[out.first].seq > ackedSeq + 1U) out.complete = false;
-    for (size_t i = out.first + 1; i < out.first + out.count; ++i)
-        if (records[i].seq != records[i - 1].seq + 1U) out.complete = false;
+    const size_t end = out.first + out.count;
+    size_t kept = out.first;
+    uint32_t previous = ackedSeq;
+    for (size_t i = out.first; i < end; ++i) {
+        if (records[i].seq <= previous) {
+            out.complete = false;
+            continue;
+        }
+        if (previous && records[i].seq != previous + 1U) out.complete = false;
+        if (kept != i) records[kept] = records[i];
+        previous = records[kept++].seq;
+    }
+    out.count = kept - out.first;
     return out;
 }
 

@@ -429,10 +429,17 @@ size_t readLastRecords(Record* records, size_t capacity, uint32_t* total_records
 size_t readUploadSnapshot(Record* records, size_t capacity, uint32_t* total_records,
                           uint8_t stats_bytes[38]) {
     if (total_records) *total_records = 0;
-    if (!records || !capacity || !stats_bytes || !flushTimerCheckins()) return 0;
-    if (!mountForTimerFlush()) return 0;
+    if (!records || !capacity || !stats_bytes) return 0;
+    // Normal boots already own a mounted LittleFS through LoadoutStore.
+    // The timer flush helper ends that shared mount, so flush in place here.
     const bool wasReady = s_ready;
+    if (!wasReady && !mountForTimerFlush()) return 0;
+    if (!wasReady && !loadStats(&s_stats)) defaultStats(&s_stats);
     s_ready = true;
+    if (!flushRtcInternal()) {
+        s_ready = wasReady;
+        return 0;
+    }
     File stats = LittleFS.open(kStatsPath, FILE_READ);
     Stats checked;
     const bool statsOk = stats && stats.size() == 38 &&
@@ -440,7 +447,6 @@ size_t readUploadSnapshot(Record* records, size_t capacity, uint32_t* total_reco
     stats.close();
     const size_t count = statsOk ? readLastRecords(records, capacity, total_records) : 0;
     s_ready = wasReady;
-    LittleFS.end();
     return count;
 }
 

@@ -150,6 +150,7 @@ struct HttpReply {
     int status = 0;
     int retry = 0;
     uint32_t nextMs = 0;
+    std::string date;
     std::string body;
 };
 
@@ -160,6 +161,8 @@ esp_err_t onHttpEvent(esp_http_client_event_t* event) {
         reply->retry = atoi(event->header_value);
     if (strcasecmp(event->header_key, "X-Next-Poll-Ms") == 0)
         reply->nextMs = (uint32_t)strtoul(event->header_value, nullptr, 10);
+    if (strcasecmp(event->header_key, "Date") == 0)
+        reply->date = event->header_value;
     return ESP_OK;
 }
 
@@ -451,7 +454,7 @@ bool readAppliedRecord(LoadoutManifest::AppliedRecord& out) {
 }
 
 std::string checkinBody(const Session& s, const char* answerBatch, const char* answer,
-                        uint32_t& crc, bool& full) {
+                        uint32_t& crc, bool& full, std::string& ackBatch) {
     LoadoutManifest::Loadout loadout;
     std::string manifest;
     bool present = false;
@@ -490,9 +493,10 @@ std::string checkinBody(const Session& s, const char* answerBatch, const char* a
             prefs.end();
         }
     }
-    full = fullReportRequired(s.reportState, crc,
-                              fields.appliedBatch && fields.result &&
-                              validBatchId(fields.appliedBatch) && validResult(fields.result));
+    ackBatch = fields.appliedBatch && fields.result &&
+               validBatchId(fields.appliedBatch) && validResult(fields.result)
+                   ? fields.appliedBatch : "";
+    full = fullReportRequired(s.reportState, crc, ackBatch.empty() ? nullptr : ackBatch.c_str());
     fields.installed = full ? &loadout : nullptr;
     return buildCheckinBody(fields);
 }
@@ -1019,19 +1023,29 @@ BlobVerdict fetchBlobs(const Session& s, const Offer& offer,
 // Sends `body` as a check-in, retrying once through a 429 when the budget
 // covers its Retry-After. Returns the planner's step after the answer.
 Step checkinWithRetry(Session& s, CloudPlanner& plan, const std::string& body,
-                      uint32_t manifestCrc, bool sentFull,
+                      uint32_t manifestCrc, bool sentFull, const std::string& ackBatch,
                       HttpReply& reply, CheckinReply& parsed, bool autoapply,
                       bool followUp, Result& r) {
     for (;;) {
         if (!postCheckin(s, body, reply)) {
-            s.reportState = reportAfterCheckin(s.reportState, manifestCrc, sentFull, 0, false);
+            s.reportState = reportAfterCheckin(s.reportState, manifestCrc, sentFull, 0, false,
+                                                ackBatch.c_str());
             setError(r, followUp ? "ack-transport" : "checkin-transport");
             return Step::Error;
         }
         const bool readable = parseCheckin(reply.status == 200 ? reply.body.c_str() : nullptr,
                                            reply.nextMs, parsed);
+        if (reply.status >= 200 && reply.status < 300 && readable && !parsed.hasServerTime &&
+            time(nullptr) <= 1577836800) {
+            const uint32_t fromDate = httpDateEpoch(reply.date.c_str());
+            if (fromDate) {
+                timeval tv = {(time_t)fromDate, 0};
+                settimeofday(&tv, nullptr);
+            }
+        }
         s.reportState = reportAfterCheckin(s.reportState, manifestCrc, sentFull,
-                                            reply.status, readable && parsed.sendReport);
+                                            reply.status, readable && parsed.sendReport,
+                                            ackBatch.c_str());
         if (reply.status == 200 && !readable) {
             setError(r, followUp ? "ack-body" : "checkin-body");
             return Step::Error;
@@ -1116,10 +1130,11 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
     // ---- 1. check-in -------------------------------------------------
     uint32_t manifestCrc = 0;
     bool sentFull = false;
-    std::string body = checkinBody(s, nullptr, nullptr, manifestCrc, sentFull);
+    std::string ackBatch;
+    std::string body = checkinBody(s, nullptr, nullptr, manifestCrc, sentFull, ackBatch);
     if (body.empty()) { setError(r, "checkin-body"); return; }
     HttpReply check;
-    Step step = checkinWithRetry(s, plan, body, manifestCrc, sentFull,
+    Step step = checkinWithRetry(s, plan, body, manifestCrc, sentFull, ackBatch,
                                  check, s.reply, autoapply, false, r);
     out.status = check.status;
     out.retry = check.retry;
@@ -1284,14 +1299,14 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
         r.ok = false;
         return;
     }
-    body = checkinBody(s, batchId.c_str(), answer, manifestCrc, sentFull);
+    body = checkinBody(s, batchId.c_str(), answer, manifestCrc, sentFull, ackBatch);
     if (body.empty()) { setError(r, "ack-body"); r.ok = false; return; }
     HttpReply follow;
     CheckinReply followParsed;
     const bool wasOk = r.ok;
     char answered[sizeof(r.err)];
     memcpy(answered, r.err, sizeof(answered));
-    step = checkinWithRetry(s, plan, body, manifestCrc, sentFull,
+    step = checkinWithRetry(s, plan, body, manifestCrc, sentFull, ackBatch,
                             follow, followParsed, autoapply, true, r);
     r.nextMs = plan.nextMs();
     if (step == Step::Done) {
