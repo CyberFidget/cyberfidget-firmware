@@ -1,6 +1,7 @@
 #include <unity.h>
 
 #include "../../lib/BatteryDiary/BatteryDiary.h"
+#include "../../lib/BatteryDiary/UsageUpload.h"
 
 using namespace BatteryDiary;
 
@@ -82,6 +83,41 @@ static void test_ring_rotation_math() {
                              rotationDropCount(kMaxRecords, kRotationRecords + 1U));
 }
 
+static void test_upload_gate() {
+    const uint32_t now = 1800000000U;
+    TEST_ASSERT_TRUE(uploadDue(true, true, true, true, true, now, 0, 8000));
+    TEST_ASSERT_FALSE(uploadDue(false, true, true, true, true, now, 0, 8000));
+    TEST_ASSERT_FALSE(uploadDue(true, false, true, true, true, now, 0, 8000));
+    TEST_ASSERT_FALSE(uploadDue(true, true, false, true, true, now, 0, 8000));
+    TEST_ASSERT_FALSE(uploadDue(true, true, true, false, true, now, 0, 8000));
+    TEST_ASSERT_FALSE(uploadDue(true, true, true, true, false, now, 0, 8000));
+    TEST_ASSERT_FALSE(uploadDue(true, true, true, true, true, now, now - (21U * 3600U - 1U), 8000));
+    TEST_ASSERT_TRUE(uploadDue(true, true, true, true, true, now, now - 21U * 3600U, 8000));
+    TEST_ASSERT_FALSE(uploadDue(true, true, true, true, true, now, 0, 7999));
+}
+
+static void test_upload_window() {
+    Record records[5] = {};
+    for (uint32_t i = 0; i < 5; ++i) records[i].seq = i + 10;
+    UploadWindow w = uploadWindow(records, 5, 11, false, 4);
+    TEST_ASSERT_EQUAL(2, w.first);
+    TEST_ASSERT_EQUAL(3, w.count);
+    TEST_ASSERT_TRUE(w.complete);
+    w = uploadWindow(records, 5, 0, false, 2);
+    TEST_ASSERT_EQUAL(3, w.first);
+    TEST_ASSERT_EQUAL(2, w.count);
+    TEST_ASSERT_FALSE(w.complete);
+    w = uploadWindow(records, 5, 8, true, 5);
+    TEST_ASSERT_EQUAL(5, w.count);
+    TEST_ASSERT_FALSE(w.complete);
+    w = uploadWindow(records, 5, 14, false, 5);
+    TEST_ASSERT_EQUAL(0, w.count);
+    records[3].seq = 20;
+    records[4].seq = 21;
+    w = uploadWindow(records, 5, 11, false, 5);
+    TEST_ASSERT_FALSE(w.complete);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_codec_round_trip_all_events_and_clamps);
@@ -90,5 +126,7 @@ int main(int, char**) {
     RUN_TEST(test_charge_cycle_jitter_does_not_count);
     RUN_TEST(test_charge_cycle_charging_boot);
     RUN_TEST(test_ring_rotation_math);
+    RUN_TEST(test_upload_gate);
+    RUN_TEST(test_upload_window);
     return UNITY_END();
 }

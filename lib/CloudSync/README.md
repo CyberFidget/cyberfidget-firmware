@@ -245,6 +245,27 @@ Test builds print one `[dev] poll=...` line per check-in (see
 `lib/SerialCli/README.md`); release builds print only `[dev] delivered`,
 `[dev] poll failing` and `[dev] poll ok again`.
 
+## Optional daily battery data
+
+Only the automatic sessions (the Daily timer session and the start-up Boot
+check-in) consider a usage upload - a Fidget used every day checks in at
+start-up and may never reach a Daily session. The device setting
+`upd.usage_share` defaults off. The scheduler supplies the voltage and charge
+percentage it measured for that session; both must pass the same 3.6 V and 20 percent
+floor as the automatic check-in. The worker waits until the check-in succeeds,
+then checks the 21-hour accepted-upload interval (under the 24 h daily
+spacing, over the site's 20 h cap) and reserves enough time for
+one bounded HTTPS POST to `/api/device-usage.php`. It skips the POST if the
+session is too near its deadline and never extends WiFi time for sharing.
+
+The POST uses the linked device bearer credential and the two-file field-usage
+manifest, with `source: device`, `consent: device_setting`, and a bounded
+chronological record window. The reply's `acked_seq` advances the saved
+sequence only after a successful 2xx answer. Transport, HTTP, and invalid
+reply failures leave the prior sequence and timestamp intact. The server
+de-duplicates by device ID and sequence. Manual, Dev, and Awake sessions do
+not upload usage data.
+
 ## Firmware offers
 
 The check-in always offers firmware. The session stores `firmware.url` in

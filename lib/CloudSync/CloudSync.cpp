@@ -18,6 +18,7 @@
 #include <esp_system.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/base64.h>
 #include <cJSON.h>
 #include <sys/time.h>
 #include <time.h>
@@ -28,6 +29,9 @@
 #include <atomic>
 
 #include "AppDefs.h"
+#include "BatteryDiary.h"
+#include "UsageUpload.h"
+#include "CheckinPolicy.h"
 #include "AppManager.h"
 #include "FerrySession.h"
 #include "HAL.h"
@@ -74,6 +78,8 @@ bool available = false;
 std::atomic<bool> cancelRequested{false};
 Result result;
 Reason sessionReason = Reason::Manual;
+int32_t dailyVbatMv = -1;
+int32_t dailySocPct = -1;
 // "Get them now": this one session applies waiting app changes even with
 // app auto-apply off. Never affects firmware (always an offer).
 bool sessionApplyOnce = false;
@@ -1298,6 +1304,128 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
     }
 }
 
+// Device uploads use the same two binary files and hashes as browser pulls.
+// The record window is deliberately small enough for a short daily session.
+bool addUsageFile(cJSON* files, const char* role, const char* name,
+                  const uint8_t* bytes, size_t size) {
+    unsigned char digest[32];
+    mbedtls_sha256_context shaContext;
+    mbedtls_sha256_init(&shaContext);
+    mbedtls_sha256_starts(&shaContext, 0);
+    mbedtls_sha256_update(&shaContext, bytes, size);
+    const bool hashed = mbedtls_sha256_finish(&shaContext, digest) == 0;
+    mbedtls_sha256_free(&shaContext);
+    if (!hashed) return false;
+    char sha[65]; digestHex(digest, sha);
+    char crc[9];
+    snprintf(crc, sizeof(crc), "%08x", (unsigned)SyncProtocol::crc32(bytes, size));
+    std::vector<unsigned char> encoded(((size + 2) / 3) * 4 + 1);
+    size_t written = 0;
+    if (mbedtls_base64_encode(encoded.data(), encoded.size(), &written, bytes, size) != 0) return false;
+    cJSON* file = cJSON_CreateObject();
+    if (!file) return false;
+    cJSON_AddStringToObject(file, "role", role);
+    cJSON_AddStringToObject(file, "path", role[0] == 'r' ? "/apps/.diary/batdiary.bin" : "/apps/.diary/batstats.bin");
+    cJSON_AddStringToObject(file, "local", name);
+    cJSON_AddNumberToObject(file, "size", size);
+    cJSON_AddStringToObject(file, "crc32", crc);
+    cJSON_AddStringToObject(file, "sha256", sha);
+    cJSON_AddStringToObject(file, "b64", (const char*)encoded.data());
+    cJSON_AddItemToArray(files, file);
+    return true;
+}
+
+void uploadDailyUsage(const Session& s, const Result& r) {
+    // Automatic sessions only: a Fidget used every day checks in at start-up
+    // and may never reach a timer (Daily) session.
+    if ((sessionReason != Reason::Daily && sessionReason != Reason::Boot) ||
+        !r.ok || s.serverUnlinked || s.serverWrongDevice) return;
+    Preferences upd;
+    if (!upd.begin("upd", true)) return;
+    const bool enabled = upd.getBool("usage_share", false);
+    const uint32_t last = upd.getUInt("usage_at", 0);
+    const uint32_t acked = upd.getUInt("usage_seq", 0);
+    upd.end();
+    const time_t clockNow = time(nullptr);
+    const uint32_t now = clockNow > 0 && clockNow <= UINT32_MAX ? (uint32_t)clockNow : 0;
+    const uint32_t remaining = s.elapsed() < s.limitMs ? s.limitMs - s.elapsed() : 0;
+    if (!BatteryDiary::uploadDue(enabled, s.token[0] != 0,
+            CheckinPolicy::batteryEligible(dailyVbatMv, dailySocPct), true, r.ok, now, last, remaining)) return;
+
+    std::vector<BatteryDiary::Record> records(BatteryDiary::kUploadRecords + 1);
+    uint8_t stats[38];
+    uint32_t total = 0;
+    const size_t count = BatteryDiary::readUploadSnapshot(records.data(), records.size(), &total, stats);
+    if (!count) return;
+    const BatteryDiary::UploadWindow window = BatteryDiary::uploadWindow(
+        records.data(), count, acked, total > count);
+    if (!window.count) return;
+    std::vector<uint8_t> raw(window.count * BatteryDiary::kRecordSize);
+    for (size_t i = 0; i < window.count; ++i)
+        BatteryDiary::encode(records[window.first + i], raw.data() + i * BatteryDiary::kRecordSize);
+
+    cJSON* bundle = cJSON_CreateObject();
+    if (!bundle) return;
+    cJSON_AddNumberToObject(bundle, "bundle_schema", 1);
+    cJSON_AddNumberToObject(bundle, "record_schema", 1);
+    cJSON_AddNumberToObject(bundle, "stats_schema", 1);
+    cJSON_AddStringToObject(bundle, "device_id", s.id);
+    cJSON* identity = cJSON_AddObjectToObject(bundle, "identity");
+    char observed[18];
+    snprintf(observed, sizeof(observed), "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c",
+             s.id[10], s.id[11], s.id[8], s.id[9], s.id[6], s.id[7],
+             s.id[4], s.id[5], s.id[2], s.id[3], s.id[0], s.id[1]);
+    cJSON_AddStringToObject(identity, "observed_mac", observed);
+    cJSON_AddStringToObject(identity, "encoding", "info.mac-reversed");
+    cJSON_AddStringToObject(identity, "canonical_order", "efuse base MAC as esptool read_mac prints it");
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", gmtime(&clockNow));
+    cJSON_AddStringToObject(bundle, "pulled_at_utc", timestamp);
+    cJSON_AddStringToObject(bundle, "source", "device");
+    cJSON_AddStringToObject(bundle, "label", "");
+    cJSON_AddStringToObject(bundle, "note", "");
+    cJSON* producer = cJSON_AddObjectToObject(bundle, "producer");
+    cJSON_AddStringToObject(producer, "name", "device");
+    cJSON_AddStringToObject(producer, "version", "1");
+    cJSON* capture = cJSON_AddObjectToObject(bundle, "capture");
+    cJSON_AddBoolToObject(capture, "reset_on_open", false);
+    cJSON_AddNumberToObject(capture, "alive_after_s", 0);
+    cJSON_AddNullToObject(capture, "checkin_period_s");
+    cJSON_AddStringToObject(capture, "cadence_source", "unknown");
+    cJSON* device = cJSON_AddObjectToObject(bundle, "device");
+    cJSON_AddStringToObject(device, "version", s.fw);
+    cJSON* info = cJSON_AddObjectToObject(device, "info");
+    cJSON_AddStringToObject(info, "fw", s.fw);
+    cJSON* files = cJSON_AddArrayToObject(bundle, "files");
+    const bool encoded = addUsageFile(files, "records", "batdiary.bin", raw.data(), raw.size()) &&
+                         addUsageFile(files, "stats", "batstats.bin", stats, sizeof(stats));
+    cJSON_AddBoolToObject(bundle, "complete", window.complete);
+    cJSON_AddStringToObject(bundle, "consent", "device_setting");
+    cJSON_AddNumberToObject(bundle, "disclosure_version", 1);
+    char* printed = encoded ? cJSON_PrintUnformatted(bundle) : nullptr;
+    cJSON_Delete(bundle);
+    if (!printed) return;
+    std::string body(printed);
+    cJSON_free(printed);
+    if (body.size() > 98304 || !budgetCovers(kCallMs, s.elapsed(), s.limitMs, kCallMs)) return;
+    HttpReply reply;
+    if (!request(s, s.base + "/api/device-usage.php", &body, reply, jsonSink, &reply) ||
+        reply.status < 200 || reply.status >= 300) return;
+    cJSON* answer = cJSON_Parse(reply.body.c_str());
+    const cJSON* acknowledged = answer ? cJSON_GetObjectItemCaseSensitive(answer, "acked_seq") : nullptr;
+    const uint32_t newest = records[window.first + window.count - 1].seq;
+    const bool accepted = cJSON_IsNumber(acknowledged) && acknowledged->valuedouble >= acked &&
+                          acknowledged->valuedouble <= newest &&
+                          acknowledged->valuedouble == (double)(uint32_t)acknowledged->valuedouble;
+    const uint32_t newAck = accepted ? (uint32_t)acknowledged->valuedouble : acked;
+    cJSON_Delete(answer);
+    if (!accepted) return;
+    if (!upd.begin("upd", false)) return;
+    upd.putUInt("usage_seq", newAck);
+    upd.putUInt("usage_at", now);
+    upd.end();
+}
+
 // Dev mode: sleeps in short steps until `ms` has passed. False when
 // cancelled; returns early (true) when devPollNow() asks for a check now.
 bool devSleep(uint32_t ms) {
@@ -1636,6 +1764,7 @@ void runWorker(Result& r) {
         }
         CycleOut out;
         checkinCycle(s, autoapply, account, linkedAt, r, out);
+        uploadDailyUsage(s, r);
     } while (false);
     // A cancelled request surfaces as a transport error; name the cause.
     if (!r.ok && cancelRequested) setError(r, "cancelled");
@@ -1711,7 +1840,7 @@ const char* reasonName(Reason reason) {
     return "?";
 }
 
-bool runSession(Reason reason, bool applyWaiting) {
+bool runSession(Reason reason, bool applyWaiting, int32_t dailyVbat, int32_t dailySoc) {
     if (UpdateSession::imagePending()) return false;
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
@@ -1742,6 +1871,8 @@ bool runSession(Reason reason, bool applyWaiting) {
     if (WiFi.getMode() != WIFI_OFF) return false;
     workerKind = WorkerKind::Cloud;
     sessionReason = reason;
+    dailyVbatMv = dailyVbat;
+    dailySocPct = dailySoc;
     sessionApplyOnce = applyWaiting;
     cancelRequested = false;
     available = false;

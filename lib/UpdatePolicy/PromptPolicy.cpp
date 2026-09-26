@@ -233,7 +233,7 @@ void appsTitle(char* out, size_t len, uint32_t count) {
 
 Row settingsRow(int index) {
     static const Row order[kSettingsRows] = {
-        Row::CheckNow, Row::AutoCheck, Row::BootCheck, Row::AutoApply, Row::Channel, Row::Source,
+        Row::CheckNow, Row::AutoCheck, Row::BootCheck, Row::ShareBattery, Row::AutoApply, Row::Channel, Row::Source,
         Row::Skip, Row::Link, Row::Awake, Row::Status,
     };
     return index >= 0 && index < kSettingsRows ? order[index] : Row::Status;
@@ -261,6 +261,9 @@ void settingsLabel(Row row, const SettingsState& s, char* out, size_t len) {
             break;
         case Row::BootCheck:
             snprintf(out, len, "Check at start-up: %s", s.bootCheck ? "On" : "Off");
+            break;
+        case Row::ShareBattery:
+            snprintf(out, len, "Share battery data: %s", s.shareBattery ? "On" : "Off");
             break;
         case Row::AutoApply:
             snprintf(out, len, "Apply app changes automatically: %s", s.autoapply ? "On" : "Off");

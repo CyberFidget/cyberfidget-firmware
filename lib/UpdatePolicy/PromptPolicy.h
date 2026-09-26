@@ -204,12 +204,13 @@ void appsTitle(char* out, size_t len, uint32_t count);
 // ---- Settings > Updates ---------------------------------------------------------
 
 enum class Row : uint8_t {
-    CheckNow, AutoCheck, BootCheck, AutoApply, Channel, Source, Skip, Link, Awake, Status,
+    CheckNow, AutoCheck, BootCheck, ShareBattery, AutoApply, Channel, Source, Skip, Link, Awake, Status,
 };
 
 struct SettingsState {
     CheckinPolicy::Policy policy = CheckinPolicy::Policy::Auto;
     bool bootCheck = true;      ///< "Check at start-up"
+    bool shareBattery = false;
     bool autoapply = true;
     const char* channel = "";   ///< empty reads as the default
     const char* source = "";    ///< empty reads as the default
@@ -222,7 +223,7 @@ struct SettingsState {
     const char* status = "";    ///< the status bar's current line, "" = none
 };
 
-constexpr int kSettingsRows = 10;
+constexpr int kSettingsRows = 11;
 constexpr int kRowText = 96;
 
 /// Row kinds in screen order (always kSettingsRows of them).

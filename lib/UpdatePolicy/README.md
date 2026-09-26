@@ -203,7 +203,9 @@ explains the choice), Check at start-up On/Off (`upd.boot_chk`; Off stops only
 the boot session - the daily sleep check-in, a Fidget kept awake past its
 interval, a manual check and dev mode are unaffected; changing it shows
 "Checks for updates when you wake your Fidget. Turning it off avoids a short
-restart when you open a new app."), Apply app changes automatically On/Off
+restart when you open a new app."), Share battery data On/Off
+(`upd.usage_share`, default off; turning it on explains what is sent and
+that it can be turned off), Apply app changes automatically On/Off
 (`upd.autoapply`, default on; it never installs firmware), Channel and Source
 (shown only: `upd.chan`, default `stable`; `upd.src`, default
 `cyberfidget.com`), Skip/Unskip the current version (Unskip when the offered
@@ -213,7 +215,7 @@ Fidget (opens the Link screen), "Awake & dev mode: <mode>" (opens that
 screen, below), and the status line the bar is showing (opens the Status
 screen).
 
-Keys the prompt work writes: `policy`, `boot_chk`, `rej`, `autoapply`. It reads `avail`,
+Keys the prompt work writes: `policy`, `boot_chk`, `usage_share`, `rej`, `autoapply`. It reads `avail`,
 `src`, `chan`. "Forget" on a saved network (portal or Settings > Saved WiFi)
 changes only `wificfg`, never `upd`.
 
