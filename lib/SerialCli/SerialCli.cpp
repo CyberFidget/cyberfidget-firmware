@@ -25,6 +25,7 @@
 #include "CloudSync.h"
 #include "UpdateSession.h"   // upd allow-unsigned / slot (every build), install / fault (test)
 #include "DeviceIdentity.h"
+#include "FactoryReset.h"
 
 #include "HAL.h"              // displayProxy() for screencap (T-191)
 #include "DisplayProxy.h"     // frameBuffer()
@@ -427,6 +428,11 @@ void tlsProbeTask(void*) {
 
 bool SerialCli::ferryActive() const { return g_ferry.active(); }
 
+void SerialCli::closeStorageForFactoryReset() {
+    if (g_ferry.active()) g_ferry.abort();
+    releaseReadPayload();
+}
+
 bool SerialCli::radioBusy() const {
 #ifdef CF_TEST_CLI
     return g_tlsSession.current() != TlsProbeSession::State::Idle;
@@ -508,6 +514,12 @@ void SerialCli::poll() {
 
 void SerialCli::dispatch(const char* line) {
     const char* arg = nullptr;
+#ifdef CF_TEST_CLI
+    if (ieq(line, "reset factory confirm")) {
+        FactoryReset::confirmFromCli();
+        return;
+    }
+#endif
     if (CloudSync::storeBusy()) {
         // Refuse writes while a network pull owns the store (dev mode
         // listening only while it is inside a check-in). A refused

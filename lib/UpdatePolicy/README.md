@@ -347,3 +347,12 @@ Bench: `awake` verbs (`lib/SerialCli/README.md`), case
 Bench: `upd` (read-only list of every `upd` key) and `upd offer <version>`
 (test builds; see `lib/SerialCli/README.md`), case
 `test/bench/cases/t391-prompt-options.json`.
+
+## Reset to factory
+
+Settings also has a separate "Reset to factory" row (outside Settings >
+Updates). `FactoryResetPolicy.h` is the pure refusal and Enter-hold rule:
+pending firmware verification or an armed update-session boot request refuses
+the reset; otherwise Enter must stay down for 3000 ms. Releasing early or
+pressing Back cancels. `test/test_upd_policy_factory_reset` covers the rules.
+The device flow and storage effects are in `lib/UpdatePrompt/README.md`.

@@ -45,6 +45,9 @@ void loopTick(bool frameDrawnLastPass);
 /// True from the first line of pending-image setup until the image is kept.
 bool imagePending();
 
+/// Read the update-session boot one-shot without consuming it.
+bool sessionRequestArmed();
+
 /// Gate every HAL deep-sleep entry. False defers ordinary sleep while the
 /// image is pending; a critical-voltage shutdown may keep passed checks or
 /// discard the pending record so battery loss cannot set fail_ver.

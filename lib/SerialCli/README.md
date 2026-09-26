@@ -163,6 +163,11 @@ and nothing on the network can set it.
 
 ## `CF_TEST_CLI` verbs
 
+`reset factory confirm` prints `[cmd] reset.factory=start`, uses the same
+erase routine as the Settings screen, prints `[reset] factory=done` just before
+restart, and is absent from release builds. It refuses an unverified firmware
+image or armed update session. It erases LittleFS and NVS; use a bench device.
+
 ### Application and network controls
 
 ```text

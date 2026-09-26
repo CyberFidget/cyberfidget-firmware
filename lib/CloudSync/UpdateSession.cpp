@@ -714,6 +714,16 @@ void finishBoot() {
     }
 }
 
+bool sessionRequestArmed() {
+    Preferences boot;
+    // Read-write open also creates an absent namespace on a first boot.
+    // Read-only open reports that ordinary empty state as a failure.
+    if (!boot.begin(kBootNs, false)) return true; // unreadable state is unsafe to erase
+    const bool armed = boot.getBool(kBootKey, false);
+    boot.end();
+    return armed;
+}
+
 bool takeSessionRequest(char* version, size_t len) {
     version[0] = '\0';
     Preferences boot;

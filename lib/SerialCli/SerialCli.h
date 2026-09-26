@@ -47,6 +47,8 @@ public:
     void poll();
     // A network pull must not overlap a partially written serial blob.
     bool ferryActive() const;
+    // Close an unfinished serial file transfer before LittleFS is formatted.
+    void closeStorageForFactoryReset();
     // True while a test-build radio probe owns WiFi.
     bool radioBusy() const;
 

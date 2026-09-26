@@ -103,6 +103,15 @@ bool begin() {
     return mounted;
 }
 
+bool formatForFactoryReset() {
+    Guard guard;
+    if (mounted) {
+        LittleFS.end();
+        mounted = false;
+    }
+    return LittleFS.format();
+}
+
 bool load(std::string& jsonOut) {
     if (!begin()) return false;
     File f = LittleFS.open(kManifestPath, FILE_READ);
