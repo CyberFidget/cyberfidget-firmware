@@ -21,6 +21,7 @@
 #include "SDManager.h"
 #include "SavedWifi.h"   // the saved networks (lib/CloudSync)
 #include "WifiRequest.h" // their request bodies (lib/CloudSync)
+#include "PortalPassword.h"
 
 
 #include <SD.h>
@@ -474,7 +475,8 @@ void WebPortalApp::begin() {
     staConnected = false;
     WP_LOG("begin: starting WiFi AP+STA");
     WiFi.mode(WIFI_AP_STA);
-    apReady = WiFi.softAP(AP_SSID);
+    PortalPassword::generate(portalPassword, []() { return esp_random(); });
+    apReady = WiFi.softAP(AP_SSID, portalPassword);
     delay(100);
     if (apReady) {
         WP_LOGF("begin: AP started, SSID=%s IP=%s", AP_SSID,
@@ -542,6 +544,7 @@ void WebPortalApp::teardown() {
     WiFi.disconnect(false);
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
+    memset(portalPassword, 0, sizeof(portalPassword));
     staConnected = false;
     delay(100);
     WP_LOG("end: WiFi stopped");
@@ -2445,75 +2448,39 @@ void WebPortalApp::render() {
     display.drawString(64, 1, wifiLanding ? "Setup WiFi" : "CyberFidget Web");
     display.setColor(WHITE);
 
-    if (wifiLanding) {
-        // Setup WiFi needs no memory card: say what to do on the phone.
-        display.setFont(ArialMT_Plain_10);
-        display.setTextAlignment(TEXT_ALIGN_CENTER);
-        if (!apReady) {
-            display.drawString(64, 22, "Could not start");
-            display.drawString(64, 34, "Exit and try again");
-        } else if (staConnected) {
-            display.drawString(64, 18, "Connected to");
-            display.drawString(64, 30, staSSID);
-            display.drawString(64, 46, "BACK to finish");
-        } else {
-            display.drawString(64, 16, "On your phone, join");
-            char line[40];
-            snprintf(line, sizeof(line), "the WiFi \"%s\"", AP_SSID);
-            display.drawString(64, 28, line);
-            display.drawString(64, 40, staSSID.length() ? "Connecting..." : "then pick your network");
-            display.drawString(64, 52, "BACK to finish");
-        }
-        display.display();
-        return;
-    }
-
-    if (!sdReady) {
-        display.setTextAlignment(TEXT_ALIGN_CENTER);
-        display.drawString(64, 30, "No SD Card");
-        display.display();
-        return;
-    }
-
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
     display.setFont(ArialMT_Plain_10);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
-
-    // AP info
-    if (apReady) {
-        display.drawString(4, 16, String("AP: ") + WiFi.softAPIP().toString());
-    } else {
-        display.drawString(4, 16, "AP failed (low mem)");
+    if (!apReady) {
+        display.drawString(64, 24, "Could not start WiFi");
+        display.drawString(64, 40, "Exit and try again");
+        display.display();
+        return;
     }
 
-    // STA info
-    if (staConnected) {
-        display.drawString(4, 28, staSSID + " " + WiFi.localIP().toString());
-        if (mdnsStarted) {
-            display.drawString(4, 40, "cyberfidget.local");
-        } else {
-            display.drawString(4, 40, String("Files: ") + String(fileCount));
-        }
-    } else if (staSSID.length()) {
-        display.drawString(4, 28, "Connecting: " + staSSID);
-        display.drawString(4, 40, String("Files: ") + String(fileCount));
-    } else {
-        display.drawString(4, 28, "WiFi: not connected");
-        display.drawString(4, 40, String("Files: ") + String(fileCount));
-    }
-
-    if (uploadInProgress && uploadBytesTotal > 0) {
-        // Upload progress (overwrites bottom line)
+    // Keep the join details visible in Setup WiFi, the general portal and
+    // the no-card state. A caption session returns here when it disconnects.
+    char groupedPassword[10];
+    PortalPassword::grouped(portalPassword, groupedPassword);
+    display.drawString(64, 15, "Join CyberFidget");
+    display.drawString(64, 26, "Password");
+    display.setFont(ArialMT_Plain_16);
+    display.drawString(64, 37, groupedPassword);
+    display.setFont(ArialMT_Plain_10);
+    if (wifiLanding) {
+        display.drawString(64, 53, staConnected ? "BACK to finish" :
+                           (staSSID.length() ? "Connecting..." : "Pick network on phone"));
+    } else if (!sdReady) {
+        display.drawString(64, 53, "No memory card");
+    } else if (uploadInProgress && uploadBytesTotal > 0) {
         int pct = (int)((uint64_t)uploadBytesReceived * 100 / uploadBytesTotal);
         if (pct > 100) pct = 100;
-        display.drawProgressBar(4, 54, 100, 8, pct);
-        display.setTextAlignment(TEXT_ALIGN_RIGHT);
-        display.drawString(124, 52, String(pct) + "%");
+        display.drawString(64, 53, String("Uploading ") + String(pct) + "%");
+    } else if (staConnected) {
+        // Also reachable from the home network without joining the Fidget's.
+        display.drawString(64, 53, mdnsStarted ? String("cyberfidget.local")
+                                               : WiFi.localIP().toString());
     } else {
-        // File count + clients
-        int clients = WiFi.softAPgetStationNum();
-        String info = String(fileCount) + " files";
-        if (clients > 0) info += " | " + String(clients) + " client" + (clients > 1 ? "s" : "");
-        display.drawString(4, 52, info);
+        display.drawString(64, 53, WiFi.softAPIP().toString());
     }
 
     display.display();

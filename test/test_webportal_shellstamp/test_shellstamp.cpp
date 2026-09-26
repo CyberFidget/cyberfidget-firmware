@@ -7,6 +7,7 @@
 #include <unity.h>
 #include <cstring>
 #include "ShellStamp.h"
+#include "PortalPassword.h"
 
 using namespace ShellStamp;
 
@@ -94,6 +95,34 @@ void test_extraction_rejects_unescaped_or_oversized_values(void) {
     TEST_ASSERT_FALSE(findShellStamp(longValue, sizeof(longValue) - 1, stamp, sizeof(stamp)));
 }
 
+void test_portal_password_has_eight_digits_and_preserves_leading_zeroes(void) {
+    char password[9];
+    PortalPassword::generate(password, []() { return uint32_t(100000001); });
+    TEST_ASSERT_EQUAL_STRING("00000001", password);
+    char grouped[10];
+    PortalPassword::grouped(password, grouped);
+    TEST_ASSERT_EQUAL_STRING("0000 0001", grouped);
+    TEST_ASSERT_EQUAL_STRING("00000001", password);
+}
+
+void test_portal_password_rejects_biased_random_values(void) {
+    char password[9];
+    int calls = 0;
+    PortalPassword::generate(password, [&calls]() {
+        return ++calls == 1 ? uint32_t(0) : uint32_t(199999999);
+    });
+    TEST_ASSERT_EQUAL_INT(2, calls);
+    TEST_ASSERT_EQUAL_STRING("99999999", password);
+}
+
+void test_portal_password_changes_with_supplied_random_value(void) {
+    char first[9], second[9];
+    PortalPassword::generate(first, []() { return uint32_t(100000000); });
+    PortalPassword::generate(second, []() { return uint32_t(112345678); });
+    TEST_ASSERT_EQUAL_STRING("00000000", first);
+    TEST_ASSERT_EQUAL_STRING("12345678", second);
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -112,5 +141,8 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_stamp_truncated_at_buffer_end_is_clean_miss);
     RUN_TEST(test_non_terminated_buffer_is_supported);
     RUN_TEST(test_extraction_rejects_unescaped_or_oversized_values);
+    RUN_TEST(test_portal_password_has_eight_digits_and_preserves_leading_zeroes);
+    RUN_TEST(test_portal_password_rejects_biased_random_values);
+    RUN_TEST(test_portal_password_changes_with_supplied_random_value);
     return UNITY_END();
 }
