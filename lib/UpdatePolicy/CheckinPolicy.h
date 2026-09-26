@@ -59,6 +59,7 @@ enum class Verdict : uint8_t {
     NoWifi,       ///< no saved network
     NotLinked,    ///< nothing to check in for (no link, no pending revoke)
     OneShotBoot,  ///< a restart that relaunches something else
+    PendingImage, ///< Boot: new image has not been kept yet
     TimerWake,    ///< the boot window never runs on a timer wake
     LowBattery,   ///< VBAT or SOC below the floor (or unreadable)
     NotDue,       ///< the interval has not passed
@@ -73,6 +74,7 @@ struct Inputs {
     bool wifiSaved = false;
     bool linked = false;        ///< a link, or a revoke still to send
     bool oneShotBoot = false;   ///< Boot: a restart that relaunches something
+    bool imagePending = false;  ///< Boot: running image is pending verification
     bool timerWake = false;     ///< Boot: this start is a deep-sleep timer wake
     bool bootCheck = true;      ///< Boot: "Check at start-up" (upd.boot_chk) is on
     bool stayAwake = false;     ///< Stay awake is latched (Awake & dev mode)

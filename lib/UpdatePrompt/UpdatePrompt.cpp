@@ -57,6 +57,7 @@ struct Stored {
     char src[40] = {0};
     char chan[16] = {0};
     char failVer[kMaxVersionLen + 1] = {0};   // an update that did not keep itself
+    char websiteSeen[kMaxVersionLen + 1] = {0};
     bool autoapply = true;
 };
 
@@ -80,6 +81,7 @@ Stored readStored() {
     readText(upd, kKeySrc, st.src, sizeof(st.src));
     readText(upd, kKeyChan, st.chan, sizeof(st.chan));
     readText(upd, OtaUpdate::kKeyFailVer, st.failVer, sizeof(st.failVer));
+    readText(upd, kKeyWebsiteSeen, st.websiteSeen, sizeof(st.websiteSeen));
     const bool hasApply = upd.isKey(kKeyAutoapply);
     st.autoapply = parseAutoapply(hasApply, hasApply && upd.getBool(kKeyAutoapply, true));
     upd.end();
@@ -215,10 +217,20 @@ bool openFirmwarePrompt(const char* version, const char* source) {
     return ModalPrompt::instance().open(promptTitle, kFwOptions, 3, onFirmwareDone);
 }
 
+bool openWebsitePrompt(const char* version) {
+    const char* const ok[] = {"OK"};
+    if (!ModalPrompt::instance().open(kWebsiteUpdateCopy, ok, 1, onComingSoonDone)) return false;
+    // Remember only an instruction actually shown; a newer version may show
+    // it once again. This path never offers Install now or restarts.
+    writeText(kKeyWebsiteSeen, version);
+    StatusService::instance().clear(StatusKind::UpdateReady);
+    return true;
+}
+
 void showPlan(const PromptPlan& plan, const Stored& st) {
     if (plan.firmware) {
         appsAfter = plan.apps;
-        if (openFirmwarePrompt(st.avail, st.src)) return;
+        if (plan.website ? openWebsitePrompt(st.avail) : openFirmwarePrompt(st.avail, st.src)) return;
         appsAfter = false;
     }
     if (plan.apps) openAppsPrompt();
@@ -254,7 +266,9 @@ void setErrorText(CloudSync::Result& r, const char* err) {
 void finishCheck(const CloudSync::Result& r) {
     const Stored st = readStored();
     const bool fw = offerEligible(st.avail, st.rej, running());
-    const PromptPlan plan = manualPlan(st.policy, fw, r.waiting);
+    const PromptPlan plan = manualPlan(st.policy, fw, r.waiting,
+                                     UpdateSession::hasUpdateSlot(),
+                                     sameVersion(st.avail, st.websiteSeen));
     checkExplainOff = plan.explainOff;
     checkNote = "";
     if (!r.ok) {
@@ -265,9 +279,11 @@ void finishCheck(const CloudSync::Result& r) {
     } else if (r.waiting) {
         snprintf(checkLine, sizeof(checkLine), "App changes waiting");
     } else if (fw) {
-        snprintf(checkLine, sizeof(checkLine), "Update %s ready", st.avail);
+        snprintf(checkLine, sizeof(checkLine), UpdateSession::hasUpdateSlot()
+                 ? "Update %s ready" : "Update %s available", st.avail);
         // Honest about a version that did not keep itself here before.
-        if (!OtaUpdate::automaticOfferAllowed(st.avail, st.failVer))
+        if (UpdateSession::hasUpdateSlot() &&
+            !OtaUpdate::automaticOfferAllowed(st.avail, st.failVer))
             checkNote = "It did not finish last time";
     } else {
         snprintf(checkLine, sizeof(checkLine), "Your Fidget is up to date");
@@ -360,6 +376,7 @@ SettingsState settingsState() {
     s.rej = cache.rej;
     s.running = running();
     s.linked = cacheLinked;
+    s.hasUpdateSlot = UpdateSession::hasUpdateSlot();
     s.awake = AwakeMode::setting();
     const StatusEntry* cur = StatusService::instance().current();
     s.status = cur ? cur->text : "";
@@ -466,7 +483,8 @@ void loop() {
     const bool retryHeld = !OtaUpdate::automaticOfferAllowed(st.avail, st.failVer);
     const PromptPlan plan = bootPlan(st.policy,
                                      offerEligible(st.avail, st.rej, running()) && !retryHeld,
-                                     have && r.waiting);
+                                     have && r.waiting, UpdateSession::hasUpdateSlot(),
+                                     sameVersion(st.avail, st.websiteSeen));
     Serial.printf("[upd] boot-popup result=%d firmware=%d apps=%d failed_held=%d\n",
                   have ? 1 : 0, plan.firmware ? 1 : 0, plan.apps ? 1 : 0,
                   retryHeld && st.avail[0] ? 1 : 0);
@@ -689,8 +707,15 @@ void injectOffer(const char* args) {
         return;
     }
     appsAfter = false;
-    if (!openFirmwarePrompt(version, source)) { Serial.println("[err] upd.offer=refused"); return; }
-    Serial.printf("[cmd] upd.offer=open version=%s source=%s\n", offerVersion, offerSource);
+    const bool website = !UpdateSession::hasUpdateSlot();
+    if (website && sameVersion(version, st.websiteSeen)) {
+        Serial.printf("[cmd] upd.offer=suppressed reason=website-shown version=%s\n", version);
+        return;
+    }
+    if (!(website ? openWebsitePrompt(version) : openFirmwarePrompt(version, source))) {
+        Serial.println("[err] upd.offer=refused"); return;
+    }
+    Serial.printf("[cmd] upd.offer=open version=%s source=%s\n", version, source);
 }
 #endif
 

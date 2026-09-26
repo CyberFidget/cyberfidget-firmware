@@ -438,12 +438,20 @@ ConfirmStep confirmStep(bool checksPassed, bool frameDrawn, uint32_t elapsedMs, 
     return frameDrawn ? ConfirmStep::Confirm : ConfirmStep::Wait;
 }
 
+SleepStep sleepStep(bool imagePending, bool checksPassed, bool criticalVoltage) {
+    if (!imagePending) return SleepStep::Proceed;
+    if (!criticalVoltage) return SleepStep::Defer;
+    return checksPassed ? SleepStep::KeepFirst : SleepStep::AbortWithoutFailure;
+}
+
 bool automaticOfferAllowed(const char* avail, const char* failedVersion) {
     if (!avail || !avail[0]) return false;
     return !failedVersion || strcmp(avail, failedVersion) != 0;
 }
 
-BootNotice bootNotice(bool recordPresent, bool recordValid, bool runningIsRecord) {
+BootNotice bootNotice(bool recordPresent, bool recordValid, bool runningIsRecord,
+                      bool criticalPowerAbort) {
+    if (criticalPowerAbort) return BootNotice::None;
     if (!recordPresent) return BootNotice::None;
     if (recordValid && runningIsRecord) return BootNotice::Completed;
     return BootNotice::DidNotFinish;

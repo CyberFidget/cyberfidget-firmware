@@ -53,6 +53,18 @@ void test_boot_starts_when_eligible_without_being_due(void) {
     expect(Verdict::Start, Session::Boot, in);
 }
 
+void test_pending_image_blocks_boot_radio_for_every_one_shot_state(void) {
+    for (int shot = 0; shot < 2; ++shot) {
+        Inputs in = eligible();
+        in.oneShotBoot = shot != 0;
+        in.imagePending = true;
+        expect(Verdict::PendingImage, Session::Boot, in);
+        in.imagePending = false;
+        expect(shot ? Verdict::OneShotBoot : Verdict::Start, Session::Boot, in);
+    }
+    TEST_ASSERT_EQUAL_STRING("pending-image", verdictName(Verdict::PendingImage));
+}
+
 void test_boot_blocked_by_each_condition(void) {
     Inputs in = eligible(); in.policy = Policy::Never;  expect(Verdict::PolicyOff, Session::Boot, in);
     in = eligible(); in.wifiSaved = false;              expect(Verdict::NoWifi, Session::Boot, in);
@@ -420,6 +432,7 @@ int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_policy_text_defaults_to_auto);
     RUN_TEST(test_boot_starts_when_eligible_without_being_due);
+    RUN_TEST(test_pending_image_blocks_boot_radio_for_every_one_shot_state);
     RUN_TEST(test_boot_blocked_by_each_condition);
     RUN_TEST(test_boot_skips_a_recent_check_in_and_a_running_backoff);
     RUN_TEST(test_battery_gate_needs_both_values);

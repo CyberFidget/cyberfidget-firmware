@@ -56,6 +56,7 @@ constexpr const char* kUpdNs = "upd";
 constexpr const char* kDidNotFinish = "The update did not finish. Nothing changed.";
 
 bool pending = false;
+bool updateSlotAvailable = false;
 bool watched = false;       // the loop task is subscribed to the task watchdog
 bool awaitingFrame = false; // checks passed; kept once the first frame is drawn
 uint32_t selfTestStart = 0;
@@ -127,11 +128,12 @@ bool readRecord(char* out, size_t len) {
     return present;
 }
 
-void clearRecord() {
+bool clearRecord() {
     Preferences upd;
-    if (!upd.begin(kUpdNs, false)) return;
-    if (upd.isKey(OtaUpdate::kKeyPendImg)) upd.remove(OtaUpdate::kKeyPendImg);
+    if (!upd.begin(kUpdNs, false)) return false;
+    const bool cleared = !upd.isKey(OtaUpdate::kKeyPendImg) || upd.remove(OtaUpdate::kKeyPendImg);
     upd.end();
+    return cleared;
 }
 
 // Freshness per (source, channel) only moves forward.
@@ -235,10 +237,16 @@ void selfTest() {
     awaitingFrame = true;
 }
 
-// The image passed every check and drew its first frame: keep it.
-void confirm() {
-    if (esp_ota_mark_app_valid_cancel_rollback() != ESP_OK) rollBack("mark-valid");
+// Normally kept after the first frame; critical voltage keeps passed checks
+// before sleeping, even if that frame has not drawn yet.
+bool confirm(bool criticalShutdown = false) {
+    if (esp_ota_mark_app_valid_cancel_rollback() != ESP_OK) {
+        if (!criticalShutdown) rollBack("mark-valid");
+        awaitingFrame = false;
+        return false;
+    }
     awaitingFrame = false;
+    pending = false;
     if (watched) {
         esp_task_wdt_delete(nullptr);
         watched = false;
@@ -250,6 +258,7 @@ void confirm() {
         Preferences upd;
         if (upd.begin(kUpdNs, false)) {
             if (upd.isKey(OtaUpdate::kKeyFailVer)) upd.remove(OtaUpdate::kKeyFailVer);
+            if (upd.isKey(OtaUpdate::kKeyPowerAbort)) upd.remove(OtaUpdate::kKeyPowerAbort);
             upd.end();
         }
         Preferences boot;
@@ -263,6 +272,18 @@ void confirm() {
     postNotice(notice, false);
     Serial.printf("[update] confirmed ms=%lu\n", (unsigned long)(millis() - selfTestStart));
     Serial.printf("[update] result=updated version=%s\n", confirmed.version);
+    return true;
+}
+
+void abandonForPower() {
+    // A flat battery is not a failed self-test. Both the marker and removal
+    // of the pending record prevent the old image from setting fail_ver.
+    Preferences upd;
+    if (upd.begin(kUpdNs, false)) {
+        upd.putBool(OtaUpdate::kKeyPowerAbort, true);
+        upd.end();
+    }
+    clearRecord();
 }
 
 // ---- update session ------------------------------------------------------------
@@ -504,6 +525,7 @@ void checkManifest(const char* base, const char* wanted, uint32_t deadline, uint
 // ---- boot ------------------------------------------------------------------------
 
 void beginSelfTest() {
+    updateSlotAvailable = esp_ota_get_next_update_partition(nullptr) != nullptr;
     const esp_partition_t* running = esp_ota_get_running_partition();
     esp_ota_img_states_t state;
     pending = running && esp_ota_get_state_partition(running, &state) == ESP_OK &&
@@ -521,6 +543,23 @@ void beginSelfTest() {
         // Test builds: a hang before hardware start-up (no serial yet).
         for (;;) {}
     }
+}
+
+bool imagePending() { return pending; }
+
+bool hasUpdateSlot() { return updateSlotAvailable; }
+
+bool prepareDeepSleep(bool criticalVoltage) {
+    const OtaUpdate::SleepStep step = OtaUpdate::sleepStep(pending, awaitingFrame, criticalVoltage);
+    if (step == OtaUpdate::SleepStep::Defer) return false;
+    if (step == OtaUpdate::SleepStep::KeepFirst) {
+        // If marking valid itself fails, voltage still wins: the previous
+        // image may offer this version again after the hard shutdown.
+        if (!confirm(true)) abandonForPower();
+    } else if (step == OtaUpdate::SleepStep::AbortWithoutFailure) {
+        abandonForPower();
+    }
+    return true;
 }
 
 void loopTick(bool frameDrawn) {
@@ -568,12 +607,28 @@ void finishBoot() {
         }
     }
     bool noticed = false;
+    bool powerAbort = false;
+    {
+        Preferences upd;
+        if (upd.begin(kUpdNs, true)) {
+            powerAbort = upd.isKey(OtaUpdate::kKeyPowerAbort) &&
+                         upd.getBool(OtaUpdate::kKeyPowerAbort, false);
+            upd.end();
+        }
+    }
+    if (powerAbort) {
+        sessionFailed = false;
+        Serial.println("[update] result=power-shutdown");
+    }
     char text[160];
-    if (readRecord(text, sizeof(text))) {
+    const bool recordPresent = readRecord(text, sizeof(text));
+    bool recordCleared = false;
+    if (recordPresent) {
         Pending p;
         const bool valid = OtaUpdate::parsePending(text, p);
-        const OtaUpdate::BootNotice n = OtaUpdate::bootNotice(true, valid, valid && runningImageIs(p));
-        clearRecord();
+        const OtaUpdate::BootNotice n = OtaUpdate::bootNotice(
+            true, valid, valid && !powerAbort && runningImageIs(p), powerAbort);
+        recordCleared = clearRecord();
         if (n == OtaUpdate::BootNotice::Completed) {
             // The new image was kept but its tidy-up was cut short.
             recordSeen(p);
@@ -581,7 +636,7 @@ void finishBoot() {
             snprintf(notice, sizeof(notice), "Updated to %s", p.version);
             postNotice(notice, false);
             Serial.printf("[update] result=updated version=%s\n", p.version);
-        } else {
+        } else if (n == OtaUpdate::BootNotice::DidNotFinish) {
             if (valid && !sessionFailed) {
                 // The new image started and did not keep itself: never offer
                 // this version automatically again (a manual check still can).
@@ -595,6 +650,18 @@ void finishBoot() {
             noticed = true;
             Serial.printf("[update] result=did-not-finish expected=%s running=%s\n",
                           valid ? p.version : "-", getFirmwareVersionString());
+        }
+    }
+    if (powerAbort) {
+        // Clear this marker only after the record: another power loss must
+        // never expose the abandoned record without its battery explanation.
+        if (!recordPresent) recordCleared = clearRecord();
+        if (recordCleared) {
+            Preferences upd;
+            if (upd.begin(kUpdNs, false)) {
+                upd.remove(OtaUpdate::kKeyPowerAbort);
+                upd.end();
+            }
         }
     }
     if (sessionFailed) {
@@ -615,7 +682,8 @@ bool takeSessionRequest(char* version, size_t len) {
     if (boot.isKey(kBootVersion)) boot.remove(kBootVersion);
     boot.end();
     // A timer wake never shows a screen; the one-shot is dropped.
-    return armed && version[0] && esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER;
+    return !pending && armed && version[0] &&
+           esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER;
 }
 
 void runSession(const char* wanted) {
@@ -718,6 +786,7 @@ bool installAllowed() {
 bool armInstall(const char* version, const char** why) {
     const char* ignored = nullptr;
     if (!why) why = &ignored;
+    if (!hasUpdateSlot()) { *why = "no-update-slot"; return false; }
     if (!installAllowed()) { *why = "unsigned"; return false; }
     if (!version || !version[0] || strlen(version) > OtaUpdate::kMaxVersionLen || strchr(version, ' ')) {
         *why = "version";

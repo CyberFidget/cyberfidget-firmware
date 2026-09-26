@@ -215,8 +215,12 @@ void AppManager::setup() {
     // check starts in a clean power cycle. A check asked for after Bluetooth
     // use continues on the Check for updates screen, which shows its result.
     // Setup WiFi that went through a restart still opens on the WiFi page.
-    if (bootPortal && bootWifiPage) WebPortalApp::resumeWifiLanding();
-    appActive     = bootPortal ? APP_WEB_PORTAL
+    if (bootPortal && bootWifiPage && !UpdateSession::imagePending())
+        WebPortalApp::resumeWifiLanding();
+    // Pending verification always draws the menu first. A leftover app
+    // one-shot cannot start WiFi or Bluetooth before the image is kept.
+    appActive     = UpdateSession::imagePending() ? APP_MENU
+                  : bootPortal ? APP_WEB_PORTAL
                   : bootMusic  ? APP_MUSIC_PLAYER
                   : bootLink   ? APP_LINK
                   : bootWasm   ? APP_WASM_HOST
@@ -275,8 +279,12 @@ void AppManager::loop() {
     CheckinScheduler::loop();
     UpdatePrompt::loop();
 
-    processButtonEvents();
-    SerialCli::instance().poll();
+    // The first frame must finish before an input can open a radio app or a
+    // serial command can restart the still-pending image.
+    if (!UpdateSession::imagePending()) {
+        processButtonEvents();
+        SerialCli::instance().poll();
+    }
 
 #ifdef CF_TEST_CLI
     if (SerialCli::instance().soakActive()) {

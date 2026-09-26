@@ -31,6 +31,7 @@ Verdict decide(Session session, const Inputs& in) {
     if (in.stayAwake && (session == Session::Boot || session == Session::Awake))
         return Verdict::StayAwake;
     if (session == Session::Boot) {
+        if (in.imagePending) return Verdict::PendingImage;
         if (!in.bootCheck) return Verdict::BootCheckOff;
         if (in.timerWake) return Verdict::TimerWake;
         if (in.oneShotBoot) return Verdict::OneShotBoot;
@@ -55,6 +56,7 @@ const char* verdictName(Verdict verdict) {
         case Verdict::NoWifi:       return "no-wifi";
         case Verdict::NotLinked:    return "not-linked";
         case Verdict::OneShotBoot:  return "one-shot-boot";
+        case Verdict::PendingImage: return "pending-image";
         case Verdict::TimerWake:    return "timer-wake";
         case Verdict::LowBattery:   return "low-battery";
         case Verdict::NotDue:       return "not-due";

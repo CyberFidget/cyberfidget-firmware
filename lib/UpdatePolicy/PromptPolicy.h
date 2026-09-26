@@ -65,6 +65,10 @@ constexpr const char* kAlreadyChecking = "A check is already running";
 /// Install now while no update session exists on the device yet.
 constexpr const char* kInstallComingSoon =
     "Installing on your Fidget is coming soon. Update it from the website for now.";
+constexpr const char* kWebsiteUpdateCopy =
+    "Update once on website for WiFi updates";
+constexpr const char* kKeyWebsiteSeen = "web_seen";
+static_assert(keyLen(kKeyWebsiteSeen) <= kMaxKeyLen, "NVS key too long");
 
 // ---- Versions ------------------------------------------------------------------
 
@@ -140,15 +144,18 @@ AppBatch appBatch(bool autoapply, bool applyOnce);
 
 struct PromptPlan {
     bool firmware = false;     ///< show the firmware prompt
+    bool website = false;      ///< show website instruction instead of install choices
     bool apps = false;         ///< show the app-changes prompt
     bool explainOff = false;   ///< say that automatic check-ins are off
 };
 
 /// After the start-up animation: Auto-check Off silences the popup.
-PromptPlan bootPlan(CheckinPolicy::Policy policy, bool fwEligible, bool appsWaiting);
+PromptPlan bootPlan(CheckinPolicy::Policy policy, bool fwEligible, bool appsWaiting,
+                    bool hasUpdateSlot = true, bool websiteSeen = false);
 
 /// After a manual check: always shown, and explains Auto-check Off.
-PromptPlan manualPlan(CheckinPolicy::Policy policy, bool fwEligible, bool appsWaiting);
+PromptPlan manualPlan(CheckinPolicy::Policy policy, bool fwEligible, bool appsWaiting,
+                      bool hasUpdateSlot = true, bool websiteSeen = false);
 
 /// Whether an automatic session (boot, daily, awake) may run at all.
 bool automaticAllowed(CheckinPolicy::Policy policy);
@@ -210,6 +217,7 @@ struct SettingsState {
     const char* rej = "";
     const char* running = "";
     bool linked = false;
+    bool hasUpdateSlot = true;
     AwakePolicy::Setting awake;   ///< the Awake & dev mode setting (row opens its screen)
     const char* status = "";    ///< the status bar's current line, "" = none
 };

@@ -149,6 +149,38 @@ void test_prompt_option_indexes(void) {
     TEST_ASSERT_EQUAL_STRING("Later", kAppOptions[(int)AppChoice::Later]);
 }
 
+void test_missing_update_space_offers_website_once_per_version(void) {
+    PromptPlan p = bootPlan(Policy::Auto, true, false, false, false);
+    TEST_ASSERT_TRUE(p.firmware);
+    TEST_ASSERT_TRUE(p.website);
+    p = bootPlan(Policy::Auto, true, false, false, true);
+    TEST_ASSERT_FALSE(p.firmware);
+    TEST_ASSERT_FALSE(p.website);
+    p = manualPlan(Policy::Auto, true, true, false, false);
+    TEST_ASSERT_TRUE(p.firmware);
+    TEST_ASSERT_TRUE(p.website);
+    TEST_ASSERT_TRUE(p.apps);
+    p = manualPlan(Policy::Auto, true, false, false, true);
+    TEST_ASSERT_FALSE(p.firmware);
+    p = manualPlan(Policy::Auto, true, false, true, true);
+    TEST_ASSERT_TRUE(p.firmware);
+    TEST_ASSERT_FALSE(p.website);
+    TEST_ASSERT_FALSE(bootPlan(Policy::Never, true, false, false, false).firmware);
+    SettingsState s;
+    s.hasUpdateSlot = false;
+    s.avail = "1.4.0";
+    s.running = "1.3.0";
+    char label[kRowText];
+    settingsLabel(Row::Status, s, label, sizeof(label));
+    TEST_ASSERT_EQUAL_STRING(kWebsiteUpdateCopy, label);
+    TEST_ASSERT_NULL(strstr(label, "slot"));
+    TEST_ASSERT_NULL(strstr(label, "partition"));
+    TEST_ASSERT_NULL(strstr(label, "OTA"));
+    s.rej = s.avail;
+    settingsLabel(Row::Status, s, label, sizeof(label));
+    TEST_ASSERT_EQUAL_STRING("Status: nothing waiting", label);
+}
+
 void test_prompt_title_names_the_source(void) {
     char title[64];
     firmwareTitle(title, sizeof(title), kOffer.version, kOffer.source);
@@ -313,6 +345,7 @@ void test_dev_mode_values(void) {
 
 void test_nvs_keys_fit(void) {
     const char* keys[] = {kKeyPolicy, kKeyRej, kKeyAvail, kKeyAvailN, kKeySrc, kKeyChan,
+                          kKeyWebsiteSeen,
                           kKeyAutoapply, AwakePolicy::kKeyMode, AwakePolicy::kKeyStop,
                           AwakePolicy::kLegacyKeyDev, AwakePolicy::kLegacyKeyDevIdle,
                           "interval_h", "last_chk",
@@ -329,6 +362,7 @@ int main(int, char**) {
     RUN_TEST(test_later_and_no_answer_store_nothing);
     RUN_TEST(test_install_hands_off_only_when_an_update_session_exists);
     RUN_TEST(test_prompt_option_indexes);
+    RUN_TEST(test_missing_update_space_offers_website_once_per_version);
     RUN_TEST(test_prompt_title_names_the_source);
     RUN_TEST(test_app_changes_prompt);
     RUN_TEST(test_policy_never_blocks_automatic_sessions_not_manual);

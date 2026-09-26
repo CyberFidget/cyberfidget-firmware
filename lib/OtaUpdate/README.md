@@ -70,6 +70,22 @@ gains no cycle through AppManager).
    still shows it, saying "It did not finish last time". A newer version is
    offered as usual; a successful update clears `fail_ver`.
 
+While an image is pending, the boot check-in cannot start WiFi or apply a
+loadout, regardless of the boot one-shot. Ordinary idle and low-battery sleep
+requests wait for the first frame or the 45 s confirmation deadline: a deep
+sleep wake before confirmation would roll back a good image. Critical voltage
+still shuts down promptly. If the checks passed, the image is kept before
+shutdown even if its first frame has not drawn. If they have not passed, the
+pending record is cleared and `upd.pwr_abort` marks the battery shutdown; the
+previous image clears that marker without setting `upd.fail_ver` or showing a
+failed-update notice. That version can be offered again.
+
+The app-slot capability is sampled once at boot. A Fidget with no second
+update slot shows a website update instruction in the prompt once per offered
+version, with no Install now choice. The same instruction remains a scrolling
+Settings > Updates line while that version is eligible. No update session is
+started from that offer.
+
 `LoadoutStore::begin` also refuses to format while the running image is
 pending (a second guard; the self-test runs before it anyway).
 

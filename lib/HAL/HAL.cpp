@@ -24,6 +24,7 @@
 #include "SDManager.h"
 #include "SliderPosition.h"
 #include "UvloLogic.h"
+#include "UpdateSession.h"
 
 #include "SparkFun_LIS2DH12.h"
 #include "ButtonManager.h"
@@ -392,6 +393,7 @@ namespace HAL
 
     void enterDeepSleep(bool hardShutdown)
     {
+        if (!UpdateSession::prepareDeepSleep(hardShutdown)) return;
         // Arms the next background check-in (only a timer wake can run one).
         if (!hardShutdown && s_beforeSleep) s_beforeSleep();
         if (!hardShutdown) {
