@@ -39,11 +39,16 @@ bool pendingAbiSupported();
 // The staged launch's manifest id and label (false when nothing is staged).
 bool pendingLaunch(std::string& id, std::string& label);
 
-// Whether the guest task's stack (one contiguous internal block) can be
-// allocated right now. After the network has been used in a power cycle
-// the internal heap no longer has such a block, and the app has to open in
-// a fresh start (AppManager).
+// Whether the guest task (a small internal-RAM stack) and the interpreter's
+// stack (PSRAM) can be allocated right now. When they cannot, the app opens
+// in a fresh start instead (AppManager).
 bool guestStackFits();
+/// True when only internal RAM is short, so a fresh start would let the app open.
+bool guestRestartHelps();
+#ifdef CF_TEST_CLI
+/// Test builds: force guestRestartHelps() true (kept across a software restart).
+void testForceRestart(bool on);
+#endif
 
 // Registry glue (wired via APP_ENTRY in AppManifest.h).
 void wasmFsAppBegin();

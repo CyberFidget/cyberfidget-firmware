@@ -663,6 +663,13 @@ d_m3Op  (CallRawFunction)
 # endif
 #endif
 
+#if defined(d_m3NativeStackGuard)
+    // CYBERFIDGET PATCH: a host call (text drawing, logging) needs native
+    // stack of its own; below the host's floor, trap instead of calling it.
+    if (M3_UNLIKELY (m3_NativeStackExhausted ()))
+        newTrap (m3Err_trapStackOverflow);
+#endif
+
     // m3_Call uses runtime->stack to set-up initial exported function stack.
     // Reconfigure the stack to enable recursive invocations of m3_Call.
     // I.e. exported/table function can be called from an impoted function.

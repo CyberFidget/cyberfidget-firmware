@@ -150,6 +150,25 @@ Apply applyEffect(const Setting& before, const Setting& after);
 /// other app, and anything unknown, pauses listening until it ends.
 bool listensDuring(const char* appEnumName);
 
+/// A delivered (WASM) app is not on that list: whether listening continues
+/// beside it depends on the heap. Its interpreter stack is in PSRAM, so the
+/// app itself holds only a few KB of internal RAM. Internal-heap floor at a
+/// check-in's trough (the network session budget, as for the allow-list).
+constexpr uint32_t kListenTroughFloor = 24u * 1024u;
+/// What one check-in takes from the internal heap below the steady listening
+/// level at its trough (bench: 17.5 KB with an HTTPS handshake), rounded up.
+constexpr uint32_t kListenPollCost = 18u * 1024u;
+/// Internal RAM a delivered app holds while it runs (bench: its task and
+/// runtime objects, ~5 KB), rounded up.
+constexpr uint32_t kDeliveredAppCost = 8u * 1024u;
+/// Decided when the app opens: listening continues when the internal heap
+/// free right then (listening already running) leaves the app its share and
+/// the next check-in's trough above the floor.
+bool listensBesideDeliveredApp(uint32_t freeInternal);
+/// Checked after each check-in while the app runs: a trough below the floor
+/// pauses listening until the app ends.
+bool troughBelowFloor(uint32_t trough);
+
 // ---- A restart loop ends the mode -------------------------------------------------
 
 /// Consecutive abnormal resets (panic, watchdog, brownout) while an awake

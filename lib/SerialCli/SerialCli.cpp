@@ -684,6 +684,16 @@ void SerialCli::dispatch(const char* line) {
     if (ieq(line, "app"))  { cmdApp();  return; }
     if (ieq(line, "net"))  { cmdNet();  return; }
     if (ieq(line, "heapstat")) { cmdHeapstat(); return; }
+#ifdef CF_TEST_CLI
+    if (ieq(line, "wasm forcerestart on") || ieq(line, "wasm forcerestart off")) {
+        // Bench the restart-with-resume fallback for delivered apps.
+        const bool on = ieq(line, "wasm forcerestart on");
+        WasmFsApp::testForceRestart(on);
+        Serial.printf("[cmd] wasm.forcerestart=%s
+", on ? "on" : "off");
+        return;
+    }
+#endif
     if (ieq(line, "heapmap")) {
         // Where the internal heap is split: the stacks of the tasks the
         // network leaves behind, then every internal block (rom printf).

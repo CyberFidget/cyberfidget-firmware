@@ -5,6 +5,8 @@
 
 #include <Arduino.h>
 #include <LittleFS.h>
+#include <esp_expression_with_stack.h>
+#include <esp_attr.h>
 #include <esp_heap_caps.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
@@ -52,9 +54,27 @@ SemaphoreHandle_t  s_cmdDone   = nullptr;   // guest task -> loop task: command 
 volatile WasmCmd   s_cmd       = CMD_UPDATE;
 volatile uint32_t  s_guestStackFreeMin = 0xFFFFFFFF;  // min free bytes seen; survives teardown for wasmstat
 
+// The interpreter's stack. wasm3 recurses on the native stack for every
+// guest call AND nests one native frame per interpreted op (no tail calls
+// on this CPU), so the depth an app needs depends on how much straight-line
+// code it runs, not just on recursion. Bench, every catalog device app:
+// worst used 54,756 B (Spaceship, 5 min of play; it levels off there),
+// Breakout 44,180 B (level skips), the rest 4.8-31.3 KB. The guard below
+// leaves 16 KB in reserve, so 128 KB gives an app 112 KB - just over twice
+// the worst. That is far more than internal RAM can spare, so the stack
+// lives in PSRAM (see guestMain; frames measured 12-19% slower than on the
+// old internal stack). The native-stack guard (WasmAppRuntime) traps a guest
+// that goes deeper, leaving its reserve for host calls and the trap itself.
 #ifndef CF_WASM_GUEST_STACK_SIZE
-#define CF_WASM_GUEST_STACK_SIZE (64 * 1024)
+#define CF_WASM_GUEST_STACK_SIZE (128 * 1024)
 #endif
+constexpr size_t kGuestStackBytes = CF_WASM_GUEST_STACK_SIZE;
+// The guest task's own (internal RAM) stack: it only holds the frames that
+// switch onto the PSRAM stack and back.
+constexpr uint32_t kGuestTaskStackBytes = 4096;
+
+uint8_t*          s_guestStack     = nullptr;   // PSRAM, kGuestStackBytes
+SemaphoreHandle_t s_guestStackLock = nullptr;   // required by the stack switch
 
 // Called ONLY on the guest task (samples its own stack; no dangling-handle risk).
 void selfSampleGuestStack() {
@@ -70,10 +90,18 @@ void ensureSyncPrimitives() {
     while (xSemaphoreTake(s_cmdDone,  0) == pdTRUE) {}
 }
 
-// The dedicated wasm task. s_shell is constructed by wasmFsAppBegin() before this
-// task starts. Runs shell->begin() (deep app_begin), then one shell->update() per
-// CMD_UPDATE, then shell->end() (deep app_end) on CMD_END, then self-deletes.
-void wasmTaskEntry(void*) {
+// The whole app runs here, on the PSRAM stack. s_shell is constructed by
+// wasmFsAppBegin() before the task starts. Runs shell->begin() (deep
+// app_begin), then one shell->update() per CMD_UPDATE, then shell->end()
+// (deep app_end) on CMD_END. The END rendezvous is given by wasmTaskEntry
+// only after the stack is switched back, so the loop task never frees the
+// PSRAM stack while it is in use. Host calls made from here must not use the
+// SPI flash driver at all - reads included (LittleFS, Preferences/NVS,
+// esp_partition, OTA): every driver operation turns the cache (and PSRAM
+// with it) off, and the SDK asserts when the caller's stack is in PSRAM
+// (esp_task_stack_is_sane_cache_disabled). None do today. Flash work by
+// OTHER tasks is fine: the SDK parks this task before the cache goes off.
+void guestMain() {
     if (s_shell) s_shell->begin();
     selfSampleGuestStack();
     xSemaphoreGive(s_cmdDone);              // begin-done rendezvous
@@ -87,11 +115,23 @@ void wasmTaskEntry(void*) {
         } else {                            // CMD_END
             if (s_shell) s_shell->end();
             selfSampleGuestStack();
-            xSemaphoreGive(s_cmdDone);
-            break;
+            return;
         }
     }
+}
+
+// The dedicated wasm task: switches onto the PSRAM stack (the switch fills
+// it with the FreeRTOS pattern and points the task's stack bounds at it, so
+// the high-water mark and the native-stack guard both measure it), runs the
+// app, switches back, then self-deletes.
+void wasmTaskEntry(void*) {
+    esp_execute_shared_stack_function(s_guestStackLock, s_guestStack, kGuestStackBytes, guestMain);
+    xSemaphoreGive(s_cmdDone);              // end-done rendezvous: the PSRAM stack is free
     vTaskDelete(nullptr);                   // self-delete; loop task already dropped the handle
+}
+
+void freeGuestStack() {
+    if (s_guestStack) { heap_caps_free(s_guestStack); s_guestStack = nullptr; }
 }
 
 void freeBuffer() {
@@ -180,10 +220,36 @@ bool pendingLaunch(std::string& id, std::string& label) {
     return true;
 }
 
-bool guestStackFits() {
-    // The stack plus a little room for the task's own control block.
+static bool guestInternalFits() {
+    // The task's small internal stack plus its control block.
     return heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT) >=
-           (size_t)CF_WASM_GUEST_STACK_SIZE + 512;
+           (size_t)kGuestTaskStackBytes + 512;
+}
+
+static bool guestPsramFits() {
+    // The interpreter's stack.
+    return heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM) >= kGuestStackBytes;
+}
+
+bool guestStackFits() { return guestInternalFits() && guestPsramFits(); }
+
+#ifdef CF_TEST_CLI
+// Test builds: pretend internal RAM is short so the restart-with-resume
+// fallback can be benched. Survives the software restart, so the bench also
+// proves the resumed start does not restart again.
+static RTC_NOINIT_ATTR uint32_t s_forceRestartMagic;
+static constexpr uint32_t kForceRestartOn = 0x57A5C0DEu;
+void testForceRestart(bool on) { s_forceRestartMagic = on ? kForceRestartOn : 0; }
+#endif
+
+bool guestRestartHelps() {
+#ifdef CF_TEST_CLI
+    if (s_forceRestartMagic == kForceRestartOn) return true;
+#endif
+    // A fresh start only defragments internal RAM. A PSRAM shortfall (or no
+    // PSRAM at all) survives a restart, so the app shows its out-of-memory
+    // screen instead of restarting forever.
+    return !guestInternalFits() && guestPsramFits();
 }
 
 void wasmFsAppBegin() {
@@ -258,18 +324,24 @@ void wasmFsAppBegin() {
     s_shell = new WasmAppShell(s_runningLabel.c_str(), s_bytes, s_len);
     ensureSyncPrimitives();
     s_guestStackFreeMin = 0xFFFFFFFF;
+    if (!s_guestStackLock) s_guestStackLock = xSemaphoreCreateMutex();
+    // Plain malloc (the aligned allocator would pull ~0.7 KB into IRAM, which
+    // has no room): the stack switch aligns the top to 16 bytes itself.
+    s_guestStack = (uint8_t*)heap_caps_malloc(kGuestStackBytes, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     UBaseType_t prio = uxTaskPriorityGet(nullptr);   // run at the loop task's priority
     BaseType_t  core = xPortGetCoreID();             // pin to the loop task's core
     // NOTE: on ESP-IDF, xTaskCreate* stack size is in BYTES (not words).
-    BaseType_t created = xTaskCreatePinnedToCore(
-        wasmTaskEntry, "wasm_guest", CF_WASM_GUEST_STACK_SIZE, nullptr,
-        prio, &s_wasmTask, core);
+    BaseType_t created = (s_guestStack && s_guestStackLock)
+        ? xTaskCreatePinnedToCore(wasmTaskEntry, "wasm_guest", kGuestTaskStackBytes, nullptr,
+                                  prio, &s_wasmTask, core)
+        : pdFAIL;
     if (created != pdPASS) {
         s_wasmTask = nullptr;
+        freeGuestStack();
         delete s_shell; s_shell = nullptr;
         freeBuffer();
         snprintf(s_loadErr, sizeof(s_loadErr), "guest task alloc failed");
-        drawLoadError("out of memory", "guest task");
+        drawLoadError("out of memory", nullptr);
         registerPreShellErrorCallbacks();
         return;
     }
@@ -301,9 +373,10 @@ void wasmFsAppEnd() {
     if (s_wasmTask) {
         s_cmd = CMD_END;
         xSemaphoreGive(s_cmdReady);
-        xSemaphoreTake(s_cmdDone, portMAX_DELAY);     // shell->end() done on the guest task
+        xSemaphoreTake(s_cmdDone, portMAX_DELAY);     // shell->end() done, back on the task's own stack
         s_wasmTask = nullptr;                         // task self-deletes via vTaskDelete(nullptr)
     }
+    freeGuestStack();
     if (s_shell) { delete s_shell; s_shell = nullptr; }  // safe: end() ran, guest task no longer touches it
     freeBuffer();
     HAL::setRgbLedsOff();

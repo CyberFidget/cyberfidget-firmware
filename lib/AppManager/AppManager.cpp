@@ -41,13 +41,24 @@ static void showRadioNotice(const char* text) {
 }
 static PowerManager powerManager(buttonManager);
 
-// A delivered (WASM) app runs on its own task whose stack must be one
-// contiguous block of internal RAM. Once the network has been used in a
-// power cycle the internal heap no longer has such a block, even with WiFi
-// off again, so the app opens in a fresh start instead: the one-shot
+// A delivered (WASM) app runs on its own task: a few KB of internal RAM plus
+// its interpreter stack in PSRAM (WasmFsApp::guestStackFits). Should either
+// not be available (the internal heap is split after the network has been
+// used in a power cycle), the app opens in a fresh start instead: the one-shot
 // `bootcfg.wasmid` (+ `wasmcat`, the menu category it was opened from)
 // relaunches it straight after boot, animation skipped, before anything
 // uses the network. Never returns.
+// Set when this start is itself the restart that reopened a delivered app:
+// that one launch never restarts again (no loop if the restart did not
+// help); later launches in the power cycle may.
+static bool s_wasmResumedBoot = false;
+
+static bool wasmRestartHelps()
+{
+    if (s_wasmResumedBoot) { s_wasmResumedBoot = false; return false; }
+    return WasmFsApp::guestRestartHelps();
+}
+
 [[noreturn]] static void restartIntoWasmApp(const std::string& id, const std::string& label)
 {
     Serial.printf("[wasm] reopen=restart id=%s largest_int=%u radio_used=%d\n", id.c_str(),
@@ -193,6 +204,7 @@ void AppManager::setup() {
 
     // A delivered app reopened in a fresh start (see restartIntoWasmApp).
     bool bootWasm = false;
+    s_wasmResumedBoot = !bootWasmId.empty();
     if (!bootWasmId.empty() && !bootPortal && !bootMusic) {
         LoadoutManifest::Loadout lo;
         if (loadLoadoutManifest(lo, nullptr)) {
@@ -439,7 +451,7 @@ void AppManager::switchToApp(AppIndex newApp)
     if (newApp == appActive) return;
     // Dev mode listening: a Bluetooth app asks to restart first.
     if (AwakeMode::interceptSwitch(newApp)) return;
-    if (newApp == APP_WASM_HOST && !WasmFsApp::guestStackFits()) {
+    if (newApp == APP_WASM_HOST && wasmRestartHelps()) {
         std::string id, label;
         if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
     }
@@ -493,6 +505,9 @@ void AppManager::switchToApp(AppIndex newApp)
 
 void AppManager::restartIntoPendingApp()
 {
+    // Escapes a stuck network session (not a memory shortfall), so it does
+    // not ask wasmRestartHelps; it still never repeats for a resumed start.
+    if (s_wasmResumedBoot) { s_wasmResumedBoot = false; return; }
     std::string id, label;
     if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
 }
@@ -503,7 +518,7 @@ void AppManager::relaunchActive()
     // arrived). An open prompt closes first, as for any switch.
     ModalPrompt::instance().closeForTeardown();
     appDefs[appActive].endFunc();
-    if (appActive == APP_WASM_HOST && !WasmFsApp::guestStackFits()) {
+    if (appActive == APP_WASM_HOST && wasmRestartHelps()) {
         std::string id, label;
         if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
     }
