@@ -60,9 +60,7 @@ bool takeSessionRequest(char* version, size_t len);
 /// The update session. Never returns: it ends in a restart.
 [[noreturn]] void runSession(const char* version);
 
-/// Whether this Fidget may install updates today: `upd.unsig_ok`, set only
-/// over USB serial (`upd allow-unsigned on`). Until updates are signed, a
-/// Fidget without it keeps the "update from the website" message.
+/// Whether the current offer has a known signing key, or USB unsigned opt-in.
 bool installAllowed();
 
 /// "Install now": stores the one-shot for `version`. The caller restarts.
@@ -84,6 +82,8 @@ bool setAllowUnsigned(bool allow);
 void printSlots();
 
 #ifdef CF_TEST_CLI
+/// Serial `upd verify-test`: checks the fixture digest and a flipped digest.
+bool verifyTestFixture();
 /// Serial `upd fault <name>`: a one-shot fault the next pending image (or
 /// update session) injects: none | crash | hang | hal-hang | loop-crash |
 /// version | mount | session-hang. Stored in the test-only namespace `cftest`.

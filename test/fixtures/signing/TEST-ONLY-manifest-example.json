@@ -1,0 +1,13 @@
+{
+  "version": "1.4.0",
+  "size": 34,
+  "sha256": "f665cb672c96fbec7991e1009cc8c4f0113e1c9372c3409b8283393a64d3e97c",
+  "sig": "MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=",
+  "key_id": "test-only-1",
+  "url": "/update/firmware.php?app=1&tag=v1.4.0&repo=CyberFidget%2Fcyberfidget-firmware&channel=stable&release_id=1&sha256=f665cb672c96fbec7991e1009cc8c4f0113e1c9372c3409b8283393a64d3e97c",
+  "hw": {"min_rev": "1.2", "max_rev": "1.2"},
+  "channel": "stable",
+  "source": "official",
+  "release_id": 1,
+  "released_at": "2026-09-26T00:00:00Z"
+}

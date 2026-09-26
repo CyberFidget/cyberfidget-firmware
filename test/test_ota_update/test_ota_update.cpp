@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -146,6 +147,32 @@ void test_fork_source_and_rc_channel_parse(void) {
     TEST_ASSERT_NULL(parse(manifestJson("channel", "\"rc\""), m));
     TEST_ASSERT_NULL(parse(manifestJson("version", "\"1.4.0-rc1\""), m));
     TEST_ASSERT_NULL(parse(manifestJson("version", "\"1.4.0+abc1234.dirty\""), m));
+}
+
+void test_optional_signature_pair_is_strict(void) {
+    auto withFields = [](const char* fields) {
+        std::string json = manifestJson();
+        json.pop_back();
+        return json + fields + "}";
+    };
+    Manifest m;
+    TEST_ASSERT_NULL(parse(withFields(",\"sig\":\"MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=\",\"key_id\":\"test-only-1\""), m));
+    TEST_ASSERT_EQUAL_STRING("MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=", m.sig);
+    TEST_ASSERT_EQUAL_STRING("test-only-1", m.keyId);
+    TEST_ASSERT_EQUAL_STRING("key_id", parse(withFields(",\"sig\":\"MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=\""), m));
+    TEST_ASSERT_EQUAL_STRING("sig", parse(withFields(",\"key_id\":\"test-only-1\""), m));
+    TEST_ASSERT_EQUAL_STRING("sig", parse(withFields(",\"sig\":\"QUJ?RA==\",\"key_id\":\"test-only-1\""), m));
+    TEST_ASSERT_EQUAL_STRING("sig", parse(withFields(",\"sig\":\"QUJDREVGR0g=\",\"key_id\":\"test-only-1\""), m));
+    TEST_ASSERT_EQUAL_STRING("key_id", parse(withFields(",\"sig\":\"MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=\",\"key_id\":\"TEST_only\""), m));
+    TEST_ASSERT_EQUAL_STRING("", m.version);
+}
+
+void test_install_permission_matrix(void) {
+    for (int sig = 0; sig < 2; ++sig)
+        for (int known = 0; known < 2; ++known)
+            for (int optIn = 0; optIn < 2; ++optIn)
+                TEST_ASSERT_EQUAL((sig && known) || (!sig && optIn),
+                                  installPermitted(sig, known, optIn));
 }
 
 void test_utc_timestamps(void) {
@@ -365,6 +392,68 @@ static InstallResult stream(Installer& inst, const std::vector<uint8_t>& img, si
         if (!inst.feed(img.data() + off, n)) return inst.result();
     }
     return inst.complete();
+}
+
+struct FakeVerifier : Verifier {
+    VerifyResult answer = VerifyResult::Ok;
+    int calls = 0;
+    VerifyResult verify(const Manifest&, const uint8_t[32]) override { ++calls; return answer; }
+};
+
+void test_verification_refuses_bad_and_unknown_even_with_opt_in(void) {
+    const auto img = image(32);
+    Manifest m = manifestFor(img);
+    strcpy(m.sig, "MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=");
+    strcpy(m.keyId, "test-only-1");
+    for (const VerifyResult refused : {VerifyResult::Bad, VerifyResult::UnknownKey}) {
+        FakeTarget t;
+        FakeHasher h;
+        FakeVerifier v;
+        v.answer = refused;
+        Installer inst(t, h, &v, true);
+        TEST_ASSERT_TRUE(inst.begin(m, kSeen));
+        TEST_ASSERT_EQUAL(InstallResult::VerificationFailed, stream(inst, img));
+        TEST_ASSERT_EQUAL_INT(1, v.calls);
+        TEST_ASSERT_TRUE(t.called("abort"));
+        TEST_ASSERT_FALSE(t.called("end"));
+        TEST_ASSERT_FALSE(t.called("boot"));
+    }
+    FakeTarget t;
+    FakeHasher h;
+    FakeVerifier v;
+    v.answer = VerifyResult::Ok;
+    Installer inst(t, h, &v, false);
+    TEST_ASSERT_TRUE(inst.begin(m, kSeen));
+    TEST_ASSERT_EQUAL(InstallResult::Ready, stream(inst, img));
+}
+
+void test_unsigned_install_needs_opt_in(void) {
+    const auto img = image(32);
+    FakeTarget t;
+    FakeHasher h;
+    FakeVerifier v;
+    v.answer = VerifyResult::Unsigned;
+    Installer inst(t, h, &v, false);
+    TEST_ASSERT_TRUE(inst.begin(manifestFor(img), kSeen));
+    TEST_ASSERT_EQUAL(InstallResult::VerificationFailed, stream(inst, img));
+    TEST_ASSERT_FALSE(t.called("boot"));
+}
+
+void test_hash_mismatch_never_reaches_signature_check(void) {
+    const auto img = image(32);
+    Manifest m = manifestFor(img);
+    strcpy(m.sig, "MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=");
+    strcpy(m.keyId, "test-only-1");
+    FakeTarget t;
+    FakeHasher h;
+    FakeVerifier v;
+    Installer inst(t, h, &v, false);
+    TEST_ASSERT_TRUE(inst.begin(m, kSeen));
+    auto changed = img;
+    changed[0] ^= 1;
+    TEST_ASSERT_EQUAL(InstallResult::HashMismatch, stream(inst, changed));
+    TEST_ASSERT_EQUAL_INT(0, v.calls);
+    TEST_ASSERT_FALSE(t.called("boot"));
 }
 
 void test_install_verifies_then_records_then_selects_boot(void) {
@@ -712,6 +801,8 @@ int main(int, char**) {
     RUN_TEST(test_parses_the_site_manifest);
     RUN_TEST(test_every_field_is_required_and_validated);
     RUN_TEST(test_fork_source_and_rc_channel_parse);
+    RUN_TEST(test_optional_signature_pair_is_strict);
+    RUN_TEST(test_install_permission_matrix);
     RUN_TEST(test_utc_timestamps);
     RUN_TEST(test_gate_accepts_a_matching_offer);
     RUN_TEST(test_gate_hardware_range_runs_first);
@@ -722,6 +813,9 @@ int main(int, char**) {
     RUN_TEST(test_seen_keys_are_short_and_scoped);
     RUN_TEST(test_only_an_unanswering_host_falls_back);
     RUN_TEST(test_install_verifies_then_records_then_selects_boot);
+    RUN_TEST(test_verification_refuses_bad_and_unknown_even_with_opt_in);
+    RUN_TEST(test_unsigned_install_needs_opt_in);
+    RUN_TEST(test_hash_mismatch_never_reaches_signature_check);
     RUN_TEST(test_hash_mismatch_aborts_before_finish);
     RUN_TEST(test_wrong_manifest_digest_aborts);
     RUN_TEST(test_short_and_long_streams_abort);

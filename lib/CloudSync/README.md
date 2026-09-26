@@ -1,5 +1,11 @@
 # CloudSync
 
+The firmware update session hashes the downloaded app image, verifies any
+manifest signature against `UpdateSigning` before completing the OTA image,
+and only then selects the other boot slot. It logs `[update] verify=ok`,
+`unsigned`, `bad`, or `unknown-key`. `upd verify-test` in a `CF_TEST_CLI`
+build checks the public fixture signature and a flipped digest on device.
+
 `runSession(reason)` starts one STA-only worker on a plain FreeRTOS task. The
 main loop calls `poll()`, which returns true when a check-in session has
 just finished (`lastResult()` then holds it); `consumeResult()` hands the
