@@ -1384,7 +1384,10 @@ void uploadDailyUsage(const Session& s, const Result& r) {
     if (!BatteryDiary::uploadDue(enabled, s.token[0] != 0,
             CheckinPolicy::batteryEligible(dailyVbatMv, dailySocPct), true, r.ok, now, last, remaining)) return;
 
-    std::vector<BatteryDiary::Record> records(BatteryDiary::kUploadRecords + 1);
+    // The whole ring (48 KiB, lands in PSRAM): the window sends the OLDEST
+    // unsent records first, so a Fidget that was offline for weeks catches
+    // up over a few daily uploads instead of losing its older records.
+    std::vector<BatteryDiary::Record> records(BatteryDiary::kMaxRecords);
     uint8_t stats[38];
     uint32_t total = 0;
     const size_t count = BatteryDiary::readUploadSnapshot(records.data(), records.size(), &total, stats);

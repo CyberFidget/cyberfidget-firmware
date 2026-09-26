@@ -50,7 +50,8 @@ inline UploadWindow uploadWindow(Record* records, size_t count,
     out.count = count - first;
     out.complete = !tailTruncated || records[first].seq == ackedSeq + 1U;
     if (out.count > maxRecords) {
-        out.first += out.count - maxRecords;
+        // Oldest unsent first: the next upload continues after this one's
+        // acknowledged sequence, so nothing is skipped while the ring holds it.
         out.count = maxRecords;
         out.complete = false;
     }

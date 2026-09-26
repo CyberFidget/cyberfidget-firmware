@@ -78,11 +78,13 @@ or reboot.
 Settings > Updates > Share battery data is off when its `upd.usage_share`
 key is missing. After a successful linked automatic check-in (the daily timer
 session or the start-up check-in), at most once every 21 hours, the cloud
-worker can flush pending RTC samples, read the newest 1025 records and the
-exact 38-byte stats file, and send at most 1024 records (more than a fully
-awake day). It does not read app files
+worker can flush pending RTC samples, read the whole ring (up to 3072 records,
+in PSRAM) and the exact 38-byte stats file, and send at most 1024 records
+(more than a fully awake day), OLDEST unsent first - a Fidget that was
+offline for weeks catches up over a few daily uploads rather than skipping
+its older records. It does not read app files
 or saved network names. It leaves `complete: false` when older unsent records
-were dropped by the ring or omitted by the bounded upload window. Sequence
+were dropped by the ring or more remain after this upload's window. Sequence
 numbers permit the server to ignore records it already accepted. The
 accepted sequence and upload time are stored in `upd.usage_seq` and
 `upd.usage_at`. An upload the site answers but does not accept stores
