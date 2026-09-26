@@ -28,8 +28,9 @@ compiled `https://cyberfidget.com`; test builds (`CF_TEST_CLI`) read an
 `upd.base` override and permit an HTTP LAN server. Release builds use HTTPS,
 and the server's chain must end in the short trusted root list
 (`lib/TrustedRoots`), not the SDK's full certificate bundle, which is no
-longer linked. Each request builds the list's PEM text in PSRAM and frees it
-after the client is cleaned up. The device credential is sent only in the
+longer linked. Each new HTTP client builds the list's PEM text in PSRAM and
+frees it after the client is cleaned up. Dev listening may retain one
+check-in client and its TLS connection over a short poll wait. The device credential is sent only in the
 Authorization header, is never logged, and its header buffer is wiped after
 use. mbedTLS's allocator is set to PSRAM-first before the first handshake.
 
@@ -40,8 +41,13 @@ check-in and loadout answers, builds the check-in body, and picks waits.
 `CloudPlanner` decides each step; the worker acts on every step it returns.
 
 1. Check-in: device id, firmware, ABI, board revision, LittleFS totals,
-   `lapply_cap=batch1`, manifest CRC, installed entries, and the last applied
-   batch record when it belongs to the current pair identity.
+   `lapply_cap=batch1`, manifest CRC, and the last applied batch record when
+   it belongs to the current pair identity. `installed` is sent on the first
+   check-in of each session, when the manifest CRC differs from the last
+   successful full report, after `send_report`, with an applied-batch answer,
+   or after a full report failed. Other check-ins omit `installed`; the site
+   keeps its stored list. The last successful full CRC lives only in worker
+   RAM, with no per-poll flash write.
 2. A 200 with `batch_id` and `upd.autoapply` on (default) fetches the offer.
    Autoapply off posts "App changes waiting" and leaves the batch, unless the
    session was started with `applyWaiting` (the update prompt's "Get them
@@ -201,6 +207,16 @@ more; a 204 has no body) - the next check-in comes after 11 s at most (the
 site takes a mode change at most once per 10 s). A stored backoff is waited out inside the loop instead of
 failing the start. A dropped connection is rejoined (5 s for the station's
 own reconnect, then a fresh join).
+
+For successive dev check-ins on the same origin, the worker keeps one
+`esp_http_client` handle and TLS connection only when the completed cycle
+succeeded and the next wait is at most 5 s. It closes the handle and frees
+its trusted-root PEM for a longer wait, any transport/HTTP error, WiFi loss,
+cancel or session end. An offered loadout or firmware closes it before
+download, apply, or app launch. Each request still checks the stored
+credential, sets a 4 s timeout, validates the complete trusted-root PEM,
+blocks redirects and uses the session deadline. The Authorization header's
+temporary buffer is wiped after setting it.
 
 - Deliveries apply whatever "Apply app changes automatically" says.
   `devSnapshot()` counts them as soon as the apply commits (before the

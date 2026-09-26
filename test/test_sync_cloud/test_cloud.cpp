@@ -445,6 +445,75 @@ void test_checkin_body_carries_hardware_fields_when_present() {
     TEST_ASSERT_EQUAL(std::string::npos, absent.find("\"serial\""));
 }
 
+void test_full_report_decision_covers_every_trigger() {
+    ReportState state;
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0, false)); // first check-in, including CRC zero
+    state = reportAfterCheckin(state, 0x12345678, true, 204, false);
+    TEST_ASSERT_TRUE(state.hasFullCrc);
+    TEST_ASSERT_EQUAL_UINT32(0x12345678, state.fullCrc);
+    TEST_ASSERT_FALSE(fullReportRequired(state, 0x12345678, false));
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0x87654321, false)); // manifest changed
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0x12345678, true));  // applied_batch + result
+    state.sendReport = true;
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0x12345678, false)); // read-back / CRC request
+    state.sendReport = false;
+    state.lastFullFailed = true;
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0x12345678, false)); // failed full report
+}
+
+void test_report_history_advances_only_on_successful_full_post() {
+    ReportState state;
+    state = reportAfterCheckin(state, 0x11111111, true, 429, false);
+    TEST_ASSERT_FALSE(state.hasFullCrc);
+    TEST_ASSERT_TRUE(state.lastFullFailed);
+    state = reportAfterCheckin(state, 0x11111111, true, 200, false);
+    TEST_ASSERT_TRUE(state.hasFullCrc);
+    TEST_ASSERT_FALSE(state.lastFullFailed);
+    state = reportAfterCheckin(state, 0x22222222, false, 200, true);
+    TEST_ASSERT_EQUAL_UINT32(0x11111111, state.fullCrc); // slim does not acknowledge a new CRC
+    TEST_ASSERT_TRUE(state.sendReport);
+    state = reportAfterCheckin(state, 0x22222222, false, 429, false);
+    TEST_ASSERT_EQUAL_UINT32(0x11111111, state.fullCrc);
+    TEST_ASSERT_TRUE(state.sendReport); // rate limit does not consume the request
+    state = reportAfterCheckin(state, 0x22222222, true, 0, false);
+    TEST_ASSERT_TRUE(state.sendReport); // transport error does not consume read-back
+    TEST_ASSERT_TRUE(state.lastFullFailed);
+    state = reportAfterCheckin(state, 0x22222222, true, 204, false);
+    TEST_ASSERT_EQUAL_UINT32(0x22222222, state.fullCrc);
+    TEST_ASSERT_FALSE(state.sendReport);
+    TEST_ASSERT_FALSE(state.lastFullFailed);
+    state = reportAfterCheckin(state, 0x22222222, true, 200, true);
+    TEST_ASSERT_TRUE(state.sendReport); // a new read-back request applies to the next poll
+}
+
+void test_slim_checkin_keeps_crc_and_telemetry() {
+    CheckinFields f;
+    f.deviceId = "a1b2c3d4e5f6";
+    f.fw = "1.4.0"; f.abi = "3"; f.board = "1.2";
+    f.fsTotal = 1441792; f.fsUsed = 20480; f.manifestCrc = 0x00abc123;
+    f.mode = "dev";
+    const std::string body = buildCheckinBody(f);
+    cJSON* root = cJSON_Parse(body.c_str());
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_NULL(cJSON_GetObjectItem(root, "installed"));
+    TEST_ASSERT_EQUAL_STRING("00abc123", cJSON_GetObjectItem(root, "manifest_crc")->valuestring);
+    TEST_ASSERT_EQUAL_STRING("dev", cJSON_GetObjectItem(root, "mode")->valuestring);
+    TEST_ASSERT_EQUAL_INT(20480, (int)cJSON_GetObjectItem(root, "fs_used")->valuedouble);
+    TEST_ASSERT_EQUAL_STRING("batch1", cJSON_GetObjectItem(root, "lapply_cap")->valuestring);
+    cJSON_Delete(root);
+}
+
+void test_dev_connection_only_survives_short_successful_wait() {
+    TEST_ASSERT_TRUE(keepDevConnection(204, true, 2000, true, false));
+    TEST_ASSERT_TRUE(keepDevConnection(200, true, kDevKeepConnectionMs, true, false));
+    TEST_ASSERT_FALSE(keepDevConnection(204, true, 30000, true, false));
+    TEST_ASSERT_FALSE(keepDevConnection(429, true, 2000, true, false));
+    TEST_ASSERT_FALSE(keepDevConnection(0, true, 2000, true, false));
+    TEST_ASSERT_FALSE(keepDevConnection(200, false, 2000, true, false));
+    TEST_ASSERT_FALSE(keepDevConnection(200, true, 2000, false, false));
+    TEST_ASSERT_FALSE(keepDevConnection(200, true, 2000, true, true));
+}
+
 void test_budget_selection() {
     TEST_ASSERT_TRUE(budgetCovers(61000, 10000, 150000, 12000));
     TEST_ASSERT_FALSE(budgetCovers(61000, 80000, 150000, 12000));
@@ -595,6 +664,10 @@ int main(int, char**) {
     RUN_TEST(test_checkin_body_carries_answer_and_report);
     RUN_TEST(test_checkin_body_omits_unacceptable_answer);
     RUN_TEST(test_checkin_body_carries_hardware_fields_when_present);
+    RUN_TEST(test_full_report_decision_covers_every_trigger);
+    RUN_TEST(test_report_history_advances_only_on_successful_full_post);
+    RUN_TEST(test_slim_checkin_keeps_crc_and_telemetry);
+    RUN_TEST(test_dev_connection_only_survives_short_successful_wait);
     RUN_TEST(test_budget_selection);
     RUN_TEST(test_backoff_retention);
     RUN_TEST(test_applied_notice_only_for_this_sessions_apply);
