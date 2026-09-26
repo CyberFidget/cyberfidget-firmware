@@ -8,6 +8,7 @@
 #include <Arduino.h>
 #include <FS.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <esp_attr.h>
 
 namespace BatteryDiary {
@@ -288,12 +289,28 @@ bool mountForTimerFlush() {
 bool begin(const char* wake_cause_name) {
     if (!ensureDirectory()) return false;
     if (!loadStats(&s_stats)) defaultStats(&s_stats);
+    uint32_t nextSeq = s_stats.records_written + 1U;
+    Preferences sequencePrefs;
+    if (sequencePrefs.begin("upd", true)) {
+        const uint32_t floor = sequencePrefs.getUInt("usage_floor", 1);
+        if (floor > nextSeq) nextSeq = floor;
+        sequencePrefs.end();
+    }
+    File ring = LittleFS.open(kRingPath, FILE_READ);
+    if (ring && ring.size() >= kRecordSize && ring.seek(ring.size() - kRecordSize, SeekSet)) {
+        uint8_t encoded[kRecordSize];
+        if (ring.read(encoded, sizeof(encoded)) == sizeof(encoded)) {
+            Record last;
+            if (decode(encoded, &last) && last.seq < UINT32_MAX && last.seq + 1U > nextSeq)
+                nextSeq = last.seq + 1U;
+        }
+    }
+    ring.close();
     if (!rtcValid()) {
-        resetRtc(s_stats.records_written + 1U, s_stats.checkin_count,
+        resetRtc(nextSeq, s_stats.checkin_count,
                  (uint8_t)(s_stats.boot_count & 0xFFU));
     } else {
-        if (s_rtc.next_seq <= s_stats.records_written)
-            s_rtc.next_seq = s_stats.records_written + 1U;
+        if (s_rtc.next_seq < nextSeq) s_rtc.next_seq = nextSeq;
         if (s_rtc.checkin_count > s_stats.checkin_count)
             s_stats.checkin_count = s_rtc.checkin_count;
     }
@@ -409,8 +426,34 @@ size_t readLastRecords(Record* records, size_t capacity, uint32_t* total_records
     return count;
 }
 
+size_t readUploadSnapshot(Record* records, size_t capacity, uint32_t* total_records,
+                          uint8_t stats_bytes[38]) {
+    if (total_records) *total_records = 0;
+    if (!records || !capacity || !stats_bytes || !flushTimerCheckins()) return 0;
+    if (!mountForTimerFlush()) return 0;
+    const bool wasReady = s_ready;
+    s_ready = true;
+    File stats = LittleFS.open(kStatsPath, FILE_READ);
+    Stats checked;
+    const bool statsOk = stats && stats.size() == 38 &&
+                         stats.read(stats_bytes, 38) == 38 && decodeStats(stats_bytes, &checked);
+    stats.close();
+    const size_t count = statsOk ? readLastRecords(records, capacity, total_records) : 0;
+    s_ready = wasReady;
+    LittleFS.end();
+    return count;
+}
+
 bool clear() {
     if (!s_ready || !ensureDirectory()) return false;
+    // Sequence is the server's de-duplication key. Keep its next value even
+    // when the ring and the other counters are deliberately reset.
+    const uint32_t nextSeq = rtcValid() ? s_rtc.next_seq : s_stats.records_written + 1U;
+    Preferences sequencePrefs;
+    if (!sequencePrefs.begin("upd", false)) return false;
+    const bool saved = sequencePrefs.putUInt("usage_floor", nextSeq) != 0;
+    sequencePrefs.end();
+    if (!saved) return false;
     File ring = LittleFS.open(kRingPath, FILE_WRITE);
     if (!ring) return false;
     ring.close();
@@ -419,7 +462,7 @@ bool clear() {
     defaultStats(&s_stats);
     s_stats.boot_count = lifetime_boots;
     s_stats.cum_on_time_s = lifetime_on_s;
-    resetRtc(1, 0, (uint8_t)(lifetime_boots & 0xFFU));
+    resetRtc(nextSeq, 0, (uint8_t)(lifetime_boots & 0xFFU));
     s_awakeTicks = 0;
     s_nextSampleTick = kFirstAwakeTicks;
     s_onTimeSubticks = 0;

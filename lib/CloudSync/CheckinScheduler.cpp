@@ -187,7 +187,8 @@ void startBootWindow(bool oneShotBoot) {
     in.socPct = awakeSocPct();
     const Verdict v = decide(Session::Boot, in);
     if (v != Verdict::Start) { logSkip("boot", v, in.vbatMv, in.socPct); return; }
-    if (!CloudSync::runSession(CloudSync::Reason::Boot))
+    // The reading also gates the once-a-day battery data upload.
+    if (!CloudSync::runSession(CloudSync::Reason::Boot, false, in.vbatMv, in.socPct))
         logSkip("boot", Verdict::Busy, in.vbatMv, in.socPct);
 }
 
@@ -259,7 +260,7 @@ void runHeadless(int32_t vcellMv, int32_t socPct) {
     } else {
         DeviceIdentity::checkStored();
         LoadoutStore::begin();
-        if (!CloudSync::runSession(CloudSync::Reason::Daily)) {
+        if (!CloudSync::runSession(CloudSync::Reason::Daily, false, vcellMv, socPct)) {
             // Refused to start: not a failed session, nothing recorded.
             logSkip("daily", Verdict::Busy, vcellMv, socPct);
         } else {

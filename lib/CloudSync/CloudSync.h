@@ -50,7 +50,8 @@ struct Result {
 // `applyWaiting` applies waiting app changes in this session even when app
 // auto-apply is off (the prompt's "Get them now"); it is not kept across the
 // restart after Bluetooth use.
-bool runSession(Reason reason, bool applyWaiting = false);
+bool runSession(Reason reason, bool applyWaiting = false,
+                int32_t dailyVbatMv = -1, int32_t dailySocPct = -1);
 // True when a check-in session finished in this call; its result is then
 // lastResult() (consumeResult() still hands it to one other reader).
 bool poll();

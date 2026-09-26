@@ -52,6 +52,7 @@ const char* running() { return getFirmwareVersionString(); }
 struct Stored {
     Policy policy = Policy::Auto;
     bool bootCheck = true;
+    bool shareBattery = false;
     char rej[kMaxVersionLen + 1] = {0};
     char avail[kMaxVersionLen + 1] = {0};
     char src[40] = {0};
@@ -76,6 +77,7 @@ Stored readStored() {
     const bool hasBootCheck = upd.isKey(CheckinPolicy::kKeyBootCheck);
     st.bootCheck = CheckinPolicy::parseBootCheck(
         hasBootCheck, hasBootCheck ? upd.getUChar(CheckinPolicy::kKeyBootCheck, 1) : 1);
+    st.shareBattery = upd.getBool("usage_share", false);
     readText(upd, kKeyRej, st.rej, sizeof(st.rej));
     readText(upd, kKeyAvail, st.avail, sizeof(st.avail));
     readText(upd, kKeySrc, st.src, sizeof(st.src));
@@ -355,6 +357,7 @@ ModalPromptModel listModel;   // selection + window, wraps like the menu
 ScrollLabel focusLabel;
 int focusFor = -1;
 bool enterArmed = false;
+bool shareExplanation = false;
 Stored cache;
 bool cacheLinked = false;
 
@@ -369,6 +372,7 @@ SettingsState settingsState() {
     SettingsState s;
     s.policy = cache.policy;
     s.bootCheck = cache.bootCheck;
+    s.shareBattery = cache.shareBattery;
     s.autoapply = cache.autoapply;
     s.channel = cache.chan;
     s.source = cache.src;
@@ -408,6 +412,19 @@ void activate(Row row) {
             refresh();
             const char* const ok[] = {"OK"};
             ModalPrompt::instance().open(kBootCheckExplanation, ok, 1, nullptr);
+            return;
+        }
+        case Row::ShareBattery: {
+            const bool enable = !cache.shareBattery;
+            Preferences upd;
+            if (upd.begin(kNamespace, false)) {
+                upd.putBool("usage_share", enable);
+                upd.end();
+            }
+            refresh();
+            if (cache.shareBattery && enable) {
+                shareExplanation = true;
+            }
             return;
         }
         case Row::AutoApply: {
@@ -455,9 +472,11 @@ void onSettingsEnter(const ButtonEvent& event) {
     if (event.eventType == ButtonEvent_Pressed) enterArmed = true;
     if (event.eventType != ButtonEvent_Released || !enterArmed) return;
     enterArmed = false;
+    if (shareExplanation) { shareExplanation = false; return; }
     activate(settingsRow(listModel.selected()));
 }
 void onSettingsBack(const ButtonEvent& event) {
+    if (shareExplanation && event.eventType == ButtonEvent_Released) { shareExplanation = false; return; }
     if (event.eventType == ButtonEvent_Released) MenuManager::instance().returnToMenu();
 }
 
@@ -581,6 +600,7 @@ void settingsBegin() {
     listModel.open(kSettingsRows, kRows, (uint32_t)millis(), 0);
     focusFor = -1;
     enterArmed = false;
+    shareExplanation = false;
     refresh();
 }
 
@@ -595,6 +615,21 @@ void settingsEnd() {
 }
 
 void settingsUpdate() {
+    if (shareExplanation) {
+        display.clear();
+        display.setFont(ArialMT_Plain_10);
+        display.setColor(WHITE);
+        display.setTextAlignment(TEXT_ALIGN_LEFT);
+        display.drawString(4, 0, "Share battery data");
+        display.drawString(4, 12, "Daily at update checks:");
+        display.drawString(4, 22, "Battery readings and");
+        // Each line fits 128 px in ArialMT_Plain_10 (the widest ends at x = 119).
+        display.drawString(4, 32, "on/off/sleep events with");
+        display.drawString(4, 42, "times. No app content or");
+        display.drawString(4, 52, "WiFi names. Off anytime.");
+        display.display();
+        return;
+    }
     const SettingsState s = settingsState();
     char line[kRowText];
 
