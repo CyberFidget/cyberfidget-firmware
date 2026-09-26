@@ -52,11 +52,13 @@ const char* running() { return getFirmwareVersionString(); }
 struct Stored {
     Policy policy = Policy::Auto;
     bool bootCheck = true;
+    bool shareBattery = false;
     char rej[kMaxVersionLen + 1] = {0};
     char avail[kMaxVersionLen + 1] = {0};
     char src[40] = {0};
     char chan[16] = {0};
     char failVer[kMaxVersionLen + 1] = {0};   // an update that did not keep itself
+    char websiteSeen[kMaxVersionLen + 1] = {0};
     bool autoapply = true;
 };
 
@@ -75,11 +77,13 @@ Stored readStored() {
     const bool hasBootCheck = upd.isKey(CheckinPolicy::kKeyBootCheck);
     st.bootCheck = CheckinPolicy::parseBootCheck(
         hasBootCheck, hasBootCheck ? upd.getUChar(CheckinPolicy::kKeyBootCheck, 1) : 1);
+    st.shareBattery = upd.getBool("usage_share", false);
     readText(upd, kKeyRej, st.rej, sizeof(st.rej));
     readText(upd, kKeyAvail, st.avail, sizeof(st.avail));
     readText(upd, kKeySrc, st.src, sizeof(st.src));
     readText(upd, kKeyChan, st.chan, sizeof(st.chan));
     readText(upd, OtaUpdate::kKeyFailVer, st.failVer, sizeof(st.failVer));
+    readText(upd, kKeyWebsiteSeen, st.websiteSeen, sizeof(st.websiteSeen));
     const bool hasApply = upd.isKey(kKeyAutoapply);
     st.autoapply = parseAutoapply(hasApply, hasApply && upd.getBool(kKeyAutoapply, true));
     upd.end();
@@ -150,9 +154,10 @@ void onComingSoonDone(int) { openAppsIfPending(); }
 
 // Install now: the update session runs after a restart (the start-up
 // animation is skipped), in a power cycle that never starts Bluetooth.
-bool handOff(const char* version) {
+bool handOff(const char* version, const char** refusal) {
     const char* why = "";
     if (!UpdateSession::armInstall(version, &why)) {
+        *refusal = why;
         Serial.printf("[upd] install=refused reason=%s\n", why);
         return false;
     }
@@ -188,15 +193,17 @@ void onFirmwareDone(int result) {
                   result == (int)FwChoice::Later ? "later" :
                   result == (int)FwChoice::Skip ? "skip" : "none",
                   offerVersion, e.writeRej ? (stored ? "ok" : "error") : "-");
-    // A refused hand-off (storage failed) says so like "coming soon" would
+    // A refused hand-off (storage failed, or the battery is low) says so like "coming soon" would
     // not: the offer stays in the bar either way.
-    if (e.handoff && !handOff(offerVersion)) {
+    const char* refusal = nullptr;
+    if (e.handoff && !handOff(offerVersion, &refusal)) {
         char text[48];
         snprintf(text, sizeof(text), "Update %s ready", offerVersion);
         svc.post(StatusKind::UpdateReady, text,
                  StatusService::defaultPriority(StatusKind::UpdateReady), true, millis());
         const char* const ok[] = {"OK"};
-        if (ModalPrompt::instance().open("The update could not start. Nothing changed.", ok, 1,
+        const char* copy = OtaUpdate::armRefusalCopy(refusal);
+        if (ModalPrompt::instance().open(copy ? copy : "The update could not start. Nothing changed.", ok, 1,
                                          onComingSoonDone)) return;
     }
     if (e.comingSoon) {
@@ -215,10 +222,20 @@ bool openFirmwarePrompt(const char* version, const char* source) {
     return ModalPrompt::instance().open(promptTitle, kFwOptions, 3, onFirmwareDone);
 }
 
+bool openWebsitePrompt(const char* version) {
+    const char* const ok[] = {"OK"};
+    if (!ModalPrompt::instance().open(kWebsiteUpdateCopy, ok, 1, onComingSoonDone)) return false;
+    // Remember only an instruction actually shown; a newer version may show
+    // it once again. This path never offers Install now or restarts.
+    writeText(kKeyWebsiteSeen, version);
+    StatusService::instance().clear(StatusKind::UpdateReady);
+    return true;
+}
+
 void showPlan(const PromptPlan& plan, const Stored& st) {
     if (plan.firmware) {
         appsAfter = plan.apps;
-        if (openFirmwarePrompt(st.avail, st.src)) return;
+        if (plan.website ? openWebsitePrompt(st.avail) : openFirmwarePrompt(st.avail, st.src)) return;
         appsAfter = false;
     }
     if (plan.apps) openAppsPrompt();
@@ -254,7 +271,9 @@ void setErrorText(CloudSync::Result& r, const char* err) {
 void finishCheck(const CloudSync::Result& r) {
     const Stored st = readStored();
     const bool fw = offerEligible(st.avail, st.rej, running());
-    const PromptPlan plan = manualPlan(st.policy, fw, r.waiting);
+    const PromptPlan plan = manualPlan(st.policy, fw, r.waiting,
+                                     UpdateSession::hasUpdateSlot(),
+                                     sameVersion(st.avail, st.websiteSeen));
     checkExplainOff = plan.explainOff;
     checkNote = "";
     if (!r.ok) {
@@ -265,9 +284,11 @@ void finishCheck(const CloudSync::Result& r) {
     } else if (r.waiting) {
         snprintf(checkLine, sizeof(checkLine), "App changes waiting");
     } else if (fw) {
-        snprintf(checkLine, sizeof(checkLine), "Update %s ready", st.avail);
+        snprintf(checkLine, sizeof(checkLine), UpdateSession::hasUpdateSlot()
+                 ? "Update %s ready" : "Update %s available", st.avail);
         // Honest about a version that did not keep itself here before.
-        if (!OtaUpdate::automaticOfferAllowed(st.avail, st.failVer))
+        if (UpdateSession::hasUpdateSlot() &&
+            !OtaUpdate::automaticOfferAllowed(st.avail, st.failVer))
             checkNote = "It did not finish last time";
     } else {
         snprintf(checkLine, sizeof(checkLine), "Your Fidget is up to date");
@@ -339,6 +360,7 @@ ModalPromptModel listModel;   // selection + window, wraps like the menu
 ScrollLabel focusLabel;
 int focusFor = -1;
 bool enterArmed = false;
+bool shareExplanation = false;
 Stored cache;
 bool cacheLinked = false;
 
@@ -353,6 +375,7 @@ SettingsState settingsState() {
     SettingsState s;
     s.policy = cache.policy;
     s.bootCheck = cache.bootCheck;
+    s.shareBattery = cache.shareBattery;
     s.autoapply = cache.autoapply;
     s.channel = cache.chan;
     s.source = cache.src;
@@ -360,6 +383,7 @@ SettingsState settingsState() {
     s.rej = cache.rej;
     s.running = running();
     s.linked = cacheLinked;
+    s.hasUpdateSlot = UpdateSession::hasUpdateSlot();
     s.awake = AwakeMode::setting();
     const StatusEntry* cur = StatusService::instance().current();
     s.status = cur ? cur->text : "";
@@ -391,6 +415,19 @@ void activate(Row row) {
             refresh();
             const char* const ok[] = {"OK"};
             ModalPrompt::instance().open(kBootCheckExplanation, ok, 1, nullptr);
+            return;
+        }
+        case Row::ShareBattery: {
+            const bool enable = !cache.shareBattery;
+            Preferences upd;
+            if (upd.begin(kNamespace, false)) {
+                upd.putBool("usage_share", enable);
+                upd.end();
+            }
+            refresh();
+            if (cache.shareBattery && enable) {
+                shareExplanation = true;
+            }
             return;
         }
         case Row::AutoApply: {
@@ -438,9 +475,11 @@ void onSettingsEnter(const ButtonEvent& event) {
     if (event.eventType == ButtonEvent_Pressed) enterArmed = true;
     if (event.eventType != ButtonEvent_Released || !enterArmed) return;
     enterArmed = false;
+    if (shareExplanation) { shareExplanation = false; return; }
     activate(settingsRow(listModel.selected()));
 }
 void onSettingsBack(const ButtonEvent& event) {
+    if (shareExplanation && event.eventType == ButtonEvent_Released) { shareExplanation = false; return; }
     if (event.eventType == ButtonEvent_Released) MenuManager::instance().returnToMenu();
 }
 
@@ -466,7 +505,8 @@ void loop() {
     const bool retryHeld = !OtaUpdate::automaticOfferAllowed(st.avail, st.failVer);
     const PromptPlan plan = bootPlan(st.policy,
                                      offerEligible(st.avail, st.rej, running()) && !retryHeld,
-                                     have && r.waiting);
+                                     have && r.waiting, UpdateSession::hasUpdateSlot(),
+                                     sameVersion(st.avail, st.websiteSeen));
     Serial.printf("[upd] boot-popup result=%d firmware=%d apps=%d failed_held=%d\n",
                   have ? 1 : 0, plan.firmware ? 1 : 0, plan.apps ? 1 : 0,
                   retryHeld && st.avail[0] ? 1 : 0);
@@ -563,6 +603,7 @@ void settingsBegin() {
     listModel.open(kSettingsRows, kRows, (uint32_t)millis(), 0);
     focusFor = -1;
     enterArmed = false;
+    shareExplanation = false;
     refresh();
 }
 
@@ -577,6 +618,21 @@ void settingsEnd() {
 }
 
 void settingsUpdate() {
+    if (shareExplanation) {
+        display.clear();
+        display.setFont(ArialMT_Plain_10);
+        display.setColor(WHITE);
+        display.setTextAlignment(TEXT_ALIGN_LEFT);
+        display.drawString(4, 0, "Share battery data");
+        display.drawString(4, 12, "Daily at update checks:");
+        display.drawString(4, 22, "Battery readings and");
+        // Each line fits 128 px in ArialMT_Plain_10 (the widest ends at x = 119).
+        display.drawString(4, 32, "on/off/sleep events with");
+        display.drawString(4, 42, "times. No app content or");
+        display.drawString(4, 52, "WiFi names. Off anytime.");
+        display.display();
+        return;
+    }
     const SettingsState s = settingsState();
     char line[kRowText];
 
@@ -689,8 +745,15 @@ void injectOffer(const char* args) {
         return;
     }
     appsAfter = false;
-    if (!openFirmwarePrompt(version, source)) { Serial.println("[err] upd.offer=refused"); return; }
-    Serial.printf("[cmd] upd.offer=open version=%s source=%s\n", offerVersion, offerSource);
+    const bool website = !UpdateSession::hasUpdateSlot();
+    if (website && sameVersion(version, st.websiteSeen)) {
+        Serial.printf("[cmd] upd.offer=suppressed reason=website-shown version=%s\n", version);
+        return;
+    }
+    if (!(website ? openWebsitePrompt(version) : openFirmwarePrompt(version, source))) {
+        Serial.println("[err] upd.offer=refused"); return;
+    }
+    Serial.printf("[cmd] upd.offer=open version=%s source=%s\n", version, source);
 }
 #endif
 

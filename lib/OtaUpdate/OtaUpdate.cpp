@@ -9,6 +9,7 @@
 #include <cJSON.h>
 
 #include "OtaManifest.h"
+#include "CheckinPolicy.h"
 #include "PromptPolicy.h"
 
 namespace OtaUpdate {
@@ -23,6 +24,54 @@ bool isSha256(const char* s) {
     if (!s || strlen(s) != 64) return false;
     for (int i = 0; i < 64; ++i) if (!isHex(s[i])) return false;
     return true;
+}
+
+bool validKeyId(const char* s) {
+    for (; *s; ++s)
+        if (!( (*s >= 'a' && *s <= 'z') || (*s >= '0' && *s <= '9') || *s == '-')) return false;
+    return true;
+}
+
+bool validSignature(const char* s) {
+    const size_t n = strlen(s);
+    if (n < 8 || n % 4 != 0) return false;
+    size_t pad = 0;
+    for (size_t i = 0; i < n; ++i) {
+        const char c = s[i];
+        if (c == '=') { ++pad; if (i < n - 2 || pad > 2) return false; }
+        else if (pad || !((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                          (c >= '0' && c <= '9') || c == '+' || c == '/')) return false;
+    }
+    const size_t bytes = n / 4 * 3 - pad;
+    if (bytes < 8 || bytes > 78) return false;
+    uint8_t der[78];
+    size_t used = 0;
+    unsigned acc = 0;
+    unsigned bits = 0;
+    for (size_t i = 0; i < n - pad; ++i) {
+        const char c = s[i];
+        const unsigned value = c >= 'A' && c <= 'Z' ? c - 'A' :
+            c >= 'a' && c <= 'z' ? c - 'a' + 26 :
+            c >= '0' && c <= '9' ? c - '0' + 52 : c == '+' ? 62 : 63;
+        acc = (acc << 6) | value;
+        bits += 6;
+        if (bits >= 8) {
+            bits -= 8;
+            der[used++] = (uint8_t)(acc >> bits);
+            acc &= (1u << bits) - 1;
+        }
+    }
+    if (used != bytes || acc != 0 || der[0] != 0x30 || der[1] != bytes - 2 || der[2] != 0x02)
+        return false;
+    const size_t rLen = der[3];
+    const size_t sTag = 4 + rLen;
+    if (rLen < 1 || rLen > 33 || sTag + 2 > bytes || der[sTag] != 0x02) return false;
+    const size_t sLen = der[sTag + 1];
+    if (sLen < 1 || sLen > 33 || sTag + 2 + sLen != bytes) return false;
+    const auto canonical = [](const uint8_t* p, size_t len) {
+        return !(p[0] & 0x80) && (len == 1 || p[0] != 0 || (p[1] & 0x80));
+    };
+    return canonical(der + 4, rLen) && canonical(der + sTag + 2, sLen);
 }
 
 // Copies a JSON string member exactly; false when missing, not a string,
@@ -113,6 +162,13 @@ const char* parseFields(const cJSON* root, Manifest& out) {
     out.size = (uint32_t)num;
     if (!copyString(root, "sha256", out.sha256, sizeof(out.sha256)) || !isSha256(out.sha256))
         return "sha256";
+    const cJSON* sig = cJSON_GetObjectItemCaseSensitive(root, "sig");
+    const cJSON* keyId = cJSON_GetObjectItemCaseSensitive(root, "key_id");
+    if ((sig == nullptr) != (keyId == nullptr)) return sig ? "key_id" : "sig";
+    if (sig) {
+        if (!copyString(root, "sig", out.sig, sizeof(out.sig)) || !validSignature(out.sig)) return "sig";
+        if (!copyString(root, "key_id", out.keyId, sizeof(out.keyId)) || !validKeyId(out.keyId)) return "key_id";
+    }
     if (!copyString(root, "url", out.url, sizeof(out.url)) || !validUrl(out.url)) return "url";
     const cJSON* hw = cJSON_GetObjectItemCaseSensitive(root, "hw");
     if (!cJSON_IsObject(hw) || !copyString(hw, "min_rev", out.minRev, sizeof(out.minRev)) ||
@@ -247,6 +303,33 @@ bool fallbackAllowed(FetchOutcome outcome) {
     return outcome == FetchOutcome::Transport || outcome == FetchOutcome::ServerError;
 }
 
+bool installPermitted(bool hasSignature, bool knownKey, bool allowUnsigned) {
+    return hasSignature ? knownKey : allowUnsigned;
+}
+
+OfferAction offerAction(FetchOutcome outcome, const char* badField) {
+    if (outcome == FetchOutcome::Ok) return OfferAction::Store;
+    if (outcome == FetchOutcome::GateRefused) return OfferAction::Withdraw;
+    if (outcome == FetchOutcome::BadManifest && badField &&
+        (strcmp(badField, "sig") == 0 || strcmp(badField, "key_id") == 0)) {
+        return OfferAction::Withdraw;
+    }
+    return OfferAction::Unchanged;
+}
+
+bool refusalMarksFailed(bool hasSignature, bool knownKey) { return hasSignature && knownKey; }
+
+const char* armRefusal(bool hasUpdateSlot, bool installAllowed, int32_t vbatMv, int32_t socPct) {
+    if (!hasUpdateSlot) return "no-update-slot";
+    if (!installAllowed) return "unsigned";
+    if (!CheckinPolicy::batteryEligible(vbatMv, socPct)) return "battery";
+    return nullptr;
+}
+
+const char* armRefusalCopy(const char* reason) {
+    return reason && strcmp(reason, "battery") == 0 ? "Charge your Fidget first." : nullptr;
+}
+
 bool formatPending(const Pending& p, char* out, size_t len) {
     if (!isSha256(p.sha256) || p.size == 0 || p.size > kSlotSize ||
         strlen(p.seenKey) != kSeenKeyLen || !p.version[0] || strchr(p.version, ' ')) {
@@ -310,6 +393,7 @@ const char* installResultName(InstallResult r) {
         case InstallResult::TooLong: return "too-long";
         case InstallResult::Short: return "short";
         case InstallResult::HashMismatch: return "hash";
+        case InstallResult::VerificationFailed: return "verify";
         case InstallResult::ImageInvalid: return "image";
         case InstallResult::StoreFailed: return "store";
         case InstallResult::BootFailed: return "boot";
@@ -320,6 +404,7 @@ const char* installResultName(InstallResult r) {
 
 bool Installer::begin(const Manifest& m, const char* seenKeyText) {
     if (begun_ || done_) return false;
+    manifest_ = m;
     pending_ = Pending();
     memcpy(pending_.sha256, m.sha256, sizeof(pending_.sha256));
     pending_.size = m.size;
@@ -389,6 +474,13 @@ InstallResult Installer::complete() {
         fail(InstallResult::HashMismatch);
         return result_;
     }
+    const VerifyResult verification = verifier_ ? verifier_->verify(manifest_, digest) :
+        (manifest_.sig[0] ? VerifyResult::Bad : VerifyResult::Unsigned);
+    if (verification != VerifyResult::Ok &&
+        !(verification == VerifyResult::Unsigned && allowUnsigned_)) {
+        fail(InstallResult::VerificationFailed);
+        return result_;
+    }
     // From here on the image handle is closed by end() whatever it returns.
     done_ = true;
     if (!target_.end()) { result_ = InstallResult::ImageInvalid; return result_; }
@@ -438,12 +530,20 @@ ConfirmStep confirmStep(bool checksPassed, bool frameDrawn, uint32_t elapsedMs, 
     return frameDrawn ? ConfirmStep::Confirm : ConfirmStep::Wait;
 }
 
+SleepStep sleepStep(bool imagePending, bool checksPassed, bool criticalVoltage) {
+    if (!imagePending) return SleepStep::Proceed;
+    if (!criticalVoltage) return SleepStep::Defer;
+    return checksPassed ? SleepStep::KeepFirst : SleepStep::AbortWithoutFailure;
+}
+
 bool automaticOfferAllowed(const char* avail, const char* failedVersion) {
     if (!avail || !avail[0]) return false;
     return !failedVersion || strcmp(avail, failedVersion) != 0;
 }
 
-BootNotice bootNotice(bool recordPresent, bool recordValid, bool runningIsRecord) {
+BootNotice bootNotice(bool recordPresent, bool recordValid, bool runningIsRecord,
+                      bool criticalPowerAbort) {
+    if (criticalPowerAbort) return BootNotice::None;
     if (!recordPresent) return BootNotice::None;
     if (recordValid && runningIsRecord) return BootNotice::Completed;
     return BootNotice::DidNotFinish;

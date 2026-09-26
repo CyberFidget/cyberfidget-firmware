@@ -1,5 +1,11 @@
 # CloudSync
 
+The firmware update session hashes the downloaded app image, verifies any
+manifest signature against `UpdateSigning` before completing the OTA image,
+and only then selects the other boot slot. It logs `[update] verify=ok`,
+`unsigned`, `bad`, or `unknown-key`. `upd verify-test` in a `CF_TEST_CLI`
+build checks the public fixture signature and a flipped digest on device.
+
 `runSession(reason)` starts one STA-only worker on a plain FreeRTOS task. The
 main loop calls `poll()`, which returns true when a check-in session has
 just finished (`lastResult()` then holds it); `consumeResult()` hands the
@@ -28,8 +34,9 @@ compiled `https://cyberfidget.com`; test builds (`CF_TEST_CLI`) read an
 `upd.base` override and permit an HTTP LAN server. Release builds use HTTPS,
 and the server's chain must end in the short trusted root list
 (`lib/TrustedRoots`), not the SDK's full certificate bundle, which is no
-longer linked. Each request builds the list's PEM text in PSRAM and frees it
-after the client is cleaned up. The device credential is sent only in the
+longer linked. Each new HTTP client builds the list's PEM text in PSRAM and
+frees it after the client is cleaned up. Dev listening may retain one
+check-in client and its TLS connection over a short poll wait. The device credential is sent only in the
 Authorization header, is never logged, and its header buffer is wiped after
 use. mbedTLS's allocator is set to PSRAM-first before the first handshake.
 
@@ -40,8 +47,13 @@ check-in and loadout answers, builds the check-in body, and picks waits.
 `CloudPlanner` decides each step; the worker acts on every step it returns.
 
 1. Check-in: device id, firmware, ABI, board revision, LittleFS totals,
-   `lapply_cap=batch1`, manifest CRC, installed entries, and the last applied
-   batch record when it belongs to the current pair identity.
+   `lapply_cap=batch1`, manifest CRC, and the last applied batch record when
+   it belongs to the current pair identity. `installed` is sent on the first
+   check-in of each session, when the manifest CRC differs from the last
+   successful full report, after `send_report`, with an applied-batch answer,
+   or after a full report failed. Other check-ins omit `installed`; the site
+   keeps its stored list. The last successful full CRC lives only in worker
+   RAM, with no per-poll flash write.
 2. A 200 with `batch_id` and `upd.autoapply` on (default) fetches the offer.
    Autoapply off posts "App changes waiting" and leaves the batch, unless the
    session was started with `applyWaiting` (the update prompt's "Get them
@@ -202,6 +214,16 @@ site takes a mode change at most once per 10 s). A stored backoff is waited out 
 failing the start. A dropped connection is rejoined (5 s for the station's
 own reconnect, then a fresh join).
 
+For successive dev check-ins on the same origin, the worker keeps one
+`esp_http_client` handle and TLS connection only when the completed cycle
+succeeded and the next wait is at most 5 s. It closes the handle and frees
+its trusted-root PEM for a longer wait, any transport/HTTP error, WiFi loss,
+cancel or session end. An offered loadout or firmware closes it before
+download, apply, or app launch. Each request still checks the stored
+credential, sets a 4 s timeout, validates the complete trusted-root PEM,
+blocks redirects and uses the session deadline. The Authorization header's
+temporary buffer is wiped after setting it.
+
 - Deliveries apply whatever "Apply app changes automatically" says.
   `devSnapshot()` counts them as soon as the apply commits (before the
   follow-up report), so the running app relaunches at once.
@@ -228,6 +250,27 @@ own reconnect, then a fresh join).
 Test builds print one `[dev] poll=...` line per check-in (see
 `lib/SerialCli/README.md`); release builds print only `[dev] delivered`,
 `[dev] poll failing` and `[dev] poll ok again`.
+
+## Optional daily battery data
+
+Only the automatic sessions (the Daily timer session and the start-up Boot
+check-in) consider a usage upload - a Fidget used every day checks in at
+start-up and may never reach a Daily session. The device setting
+`upd.usage_share` defaults off. The scheduler supplies the voltage and charge
+percentage it measured for that session; both must pass the same 3.6 V and 20 percent
+floor as the automatic check-in. The worker waits until the check-in succeeds,
+then checks the 21-hour accepted-upload interval (under the 24 h daily
+spacing, over the site's 20 h cap) and reserves enough time for
+one bounded HTTPS POST to `/api/device-usage.php`. It skips the POST if the
+session is too near its deadline and never extends WiFi time for sharing.
+
+The POST uses the linked device bearer credential and the two-file field-usage
+manifest, with `source: device`, `consent: device_setting`, and a bounded
+chronological record window. The reply's `acked_seq` advances the saved
+sequence only after a successful 2xx answer. Transport, HTTP, and invalid
+reply failures leave the prior sequence and timestamp intact. The server
+de-duplicates by device ID and sequence. Manual, Dev, and Awake sessions do
+not upload usage data.
 
 ## Firmware offers
 

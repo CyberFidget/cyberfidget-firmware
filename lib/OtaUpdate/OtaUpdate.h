@@ -37,12 +37,15 @@ constexpr uint32_t kSlotSize = 3342336;
 constexpr size_t kMaxVersionLen = 31;
 constexpr size_t kMaxUrlLen = 300;
 constexpr size_t kMaxSourceLen = 150;   // "fork:" + owner (39) + "/" + repo (100)
+constexpr size_t kMaxKeyIdLen = 31;
+constexpr size_t kMaxSignatureLen = 104; // base64 of at most 78 DER bytes
 constexpr size_t kSeenKeyLen = 13;      // "seen_" + 8 hex digits
 
 // NVS keys (at most 15 characters). Namespace `upd`:
 constexpr const char* kKeyPendImg  = "pend_img";   ///< the expected new image
 constexpr const char* kKeyUnsigOk  = "unsig_ok";   ///< installing allowed (USB serial)
 constexpr const char* kKeyFailVer  = "fail_ver";   ///< a version whose self-test failed
+constexpr const char* kKeyPowerAbort = "pwr_abort"; ///< critical battery shutdown before checks pass
 constexpr const char* kKeyAvail    = "avail";      ///< the version the prompt may offer
 // Namespace `bootcfg` (one-shots):
 constexpr const char* kBootSession = "bootupd";    ///< run the update session
@@ -74,6 +77,8 @@ struct Manifest {
     char version[kMaxVersionLen + 1] = {0};
     uint32_t size = 0;
     char sha256[65] = {0};              ///< 64 lowercase hex digits
+    char sig[kMaxSignatureLen + 1] = {0}; ///< optional base64 DER ECDSA signature
+    char keyId[kMaxKeyIdLen + 1] = {0};  ///< optional signing key identifier
     char url[kMaxUrlLen + 1] = {0};     ///< a path on the same site ("/...")
     char minRev[16] = {0};
     char maxRev[16] = {0};
@@ -85,7 +90,7 @@ struct Manifest {
 
 /// Parses and validates the whole manifest. Returns nullptr on success, else
 /// a short reason ("json", "version", "size", "sha256", "url", "hw",
-/// "channel", "source", "release_id", "released_at"). Text that does not fit
+/// "channel", "source", "release_id", "released_at", "sig", "key_id"). Text that does not fit
 /// is refused, never truncated.
 const char* parseManifest(const char* json, size_t len, Manifest& out);
 
@@ -148,6 +153,38 @@ enum class FetchOutcome : uint8_t {
 /// refusal.
 bool fallbackAllowed(FetchOutcome outcome);
 
+/// A signed offer is installable only when its id is compiled in. Verification
+/// still happens after download; unsigned offers require the USB opt-in.
+bool installPermitted(bool hasSignature, bool knownKey, bool allowUnsigned);
+
+/// What a check-in does with the stored offer after asking the update site.
+enum class OfferAction : uint8_t {
+    Store,      ///< keep this release on offer (version + key id)
+    Withdraw,   ///< remove the offer
+    Unchanged,  ///< the site did not answer usefully: leave what is stored
+};
+
+/// `badField` is the manifest field that failed to parse (BadManifest only).
+/// A release signed with a key id this firmware does not know is still
+/// stored: installPermitted() then says no, so the owner is told to update
+/// from the website instead of never hearing about the release. Only a
+/// malformed signature or key id, or a gate refusal, withdraws the offer.
+OfferAction offerAction(FetchOutcome outcome, const char* badField);
+
+/// Whether a refused install marks the version as failed (never offered
+/// again automatically). Only a signature checked against a known key that
+/// did not match counts; an unknown key or a missing signature does not.
+bool refusalMarksFailed(bool hasSignature, bool knownKey);
+
+/// Why Install now refuses to arm, as a short log reason, or nullptr when it
+/// may arm. The battery floor is the automatic check-in's
+/// (CheckinPolicy::batteryEligible): a download and flash write must not
+/// run on a nearly flat battery. An unreadable value (-1) refuses.
+const char* armRefusal(bool hasUpdateSlot, bool installAllowed, int32_t vbatMv, int32_t socPct);
+
+/// On-screen copy for an armRefusal reason, or nullptr for the generic one.
+const char* armRefusalCopy(const char* reason);
+
 // ---- install ----------------------------------------------------------------
 
 /// Where the image goes. On the device: esp_ota_begin/write/end/abort, NVS,
@@ -171,6 +208,13 @@ public:
     virtual void finish(uint8_t out[32]) = 0;
 };
 
+enum class VerifyResult : uint8_t { Ok, Unsigned, Bad, UnknownKey };
+class Verifier {
+public:
+    virtual ~Verifier() {}
+    virtual VerifyResult verify(const Manifest& m, const uint8_t digest[32]) = 0;
+};
+
 struct Pending {
     char sha256[65] = {0};
     uint32_t size = 0;
@@ -190,6 +234,7 @@ enum class InstallResult : uint8_t {
     TooLong,        ///< more bytes than the manifest's size
     Short,          ///< fewer bytes than the manifest's size
     HashMismatch,
+    VerificationFailed,
     ImageInvalid,   ///< the finished image did not validate
     StoreFailed,    ///< the pending record could not be stored
     BootFailed,     ///< the boot slot could not be selected
@@ -199,7 +244,8 @@ const char* installResultName(InstallResult r);
 
 class Installer {
 public:
-    Installer(Target& target, Hasher& hasher) : target_(target), hasher_(hasher) {}
+    Installer(Target& target, Hasher& hasher, Verifier* verifier = nullptr, bool allowUnsigned = true)
+        : target_(target), hasher_(hasher), verifier_(verifier), allowUnsigned_(allowUnsigned) {}
     /// Starts an image of m.size bytes. False: nothing was begun.
     bool begin(const Manifest& m, const char* seenKeyText);
     /// Streams one piece. False: the install is over (see result()).
@@ -216,6 +262,9 @@ public:
 private:
     Target& target_;
     Hasher& hasher_;
+    Verifier* verifier_;
+    bool allowUnsigned_;
+    Manifest manifest_;
     Pending pending_;
     uint32_t received_ = 0;
     bool begun_ = false;
@@ -253,6 +302,11 @@ SelfTestResult decideSelfTest(const SelfTestInputs& in);
 /// first frame (a full main-loop pass), still under the watchdog and the
 /// wall-clock budget. `elapsedMs` counts from the start of the self-test.
 enum class ConfirmStep : uint8_t { Wait, Confirm, RollBack };
+enum class SleepStep : uint8_t { Proceed, Defer, KeepFirst, AbortWithoutFailure };
+/// Any reset while PENDING_VERIFY returns to the old image. Ordinary sleep
+/// waits for the first frame or confirmation deadline; critical voltage may
+/// sleep immediately, keeping passed checks first or suppressing fail_ver.
+SleepStep sleepStep(bool imagePending, bool checksPassed, bool criticalVoltage);
 ConfirmStep confirmStep(bool checksPassed, bool frameDrawn, uint32_t elapsedMs, uint32_t budgetMs);
 
 /// Automatic offers (the post-boot popup) skip a version whose self-test
@@ -267,7 +321,8 @@ enum class BootNotice : uint8_t {
 
 /// A boot that is NOT pending verification, with `recordPresent` =
 /// `upd.pend_img` exists. `runningIsRecord`: the running image hashes to it.
-BootNotice bootNotice(bool recordPresent, bool recordValid, bool runningIsRecord);
+BootNotice bootNotice(bool recordPresent, bool recordValid, bool runningIsRecord,
+                      bool criticalPowerAbort = false);
 
 }  // namespace OtaUpdate
 

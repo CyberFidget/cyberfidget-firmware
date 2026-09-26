@@ -105,6 +105,16 @@ bool listensDuring(const char* name) {
     return false;
 }
 
+bool stopsAutomaticSession(const char* appEnumName, bool automaticSessionRunning) {
+    return automaticSessionRunning && !listensDuring(appEnumName);
+}
+
+bool listensBesideDeliveredApp(uint32_t freeInternal) {
+    return freeInternal >= kListenTroughFloor + kListenPollCost + kDeliveredAppCost;
+}
+
+bool troughBelowFloor(uint32_t trough) { return trough < kListenTroughFloor; }
+
 uint8_t nextLoopCount(uint8_t previous, bool abnormalReset, bool awakeLatched) {
     if (!awakeLatched || !abnormalReset) return 0;
     return previous < 0xFF ? previous + 1 : previous;

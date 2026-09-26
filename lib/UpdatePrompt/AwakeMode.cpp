@@ -56,6 +56,10 @@ bool workerStarted = false;
 bool pausedCancel = false;     // cancelled for an app that needs the radio or the link
 uint32_t workerStartMs = 0;
 uint32_t seenDeliveries = 0;
+// Listening beside a delivered app: decided when it opens, withdrawn by a
+// check-in trough below the floor while it runs (AwakePolicy).
+bool besideAppOk = true;
+uint32_t besideAppSinceMs = 0;
 
 enum class Shown : uint8_t { None, Listening, NotConnected, NotLinked, NoWifi };
 Shown shown = Shown::None;
@@ -244,16 +248,28 @@ void breathe(uint32_t now) {
 
 bool pausesListening(AppIndex app) {
     // Listening continues only beside what was measured to leave the network
-    // session its internal heap (AwakePolicy::listensDuring). Everything else
-    // pauses it until it ends: the radio apps and the Link screen need the
-    // radio or the worker, a delivered (WASM) app and the network do not fit
-    // together (2 KB left), Voice Notes dips to 13 KB. A send made meanwhile
-    // arrives at the menu and reopens the app it was for.
+    // session its internal heap (AwakePolicy::listensDuring), and beside a
+    // delivered (WASM) app while the heap allows (its interpreter stack is in
+    // PSRAM). Everything else pauses it until it ends: the radio apps and the
+    // Link screen need the radio or the worker, Voice Notes dips to 13 KB. A
+    // send made meanwhile arrives at the menu and reopens the app it was for.
+    if (app == APP_WASM_HOST) return !besideAppOk;
     return app < 0 || app >= APP_COUNT || !listensDuring(appIds[app]);
+}
+
+// While a delivered app runs beside listening, a check-in whose trough fell
+// below the floor pauses listening for the rest of the app.
+void watchBesideApp(AppIndex active) {
+    if (active != APP_WASM_HOST || !besideAppOk || !CloudSync::devListening()) return;
+    const CloudSync::DevSnapshot snap = CloudSync::devSnapshot();
+    if ((int32_t)(snap.lastPollMs - besideAppSinceMs) <= 0 || !troughBelowFloor(snap.last.heapMin)) return;
+    besideAppOk = false;
+    Serial.printf("[awake] pause=heap app=%d trough=%u\n", (int)active, (unsigned)snap.last.heapMin);
 }
 
 void manageWorker(uint32_t now) {
     const AppIndex active = AppManager::instance().activeApp();
+    watchBesideApp(active);
     if (pausesListening(active)) {
         if (CloudSync::devListening()) {
             CloudSync::requestCancel();
@@ -569,6 +585,15 @@ void noteButton() {
 }
 
 bool interceptSwitch(AppIndex newApp) {
+    if (newApp == APP_WASM_HOST) {
+        // Decided now, with listening (if running) at its steady level.
+        const uint32_t freeInt = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        besideAppOk = listensBesideDeliveredApp(freeInt);
+        besideAppSinceMs = millis();
+        if (listenBoot)
+            Serial.printf("[awake] beside-app=%s free_int=%u listening=%d\n", besideAppOk ? "listen" : "pause",
+                          (unsigned)freeInt, CloudSync::devListening() ? 1 : 0);
+    }
     if (newApp != APP_MUSIC_PLAYER || !bluetoothAppNeedsRestart(listenBoot)) {
         if (CloudSync::devListening() && pausesListening(newApp)) {
             // Listening stops (WiFi off) BEFORE the app begins, so the app

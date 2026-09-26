@@ -18,6 +18,7 @@
 #include <esp_system.h>
 #include <mbedtls/platform.h>
 #include <mbedtls/sha256.h>
+#include <mbedtls/base64.h>
 #include <cJSON.h>
 #include <sys/time.h>
 #include <time.h>
@@ -28,6 +29,9 @@
 #include <atomic>
 
 #include "AppDefs.h"
+#include "BatteryDiary.h"
+#include "UsageUpload.h"
+#include "CheckinPolicy.h"
 #include "AppManager.h"
 #include "FerrySession.h"
 #include "HAL.h"
@@ -74,6 +78,8 @@ bool available = false;
 std::atomic<bool> cancelRequested{false};
 Result result;
 Reason sessionReason = Reason::Manual;
+int32_t dailyVbatMv = -1;
+int32_t dailySocPct = -1;
 // "Get them now": this one session applies waiting app changes even with
 // app auto-apply off. Never affects firmware (always an offer).
 bool sessionApplyOnce = false;
@@ -144,6 +150,7 @@ struct HttpReply {
     int status = 0;
     int retry = 0;
     uint32_t nextMs = 0;
+    std::string date;
     std::string body;
 };
 
@@ -154,6 +161,8 @@ esp_err_t onHttpEvent(esp_http_client_event_t* event) {
         reply->retry = atoi(event->header_value);
     if (strcasecmp(event->header_key, "X-Next-Poll-Ms") == 0)
         reply->nextMs = (uint32_t)strtoul(event->header_value, nullptr, 10);
+    if (strcasecmp(event->header_key, "Date") == 0)
+        reply->date = event->header_value;
     return ESP_OK;
 }
 
@@ -164,6 +173,26 @@ bool jsonSink(void* arg, const uint8_t* data, size_t len) {
     reply.body.append((const char*)data, len);
     return true;
 }
+
+// Owned by the worker. The PEM is allocated in PSRAM and must remain alive
+// for the entire handle lifetime, including idle keep-alive time. The handle
+// also retains HTTP/TLS buffers (mostly PSRAM, plus internal socket/lwIP and
+// mbedTLS bookkeeping); release both before a long wait or app handoff.
+struct HttpConnection {
+    esp_http_client_handle_t client = nullptr;
+    char* roots = nullptr;
+    ~HttpConnection() { clear(); }
+    void clear() {
+        if (client) esp_http_client_cleanup(client);
+        client = nullptr;
+        if (roots) TrustedRoots::freePem(roots);
+        roots = nullptr;
+        sampleHeap();
+    }
+    HttpConnection() = default;
+    HttpConnection(const HttpConnection&) = delete;
+    HttpConnection& operator=(const HttpConnection&) = delete;
+};
 
 // Everything one worker run needs; the credential is wiped at exit (the
 // WiFi passwords stay inside SavedWifi::join).
@@ -189,6 +218,8 @@ struct Session {
     uint32_t lastCheckinAt = 0;   // millis() when the last check-in finished
     CheckinReply reply;           // the first check-in's answer
     const char* mode = "normal";  // the Awake & dev mode setting, as the site names it
+    ReportState reportState;       // RAM only; first check-in of this session is full
+    HttpConnection* checkinConnection = nullptr; // dev loop only, worker owned
 
     uint32_t elapsed() const { return millis() - started; }
     bool covers(uint32_t waitMs) const {
@@ -239,31 +270,52 @@ private:
 // whose PEM text must outlive the client.
 bool request(const Session& s, const std::string& url, const std::string* post,
              HttpReply& reply, Sink sink, void* sinkArg) {
-    if (s.credential && !DeviceIdentity::checkStored()) return false;
-    if (s.elapsed() >= s.limitMs || cancelRequested) return false;
-    char* roots = TrustedRoots::newPem();
-    if (!roots) return false;
-    // A partial parse would trust fewer roots: never connect on one.
-    if (!TrustedRoots::pemParsesCompletely(roots)) {
-        TrustedRoots::freePem(roots);
-        rootsRejected = true;
+    HttpConnection once;
+    const bool reusable = s.checkinConnection && post && url == s.checkinUrl;
+    HttpConnection& connection = reusable ? *s.checkinConnection : once;
+    // Every authenticated endpoint is built under the configured origin.
+    if (url.compare(0, s.base.size(), s.base) != 0 ||
+        url.size() <= s.base.size() || url[s.base.size()] != '/' ||
+        (s.credential && !DeviceIdentity::checkStored()) ||
+        s.elapsed() >= s.limitMs || cancelRequested || WiFi.status() != WL_CONNECTED) {
+        connection.clear();
         return false;
     }
-    esp_http_client_config_t config = {};
-    config.url = url.c_str();
-    config.method = post ? HTTP_METHOD_POST : HTTP_METHOD_GET;
-    config.cert_pem = roots;
-    config.disable_auto_redirect = true;
-    config.timeout_ms = kCallMs;
-    config.event_handler = onHttpEvent;
-    config.user_data = &reply;
-    esp_http_client_handle_t client = esp_http_client_init(&config);
-    if (!client) { TrustedRoots::freePem(roots); return false; }
+    const bool wasOpen = connection.client != nullptr;
+    if (!connection.client) {
+        connection.roots = TrustedRoots::newPem();
+        if (!connection.roots) return false;
+        // A partial parse would trust fewer roots: never connect on one.
+        if (!TrustedRoots::pemParsesCompletely(connection.roots)) {
+            rootsRejected = true;
+            connection.clear();
+            return false;
+        }
+        esp_http_client_config_t config = {};
+        config.url = url.c_str();
+        config.method = post ? HTTP_METHOD_POST : HTTP_METHOD_GET;
+        config.cert_pem = connection.roots;
+        config.disable_auto_redirect = true;
+        config.timeout_ms = kCallMs;
+        config.event_handler = onHttpEvent;
+        config.user_data = &reply;
+        connection.client = esp_http_client_init(&config);
+        if (!connection.client) { connection.clear(); return false; }
+    }
+    esp_http_client_handle_t client = connection.client;
+    if (esp_http_client_set_user_data(client, &reply) != ESP_OK ||
+        esp_http_client_set_timeout_ms(client, kCallMs) != ESP_OK) {
+        connection.clear();
+        return false;
+    }
     char auth[112];
     snprintf(auth, sizeof(auth), "Bearer %s", s.token);
-    esp_http_client_set_header(client, "Authorization", auth);
+    const bool authSet = esp_http_client_set_header(client, "Authorization", auth) == ESP_OK;
     memset(auth, 0, sizeof(auth));
-    if (post) esp_http_client_set_header(client, "Content-Type", "application/json");
+    if (!authSet || (post && esp_http_client_set_header(client, "Content-Type", "application/json") != ESP_OK)) {
+        connection.clear();
+        return false;
+    }
     bool ok = esp_http_client_open(client, post ? post->size() : 0) == ESP_OK;
     sampleHeap();
     if (ok && post) {
@@ -273,13 +325,25 @@ bool request(const Session& s, const std::string& url, const std::string* post,
     if (ok) {
         ok = esp_http_client_fetch_headers(client) >= 0;
     }
+    if (!ok && wasOpen) {
+        // The server may have closed the kept connection while idle (its
+        // keep-alive timeout or request cap): nothing was answered, so retry
+        // once on a fresh connection instead of reporting a failed check-in.
+        connection.clear();
+        reply = HttpReply();
+        return request(s, url, post, reply, sink, sinkArg);
+    }
     if (ok) {
         reply.status = esp_http_client_get_status_code(client);
         if (reply.status == 204) {
-            esp_http_client_cleanup(client);
-            TrustedRoots::freePem(roots);
-            sampleHeap();
-            return true;
+            // A 204 has no entity. If the parser did not finish it, do not
+            // carry an ambiguous response into the next request.
+            const bool stillValid = s.elapsed() < s.limitMs && !cancelRequested &&
+                                    WiFi.status() == WL_CONNECTED;
+            if (!stillValid || !esp_http_client_is_complete_data_received(client) || !reusable)
+                connection.clear();
+            else esp_http_client_set_user_data(client, nullptr);
+            return stillValid;
         }
         if (reply.status >= 400) { sink = jsonSink; sinkArg = &reply; }
         uint8_t buf[1024];
@@ -295,8 +359,9 @@ bool request(const Session& s, const std::string& url, const std::string* post,
         if (s.elapsed() >= s.limitMs || cancelRequested) ok = false;
     }
     sampleHeap();
-    esp_http_client_cleanup(client);
-    TrustedRoots::freePem(roots);
+    if (!ok || reply.status < 200 || reply.status >= 300 || !reusable || cancelRequested ||
+        WiFi.status() != WL_CONNECTED) connection.clear();
+    else esp_http_client_set_user_data(client, nullptr);
     if (s.credential && ok && reply.status == 401) {
         cJSON* body = cJSON_Parse(reply.body.c_str());
         const cJSON* item = body ? cJSON_GetObjectItemCaseSensitive(body, "error") : nullptr;
@@ -388,7 +453,8 @@ bool readAppliedRecord(LoadoutManifest::AppliedRecord& out) {
     return n > 0 && LoadoutManifest::parseAppliedRecord(buf, out);
 }
 
-std::string checkinBody(const Session& s, const char* answerBatch, const char* answer) {
+std::string checkinBody(const Session& s, const char* answerBatch, const char* answer,
+                        uint32_t& crc, bool& full, std::string& ackBatch) {
     LoadoutManifest::Loadout loadout;
     std::string manifest;
     bool present = false;
@@ -410,7 +476,7 @@ std::string checkinBody(const Session& s, const char* answerBatch, const char* a
     fields.fsTotal = (uint32_t)LittleFS.totalBytes();
     fields.fsUsed = (uint32_t)LittleFS.usedBytes();
     fields.manifestCrc = present ? SyncProtocol::crc32(manifest.data(), manifest.size()) : 0;
-    fields.installed = &loadout;
+    crc = fields.manifestCrc;
     fields.mode = s.mode;
     if (answerBatch && answer) {
         fields.appliedBatch = answerBatch;
@@ -427,6 +493,11 @@ std::string checkinBody(const Session& s, const char* answerBatch, const char* a
             prefs.end();
         }
     }
+    ackBatch = fields.appliedBatch && fields.result &&
+               validBatchId(fields.appliedBatch) && validResult(fields.result)
+                   ? fields.appliedBatch : "";
+    full = fullReportRequired(s.reportState, crc, ackBatch.empty() ? nullptr : ackBatch.c_str());
+    fields.installed = full ? &loadout : nullptr;
     return buildCheckinBody(fields);
 }
 
@@ -952,15 +1023,29 @@ BlobVerdict fetchBlobs(const Session& s, const Offer& offer,
 // Sends `body` as a check-in, retrying once through a 429 when the budget
 // covers its Retry-After. Returns the planner's step after the answer.
 Step checkinWithRetry(Session& s, CloudPlanner& plan, const std::string& body,
+                      uint32_t manifestCrc, bool sentFull, const std::string& ackBatch,
                       HttpReply& reply, CheckinReply& parsed, bool autoapply,
                       bool followUp, Result& r) {
     for (;;) {
         if (!postCheckin(s, body, reply)) {
+            s.reportState = reportAfterCheckin(s.reportState, manifestCrc, sentFull, 0, false,
+                                                ackBatch.c_str());
             setError(r, followUp ? "ack-transport" : "checkin-transport");
             return Step::Error;
         }
         const bool readable = parseCheckin(reply.status == 200 ? reply.body.c_str() : nullptr,
                                            reply.nextMs, parsed);
+        if (reply.status >= 200 && reply.status < 300 && readable && !parsed.hasServerTime &&
+            time(nullptr) <= 1577836800) {
+            const uint32_t fromDate = httpDateEpoch(reply.date.c_str());
+            if (fromDate) {
+                timeval tv = {(time_t)fromDate, 0};
+                settimeofday(&tv, nullptr);
+            }
+        }
+        s.reportState = reportAfterCheckin(s.reportState, manifestCrc, sentFull,
+                                            reply.status, readable && parsed.sendReport,
+                                            ackBatch.c_str());
         if (reply.status == 200 && !readable) {
             setError(r, followUp ? "ack-body" : "checkin-body");
             return Step::Error;
@@ -1043,15 +1128,23 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
     CloudPlanner plan;
     plan.start(true);
     // ---- 1. check-in -------------------------------------------------
-    std::string body = checkinBody(s, nullptr, nullptr);
+    uint32_t manifestCrc = 0;
+    bool sentFull = false;
+    std::string ackBatch;
+    std::string body = checkinBody(s, nullptr, nullptr, manifestCrc, sentFull, ackBatch);
     if (body.empty()) { setError(r, "checkin-body"); return; }
     HttpReply check;
-    Step step = checkinWithRetry(s, plan, body, check, s.reply, autoapply, false, r);
+    Step step = checkinWithRetry(s, plan, body, manifestCrc, sentFull, ackBatch,
+                                 check, s.reply, autoapply, false, r);
     out.status = check.status;
     out.retry = check.retry;
     out.modeNotTaken = devModeNotTaken(check.status, s.reply.mode, s.mode, s.reply.nextPollMs);
     r.nextMs = plan.nextMs();
     if (step == Step::Error || step == Step::Deferred) return;
+    // A loadout/firmware offer can allocate large internal blocks or start
+    // an app. Do not carry an idle TLS client into that work.
+    if (s.checkinConnection && (s.reply.hasBatch || s.reply.firmwareOffer))
+        s.checkinConnection->clear();
     // Dev mode checks in every few seconds: the check-in time is stored
     // (a flash write) only when the site sends its clock, or every 10 min.
     if (!dev || s.reply.serverEpoch || devRecordDue()) recordCheckIn(r, s.reply.serverEpoch);
@@ -1206,14 +1299,15 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
         r.ok = false;
         return;
     }
-    body = checkinBody(s, batchId.c_str(), answer);
+    body = checkinBody(s, batchId.c_str(), answer, manifestCrc, sentFull, ackBatch);
     if (body.empty()) { setError(r, "ack-body"); r.ok = false; return; }
     HttpReply follow;
     CheckinReply followParsed;
     const bool wasOk = r.ok;
     char answered[sizeof(r.err)];
     memcpy(answered, r.err, sizeof(answered));
-    step = checkinWithRetry(s, plan, body, follow, followParsed, autoapply, true, r);
+    step = checkinWithRetry(s, plan, body, manifestCrc, sentFull, ackBatch,
+                            follow, followParsed, autoapply, true, r);
     r.nextMs = plan.nextMs();
     if (step == Step::Done) {
         recordCheckIn(r, followParsed.serverEpoch);
@@ -1223,6 +1317,141 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
     } else {
         r.ok = false;
     }
+}
+
+// Device uploads use the same two binary files and hashes as browser pulls.
+// The record window is deliberately small enough for a short daily session.
+bool addUsageFile(cJSON* files, const char* role, const char* name,
+                  const uint8_t* bytes, size_t size) {
+    unsigned char digest[32];
+    mbedtls_sha256_context shaContext;
+    mbedtls_sha256_init(&shaContext);
+    mbedtls_sha256_starts(&shaContext, 0);
+    mbedtls_sha256_update(&shaContext, bytes, size);
+    const bool hashed = mbedtls_sha256_finish(&shaContext, digest) == 0;
+    mbedtls_sha256_free(&shaContext);
+    if (!hashed) return false;
+    char sha[65]; digestHex(digest, sha);
+    char crc[9];
+    snprintf(crc, sizeof(crc), "%08x", (unsigned)SyncProtocol::crc32(bytes, size));
+    std::vector<unsigned char> encoded(((size + 2) / 3) * 4 + 1);
+    size_t written = 0;
+    if (mbedtls_base64_encode(encoded.data(), encoded.size(), &written, bytes, size) != 0) return false;
+    cJSON* file = cJSON_CreateObject();
+    if (!file) return false;
+    cJSON_AddStringToObject(file, "role", role);
+    cJSON_AddStringToObject(file, "path", role[0] == 'r' ? "/apps/.diary/batdiary.bin" : "/apps/.diary/batstats.bin");
+    cJSON_AddStringToObject(file, "local", name);
+    cJSON_AddNumberToObject(file, "size", size);
+    cJSON_AddStringToObject(file, "crc32", crc);
+    cJSON_AddStringToObject(file, "sha256", sha);
+    cJSON_AddStringToObject(file, "b64", (const char*)encoded.data());
+    cJSON_AddItemToArray(files, file);
+    return true;
+}
+
+void uploadDailyUsage(const Session& s, const Result& r) {
+    // Automatic sessions only: a Fidget used every day checks in at start-up
+    // and may never reach a timer (Daily) session.
+    if ((sessionReason != Reason::Daily && sessionReason != Reason::Boot) ||
+        !r.ok || s.serverUnlinked || s.serverWrongDevice) return;
+    Preferences upd;
+    if (!upd.begin("upd", true)) return;
+    const bool enabled = upd.getBool("usage_share", false);
+    const uint32_t last = upd.getUInt("usage_at", 0);
+    const uint32_t acked = upd.getUInt("usage_seq", 0);
+    upd.end();
+    const time_t clockNow = time(nullptr);
+    const uint32_t now = clockNow > 0 && clockNow <= UINT32_MAX ? (uint32_t)clockNow : 0;
+    const uint32_t remaining = s.elapsed() < s.limitMs ? s.limitMs - s.elapsed() : 0;
+    if (!BatteryDiary::uploadDue(enabled, s.token[0] != 0,
+            CheckinPolicy::batteryEligible(dailyVbatMv, dailySocPct), true, r.ok, now, last, remaining)) return;
+
+    std::vector<BatteryDiary::Record> records(BatteryDiary::kUploadRecords + 1);
+    uint8_t stats[38];
+    uint32_t total = 0;
+    const size_t count = BatteryDiary::readUploadSnapshot(records.data(), records.size(), &total, stats);
+    if (!count) return;
+    const BatteryDiary::UploadWindow window = BatteryDiary::uploadWindow(
+        records.data(), count, acked, total > count);
+    if (!window.count) return;
+    std::vector<uint8_t> raw(window.count * BatteryDiary::kRecordSize);
+    for (size_t i = 0; i < window.count; ++i)
+        BatteryDiary::encode(records[window.first + i], raw.data() + i * BatteryDiary::kRecordSize);
+
+    cJSON* bundle = cJSON_CreateObject();
+    if (!bundle) return;
+    cJSON_AddNumberToObject(bundle, "bundle_schema", 1);
+    cJSON_AddNumberToObject(bundle, "record_schema", 1);
+    cJSON_AddNumberToObject(bundle, "stats_schema", 1);
+    cJSON_AddStringToObject(bundle, "device_id", s.id);
+    cJSON* identity = cJSON_AddObjectToObject(bundle, "identity");
+    char observed[18];
+    snprintf(observed, sizeof(observed), "%c%c:%c%c:%c%c:%c%c:%c%c:%c%c",
+             s.id[10], s.id[11], s.id[8], s.id[9], s.id[6], s.id[7],
+             s.id[4], s.id[5], s.id[2], s.id[3], s.id[0], s.id[1]);
+    cJSON_AddStringToObject(identity, "observed_mac", observed);
+    cJSON_AddStringToObject(identity, "encoding", "info.mac-reversed");
+    cJSON_AddStringToObject(identity, "canonical_order", "efuse base MAC as esptool read_mac prints it");
+    char timestamp[32];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", gmtime(&clockNow));
+    cJSON_AddStringToObject(bundle, "pulled_at_utc", timestamp);
+    cJSON_AddStringToObject(bundle, "source", "device");
+    cJSON_AddStringToObject(bundle, "label", "");
+    cJSON_AddStringToObject(bundle, "note", "");
+    cJSON* producer = cJSON_AddObjectToObject(bundle, "producer");
+    cJSON_AddStringToObject(producer, "name", "device");
+    cJSON_AddStringToObject(producer, "version", "1");
+    cJSON* capture = cJSON_AddObjectToObject(bundle, "capture");
+    cJSON_AddBoolToObject(capture, "reset_on_open", false);
+    cJSON_AddNumberToObject(capture, "alive_after_s", 0);
+    cJSON_AddNullToObject(capture, "checkin_period_s");
+    cJSON_AddStringToObject(capture, "cadence_source", "unknown");
+    cJSON* device = cJSON_AddObjectToObject(bundle, "device");
+    cJSON_AddStringToObject(device, "version", s.fw);
+    cJSON* info = cJSON_AddObjectToObject(device, "info");
+    cJSON_AddStringToObject(info, "fw", s.fw);
+    cJSON* files = cJSON_AddArrayToObject(bundle, "files");
+    const bool encoded = addUsageFile(files, "records", "batdiary.bin", raw.data(), raw.size()) &&
+                         addUsageFile(files, "stats", "batstats.bin", stats, sizeof(stats));
+    cJSON_AddBoolToObject(bundle, "complete", window.complete);
+    cJSON_AddStringToObject(bundle, "consent", "device_setting");
+    cJSON_AddNumberToObject(bundle, "disclosure_version", 1);
+    char* printed = encoded ? cJSON_PrintUnformatted(bundle) : nullptr;
+    cJSON_Delete(bundle);
+    if (!printed) return;
+    std::string body(printed);
+    cJSON_free(printed);
+    if (body.size() > 98304 || !budgetCovers(kCallMs, s.elapsed(), s.limitMs, kCallMs)) return;
+    HttpReply reply;
+    // Answered but not accepted: the attempt still starts the day-long wait
+    // (the sequence stays, so the same records go next time).
+    auto stampAttempt = [&]() {
+        if (!BatteryDiary::uploadStartsWait(reply.status) || !upd.begin("upd", false)) return;
+        upd.putUInt("usage_at", now);
+        upd.end();
+    };
+    if (!request(s, s.base + "/api/device-usage.php", &body, reply, jsonSink, &reply) ||
+        reply.status < 200 || reply.status >= 300) {
+        stampAttempt();
+        return;
+    }
+    cJSON* answer = cJSON_Parse(reply.body.c_str());
+    const cJSON* acknowledged = answer ? cJSON_GetObjectItemCaseSensitive(answer, "acked_seq") : nullptr;
+    const uint32_t newest = records[window.first + window.count - 1].seq;
+    const bool accepted = cJSON_IsNumber(acknowledged) && acknowledged->valuedouble >= acked &&
+                          acknowledged->valuedouble <= newest &&
+                          acknowledged->valuedouble == (double)(uint32_t)acknowledged->valuedouble;
+    const uint32_t newAck = accepted ? (uint32_t)acknowledged->valuedouble : acked;
+    cJSON_Delete(answer);
+    if (!accepted) {
+        stampAttempt();
+        return;
+    }
+    if (!upd.begin("upd", false)) return;
+    upd.putUInt("usage_seq", newAck);
+    upd.putUInt("usage_at", now);
+    upd.end();
 }
 
 // Dev mode: sleeps in short steps until `ms` has passed. False when
@@ -1288,6 +1517,8 @@ void devTlsProbe() {
 // worker's result when it ends.
 void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
              uint32_t firstWaitMs) {
+    HttpConnection checkinConnection;
+    s.checkinConnection = &checkinConnection;
     uint8_t failures = 0;
     uint32_t polls = 0;
     devOfferRead = false;
@@ -1295,7 +1526,7 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
     if (firstWaitMs) {
         // A backoff the site asked for is still running.
         if (firstWaitMs > kDevMaxRetryMs) firstWaitMs = kDevMaxRetryMs;
-        if (!devSleep(firstWaitMs)) return;
+        if (!devSleep(firstWaitMs)) { s.checkinConnection = nullptr; return; }
     }
     for (;;) {
         if (cancelRequested) break;
@@ -1304,6 +1535,7 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         // makes this poll skip.
         devInCycle = true;
         if (SerialCli::instance().ferryActive()) {
+            checkinConnection.clear();
             devInCycle = false;
             if (!devSleep(kDevPollMs)) break;
             continue;
@@ -1317,10 +1549,12 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         sampleHeap();
         bool connected = WiFi.status() == WL_CONNECTED;
         const uint32_t cycleAt = millis();
+        if (!connected) checkinConnection.clear();
         if (!connected) connected = devRejoin();
         if (cancelRequested) { devInCycle = false; break; }
         // A rejoin can take seconds: a transfer that opened meanwhile wins.
         if (SerialCli::instance().ferryActive()) {
+            checkinConnection.clear();
             devInCycle = false;
             if (!devSleep(kDevPollMs)) break;
             continue;
@@ -1355,6 +1589,11 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         failures = r.ok ? 0 : (failures < 250 ? failures + 1 : failures);
         const uint32_t wait = devPollWaitMs(r.nextMs, failures, out.retry, esp_random(),
                                             out.modeNotTaken);
+        // Apache's idle keep-alive is normally about 5 s. A long wait only
+        // holds heap and is likely to meet a server-closed socket.
+        if (!keepDevConnection(out.status, r.ok, wait,
+                               WiFi.status() == WL_CONNECTED, cancelRequested))
+            checkinConnection.clear();
         portENTER_CRITICAL(&devLock);
         devView.connected = WiFi.status() == WL_CONNECTED;
         devView.polls = polls;
@@ -1385,6 +1624,8 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         if (s.serverUnlinked || s.serverWrongDevice) break;   // the link is gone
         if (!devSleep(wait)) break;
     }
+    checkinConnection.clear();
+    s.checkinConnection = nullptr;
     total.reason = Reason::Dev;
     if (cancelRequested) { total.ok = true; total.none = true; setError(total, "cancelled"); }
 }
@@ -1551,6 +1792,7 @@ void runWorker(Result& r) {
         }
         CycleOut out;
         checkinCycle(s, autoapply, account, linkedAt, r, out);
+        uploadDailyUsage(s, r);
     } while (false);
     // A cancelled request surfaces as a transport error; name the cause.
     if (!r.ok && cancelRequested) setError(r, "cancelled");
@@ -1626,7 +1868,8 @@ const char* reasonName(Reason reason) {
     return "?";
 }
 
-bool runSession(Reason reason, bool applyWaiting) {
+bool runSession(Reason reason, bool applyWaiting, int32_t dailyVbat, int32_t dailySoc) {
+    if (UpdateSession::imagePending()) return false;
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
     recoverClearBeforeSession();
@@ -1656,6 +1899,8 @@ bool runSession(Reason reason, bool applyWaiting) {
     if (WiFi.getMode() != WIFI_OFF) return false;
     workerKind = WorkerKind::Cloud;
     sessionReason = reason;
+    dailyVbatMv = dailyVbat;
+    dailySocPct = dailySoc;
     sessionApplyOnce = applyWaiting;
     cancelRequested = false;
     available = false;
@@ -1687,6 +1932,7 @@ bool runSession(Reason reason, bool applyWaiting) {
 }
 
 static bool beginPairWorker(WorkerKind kind) {
+    if (UpdateSession::imagePending()) return false;
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
     recoverClearBeforeSession();
@@ -1844,6 +2090,10 @@ bool cancelPending() {
 }
 void requestCancel() { cancelRequested = true; }
 bool busy() { return running; }
+bool automaticSessionRunning() {
+    return running && workerKind == WorkerKind::Cloud && sessionReason != Reason::Manual &&
+           sessionReason != Reason::Dev;
+}
 bool storeBusy() {
     if (!running) return false;
     return workerKind != WorkerKind::Cloud || sessionReason != Reason::Dev || devInCycle;

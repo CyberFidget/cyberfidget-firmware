@@ -85,6 +85,8 @@ env:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
 
     steps:
       - name: Checkout
@@ -539,7 +541,9 @@ jobs:
           # commit list since the previous release underneath it.
           body_path: ${{ env.SUMMARY_PATH }}
           generate_release_notes: true
-          draft: false
+          # The protected sign job publishes only after the signature assets
+          # are uploaded (or after clean unsigned fallback with no secret).
+          draft: true
           prerelease: ${{ steps.plan.outputs.prerelease }}
           # Companion assets are absent when the best-effort steps above fail;
           # unmatched patterns must not fail the release.
@@ -550,6 +554,16 @@ jobs:
             .pio/build/local/release-info.json
             companion-pack.zip
             companion-index.html
+
+      # Pass exactly the checked app image to the protected signing job.
+      - name: Hold app image for signing
+        if: steps.plan.outputs.dry_run != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-image-to-sign
+          path: .pio/build/local/firmware.bin
+          if-no-files-found: error
+          retention-days: 1
 
       # ---------------------------------------------------------------------
       # Post-release bump. Stable only: an RC series iterates toward a single
@@ -592,3 +606,54 @@ jobs:
           else
             echo "Released $TAG" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  sign:
+    needs: release
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+      || (github.event_name == 'workflow_dispatch' && github.ref_name == github.event.repository.default_branch && inputs.dry_run != true)
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - name: Download exact app image
+        uses: actions/download-artifact@v4
+        with:
+          name: app-image-to-sign
+      - name: Sign and upload app signature
+        env:
+          SIGNING_KEY: ${{ secrets.FIRMWARE_SIGNING_KEY }}
+          KEY_ID: ${{ vars.FIRMWARE_SIGNING_KEY_ID }}
+          GH_TOKEN: ${{ github.token }}
+          # Through env, never ${{ }} in the script: a tag name may hold shell
+          # syntax, and this job has the signing key on disk.
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "Signing secret absent; publishing an unsigned release." >> "$GITHUB_STEP_SUMMARY"
+          else
+            if ! [[ "$KEY_ID" =~ ^[a-z0-9-]{1,31}$ ]]; then
+              echo "::error::FIRMWARE_SIGNING_KEY_ID must be a configured key id"
+              exit 1
+            fi
+            umask 077
+            TEMP_DIR="$(mktemp -d)"
+            trap 'rm -rf "$TEMP_DIR"' EXIT
+            printf '%s\n' "$SIGNING_KEY" > "$TEMP_DIR/private.pem"
+            unset SIGNING_KEY
+            openssl dgst -sha256 -sign "$TEMP_DIR/private.pem" -out "$TEMP_DIR/signature.der" firmware.bin
+            openssl pkey -in "$TEMP_DIR/private.pem" -pubout -out "$TEMP_DIR/public.pem"
+            rm -f "$TEMP_DIR/private.pem"
+            # Devices accept only P-256; refuse to publish a signature they
+            # would reject, and prove it verifies over the exact image.
+            PUB_TEXT="$(openssl pkey -pubin -in "$TEMP_DIR/public.pem" -noout -text)"
+            case "$PUB_TEXT" in
+              *prime256v1*) ;;
+              *) echo "::error::FIRMWARE_SIGNING_KEY must be an EC P-256 key"; exit 1 ;;
+            esac
+            openssl dgst -sha256 -verify "$TEMP_DIR/public.pem" -signature "$TEMP_DIR/signature.der" firmware.bin
+            base64 -w0 "$TEMP_DIR/signature.der" > firmware.bin.sig
+            printf '%s' "$KEY_ID" > firmware.bin.sig.keyid
+            gh release upload "$TAG" firmware.bin.sig firmware.bin.sig.keyid --repo "$GITHUB_REPOSITORY" --clobber
+          fi
+          gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"

@@ -109,6 +109,47 @@ uint32_t serverEpoch(const char* iso) {
     return epoch > 1577836800 && epoch <= 4294967295LL ? (uint32_t)epoch : 0;
 }
 
+uint32_t httpDateEpoch(const char* date) {
+    if (!date || strlen(date) != 29 || date[3] != ',' || date[4] != ' ' ||
+        date[7] != ' ' || date[11] != ' ' || date[16] != ' ' ||
+        date[19] != ':' || date[22] != ':' || strcmp(date + 25, " GMT") != 0)
+        return 0;
+    const char* weekdays[] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    const char* months[] = {"Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                            "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    auto digits = [date](size_t offset, size_t length) {
+        int value = 0;
+        for (size_t i = 0; i < length; ++i) {
+            const char c = date[offset + i];
+            if (c < '0' || c > '9') return -1;
+            value = value * 10 + c - '0';
+        }
+        return value;
+    };
+    int weekday = -1, month = -1;
+    for (int i = 0; i < 7; ++i)
+        if (strncmp(date, weekdays[i], 3) == 0) weekday = i;
+    for (int i = 0; i < 12; ++i)
+        if (strncmp(date + 8, months[i], 3) == 0) month = i + 1;
+    const int day = digits(5, 2), year = digits(12, 4);
+    const int hour = digits(17, 2), minute = digits(20, 2), second = digits(23, 2);
+    if (weekday < 0 || month < 1 || year < 2020 || year > 2099 ||
+        hour < 0 || hour > 23 || minute < 0 || minute > 59 || second < 0 || second > 59)
+        return 0;
+    const int monthDays[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
+    const bool leap = year % 4 == 0 && (year % 100 != 0 || year % 400 == 0);
+    if (day < 1 || day > monthDays[month] + (month == 2 && leap ? 1 : 0)) return 0;
+    int y = year - (month <= 2);
+    const int era = y / 400;
+    const unsigned yearOfEra = (unsigned)(y - era * 400);
+    const unsigned dayOfYear = (153 * (unsigned)(month + (month > 2 ? -3 : 9)) + 2) / 5 + day - 1;
+    const unsigned dayOfEra = yearOfEra * 365 + yearOfEra / 4 - yearOfEra / 100 + dayOfYear;
+    const int64_t days = (int64_t)era * 146097 + dayOfEra - 719468;
+    if ((days + 4) % 7 != weekday) return 0;
+    const int64_t epoch = days * 86400 + hour * 3600 + minute * 60 + second;
+    return epoch >= 1577836800 && epoch <= 4294967295LL ? (uint32_t)epoch : 0;
+}
+
 bool parseCheckin(const char* body, uint32_t headerNextMs, CheckinReply& out) {
     out = CheckinReply();
     out.nextPollMs = headerNextMs;
@@ -136,6 +177,7 @@ bool parseCheckin(const char* body, uint32_t headerNextMs, CheckinReply& out) {
     const char* mode = str(root, "mode");
     if (mode) out.mode = mode;
     num(root, "next_poll_ms", out.nextPollMs);
+    out.hasServerTime = cJSON_GetObjectItemCaseSensitive(root, "server_time") != nullptr;
     out.serverEpoch = serverEpoch(str(root, "server_time"));
     cJSON_Delete(root);
     return ok;
@@ -250,6 +292,35 @@ std::string buildCheckinBody(const CheckinFields& f) {
     cJSON_free(encoded);
     cJSON_Delete(root);
     return body;
+}
+
+bool fullReportRequired(const ReportState& state, uint32_t manifestCrc, const char* ackBatch) {
+    return !state.hasFullCrc || state.fullCrc != manifestCrc || state.sendReport ||
+           state.lastFullFailed || (ackBatch && *ackBatch && state.lastAckBatch != ackBatch);
+}
+
+ReportState reportAfterCheckin(const ReportState& state, uint32_t manifestCrc,
+                               bool sentFull, int status, bool sendReport,
+                               const char* ackBatch) {
+    ReportState next = state;
+    const bool accepted = status >= 200 && status < 300;
+    if (sentFull) {
+        next.lastFullFailed = !accepted;
+        if (accepted) {
+            next.hasFullCrc = true;
+            next.fullCrc = manifestCrc;
+            next.sendReport = false;
+        }
+    }
+    if (accepted && sendReport) next.sendReport = true;
+    if (accepted && validBatchId(ackBatch)) next.lastAckBatch = ackBatch;
+    return next;
+}
+
+bool keepDevConnection(int status, bool cycleOk, uint32_t waitMs,
+                       bool wifiConnected, bool cancelled) {
+    return status >= 200 && status < 300 && cycleOk &&
+           waitMs <= kDevKeepConnectionMs && wifiConnected && !cancelled;
 }
 
 bool devMode(const std::string& mode, uint32_t nextPollMs) {

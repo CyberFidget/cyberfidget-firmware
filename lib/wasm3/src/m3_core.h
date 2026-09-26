@@ -213,7 +213,8 @@ int         m3StackGetMax           ();
 // deep guest call chain overruns the host task stack -> panic/reboot instead
 // of a contained trap. When d_m3NativeStackGuard is defined, op_Entry asks the
 // host whether native stack headroom is exhausted and traps with
-// m3Err_trapStackOverflow if so. Host provides the predicate (see
+// m3Err_trapStackOverflow if so (so do op_CallRawFunction before a host call
+// and CompileBlock per nesting level). Host provides the predicate (see
 // lib/WasmAppRuntime/WasmAppRuntime.cpp, which arms it around module loads).
 #if defined(d_m3NativeStackGuard)
 bool        m3_NativeStackExhausted (void);

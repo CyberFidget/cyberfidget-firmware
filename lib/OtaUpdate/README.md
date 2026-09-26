@@ -20,8 +20,10 @@ gains no cycle through AppManager).
    newer than the running version and not skipped.
 2. **Install now** arms the `bootcfg` one-shot (`bootupd`, `updver` = the
    version chosen, `skipanim`) and restarts - but only on a Fidget with
-   `upd.unsig_ok` set (below). Every other Fidget keeps the "update from the
-   website" message.
+   a known signing key in the offer or `upd.unsig_ok` set over USB, and a
+   battery at the automatic check-in's floor (3.6 V and 20 %; otherwise
+   "Charge your Fidget first.", `OtaUpdate::armRefusal`). Every other
+   Fidget keeps the "update from the website" message.
 3. **Update session** (that boot, right after hardware start-up, before the
    menu, the check-in scheduler or anything that could start Bluetooth):
    the one-shot is removed first, so a crash never loops into another
@@ -36,7 +38,8 @@ gains no cycle through AppManager).
    pinned SDK does not allow plain HTTP there, and the bench site is HTTP.
 4. **Order of the last steps** (`Installer::complete`): byte count, then the
    digest against the manifest (mismatch: `esp_ota_abort`, the boot slot is
-   never touched), then `esp_ota_end`, then the pending record
+   never touched), then signature verification against that exact digest,
+   then `esp_ota_end`, then the pending record
    `upd.pend_img` is stored, then `esp_ota_set_boot_partition`, then a
    restart. Any failure before the last step leaves the running slot
    selected.
@@ -69,6 +72,44 @@ gains no cycle through AppManager).
    automatic offers (the post-boot popup) skip that version; a manual check
    still shows it, saying "It did not finish last time". A newer version is
    offered as usual; a successful update clears `fail_ver`.
+
+While an image is pending, the boot check-in cannot start WiFi or apply a
+loadout, regardless of the boot one-shot. Ordinary idle and low-battery sleep
+requests wait for the first frame or the 45 s confirmation deadline: a deep
+sleep wake before confirmation would roll back a good image. Critical voltage
+still shuts down promptly. If the checks passed, the image is kept before
+shutdown even if its first frame has not drawn. If they have not passed, the
+pending record is cleared and `upd.pwr_abort` marks the battery shutdown; the
+previous image clears that marker without setting `upd.fail_ver` or showing a
+failed-update notice. That version can be offered again.
+
+The app-slot capability is sampled once at boot. A Fidget with no second
+update slot shows a website update instruction in the prompt once per offered
+version, with no Install now choice. The same instruction remains a scrolling
+Settings > Updates line while that version is eligible. No update session is
+started from that offer.
+
+## Signing keys
+
+The manifest may carry both `sig` (canonical base64 DER ECDSA P-256,
+at most 104 characters) and `key_id` (1 to 31 lowercase letters, digits or
+hyphens). Both fields must be present together. No fields means unsigned.
+An unknown id or a bad signature is refused even with USB unsigned opt-in;
+an unsigned image needs that opt-in. A signature checked against a known key
+that does not match records the version in `upd.fail_ver`, so it is not
+offered automatically again. An offer signed with a key id this firmware does
+not know is not a failure: the check-in keeps it on offer (`avail`,
+`avail_kid`) like an unsigned one without the opt-in, so the owner is told to
+update from the website (`OtaUpdate::offerAction`, `refusalMarksFailed`).
+
+The public key table is in `lib/CloudSync/UpdateSigning.cpp`. Its production
+slot is empty until the owner supplies public keys. Add the release and
+backup public PEMs with distinct ids there, and configure the release
+environment variable `FIRMWARE_SIGNING_KEY_ID` to name the signer. Keep
+private keys outside this repository. To rotate after compromise, sign an
+update with the already trusted backup key; that update can drop the
+compromised public key from the table. The test fixture key exists only
+in `CF_TEST_CLI` images; a release image refuses its id explicitly.
 
 `LoadoutStore::begin` also refuses to format while the running image is
 pending (a second guard; the self-test runs before it anyway).

@@ -1,0 +1,20 @@
+{
+  "name": "When memory is short, a delivered app reopens in a fresh start, and that start never restarts again",
+  "fw_min": "1.3.3",
+  "fixtures": ["stopwatch.wasm"],
+  "reviewer_setup": "A local_test build. `wasm forcerestart on` makes the app launcher treat internal memory as short, and stays set across the software restart - so this case proves both the fallback (restart into the app) and the loop guard (the resumed start opens the app instead of restarting again).",
+  "steps": [
+    {"do": "reset"},
+    {"do": "wait_cli"},
+    {"do": "nav_to_menu"},
+    {"do": "ferry", "path": "/apps/stopwatch.wasm", "fixture": "stopwatch.wasm"},
+    {"do": "lapply_add", "id": "bench-stopwatch", "name": "Bench stopwatch", "category": "Tools",
+     "format": "wasm", "path": "/apps/stopwatch.wasm", "version": "1.0.0", "abi": "1"},
+    {"do": "command", "command": "wasm forcerestart on", "until": "[cmd] wasm.forcerestart=on", "timeout_s": 3},
+    {"do": "command", "command": "launch bench-stopwatch", "until": "[wasm] reopen=restart id=bench-stopwatch", "timeout_s": 10},
+    {"do": "watch", "until": "[wasm] reopen=boot id=bench-stopwatch found=1", "timeout_s": 15},
+    {"do": "watch", "until": "[wasm] reopen=restart", "timeout_s": 10, "expect_absent": true},
+    {"do": "wait_cli"},
+    {"do": "command", "command": "wasm forcerestart off", "until": "[cmd] wasm.forcerestart=off", "timeout_s": 3}
+  ]
+}

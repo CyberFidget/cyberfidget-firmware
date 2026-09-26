@@ -19,6 +19,8 @@
 #include "UpdatePrompt.h"
 #include "PromptPolicy.h"
 #include "AwakeMode.h"
+#include "AwakePolicy.h"
+#include "StatusService.h"
 #include "WasmFsApp.h"
 #include "WebPortalApp.h"
 #include <Preferences.h>
@@ -41,13 +43,24 @@ static void showRadioNotice(const char* text) {
 }
 static PowerManager powerManager(buttonManager);
 
-// A delivered (WASM) app runs on its own task whose stack must be one
-// contiguous block of internal RAM. Once the network has been used in a
-// power cycle the internal heap no longer has such a block, even with WiFi
-// off again, so the app opens in a fresh start instead: the one-shot
+// A delivered (WASM) app runs on its own task: a few KB of internal RAM plus
+// its interpreter stack in PSRAM (WasmFsApp::guestStackFits). Should either
+// not be available (the internal heap is split after the network has been
+// used in a power cycle), the app opens in a fresh start instead: the one-shot
 // `bootcfg.wasmid` (+ `wasmcat`, the menu category it was opened from)
 // relaunches it straight after boot, animation skipped, before anything
 // uses the network. Never returns.
+// Set when this start is itself the restart that reopened a delivered app:
+// that one launch never restarts again (no loop if the restart did not
+// help); later launches in the power cycle may.
+static bool s_wasmResumedBoot = false;
+
+static bool wasmRestartHelps()
+{
+    if (s_wasmResumedBoot) { s_wasmResumedBoot = false; return false; }
+    return WasmFsApp::guestRestartHelps();
+}
+
 [[noreturn]] static void restartIntoWasmApp(const std::string& id, const std::string& label)
 {
     Serial.printf("[wasm] reopen=restart id=%s largest_int=%u radio_used=%d\n", id.c_str(),
@@ -193,6 +206,7 @@ void AppManager::setup() {
 
     // A delivered app reopened in a fresh start (see restartIntoWasmApp).
     bool bootWasm = false;
+    s_wasmResumedBoot = !bootWasmId.empty();
     if (!bootWasmId.empty() && !bootPortal && !bootMusic) {
         LoadoutManifest::Loadout lo;
         if (loadLoadoutManifest(lo, nullptr)) {
@@ -215,8 +229,12 @@ void AppManager::setup() {
     // check starts in a clean power cycle. A check asked for after Bluetooth
     // use continues on the Check for updates screen, which shows its result.
     // Setup WiFi that went through a restart still opens on the WiFi page.
-    if (bootPortal && bootWifiPage) WebPortalApp::resumeWifiLanding();
-    appActive     = bootPortal ? APP_WEB_PORTAL
+    if (bootPortal && bootWifiPage && !UpdateSession::imagePending())
+        WebPortalApp::resumeWifiLanding();
+    // Pending verification always draws the menu first. A leftover app
+    // one-shot cannot start WiFi or Bluetooth before the image is kept.
+    appActive     = UpdateSession::imagePending() ? APP_MENU
+                  : bootPortal ? APP_WEB_PORTAL
                   : bootMusic  ? APP_MUSIC_PLAYER
                   : bootLink   ? APP_LINK
                   : bootWasm   ? APP_WASM_HOST
@@ -275,8 +293,12 @@ void AppManager::loop() {
     CheckinScheduler::loop();
     UpdatePrompt::loop();
 
-    processButtonEvents();
-    SerialCli::instance().poll();
+    // The first frame must finish before an input can open a radio app or a
+    // serial command can restart the still-pending image.
+    if (!UpdateSession::imagePending()) {
+        processButtonEvents();
+        SerialCli::instance().poll();
+    }
 
 #ifdef CF_TEST_CLI
     if (SerialCli::instance().soakActive()) {
@@ -439,7 +461,7 @@ void AppManager::switchToApp(AppIndex newApp)
     if (newApp == appActive) return;
     // Dev mode listening: a Bluetooth app asks to restart first.
     if (AwakeMode::interceptSwitch(newApp)) return;
-    if (newApp == APP_WASM_HOST && !WasmFsApp::guestStackFits()) {
+    if (newApp == APP_WASM_HOST && wasmRestartHelps()) {
         std::string id, label;
         if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
     }
@@ -475,6 +497,24 @@ void AppManager::switchToApp(AppIndex newApp)
             return;
         }
     }
+    if (newApp >= 0 && newApp < APP_COUNT &&
+        AwakePolicy::stopsAutomaticSession(appIds[newApp], CloudSync::automaticSessionRunning())) {
+        // An app not measured safe beside a network session (dev mode's
+        // allow-list) never starts beside an automatic check-in: stop it
+        // first (WiFi off). A check the person asked for runs on.
+        showRadioNotice("Finishing check...");
+        const bool stopped = CloudSync::cancelPending();
+        Serial.printf("[checkin] cancel-for-app app=%d stopped=%d\n", (int)newApp, stopped ? 1 : 0);
+        if (!stopped) {
+            // Still inside a long network call: as in dev mode, a delivered
+            // app opens in a fresh start; a built-in one waits.
+            if (newApp == APP_WASM_HOST) restartIntoPendingApp();
+            if (appActive == APP_MENU) MenuManager::instance().begin();
+            StatusService::instance().post(StatusKind::Info, "Checking for updates. Try again in a moment.",
+                                           StatusPriority::Normal, false, millis());
+            return;
+        }
+    }
 
     // An open prompt belongs to the app being left: close it (no choice)
     // while that app's button callbacks can still be handed back.
@@ -493,6 +533,9 @@ void AppManager::switchToApp(AppIndex newApp)
 
 void AppManager::restartIntoPendingApp()
 {
+    // Escapes a stuck network session (not a memory shortfall), so it does
+    // not ask wasmRestartHelps; it still never repeats for a resumed start.
+    if (s_wasmResumedBoot) { s_wasmResumedBoot = false; return; }
     std::string id, label;
     if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
 }
@@ -503,7 +546,7 @@ void AppManager::relaunchActive()
     // arrived). An open prompt closes first, as for any switch.
     ModalPrompt::instance().closeForTeardown();
     appDefs[appActive].endFunc();
-    if (appActive == APP_WASM_HOST && !WasmFsApp::guestStackFits()) {
+    if (appActive == APP_WASM_HOST && wasmRestartHelps()) {
         std::string id, label;
         if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
     }

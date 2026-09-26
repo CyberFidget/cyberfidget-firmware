@@ -190,17 +190,21 @@ CheckEntry checkEntry(bool resumedSessionStarted, bool sessionBusy) {
                                                 : CheckEntry::StartNew;
 }
 
-PromptPlan bootPlan(Policy policy, bool fwEligible, bool appsWaiting) {
+PromptPlan bootPlan(Policy policy, bool fwEligible, bool appsWaiting,
+                    bool hasUpdateSlot, bool websiteSeen) {
     PromptPlan p;
     if (policy == Policy::Never) return p;   // Auto-check Off: no popup
-    p.firmware = fwEligible;
+    p.website = fwEligible && !hasUpdateSlot && !websiteSeen;
+    p.firmware = fwEligible && (hasUpdateSlot || p.website);
     p.apps = appsWaiting;
     return p;
 }
 
-PromptPlan manualPlan(Policy policy, bool fwEligible, bool appsWaiting) {
+PromptPlan manualPlan(Policy policy, bool fwEligible, bool appsWaiting,
+                      bool hasUpdateSlot, bool websiteSeen) {
     PromptPlan p;
-    p.firmware = fwEligible;
+    p.website = fwEligible && !hasUpdateSlot && !websiteSeen;
+    p.firmware = fwEligible && (hasUpdateSlot || p.website);
     p.apps = appsWaiting;
     p.explainOff = policy == Policy::Never;
     return p;
@@ -229,7 +233,7 @@ void appsTitle(char* out, size_t len, uint32_t count) {
 
 Row settingsRow(int index) {
     static const Row order[kSettingsRows] = {
-        Row::CheckNow, Row::AutoCheck, Row::BootCheck, Row::AutoApply, Row::Channel, Row::Source,
+        Row::CheckNow, Row::AutoCheck, Row::BootCheck, Row::ShareBattery, Row::AutoApply, Row::Channel, Row::Source,
         Row::Skip, Row::Link, Row::Awake, Row::Status,
     };
     return index >= 0 && index < kSettingsRows ? order[index] : Row::Status;
@@ -258,6 +262,9 @@ void settingsLabel(Row row, const SettingsState& s, char* out, size_t len) {
         case Row::BootCheck:
             snprintf(out, len, "Check at start-up: %s", s.bootCheck ? "On" : "Off");
             break;
+        case Row::ShareBattery:
+            snprintf(out, len, "Share battery data: %s", s.shareBattery ? "On" : "Off");
+            break;
         case Row::AutoApply:
             snprintf(out, len, "Apply app changes automatically: %s", s.autoapply ? "On" : "Off");
             break;
@@ -281,7 +288,9 @@ void settingsLabel(Row row, const SettingsState& s, char* out, size_t len) {
             snprintf(out, len, "Awake & dev mode: %s", AwakePolicy::modeName(s.awake.mode));
             break;
         case Row::Status:
-            if (s.policy == Policy::Never) snprintf(out, len, "%s", kOffExplanation);
+            if (!s.hasUpdateSlot && offerEligible(s.avail, s.rej, s.running))
+                snprintf(out, len, "%s", kWebsiteUpdateCopy);
+            else if (s.policy == Policy::Never) snprintf(out, len, "%s", kOffExplanation);
             else if (s.status && s.status[0]) snprintf(out, len, "Status: %s", s.status);
             else snprintf(out, len, "Status: nothing waiting");
             break;

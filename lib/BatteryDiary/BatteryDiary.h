@@ -247,6 +247,11 @@ void onFlushMarker(uint32_t app_index, float vcell, float soc_pct,
                    float crate_pct_hr);
 bool getStats(Stats* stats);
 size_t readLastRecords(Record* records, size_t capacity, uint32_t* total_records);
+// Daily cloud session only: makes pending RTC samples durable and returns a
+// chronological tail plus the exact 38-byte stats file. Never unmounts
+// LittleFS; mounts it only when it is not already mounted.
+size_t readUploadSnapshot(Record* records, size_t capacity, uint32_t* total_records,
+                          uint8_t stats_bytes[38]);
 bool clear();
 const char* eventName(uint8_t event);
 

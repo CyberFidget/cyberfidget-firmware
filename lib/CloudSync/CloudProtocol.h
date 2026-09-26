@@ -34,6 +34,7 @@ struct CheckinReply {
     std::string firmwareUrl;
     std::string mode;
     uint32_t nextPollMs = 0;
+    bool hasServerTime = false; ///< body contains server_time, even if unreadable
     uint32_t serverEpoch = 0;   ///< 0 when absent or unreadable
 };
 
@@ -104,8 +105,36 @@ struct CheckinFields {
 /// The check-in POST body. Empty on an allocation failure.
 std::string buildCheckinBody(const CheckinFields& fields);
 
+/// RAM-only report history for one worker session. A fresh session starts
+/// without an acknowledged full report, even if a prior boot sent one.
+struct ReportState {
+    bool hasFullCrc = false;
+    uint32_t fullCrc = 0;
+    bool sendReport = false;
+    bool lastFullFailed = false;
+    std::string lastAckBatch;  ///< Last batch accepted by a 2xx in this session (at most 40 chars)
+};
+
+/// Whether this check-in must include installed. `ackBatch` is the valid
+/// applied_batch sent with a result, or null when there is no answer.
+bool fullReportRequired(const ReportState& state, uint32_t manifestCrc, const char* ackBatch);
+
+/// Pure transition after one HTTP attempt. A transport failure uses status 0;
+/// sendReport is taken only from a successfully parsed 2xx reply.
+ReportState reportAfterCheckin(const ReportState& state, uint32_t manifestCrc,
+                               bool sentFull, int status, bool sendReport,
+                               const char* ackBatch = nullptr);
+
+/// Retain a completed dev check-in connection only across a short wait.
+constexpr uint32_t kDevKeepConnectionMs = 5000;
+bool keepDevConnection(int status, bool cycleOk, uint32_t waitMs,
+                       bool wifiConnected, bool cancelled);
+
 /// Seconds since the epoch for "YYYY-MM-DDTHH:MM:SSZ", or 0.
 uint32_t serverEpoch(const char* iso);
+
+/// RFC 7231 IMF-fixdate (including a matching weekday), UTC epoch, or 0.
+uint32_t httpDateEpoch(const char* date);
 
 /// True for a device the server polls every 2 s (dev / always modes).
 bool devMode(const std::string& mode, uint32_t nextPollMs);

@@ -50,7 +50,8 @@ struct Result {
 // `applyWaiting` applies waiting app changes in this session even when app
 // auto-apply is off (the prompt's "Get them now"); it is not kept across the
 // restart after Bluetooth use.
-bool runSession(Reason reason, bool applyWaiting = false);
+bool runSession(Reason reason, bool applyWaiting = false,
+                int32_t dailyVbatMv = -1, int32_t dailySocPct = -1);
 // True when a check-in session finished in this call; its result is then
 // lastResult() (consumeResult() still hands it to one other reader).
 bool poll();
@@ -62,6 +63,9 @@ bool consumeResult(Result& out);
 bool cancelPending();
 void requestCancel();
 bool busy();
+// True while a scheduled or recovery check-in runs (Boot, Daily, Awake,
+// Recovery) - not a Manual check, dev mode listening, or a link worker.
+bool automaticSessionRunning();
 // True while a session may be changing the app store: any session except
 // dev mode listening between its check-ins. Serial transfers wait for it.
 bool storeBusy();

@@ -103,6 +103,7 @@ void test_settings_rows_fresh_device(void) {
         "Check now",
         "Auto-check: On",
         "Check at start-up: On",
+        "Share battery data: Off",
         "Apply app changes automatically: On",
         "Channel: stable",
         "Source: cyberfidget.com",
@@ -123,36 +124,38 @@ void test_settings_rows_follow_state(void) {
     s.awake.mode = AwakePolicy::Mode::Dev;
     s.awake.stop = AwakePolicy::Stop::UntilStopped;
     s.status = "Update 1.4.0 ready";
+    s.shareBattery = true;
     std::vector<std::string> l;
     labels(s, l);
-    TEST_ASSERT_EQUAL_STRING("Apply app changes automatically: Off", l[3].c_str());
-    TEST_ASSERT_EQUAL_STRING("Skip 1.4.0", l[6].c_str());
-    TEST_ASSERT_EQUAL_STRING("Unlink this Fidget", l[7].c_str());
-    TEST_ASSERT_EQUAL_STRING("Awake & dev mode: Dev mode", l[8].c_str());
-    TEST_ASSERT_EQUAL_STRING("Status: Update 1.4.0 ready", l[9].c_str());
+    TEST_ASSERT_EQUAL_STRING("Share battery data: On", l[3].c_str());
+    TEST_ASSERT_EQUAL_STRING("Apply app changes automatically: Off", l[4].c_str());
+    TEST_ASSERT_EQUAL_STRING("Skip 1.4.0", l[7].c_str());
+    TEST_ASSERT_EQUAL_STRING("Unlink this Fidget", l[8].c_str());
+    TEST_ASSERT_EQUAL_STRING("Awake & dev mode: Dev mode", l[9].c_str());
+    TEST_ASSERT_EQUAL_STRING("Status: Update 1.4.0 ready", l[10].c_str());
     TEST_ASSERT_EQUAL_INT((int)SkipAction::Skip, (int)skipAction(s));
 
     s.rej = "1.4.0";   // skipped: the row undoes it
     labels(s, l);
-    TEST_ASSERT_EQUAL_STRING("Unskip 1.4.0", l[6].c_str());
+    TEST_ASSERT_EQUAL_STRING("Unskip 1.4.0", l[7].c_str());
     TEST_ASSERT_EQUAL_INT((int)SkipAction::Unskip, (int)skipAction(s));
 
     // A newer offer arrives while 1.4.0 is skipped: the row skips the new
     // version (replacing the old skip), it does not offer to unskip 1.4.0.
     s.avail = "1.5.0";
     labels(s, l);
-    TEST_ASSERT_EQUAL_STRING("Skip 1.5.0", l[6].c_str());
+    TEST_ASSERT_EQUAL_STRING("Skip 1.5.0", l[7].c_str());
     TEST_ASSERT_EQUAL_INT((int)SkipAction::Skip, (int)skipAction(s));
     // Nothing offered at all: the old skip can still be undone.
     s.avail = "";
     labels(s, l);
-    TEST_ASSERT_EQUAL_STRING("Unskip 1.4.0", l[6].c_str());
+    TEST_ASSERT_EQUAL_STRING("Unskip 1.4.0", l[7].c_str());
     s.avail = "1.4.0";
 
     s.policy = CheckinPolicy::Policy::Never;
     labels(s, l);
     TEST_ASSERT_EQUAL_STRING("Auto-check: Off", l[1].c_str());
-    TEST_ASSERT_EQUAL_STRING(kOffExplanation, l[9].c_str());
+    TEST_ASSERT_EQUAL_STRING(kOffExplanation, l[10].c_str());
     s.bootCheck = false;
     labels(s, l);
     TEST_ASSERT_EQUAL_STRING("Check at start-up: Off", l[2].c_str());

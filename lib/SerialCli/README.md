@@ -370,7 +370,7 @@ upd offer <version> [source] -> [cmd] upd.offer=open version=<v> source=<source>
                                 [cmd] upd.offer=suppressed reason=<skipped|not-newer|invalid> version=<v>
                                 [err] upd.offer=busy | not-menu | refused
 upd install <version>        -> [cmd] upd.install=restarting version=<v>   (then the update session)
-                                [cmd] upd.install=refused reason=<unsigned|version|storage>
+                                [cmd] upd.install=refused reason=<no-update-slot|unsigned|battery|version|storage>
 upd fault <name>             -> [cmd] upd.fault=<name|error>   (none|crash|hang|hal-hang|loop-crash|version|mount|session-hang)
 upd seen-clear               -> [cmd] upd.seen_clear=<count|error>
 bad arguments                -> [err] upd.usage=upd [offer <version> [source] | install <version> | fault <...> | slot | allow-unsigned on|off]

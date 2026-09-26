@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <initializer_list>
 #include <string>
 #include <vector>
 
@@ -146,6 +147,79 @@ void test_fork_source_and_rc_channel_parse(void) {
     TEST_ASSERT_NULL(parse(manifestJson("channel", "\"rc\""), m));
     TEST_ASSERT_NULL(parse(manifestJson("version", "\"1.4.0-rc1\""), m));
     TEST_ASSERT_NULL(parse(manifestJson("version", "\"1.4.0+abc1234.dirty\""), m));
+}
+
+void test_optional_signature_pair_is_strict(void) {
+    auto withFields = [](const char* fields) {
+        std::string json = manifestJson();
+        json.pop_back();
+        return json + fields + "}";
+    };
+    Manifest m;
+    TEST_ASSERT_NULL(parse(withFields(",\"sig\":\"MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=\",\"key_id\":\"test-only-1\""), m));
+    TEST_ASSERT_EQUAL_STRING("MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=", m.sig);
+    TEST_ASSERT_EQUAL_STRING("test-only-1", m.keyId);
+    TEST_ASSERT_EQUAL_STRING("key_id", parse(withFields(",\"sig\":\"MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=\""), m));
+    TEST_ASSERT_EQUAL_STRING("sig", parse(withFields(",\"key_id\":\"test-only-1\""), m));
+    TEST_ASSERT_EQUAL_STRING("sig", parse(withFields(",\"sig\":\"QUJ?RA==\",\"key_id\":\"test-only-1\""), m));
+    TEST_ASSERT_EQUAL_STRING("sig", parse(withFields(",\"sig\":\"QUJDREVGR0g=\",\"key_id\":\"test-only-1\""), m));
+    TEST_ASSERT_EQUAL_STRING("key_id", parse(withFields(",\"sig\":\"MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=\",\"key_id\":\"TEST_only\""), m));
+    TEST_ASSERT_EQUAL_STRING("", m.version);
+}
+
+void test_install_permission_matrix(void) {
+    for (int sig = 0; sig < 2; ++sig)
+        for (int known = 0; known < 2; ++known)
+            for (int optIn = 0; optIn < 2; ++optIn)
+                TEST_ASSERT_EQUAL((sig && known) || (!sig && optIn),
+                                  installPermitted(sig, known, optIn));
+}
+
+void test_an_unknown_signing_key_keeps_the_offer(void) {
+    // Any answered offer is stored, whatever its key: a release signed with
+    // a key id this firmware does not know is not withdrawn (the owner is
+    // told to update from the website), and nothing marks it failed.
+    TEST_ASSERT_EQUAL(OfferAction::Store, offerAction(FetchOutcome::Ok, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Withdraw, offerAction(FetchOutcome::GateRefused, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Withdraw, offerAction(FetchOutcome::BadManifest, "sig"));
+    TEST_ASSERT_EQUAL(OfferAction::Withdraw, offerAction(FetchOutcome::BadManifest, "key_id"));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::BadManifest, "version"));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::BadManifest, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::Transport, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::ServerError, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::Refused, nullptr));
+    // known key / unknown key / no signature x USB opt-in off / on.
+    struct Row { bool sig, known, optIn, installs, marksFailed; };
+    const Row rows[] = {
+        {true,  true,  false, true,  true},
+        {true,  true,  true,  true,  true},
+        {true,  false, false, false, false},   // unknown key: like unsigned, not allowed
+        {true,  false, true,  false, false},   // the opt-in does not cover an unknown key
+        {false, false, false, false, false},
+        {false, false, true,  true,  false},
+    };
+    for (const Row& r : rows) {
+        TEST_ASSERT_EQUAL(r.installs, installPermitted(r.sig, r.known, r.optIn));
+        TEST_ASSERT_EQUAL(r.marksFailed, refusalMarksFailed(r.sig, r.known));
+    }
+}
+
+void test_install_now_needs_the_check_in_battery_floor(void) {
+    TEST_ASSERT_NULL(armRefusal(true, true, 3600, 20));
+    TEST_ASSERT_NULL(armRefusal(true, true, 4200, 100));
+    TEST_ASSERT_EQUAL_STRING("battery", armRefusal(true, true, 3599, 100));
+    TEST_ASSERT_EQUAL_STRING("battery", armRefusal(true, true, 4200, 19));
+    TEST_ASSERT_EQUAL_STRING("battery", armRefusal(true, true, -1, 80));
+    TEST_ASSERT_EQUAL_STRING("battery", armRefusal(true, true, 3900, -1));
+    // Earlier refusals keep their order and names.
+    TEST_ASSERT_EQUAL_STRING("no-update-slot", armRefusal(false, true, 4200, 100));
+    TEST_ASSERT_EQUAL_STRING("unsigned", armRefusal(true, false, 4200, 100));
+    TEST_ASSERT_EQUAL_STRING("no-update-slot", armRefusal(false, false, -1, -1));
+    // Plain copy for the battery; the rest keep the generic sentence.
+    TEST_ASSERT_EQUAL_STRING("Charge your Fidget first.", armRefusalCopy("battery"));
+    TEST_ASSERT_NULL(armRefusalCopy("storage"));
+    TEST_ASSERT_NULL(armRefusalCopy("unsigned"));
+    TEST_ASSERT_NULL(armRefusalCopy(nullptr));
 }
 
 void test_utc_timestamps(void) {
@@ -365,6 +439,68 @@ static InstallResult stream(Installer& inst, const std::vector<uint8_t>& img, si
         if (!inst.feed(img.data() + off, n)) return inst.result();
     }
     return inst.complete();
+}
+
+struct FakeVerifier : Verifier {
+    VerifyResult answer = VerifyResult::Ok;
+    int calls = 0;
+    VerifyResult verify(const Manifest&, const uint8_t[32]) override { ++calls; return answer; }
+};
+
+void test_verification_refuses_bad_and_unknown_even_with_opt_in(void) {
+    const auto img = image(32);
+    Manifest m = manifestFor(img);
+    strcpy(m.sig, "MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=");
+    strcpy(m.keyId, "test-only-1");
+    for (const VerifyResult refused : {VerifyResult::Bad, VerifyResult::UnknownKey}) {
+        FakeTarget t;
+        FakeHasher h;
+        FakeVerifier v;
+        v.answer = refused;
+        Installer inst(t, h, &v, true);
+        TEST_ASSERT_TRUE(inst.begin(m, kSeen));
+        TEST_ASSERT_EQUAL(InstallResult::VerificationFailed, stream(inst, img));
+        TEST_ASSERT_EQUAL_INT(1, v.calls);
+        TEST_ASSERT_TRUE(t.called("abort"));
+        TEST_ASSERT_FALSE(t.called("end"));
+        TEST_ASSERT_FALSE(t.called("boot"));
+    }
+    FakeTarget t;
+    FakeHasher h;
+    FakeVerifier v;
+    v.answer = VerifyResult::Ok;
+    Installer inst(t, h, &v, false);
+    TEST_ASSERT_TRUE(inst.begin(m, kSeen));
+    TEST_ASSERT_EQUAL(InstallResult::Ready, stream(inst, img));
+}
+
+void test_unsigned_install_needs_opt_in(void) {
+    const auto img = image(32);
+    FakeTarget t;
+    FakeHasher h;
+    FakeVerifier v;
+    v.answer = VerifyResult::Unsigned;
+    Installer inst(t, h, &v, false);
+    TEST_ASSERT_TRUE(inst.begin(manifestFor(img), kSeen));
+    TEST_ASSERT_EQUAL(InstallResult::VerificationFailed, stream(inst, img));
+    TEST_ASSERT_FALSE(t.called("boot"));
+}
+
+void test_hash_mismatch_never_reaches_signature_check(void) {
+    const auto img = image(32);
+    Manifest m = manifestFor(img);
+    strcpy(m.sig, "MEUCIQCHz8IEMOCjIStzZFpynuIjQvTz/HHL8olztrjWbppqKwIgPqA1QWeCpnfALWBulcoTtyg76yhQjj0ShuHib1xV0/4=");
+    strcpy(m.keyId, "test-only-1");
+    FakeTarget t;
+    FakeHasher h;
+    FakeVerifier v;
+    Installer inst(t, h, &v, false);
+    TEST_ASSERT_TRUE(inst.begin(m, kSeen));
+    auto changed = img;
+    changed[0] ^= 1;
+    TEST_ASSERT_EQUAL(InstallResult::HashMismatch, stream(inst, changed));
+    TEST_ASSERT_EQUAL_INT(0, v.calls);
+    TEST_ASSERT_FALSE(t.called("boot"));
 }
 
 void test_install_verifies_then_records_then_selects_boot(void) {
@@ -628,7 +764,7 @@ void test_boot_notice_after_a_normal_boot(void) {
 
 void test_nvs_keys_fit(void) {
     // Every key the update work stores, in every namespace.
-    const char* keys[] = {kKeyPendImg, kKeyUnsigOk, kKeyFailVer, kKeyAvail,
+    const char* keys[] = {kKeyPendImg, kKeyUnsigOk, kKeyFailVer, kKeyPowerAbort, kKeyAvail,
                           kBootSession, kBootVersion, kBootFailed, kTestFault};
     for (const char* k : keys) {
         TEST_ASSERT_TRUE_MESSAGE(strlen(k) > 0 && strlen(k) <= kMaxNvsKeyLen, k);
@@ -681,6 +817,21 @@ void test_confirm_only_after_the_first_frame(void) {
     TEST_ASSERT_EQUAL(ConfirmStep::RollBack, confirmStep(false, true, 10, kConfirmBudgetMs));
 }
 
+void test_pending_sleep_waits_or_handles_critical_voltage(void) {
+    TEST_ASSERT_EQUAL(SleepStep::Proceed, sleepStep(false, false, false));
+    TEST_ASSERT_EQUAL(SleepStep::Proceed, sleepStep(false, true, true));
+    TEST_ASSERT_EQUAL(SleepStep::Defer, sleepStep(true, false, false));
+    TEST_ASSERT_EQUAL(SleepStep::Defer, sleepStep(true, true, false));
+    TEST_ASSERT_EQUAL(SleepStep::AbortWithoutFailure, sleepStep(true, false, true));
+    TEST_ASSERT_EQUAL(SleepStep::KeepFirst, sleepStep(true, true, true));
+}
+
+void test_critical_power_abort_is_not_a_failed_boot_notice(void) {
+    TEST_ASSERT_EQUAL(BootNotice::DidNotFinish, bootNotice(true, true, false));
+    TEST_ASSERT_EQUAL(BootNotice::None, bootNotice(true, true, false, true));
+    TEST_ASSERT_EQUAL(BootNotice::None, bootNotice(true, false, false, true));
+}
+
 void test_a_failed_version_is_not_offered_automatically(void) {
     TEST_ASSERT_TRUE(automaticOfferAllowed("1.4.0", ""));
     TEST_ASSERT_TRUE(automaticOfferAllowed("1.4.0", nullptr));
@@ -697,6 +848,10 @@ int main(int, char**) {
     RUN_TEST(test_parses_the_site_manifest);
     RUN_TEST(test_every_field_is_required_and_validated);
     RUN_TEST(test_fork_source_and_rc_channel_parse);
+    RUN_TEST(test_optional_signature_pair_is_strict);
+    RUN_TEST(test_install_permission_matrix);
+    RUN_TEST(test_an_unknown_signing_key_keeps_the_offer);
+    RUN_TEST(test_install_now_needs_the_check_in_battery_floor);
     RUN_TEST(test_utc_timestamps);
     RUN_TEST(test_gate_accepts_a_matching_offer);
     RUN_TEST(test_gate_hardware_range_runs_first);
@@ -707,6 +862,9 @@ int main(int, char**) {
     RUN_TEST(test_seen_keys_are_short_and_scoped);
     RUN_TEST(test_only_an_unanswering_host_falls_back);
     RUN_TEST(test_install_verifies_then_records_then_selects_boot);
+    RUN_TEST(test_verification_refuses_bad_and_unknown_even_with_opt_in);
+    RUN_TEST(test_unsigned_install_needs_opt_in);
+    RUN_TEST(test_hash_mismatch_never_reaches_signature_check);
     RUN_TEST(test_hash_mismatch_aborts_before_finish);
     RUN_TEST(test_wrong_manifest_digest_aborts);
     RUN_TEST(test_short_and_long_streams_abort);
@@ -721,6 +879,8 @@ int main(int, char**) {
     RUN_TEST(test_time_limits_can_each_fire);
     RUN_TEST(test_self_test_deadline_expiry_rolls_back);
     RUN_TEST(test_confirm_only_after_the_first_frame);
+    RUN_TEST(test_pending_sleep_waits_or_handles_critical_voltage);
+    RUN_TEST(test_critical_power_abort_is_not_a_failed_boot_notice);
     RUN_TEST(test_a_failed_version_is_not_offered_automatically);
     return UNITY_END();
 }

@@ -203,7 +203,9 @@ explains the choice), Check at start-up On/Off (`upd.boot_chk`; Off stops only
 the boot session - the daily sleep check-in, a Fidget kept awake past its
 interval, a manual check and dev mode are unaffected; changing it shows
 "Checks for updates when you wake your Fidget. Turning it off avoids a short
-restart when you open a new app."), Apply app changes automatically On/Off
+restart when you open a new app."), Share battery data On/Off
+(`upd.usage_share`, default off; turning it on explains what is sent and
+that it can be turned off), Apply app changes automatically On/Off
 (`upd.autoapply`, default on; it never installs firmware), Channel and Source
 (shown only: `upd.chan`, default `stable`; `upd.src`, default
 `cyberfidget.com`), Skip/Unskip the current version (Unskip when the offered
@@ -213,7 +215,7 @@ Fidget (opens the Link screen), "Awake & dev mode: <mode>" (opens that
 screen, below), and the status line the bar is showing (opens the Status
 screen).
 
-Keys the prompt work writes: `policy`, `boot_chk`, `rej`, `autoapply`. It reads `avail`,
+Keys the prompt work writes: `policy`, `boot_chk`, `usage_share`, `rej`, `autoapply`. It reads `avail`,
 `src`, `chan`. "Forget" on a saved network (portal or Settings > Saved WiFi)
 changes only `wificfg`, never `upd`.
 
@@ -293,23 +295,32 @@ allow-list by manifest name): the menu, the boot animation, Status, Updates,
 Check for updates, Awake & dev mode, Particle Sim and Snake - what was
 measured to leave a network session at least 24 KB of internal heap. Every
 other app pauses listening until it ends: the portal, Music Player and Link
-need the radio or the worker, a delivered (WASM) app and the network do not
-fit together (bench: 2 KB free, every check-in failed), Voice Notes dipped to
-13 KB. An app added to the firmware pauses listening until it is measured
+need the radio or the worker, Voice Notes dipped to 13 KB. A delivered
+(WASM) app is not on the list; listening continues beside it when the heap
+allows (`AwakePolicy::listensBesideDeliveredApp`: internal free when it
+opens >= 24 KB floor + 18 KB check-in cost + 8 KB app), and a check-in whose
+trough falls below 24 KB while it runs pauses listening until it ends
+(`[awake] pause=heap`). A send of the running app then relaunches it in
+place, with no Back press. An app added to the firmware pauses listening until it is measured
 and listed. Opening a paused app first shows "Pausing dev mode..." while
 WiFi goes off; if the worker does not stop in time (a stuck network call),
 the app is not opened beside it: a delivered app opens in a fresh start, a
 built-in one waits and the bar says "Dev mode is busy. Try again in a
-moment." A send made meanwhile arrives when
+moment." The same list applies outside dev mode
+(`AwakePolicy::stopsAutomaticSession`): opening an app not on it first stops
+a running automatic check-in (start-up, awake or recovery; never a check the
+person asked for), showing "Finishing check..."; if that check does not stop
+in time the app is not opened (a delivered app opens in a fresh start) and
+the bar says "Checking for updates. Try again in a moment." A send made meanwhile arrives when
 the person goes back to the menu; when it carries a new file for the app last
 run this power cycle, that app opens again (through the restart below).
 Anything else just appears in the menu.
 
 **Opening a delivered app after the network was used** (any power cycle, any
-mode): a delivered app's task needs one contiguous 64 KB block of internal
-RAM, and after the network has been used in a power cycle the heap no longer
-has one, even with WiFi off (bench: 61 KB largest after one check-in). The app
-then opens through a restart: "Opening <app>...", `bootcfg.wasmid` (+
+mode): a delivered app's task needs a small internal-RAM block (4 KB stack
+plus its control block) and its interpreter stack (128 KB) in PSRAM, so it
+opens directly after a check-in and beside dev mode listening. Only when
+either cannot be allocated does the app open through a restart: "Opening <app>...", `bootcfg.wasmid` (+
 `wasmcat`, the menu category it was opened from) and `skipanim`, restart, and
 the app starts straight after boot before anything uses the network. The
 one-shot is removed before the app starts (a failing app never loops; an id
