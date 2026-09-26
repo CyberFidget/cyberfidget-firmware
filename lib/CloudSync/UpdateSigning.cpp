@@ -11,11 +11,23 @@ namespace UpdateSigning {
 namespace {
 struct PublicKey { const char* id; const char* pem; };
 
-// Production public keys go here, after the owner supplies them. Keep a
-// backup key in the same table so an update signed by it can remove a bad key.
-// No production trust anchor is shipped yet.
+// Official release keys (public halves; the private halves are held offline by
+// the owner). cf-release-1 signs every official release. cf-backup-1 never
+// signs routinely: it exists so that, if the release key is ever lost or
+// leaked, one update signed with it can replace or remove the release key.
+static const char kReleasePem[] =
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEkNa5FE6/L/y22JjvU9TMYwb1LCDz\n"
+    "oYzKCUeRsRqI05l0bBJZGh0y0HPq1ISQfddgsqPqcaV4Re4IaA1rsgVOtA==\n"
+    "-----END PUBLIC KEY-----\n";
+static const char kBackupPem[] =
+    "-----BEGIN PUBLIC KEY-----\n"
+    "MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEKPUEcwHD6t/BuCCqMG98VVbcFw3s\n"
+    "qiBJrBerD0LZvAsKh2OF/KKSZtXe0JGed6Mea7BhNiDaKd+lFkIHB6MGYA==\n"
+    "-----END PUBLIC KEY-----\n";
 static const PublicKey kProductionKeys[] = {
-    {nullptr, nullptr}, // EMPTY SLOT: replace with {"cf-release-1", PEM}.
+    {"cf-release-1", kReleasePem},
+    {"cf-backup-1", kBackupPem},
 };
 
 #ifdef CF_TEST_CLI
