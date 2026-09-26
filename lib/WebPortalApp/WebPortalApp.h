@@ -57,6 +57,7 @@ private:
     // AP bring-up state: false when WiFi.softAP() failed (surfaced on the OLED
     // and gates captive DNS instead of silently binding 0.0.0.0).
     bool apReady = false;
+    char portalPassword[9] = {0};  // RAM only; fresh for each portal start
 
     // SD state
     bool sdReady = false;
