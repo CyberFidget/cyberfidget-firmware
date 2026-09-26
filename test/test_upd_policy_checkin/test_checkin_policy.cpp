@@ -428,6 +428,22 @@ void test_stay_awake_starts_no_automatic_session(void) {
     TEST_ASSERT_TRUE(fromStore.stayAwake);
 }
 
+void test_manifest_refresh_manual_stale_scheduled_dev_and_deadline(void) {
+    const uint32_t now = 1790000000u;
+    using M = ManifestSession;
+    TEST_ASSERT_TRUE(manifestRefreshDue(M::Manual, false, now, now, true));
+    TEST_ASSERT_FALSE(manifestRefreshDue(M::Manual, false, now, now, false));
+    TEST_ASSERT_FALSE(manifestRefreshDue(M::Scheduled, false, now, now - 19u * 3600u, true));
+    TEST_ASSERT_TRUE(manifestRefreshDue(M::Scheduled, false, now, now - kManifestRefreshSec, true));
+    TEST_ASSERT_TRUE(manifestRefreshDue(M::Scheduled, true, now, now, true));
+    TEST_ASSERT_TRUE(manifestRefreshDue(M::Scheduled, false, now, 0, true));
+    TEST_ASSERT_TRUE(manifestRefreshDue(M::Scheduled, false, now, now + 1, true));
+    TEST_ASSERT_FALSE(manifestRefreshDue(M::Scheduled, false, now, 0, false));
+    TEST_ASSERT_FALSE(manifestRefreshDue(M::Dev, false, now, 0, true));
+    TEST_ASSERT_TRUE(manifestRefreshDue(M::Dev, true, now, 0, true));
+    TEST_ASSERT_TRUE(strlen(kKeyManifestAt) <= 15);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_policy_text_defaults_to_auto);
@@ -456,5 +472,6 @@ int main(int, char**) {
     RUN_TEST(test_arm_gating_and_server_backoff);
     RUN_TEST(test_boot_check_off_stops_only_the_boot_session);
     RUN_TEST(test_stay_awake_starts_no_automatic_session);
+    RUN_TEST(test_manifest_refresh_manual_stale_scheduled_dev_and_deadline);
     return UNITY_END();
 }

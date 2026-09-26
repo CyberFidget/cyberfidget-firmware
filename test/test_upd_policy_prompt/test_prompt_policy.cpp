@@ -81,6 +81,8 @@ void test_version_precedence(void) {
     TEST_ASSERT_TRUE(isNewer("1.0.0", "dev-build"));   // unparsable running
     // A final release is newer than its own prerelease, not equal to it.
     TEST_ASSERT_TRUE(isNewer("1.4.0", "1.4.0-rc1"));
+    TEST_ASSERT_TRUE(isNewer("1.4.0-rc2", "1.4.0-rc1"));
+    TEST_ASSERT_FALSE(isNewer("1.4.0-rc1", "1.4.0-rc2"));
     TEST_ASSERT_FALSE(isNewer("1.4.0-rc1", "1.4.0"));
     TEST_ASSERT_TRUE(isNewer("1.4.0-rc1", "1.3.9"));
     // The semver.org ordering example, each strictly newer than the last.
@@ -343,6 +345,21 @@ void test_dev_mode_values(void) {
     TEST_ASSERT_EQUAL_STRING("Awake & dev mode: Stay awake", label);
 }
 
+void test_test_versions_default_and_explicit_selection(void) {
+    TEST_ASSERT_EQUAL_STRING("stable", selectedChannel("", "1.4.0"));
+    TEST_ASSERT_EQUAL_STRING("rc", selectedChannel("", "1.4.0-rc1"));
+    TEST_ASSERT_EQUAL_STRING("stable", selectedChannel("stable", "1.4.0-rc1"));
+    TEST_ASSERT_EQUAL_STRING("rc", selectedChannel("rc", "1.4.0"));
+    SettingsState s;
+    char label[kRowText];
+    s.running = "1.4.0-rc1";
+    settingsLabel(Row::Channel, s, label, sizeof(label));
+    TEST_ASSERT_EQUAL_STRING("Versions: Test", label);
+    s.channel = "stable";
+    settingsLabel(Row::Channel, s, label, sizeof(label));
+    TEST_ASSERT_EQUAL_STRING("Versions: Stable", label);
+}
+
 void test_nvs_keys_fit(void) {
     const char* keys[] = {kKeyPolicy, kKeyRej, kKeyAvail, kKeyAvailN, kKeySrc, kKeyChan,
                           kKeyWebsiteSeen,
@@ -373,6 +390,7 @@ int main(int, char**) {
     RUN_TEST(test_autoapply_defaults_on_and_off_leaves_batches_pending);
     RUN_TEST(test_settings_are_independent_and_firmware_stays_an_offer);
     RUN_TEST(test_dev_mode_values);
+    RUN_TEST(test_test_versions_default_and_explicit_selection);
     RUN_TEST(test_nvs_keys_fit);
     return UNITY_END();
 }

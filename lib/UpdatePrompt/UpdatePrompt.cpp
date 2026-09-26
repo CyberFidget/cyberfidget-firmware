@@ -439,6 +439,18 @@ void activate(Row row) {
             refresh();
             return;
         }
+        case Row::Channel: {
+            const char* current = selectedChannel(cache.chan, running());
+            if (writeText(kKeyChan, strcmp(current, "rc") == 0 ? "stable" : "rc")) {
+                removeKey(kKeyAvail);
+                removeKey(kKeyAvailN);
+                removeKey("avail_kid");
+                removeKey("fw_url");
+                StatusService::instance().clear(StatusKind::UpdateReady);
+            }
+            refresh();
+            return;
+        }
         case Row::Skip: {
             const SkipAction action = skipAction(settingsState());
             if (action == SkipAction::Unskip) removeKey(kKeyRej);
@@ -458,7 +470,6 @@ void activate(Row row) {
         case Row::Status:
             AppManager::instance().switchToApp(APP_STATUS);
             return;
-        case Row::Channel:
         case Row::Source:
             return;   // shown only; there is nothing to change yet
     }

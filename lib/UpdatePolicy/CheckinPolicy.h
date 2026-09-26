@@ -34,6 +34,14 @@ constexpr uint32_t kMaxBackoffSec = 86400;
 constexpr uint32_t kBootMinGapSec = 3600;
 /// elapsedSinceCheckin() when nothing tells how long it has been.
 constexpr uint32_t kUnknownElapsed = 0xFFFFFFFFu;
+constexpr uint32_t kManifestRefreshSec = 20u * 3600u;
+constexpr const char* kKeyManifestAt = "manifest_at";
+
+enum class ManifestSession : uint8_t { Manual, Scheduled, Dev };
+/// A reply's offer is only a hint. Manual checks always read; scheduled
+/// checks also read after 20 hours. The caller supplies the deadline gate.
+bool manifestRefreshDue(ManifestSession session, bool offered, uint32_t nowSec,
+                        uint32_t lastSec, bool budgetAvailable);
 
 enum class Session : uint8_t { Boot, Daily, Awake, Manual };
 

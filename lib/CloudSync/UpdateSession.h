@@ -71,8 +71,9 @@ bool armInstall(const char* version, const char** why);
 /// Check-in worker, when the site offers firmware: reads the update
 /// manifest, runs every gate, and stores `upd.avail` (what the prompt may
 /// offer) - or removes it when a gate refuses the release. A fetch that
-/// fails leaves the stored offer as it was. Nothing is downloaded.
-void refreshOffer(uint32_t deadlineMs);
+/// fails leaves the stored offer as it was. Nothing is downloaded. Returns
+/// true when the site answered, so the caller can stamp the refresh.
+bool refreshOffer(uint32_t deadlineMs);
 
 /// Serial `upd allow-unsigned on|off` (every build: holding the USB cable is
 /// the proof). Never settable over the network.

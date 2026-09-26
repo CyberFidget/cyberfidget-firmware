@@ -48,6 +48,8 @@ constexpr const char* kPolicyAuto  = "auto";
 constexpr const char* kPolicyNever = "never";
 constexpr const char* kDefaultSource  = "cyberfidget.com";
 constexpr const char* kDefaultChannel = "stable";
+/// Explicit selection wins; an unset selection follows a running prerelease.
+const char* selectedChannel(const char* stored, const char* running);
 
 // ---- Copy (what the screen says) ---------------------------------------------
 

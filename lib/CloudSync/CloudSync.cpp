@@ -1076,6 +1076,7 @@ Step checkinWithRetry(Session& s, CloudPlanner& plan, const std::string& body,
 portMUX_TYPE devLock = portMUX_INITIALIZER_UNLOCKED;
 DevSnapshot devView;
 std::atomic<bool> devWake{false};
+std::atomic<bool> devManualRefresh{false};
 // Inside a check-in (not waiting between them): the store may change.
 std::atomic<bool> devInCycle{false};
 #ifdef CF_TEST_CLI
@@ -1160,16 +1161,32 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
             offered.putString("fw_url", s.reply.firmwareUrl.c_str());
             offered.end();
         }
-        // What the prompt may offer: the manifest, through every gate
-        // (UpdateSession). Every session reads it, scheduled ones too
-        // (the post-boot popup shows what the daily wake cached): one
-        // call, never a wait, and only when the remaining budget still
-        // leaves the usual reserve.
-        // Dev mode reads it at most once an hour, never ahead of an app
-        // that is waiting to be delivered.
-        if (budgetCovers(kCallMs, s.elapsed(), s.limitMs, kReserveMs) &&
-            (!dev || (!s.reply.hasBatch && devOfferDue())))
-            UpdateSession::refreshOffer(s.started + s.limitMs - kReserveMs);
+    }
+    // A quiet check-in may be 204 with no offer. Manual and stale scheduled
+    // checks still read the update site, within the same deadline reserve.
+    const time_t clock = time(nullptr);
+    const uint32_t now = clock > 0 && (uint64_t)clock <= UINT32_MAX ? (uint32_t)clock : 0;
+    uint32_t lastManifest = 0;
+    Preferences manifestStamp;
+    if (manifestStamp.begin("upd", true)) {
+        lastManifest = manifestStamp.getUInt(CheckinPolicy::kKeyManifestAt, 0);
+        manifestStamp.end();
+    }
+    const bool manualDev = dev && devManualRefresh.exchange(false);
+    const CheckinPolicy::ManifestSession manifestSession = manualDev ? CheckinPolicy::ManifestSession::Manual :
+        dev ? CheckinPolicy::ManifestSession::Dev :
+        (sessionReason == Reason::Manual || sessionReason == Reason::Recovery)
+            ? CheckinPolicy::ManifestSession::Manual : CheckinPolicy::ManifestSession::Scheduled;
+    const bool budget = budgetCovers(kCallMs, s.elapsed(), s.limitMs, kReserveMs);
+    if (CheckinPolicy::manifestRefreshDue(manifestSession, s.reply.firmwareOffer, now,
+                                          lastManifest, budget) &&
+        (!dev || manualDev || (!s.reply.hasBatch && devOfferDue()))) {
+        if (s.checkinConnection) s.checkinConnection->clear();
+        const bool answered = UpdateSession::refreshOffer(s.started + s.limitMs - kReserveMs);
+        if (answered && CheckinPolicy::clockPlausible(now) && manifestStamp.begin("upd", false)) {
+            manifestStamp.putUInt(CheckinPolicy::kKeyManifestAt, now);
+            manifestStamp.end();
+        }
     }
     if (step == Step::Done) { r.ok = true; r.none = true; return; }
     if (step == Step::Waiting) { r.ok = true; r.none = true; r.waiting = true; return; }
@@ -1915,6 +1932,7 @@ bool runSession(Reason reason, bool applyWaiting, int32_t dailyVbat, int32_t dai
         devView = DevSnapshot();
         portEXIT_CRITICAL(&devLock);
         devWake = false;
+        devManualRefresh = false;
         devInCycle = false;
     }
     if (xTaskCreate(worker, "cloudsync", kStackBytes, nullptr, 1, nullptr) != pdPASS) {
@@ -2111,7 +2129,7 @@ DevSnapshot devSnapshot() {
     return copy;
 }
 
-void devPollNow() { devWake = true; }
+void devPollNow() { devManualRefresh = true; devWake = true; }
 
 // A full update URL (the site plus a path and query): longer than a site
 // base, same scheme rules.

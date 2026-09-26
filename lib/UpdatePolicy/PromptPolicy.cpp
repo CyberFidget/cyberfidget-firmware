@@ -127,6 +127,12 @@ bool isNewer(const char* offered, const char* running) {
     return compareVersions(o, r) > 0;
 }
 
+const char* selectedChannel(const char* stored, const char* running) {
+    if (stored && stored[0]) return strcmp(stored, "rc") == 0 ? "rc" : "stable";
+    Version version;
+    return parseVersion(running, version) && version.pre[0] ? "rc" : "stable";
+}
+
 bool sameVersion(const char* a, const char* b) {
     return a && b && a[0] && strcmp(a, b) == 0;
 }
@@ -269,7 +275,8 @@ void settingsLabel(Row row, const SettingsState& s, char* out, size_t len) {
             snprintf(out, len, "Apply app changes automatically: %s", s.autoapply ? "On" : "Off");
             break;
         case Row::Channel:
-            snprintf(out, len, "Channel: %s", orDefault(s.channel, kDefaultChannel));
+            snprintf(out, len, "Versions: %s",
+                     strcmp(selectedChannel(s.channel, s.running), "rc") == 0 ? "Test" : "Stable");
             break;
         case Row::Source:
             snprintf(out, len, "Source: %s", orDefault(s.source, kDefaultSource));

@@ -105,6 +105,9 @@ const char* normalizeSource(const char* stored);
 
 /// The device's stored channel: anything but "rc" is "stable".
 const char* normalizeChannel(const char* stored);
+/// Clamp a persisted freshness floor to at most two days beyond trusted time.
+/// An unset clock cannot authorize a new floor.
+uint32_t boundedSeenFloor(uint32_t stored, uint32_t offered, uint32_t now);
 
 /// NVS key holding the newest `released_at` installed for one (source,
 /// channel): "seen_" + 8 hex digits of an FNV-1a hash. Always 13 characters.

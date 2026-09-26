@@ -238,6 +238,14 @@ const char* normalizeChannel(const char* stored) {
     return (stored && sameText(stored, "rc")) ? "rc" : "stable";
 }
 
+uint32_t boundedSeenFloor(uint32_t stored, uint32_t offered, uint32_t now) {
+    if (!CheckinPolicy::clockPlausible(now)) return stored;
+    const uint32_t cap = now > UINT32_MAX - 2u * 86400u ? UINT32_MAX : now + 2u * 86400u;
+    if (stored > cap) stored = cap;
+    if (offered > cap) offered = cap;
+    return offered > stored ? offered : stored;
+}
+
 void seenKey(const char* source, const char* channel, char out[kSeenKeyLen + 1]) {
     uint32_t h = 2166136261u;
     auto mix = [&h](const char* s) {
@@ -291,7 +299,7 @@ const char* verdictCopy(Verdict v) {
         case Verdict::HwIncompatible: return OtaManifest::kHardwareRefusal;
         case Verdict::WrongSource:
         case Verdict::SourceNotAcknowledged: return "This update comes from a source this Fidget does not use.";
-        case Verdict::WrongChannel: return "This update is not on this Fidget's update channel.";
+        case Verdict::WrongChannel: return "This update needs Test versions.";
         case Verdict::Stale: return "This update is older than one already installed.";
         case Verdict::TooLarge: return "This update is too big for this Fidget.";
         case Verdict::NotWanted: return "The update changed. Check for updates again.";

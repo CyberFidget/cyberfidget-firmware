@@ -95,6 +95,9 @@ jobs:
           fetch-depth: 0   # full history + tags: generate_version.py and the
                            # iteration auto-pick both need them
 
+      - name: Check production signing key table
+        run: python -B scripts/release_public_key.py --check-table
+
       # ---------------------------------------------------------------------
       # Work out what we are releasing, before doing anything irreversible.
       # ---------------------------------------------------------------------
@@ -542,7 +545,7 @@ jobs:
           body_path: ${{ env.SUMMARY_PATH }}
           generate_release_notes: true
           # The protected sign job publishes only after the signature assets
-          # are uploaded (or after clean unsigned fallback with no secret).
+          # are uploaded and verified against the firmware's public key.
           draft: true
           prerelease: ${{ steps.plan.outputs.prerelease }}
           # Companion assets are absent when the best-effort steps above fail;
@@ -615,6 +618,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: release-signing
     steps:
+      - name: Checkout firmware key table
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
       - name: Download exact app image
         uses: actions/download-artifact@v4
         with:
@@ -630,30 +637,41 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "$SIGNING_KEY" ]; then
-            echo "Signing secret absent; publishing an unsigned release." >> "$GITHUB_STEP_SUMMARY"
-          else
-            if ! [[ "$KEY_ID" =~ ^[a-z0-9-]{1,31}$ ]]; then
-              echo "::error::FIRMWARE_SIGNING_KEY_ID must be a configured key id"
-              exit 1
-            fi
-            umask 077
-            TEMP_DIR="$(mktemp -d)"
-            trap 'rm -rf "$TEMP_DIR"' EXIT
-            printf '%s\n' "$SIGNING_KEY" > "$TEMP_DIR/private.pem"
-            unset SIGNING_KEY
-            openssl dgst -sha256 -sign "$TEMP_DIR/private.pem" -out "$TEMP_DIR/signature.der" firmware.bin
-            openssl pkey -in "$TEMP_DIR/private.pem" -pubout -out "$TEMP_DIR/public.pem"
-            rm -f "$TEMP_DIR/private.pem"
-            # Devices accept only P-256; refuse to publish a signature they
-            # would reject, and prove it verifies over the exact image.
-            PUB_TEXT="$(openssl pkey -pubin -in "$TEMP_DIR/public.pem" -noout -text)"
-            case "$PUB_TEXT" in
-              *prime256v1*) ;;
-              *) echo "::error::FIRMWARE_SIGNING_KEY must be an EC P-256 key"; exit 1 ;;
-            esac
-            openssl dgst -sha256 -verify "$TEMP_DIR/public.pem" -signature "$TEMP_DIR/signature.der" firmware.bin
-            base64 -w0 "$TEMP_DIR/signature.der" > firmware.bin.sig
-            printf '%s' "$KEY_ID" > firmware.bin.sig.keyid
-            gh release upload "$TAG" firmware.bin.sig firmware.bin.sig.keyid --repo "$GITHUB_REPOSITORY" --clobber
+            echo "::error::FIRMWARE_SIGNING_KEY is missing; release remains a draft"
+            exit 1
           fi
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::FIRMWARE_SIGNING_KEY_ID is missing; release remains a draft"
+            exit 1
+          fi
+          if ! [[ "$KEY_ID" =~ ^[a-z0-9-]{1,31}$ ]]; then
+            echo "::error::FIRMWARE_SIGNING_KEY_ID must be a configured key id"
+            exit 1
+          fi
+          umask 077
+          TEMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TEMP_DIR"' EXIT
+          python -B scripts/release_public_key.py --key-id "$KEY_ID" --output "$TEMP_DIR/firmware-public.pem"
+          printf '%s\n' "$SIGNING_KEY" > "$TEMP_DIR/private.pem"
+          unset SIGNING_KEY
+          openssl dgst -sha256 -sign "$TEMP_DIR/private.pem" -out "$TEMP_DIR/signature.der" firmware.bin
+          openssl pkey -in "$TEMP_DIR/private.pem" -pubout -out "$TEMP_DIR/public.pem"
+          rm -f "$TEMP_DIR/private.pem"
+          # Devices accept only P-256; refuse to publish a signature they
+          # would reject, and prove it verifies over the exact image.
+          PUB_TEXT="$(openssl pkey -pubin -in "$TEMP_DIR/public.pem" -noout -text)"
+          case "$PUB_TEXT" in
+            *prime256v1*) ;;
+            *) echo "::error::FIRMWARE_SIGNING_KEY must be an EC P-256 key"; exit 1 ;;
+          esac
+          openssl pkey -pubin -in "$TEMP_DIR/public.pem" -outform DER -out "$TEMP_DIR/derived.der"
+          openssl pkey -pubin -in "$TEMP_DIR/firmware-public.pem" -outform DER -out "$TEMP_DIR/firmware.der"
+          if ! cmp -s "$TEMP_DIR/derived.der" "$TEMP_DIR/firmware.der"; then
+            echo "::error::FIRMWARE_SIGNING_KEY does not match the firmware public key for $KEY_ID"
+            exit 1
+          fi
+          openssl dgst -sha256 -verify "$TEMP_DIR/firmware-public.pem" -signature "$TEMP_DIR/signature.der" firmware.bin
+          base64 -w0 "$TEMP_DIR/signature.der" > firmware.bin.sig
+          printf '%s' "$KEY_ID" > firmware.bin.sig.keyid
+          gh release upload "$TAG" firmware.bin.sig firmware.bin.sig.keyid --repo "$GITHUB_REPOSITORY" --clobber
           gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"

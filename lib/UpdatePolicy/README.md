@@ -151,11 +151,12 @@ in `test/test_core_updatemenu`, `pio test -e test_core`). The device glue is
   (`MAJOR.MINOR.PATCH`, optional `-prerelease`, optional `+build`, at most
   31 characters), validated as a whole: anything else is never offered. A
   prerelease sorts below its final; build metadata does not count. An empty `avail` is no
-  notification, not an error. The check-in says that a firmware manifest
-  exists (`offered=fw`, `upd.fw_url`); the check-in worker then reads that
-  manifest, runs the install gates and writes (or removes) `avail`
-  (`UpdateSession::refreshOffer`, lib/OtaUpdate), in every check-in
-  session including the scheduled ones. The bench can also use
+  notification, not an error. The check-in may hint that firmware exists
+  (`offered=fw`, `upd.fw_url`), but a manual check reads the update site
+  even after a 204 reply. Scheduled sessions also read it when the last
+  refresh is at least 20 hours old. The worker runs the install gates and
+  writes (or removes) `avail` (`UpdateSession::refreshOffer`, lib/OtaUpdate).
+  The bench can also use
   `upd offer`.
 - A version whose update did not keep itself on this Fidget (`upd.fail_ver`,
   written by the previous image after the rollback) is not offered by the
