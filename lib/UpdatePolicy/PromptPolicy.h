@@ -185,6 +185,24 @@ struct CheckResume {
 };
 CheckResume resumeAfterRestart(bool bootcloud, bool bootapply, bool otherAppFirst);
 
+/// What decides the first screen of a start, read before the filesystem is
+/// mounted.
+struct StartShots {
+    bool imagePending = false;   ///< a just-installed update not yet kept
+    bool timerWake = false;      ///< the battery timer wake (never draws)
+    bool skipanim = false;
+    bool portal = false;         ///< bootapp
+    bool music = false;          ///< bootmusic
+    bool link = false;           ///< bootlink
+    bool wasmApp = false;        ///< a delivered app to reopen (wasmid set)
+    bool bootcloud = false;      ///< a check resumed after a restart
+};
+/// True when this start opens on the start-up animation for certain, so its
+/// first frame can be drawn before the slower start-up steps. Any restart
+/// one-shot, a pending update or a timer wake says no (those starts draw
+/// their own first screen, or none).
+bool earlyAnimationFrame(const StartShots& s);
+
 enum class CheckEntry : uint8_t { StartNew, WatchSession };
 
 /// How the Check for updates screen begins its first pass. A screen resumed

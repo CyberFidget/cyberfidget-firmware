@@ -289,6 +289,25 @@ void test_resumed_check_screen_shows_one_result(void) {
     TEST_ASSERT_EQUAL_INT((int)CheckEntry::WatchSession, (int)checkEntry(false, true));
 }
 
+// ---- The start-up animation's first frame comes before the slow start-up steps ---------
+
+void test_early_animation_frame_only_on_an_ordinary_start(void) {
+    StartShots plain;
+    TEST_ASSERT_TRUE(earlyAnimationFrame(plain));
+    // Each of these starts opens on something else (or draws nothing).
+    StartShots s;
+    s = plain; s.imagePending = true; TEST_ASSERT_FALSE(earlyAnimationFrame(s));
+    s = plain; s.timerWake = true;    TEST_ASSERT_FALSE(earlyAnimationFrame(s));
+    s = plain; s.skipanim = true;     TEST_ASSERT_FALSE(earlyAnimationFrame(s));
+    s = plain; s.portal = true;       TEST_ASSERT_FALSE(earlyAnimationFrame(s));
+    s = plain; s.music = true;        TEST_ASSERT_FALSE(earlyAnimationFrame(s));
+    s = plain; s.link = true;         TEST_ASSERT_FALSE(earlyAnimationFrame(s));
+    s = plain; s.wasmApp = true;      TEST_ASSERT_FALSE(earlyAnimationFrame(s));
+    s = plain; s.bootcloud = true;    TEST_ASSERT_FALSE(earlyAnimationFrame(s));
+    // A resumed check behind a portal one-shot still opens the portal: no frame.
+    s = plain; s.bootcloud = true; s.portal = true; TEST_ASSERT_FALSE(earlyAnimationFrame(s));
+}
+
 // ---- A5: app auto-apply is independent of Auto-check and of firmware --------------------
 
 void test_autoapply_defaults_on_and_off_leaves_batches_pending(void) {
@@ -387,6 +406,7 @@ int main(int, char**) {
     RUN_TEST(test_bt_tainted_manual_check_takes_reboot_path);
     RUN_TEST(test_bt_restart_handoff_carries_get_them_now);
     RUN_TEST(test_resumed_check_screen_shows_one_result);
+    RUN_TEST(test_early_animation_frame_only_on_an_ordinary_start);
     RUN_TEST(test_autoapply_defaults_on_and_off_leaves_batches_pending);
     RUN_TEST(test_settings_are_independent_and_firmware_stays_an_offer);
     RUN_TEST(test_dev_mode_values);

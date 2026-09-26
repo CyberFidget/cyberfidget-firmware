@@ -47,10 +47,26 @@ BootAnimationApp::BootAnimationApp(ButtonManager& btnMgr)
     instance = this;
 }
 
+// Set when showFirstFrame() drew the opening frame during start-up.
+static bool firstFrameShown = false;
+
+void BootAnimationApp::showFirstFrame() {
+    // The frame the first update would draw, drawn as soon as the screen is
+    // on; the animation carries on from it once start-up finishes.
+    drawFrame = 1 % boot_epd_bitmap_allArray_LEN;
+    lastFrameTime = millis();
+    display.clear();
+    display.drawXbm(0, 0, 128, 64, boot_epd_bitmap_allArray[drawFrame]);
+    display.display();
+    firstFrameShown = true;
+}
+
 void BootAnimationApp::begin() {
     buttonManager.registerCallback(button_BottomLeftIndex, onButtonBackPressed);
     sequenceStartTime = millis_NOW; // Record the start time of the sequence
-    lastFrameTime = millis_NOW; // Initialize the last frame time
+    // Keep the early frame's time: the next frame follows it.
+    if (!firstFrameShown) lastFrameTime = millis_NOW; // Initialize the last frame time
+    firstFrameShown = false;
 }
 
 void BootAnimationApp::end() {
