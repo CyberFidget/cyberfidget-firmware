@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
 // Copyright (c) 2023-2026 Dismo Industries LLC
-#include "UpdateSigning.h"
-
+// Device only: the host test builds of this library have no update headers.
 #ifndef HOST_TEST
+#include "UpdateSigning.h"
 #include <mbedtls/base64.h>
 #include <mbedtls/pk.h>
 #include <string.h>
