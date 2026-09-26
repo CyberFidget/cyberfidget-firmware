@@ -20,7 +20,7 @@ It is not the site: it does not read GitHub, cache, throttle forks or check
     set CF_OTA_RELEASES=C:\path\to\releases
     C:\php\php.exe -S 0.0.0.0:8297 router.php
 
-Use a port the website's own tests do not pin (8297 on Sam's bench). The
+Use a port the website's own tests do not pin (8297 on the reference bench). The
 Fidget reads a release through its test-build base: `cloud base
 http://<host>:8297/<name>` selects `<releases>/<name>/`.
 

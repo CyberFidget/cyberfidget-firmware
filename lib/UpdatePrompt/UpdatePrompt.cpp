@@ -154,9 +154,10 @@ void onComingSoonDone(int) { openAppsIfPending(); }
 
 // Install now: the update session runs after a restart (the start-up
 // animation is skipped), in a power cycle that never starts Bluetooth.
-bool handOff(const char* version) {
+bool handOff(const char* version, const char** refusal) {
     const char* why = "";
     if (!UpdateSession::armInstall(version, &why)) {
+        *refusal = why;
         Serial.printf("[upd] install=refused reason=%s\n", why);
         return false;
     }
@@ -192,15 +193,17 @@ void onFirmwareDone(int result) {
                   result == (int)FwChoice::Later ? "later" :
                   result == (int)FwChoice::Skip ? "skip" : "none",
                   offerVersion, e.writeRej ? (stored ? "ok" : "error") : "-");
-    // A refused hand-off (storage failed) says so like "coming soon" would
+    // A refused hand-off (storage failed, or the battery is low) says so like "coming soon" would
     // not: the offer stays in the bar either way.
-    if (e.handoff && !handOff(offerVersion)) {
+    const char* refusal = nullptr;
+    if (e.handoff && !handOff(offerVersion, &refusal)) {
         char text[48];
         snprintf(text, sizeof(text), "Update %s ready", offerVersion);
         svc.post(StatusKind::UpdateReady, text,
                  StatusService::defaultPriority(StatusKind::UpdateReady), true, millis());
         const char* const ok[] = {"OK"};
-        if (ModalPrompt::instance().open("The update could not start. Nothing changed.", ok, 1,
+        const char* copy = OtaUpdate::armRefusalCopy(refusal);
+        if (ModalPrompt::instance().open(copy ? copy : "The update could not start. Nothing changed.", ok, 1,
                                          onComingSoonDone)) return;
     }
     if (e.comingSoon) {

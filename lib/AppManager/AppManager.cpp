@@ -19,6 +19,8 @@
 #include "UpdatePrompt.h"
 #include "PromptPolicy.h"
 #include "AwakeMode.h"
+#include "AwakePolicy.h"
+#include "StatusService.h"
 #include "WasmFsApp.h"
 #include "WebPortalApp.h"
 #include <Preferences.h>
@@ -492,6 +494,24 @@ void AppManager::switchToApp(AppIndex newApp)
             Serial.flush();
             delay(50);
             ESP.restart();
+            return;
+        }
+    }
+    if (newApp >= 0 && newApp < APP_COUNT &&
+        AwakePolicy::stopsAutomaticSession(appIds[newApp], CloudSync::automaticSessionRunning())) {
+        // An app not measured safe beside a network session (dev mode's
+        // allow-list) never starts beside an automatic check-in: stop it
+        // first (WiFi off). A check the person asked for runs on.
+        showRadioNotice("Finishing check...");
+        const bool stopped = CloudSync::cancelPending();
+        Serial.printf("[checkin] cancel-for-app app=%d stopped=%d\n", (int)newApp, stopped ? 1 : 0);
+        if (!stopped) {
+            // Still inside a long network call: as in dev mode, a delivered
+            // app opens in a fresh start; a built-in one waits.
+            if (newApp == APP_WASM_HOST) restartIntoPendingApp();
+            if (appActive == APP_MENU) MenuManager::instance().begin();
+            StatusService::instance().post(StatusKind::Info, "Checking for updates. Try again in a moment.",
+                                           StatusPriority::Normal, false, millis());
             return;
         }
     }

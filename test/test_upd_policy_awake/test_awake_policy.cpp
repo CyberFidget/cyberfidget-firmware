@@ -352,6 +352,21 @@ void test_listening_allow_list(void) {
     TEST_ASSERT_FALSE(listensDuring(nullptr));
 }
 
+void test_an_automatic_check_in_stops_for_an_unmeasured_app(void) {
+    // Same allow-list as dev mode: only a running automatic check-in, and
+    // only for an app not measured safe beside a network session.
+    TEST_ASSERT_TRUE(stopsAutomaticSession("APP_VOICE_RECORDER", true));
+    TEST_ASSERT_TRUE(stopsAutomaticSession("APP_WASM_HOST", true));
+    TEST_ASSERT_TRUE(stopsAutomaticSession("APP_BREAKOUT_GAME", true));
+    TEST_ASSERT_TRUE(stopsAutomaticSession(nullptr, true));
+    TEST_ASSERT_FALSE(stopsAutomaticSession("APP_MENU", true));
+    TEST_ASSERT_FALSE(stopsAutomaticSession("APP_SNAKE", true));
+    TEST_ASSERT_FALSE(stopsAutomaticSession("APP_CHECK_UPDATES", true));
+    // A check the person asked for (or none) is never stopped here.
+    TEST_ASSERT_FALSE(stopsAutomaticSession("APP_VOICE_RECORDER", false));
+    TEST_ASSERT_FALSE(stopsAutomaticSession("APP_WASM_HOST", false));
+}
+
 void test_listening_beside_a_delivered_app(void) {
     // A delivered app is not on the allow-list; the heap decides. Opening:
     // the floor, one check-in's cost and the app's own share must fit.
@@ -418,6 +433,7 @@ int main(int, char**) {
     RUN_TEST(test_marker_for_each_awake_mode);
     RUN_TEST(test_breathing_indicator);
     RUN_TEST(test_listening_allow_list);
+    RUN_TEST(test_an_automatic_check_in_stops_for_an_unmeasured_app);
     RUN_TEST(test_listening_beside_a_delivered_app);
     RUN_TEST(test_restart_loop_ends_the_mode);
     RUN_TEST(test_clean_stretch_clears_the_loop_count);

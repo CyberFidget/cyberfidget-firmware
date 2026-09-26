@@ -20,8 +20,10 @@ gains no cycle through AppManager).
    newer than the running version and not skipped.
 2. **Install now** arms the `bootcfg` one-shot (`bootupd`, `updver` = the
    version chosen, `skipanim`) and restarts - but only on a Fidget with
-   a known signing key in the offer or `upd.unsig_ok` set over USB. Every
-   other Fidget keeps the "update from the website" message.
+   a known signing key in the offer or `upd.unsig_ok` set over USB, and a
+   battery at the automatic check-in's floor (3.6 V and 20 %; otherwise
+   "Charge your Fidget first.", `OtaUpdate::armRefusal`). Every other
+   Fidget keeps the "update from the website" message.
 3. **Update session** (that boot, right after hardware start-up, before the
    menu, the check-in scheduler or anything that could start Bluetooth):
    the one-shot is removed first, so a crash never loops into another
@@ -93,8 +95,12 @@ The manifest may carry both `sig` (canonical base64 DER ECDSA P-256,
 at most 104 characters) and `key_id` (1 to 31 lowercase letters, digits or
 hyphens). Both fields must be present together. No fields means unsigned.
 An unknown id or a bad signature is refused even with USB unsigned opt-in;
-an unsigned image needs that opt-in. A verification refusal records the
-version in `upd.fail_ver`, so it is not offered automatically again.
+an unsigned image needs that opt-in. A signature checked against a known key
+that does not match records the version in `upd.fail_ver`, so it is not
+offered automatically again. An offer signed with a key id this firmware does
+not know is not a failure: the check-in keeps it on offer (`avail`,
+`avail_kid`) like an unsigned one without the opt-in, so the owner is told to
+update from the website (`OtaUpdate::offerAction`, `refusalMarksFailed`).
 
 The public key table is in `lib/CloudSync/UpdateSigning.cpp`. Its production
 slot is empty until the owner supplies public keys. Add the release and

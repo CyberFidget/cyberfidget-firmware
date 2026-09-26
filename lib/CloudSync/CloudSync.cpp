@@ -1424,8 +1424,18 @@ void uploadDailyUsage(const Session& s, const Result& r) {
     cJSON_free(printed);
     if (body.size() > 98304 || !budgetCovers(kCallMs, s.elapsed(), s.limitMs, kCallMs)) return;
     HttpReply reply;
+    // Answered but not accepted: the attempt still starts the day-long wait
+    // (the sequence stays, so the same records go next time).
+    auto stampAttempt = [&]() {
+        if (!BatteryDiary::uploadStartsWait(reply.status) || !upd.begin("upd", false)) return;
+        upd.putUInt("usage_at", now);
+        upd.end();
+    };
     if (!request(s, s.base + "/api/device-usage.php", &body, reply, jsonSink, &reply) ||
-        reply.status < 200 || reply.status >= 300) return;
+        reply.status < 200 || reply.status >= 300) {
+        stampAttempt();
+        return;
+    }
     cJSON* answer = cJSON_Parse(reply.body.c_str());
     const cJSON* acknowledged = answer ? cJSON_GetObjectItemCaseSensitive(answer, "acked_seq") : nullptr;
     const uint32_t newest = records[window.first + window.count - 1].seq;
@@ -1434,7 +1444,10 @@ void uploadDailyUsage(const Session& s, const Result& r) {
                           acknowledged->valuedouble == (double)(uint32_t)acknowledged->valuedouble;
     const uint32_t newAck = accepted ? (uint32_t)acknowledged->valuedouble : acked;
     cJSON_Delete(answer);
-    if (!accepted) return;
+    if (!accepted) {
+        stampAttempt();
+        return;
+    }
     if (!upd.begin("upd", false)) return;
     upd.putUInt("usage_seq", newAck);
     upd.putUInt("usage_at", now);
@@ -2077,6 +2090,10 @@ bool cancelPending() {
 }
 void requestCancel() { cancelRequested = true; }
 bool busy() { return running; }
+bool automaticSessionRunning() {
+    return running && workerKind == WorkerKind::Cloud && sessionReason != Reason::Manual &&
+           sessionReason != Reason::Dev;
+}
 bool storeBusy() {
     if (!running) return false;
     return workerKind != WorkerKind::Cloud || sessionReason != Reason::Dev || devInCycle;

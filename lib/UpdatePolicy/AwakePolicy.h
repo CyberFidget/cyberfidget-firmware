@@ -150,6 +150,12 @@ Apply applyEffect(const Setting& before, const Setting& after);
 /// other app, and anything unknown, pauses listening until it ends.
 bool listensDuring(const char* appEnumName);
 
+/// Whether opening this app first stops a running automatic check-in (start,
+/// awake or recovery), by the same allow-list: an app not measured safe
+/// beside a network session never starts beside one. A check the person
+/// asked for (and dev mode, which has its own pause) is not stopped here.
+bool stopsAutomaticSession(const char* appEnumName, bool automaticSessionRunning);
+
 /// A delivered (WASM) app is not on that list: whether listening continues
 /// beside it depends on the heap. Its interpreter stack is in PSRAM, so the
 /// app itself holds only a few KB of internal RAM. Internal-heap floor at a

@@ -96,6 +96,22 @@ static void test_upload_gate() {
     TEST_ASSERT_FALSE(uploadDue(true, true, true, true, true, now, 0, 7999));
 }
 
+static void test_an_answered_upload_waits_a_day() {
+    // Any answer (accepted or refused) stores the attempt time; only no
+    // answer at all tries again at the next session.
+    TEST_ASSERT_TRUE(uploadStartsWait(200));
+    TEST_ASSERT_TRUE(uploadStartsWait(400));
+    TEST_ASSERT_TRUE(uploadStartsWait(413));
+    TEST_ASSERT_TRUE(uploadStartsWait(429));
+    TEST_ASSERT_TRUE(uploadStartsWait(503));
+    TEST_ASSERT_FALSE(uploadStartsWait(0));
+    TEST_ASSERT_FALSE(uploadStartsWait(-1));
+    // The stored time then holds the next upload back for the full gap.
+    const uint32_t now = 1800000000U;
+    TEST_ASSERT_FALSE(uploadDue(true, true, true, true, true, now + 3600U, now, 8000));
+    TEST_ASSERT_TRUE(uploadDue(true, true, true, true, true, now + kUploadGapSec, now, 8000));
+}
+
 static void test_upload_window() {
     Record records[5] = {};
     for (uint32_t i = 0; i < 5; ++i) records[i].seq = i + 10;
@@ -166,5 +182,6 @@ int main(int, char**) {
     RUN_TEST(test_upload_window_drops_duplicate_sequence);
     RUN_TEST(test_upload_window_drops_decreasing_sequence);
     RUN_TEST(test_upload_window_normal_run_stays_complete);
+    RUN_TEST(test_an_answered_upload_waits_a_day);
     return UNITY_END();
 }

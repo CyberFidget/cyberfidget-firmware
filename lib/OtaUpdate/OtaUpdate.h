@@ -157,6 +157,34 @@ bool fallbackAllowed(FetchOutcome outcome);
 /// still happens after download; unsigned offers require the USB opt-in.
 bool installPermitted(bool hasSignature, bool knownKey, bool allowUnsigned);
 
+/// What a check-in does with the stored offer after asking the update site.
+enum class OfferAction : uint8_t {
+    Store,      ///< keep this release on offer (version + key id)
+    Withdraw,   ///< remove the offer
+    Unchanged,  ///< the site did not answer usefully: leave what is stored
+};
+
+/// `badField` is the manifest field that failed to parse (BadManifest only).
+/// A release signed with a key id this firmware does not know is still
+/// stored: installPermitted() then says no, so the owner is told to update
+/// from the website instead of never hearing about the release. Only a
+/// malformed signature or key id, or a gate refusal, withdraws the offer.
+OfferAction offerAction(FetchOutcome outcome, const char* badField);
+
+/// Whether a refused install marks the version as failed (never offered
+/// again automatically). Only a signature checked against a known key that
+/// did not match counts; an unknown key or a missing signature does not.
+bool refusalMarksFailed(bool hasSignature, bool knownKey);
+
+/// Why Install now refuses to arm, as a short log reason, or nullptr when it
+/// may arm. The battery floor is the automatic check-in's
+/// (CheckinPolicy::batteryEligible): a download and flash write must not
+/// run on a nearly flat battery. An unreadable value (-1) refuses.
+const char* armRefusal(bool hasUpdateSlot, bool installAllowed, int32_t vbatMv, int32_t socPct);
+
+/// On-screen copy for an armRefusal reason, or nullptr for the generic one.
+const char* armRefusalCopy(const char* reason);
+
 // ---- install ----------------------------------------------------------------
 
 /// Where the image goes. On the device: esp_ota_begin/write/end/abort, NVS,

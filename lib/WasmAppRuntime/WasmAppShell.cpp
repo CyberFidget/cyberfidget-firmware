@@ -196,8 +196,7 @@ void WasmAppShell::drawErrorScreen() {
     if (strcmp(errBuf, m3Err_trapStackOverflow) == 0) {
         d.drawString(64, 26, "stopped: out of memory");
     } else {
-        d.drawString(64, 26, "stopped with an error:");
-        d.drawString(64, 38, errBuf);
+        d.drawString(64, 26, "stopped with an error");
     }
     d.drawString(64, 52, "press any button");
     d.display();

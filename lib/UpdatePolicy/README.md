@@ -306,7 +306,12 @@ and listed. Opening a paused app first shows "Pausing dev mode..." while
 WiFi goes off; if the worker does not stop in time (a stuck network call),
 the app is not opened beside it: a delivered app opens in a fresh start, a
 built-in one waits and the bar says "Dev mode is busy. Try again in a
-moment." A send made meanwhile arrives when
+moment." The same list applies outside dev mode
+(`AwakePolicy::stopsAutomaticSession`): opening an app not on it first stops
+a running automatic check-in (start-up, awake or recovery; never a check the
+person asked for), showing "Finishing check..."; if that check does not stop
+in time the app is not opened (a delivered app opens in a fresh start) and
+the bar says "Checking for updates. Try again in a moment." A send made meanwhile arrives when
 the person goes back to the menu; when it carries a new file for the app last
 run this power cycle, that app opens again (through the restart below).
 Anything else just appears in the menu.

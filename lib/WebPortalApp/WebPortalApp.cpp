@@ -474,6 +474,10 @@ void WebPortalApp::begin() {
     // broadcasting. Don't swallow it: surface on the OLED + gate captive DNS.
     staConnected = false;
     WP_LOG("begin: starting WiFi AP+STA");
+    // RAM only: the WiFi driver must not copy the portal password or the
+    // network being joined into its own flash area (saved networks live
+    // only in SavedWifi, and every join below passes them explicitly).
+    WiFi.persistent(false);
     WiFi.mode(WIFI_AP_STA);
     PortalPassword::generate(portalPassword, []() { return esp_random(); });
     apReady = WiFi.softAP(AP_SSID, portalPassword);

@@ -175,6 +175,53 @@ void test_install_permission_matrix(void) {
                                   installPermitted(sig, known, optIn));
 }
 
+void test_an_unknown_signing_key_keeps_the_offer(void) {
+    // Any answered offer is stored, whatever its key: a release signed with
+    // a key id this firmware does not know is not withdrawn (the owner is
+    // told to update from the website), and nothing marks it failed.
+    TEST_ASSERT_EQUAL(OfferAction::Store, offerAction(FetchOutcome::Ok, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Withdraw, offerAction(FetchOutcome::GateRefused, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Withdraw, offerAction(FetchOutcome::BadManifest, "sig"));
+    TEST_ASSERT_EQUAL(OfferAction::Withdraw, offerAction(FetchOutcome::BadManifest, "key_id"));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::BadManifest, "version"));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::BadManifest, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::Transport, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::ServerError, nullptr));
+    TEST_ASSERT_EQUAL(OfferAction::Unchanged, offerAction(FetchOutcome::Refused, nullptr));
+    // known key / unknown key / no signature x USB opt-in off / on.
+    struct Row { bool sig, known, optIn, installs, marksFailed; };
+    const Row rows[] = {
+        {true,  true,  false, true,  true},
+        {true,  true,  true,  true,  true},
+        {true,  false, false, false, false},   // unknown key: like unsigned, not allowed
+        {true,  false, true,  false, false},   // the opt-in does not cover an unknown key
+        {false, false, false, false, false},
+        {false, false, true,  true,  false},
+    };
+    for (const Row& r : rows) {
+        TEST_ASSERT_EQUAL(r.installs, installPermitted(r.sig, r.known, r.optIn));
+        TEST_ASSERT_EQUAL(r.marksFailed, refusalMarksFailed(r.sig, r.known));
+    }
+}
+
+void test_install_now_needs_the_check_in_battery_floor(void) {
+    TEST_ASSERT_NULL(armRefusal(true, true, 3600, 20));
+    TEST_ASSERT_NULL(armRefusal(true, true, 4200, 100));
+    TEST_ASSERT_EQUAL_STRING("battery", armRefusal(true, true, 3599, 100));
+    TEST_ASSERT_EQUAL_STRING("battery", armRefusal(true, true, 4200, 19));
+    TEST_ASSERT_EQUAL_STRING("battery", armRefusal(true, true, -1, 80));
+    TEST_ASSERT_EQUAL_STRING("battery", armRefusal(true, true, 3900, -1));
+    // Earlier refusals keep their order and names.
+    TEST_ASSERT_EQUAL_STRING("no-update-slot", armRefusal(false, true, 4200, 100));
+    TEST_ASSERT_EQUAL_STRING("unsigned", armRefusal(true, false, 4200, 100));
+    TEST_ASSERT_EQUAL_STRING("no-update-slot", armRefusal(false, false, -1, -1));
+    // Plain copy for the battery; the rest keep the generic sentence.
+    TEST_ASSERT_EQUAL_STRING("Charge your Fidget first.", armRefusalCopy("battery"));
+    TEST_ASSERT_NULL(armRefusalCopy("storage"));
+    TEST_ASSERT_NULL(armRefusalCopy("unsigned"));
+    TEST_ASSERT_NULL(armRefusalCopy(nullptr));
+}
+
 void test_utc_timestamps(void) {
     uint32_t t = 1;
     TEST_ASSERT_TRUE(parseUtc("1970-01-01T00:00:00Z", t));
@@ -803,6 +850,8 @@ int main(int, char**) {
     RUN_TEST(test_fork_source_and_rc_channel_parse);
     RUN_TEST(test_optional_signature_pair_is_strict);
     RUN_TEST(test_install_permission_matrix);
+    RUN_TEST(test_an_unknown_signing_key_keeps_the_offer);
+    RUN_TEST(test_install_now_needs_the_check_in_battery_floor);
     RUN_TEST(test_utc_timestamps);
     RUN_TEST(test_gate_accepts_a_matching_offer);
     RUN_TEST(test_gate_hardware_range_runs_first);
