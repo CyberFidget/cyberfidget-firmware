@@ -689,8 +689,7 @@ void SerialCli::dispatch(const char* line) {
         // Bench the restart-with-resume fallback for delivered apps.
         const bool on = ieq(line, "wasm forcerestart on");
         WasmFsApp::testForceRestart(on);
-        Serial.printf("[cmd] wasm.forcerestart=%s
-", on ? "on" : "off");
+        Serial.printf("[cmd] wasm.forcerestart=%s\n", on ? "on" : "off");
         return;
     }
 #endif
