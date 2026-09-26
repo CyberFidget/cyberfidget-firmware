@@ -1,6 +1,6 @@
 {
   "name": "Awake & dev mode: listening delivers within two check-ins, every way out, the latch, Bluetooth apps",
-  "reviewer_setup": "A local_test build. The unit needs saved WiFi (wifi <ssid>|<pass>). Start a LAN test-mode copy of the site (isolated data directory, never a live account) and link this unit's device id to a test account there. Environment: CF_BENCH_BASE=http://<LAN-IP>:<port>, CF_BENCH_TOKEN=<the unit's 43-character link credential>, CF_DEV_STAGE_A / CF_DEV_STAGE_B = host commands that send one wasm app with manifest id $CF_DEV_APP_ID through the site as the studio does (A with fixtures/breakout.wasm, B with fixtures/stopwatch.wasm, so B is a new version of the same id - the site needs op 'replace' for an app already on the Fidget), CF_DEV_APP_ID=<that id>, CF_DEV_STUDIO_ON = a host command that marks the Studio as sending to this Fidget (POST /api/device-studio-activity.php {device_id, active:true} as the account); the site paces dev mode at 2 s only while the Studio is active (60 s), 30 s otherwise. Run: python test/bench/cf_replay.py test/bench/cases/t379-devmode-poll.json --port <PORT> --out <dir> [--part delivery|exits|latch|bluetooth]. Every part starts and ends with the mode Off. A delivered app and listening do not fit in internal RAM together, so listening pauses while the app runs and every open after the network was used goes through a restart ('reopen').",
+  "reviewer_setup": "A local_test build. The unit needs saved WiFi (wifi <ssid>|<pass>). Start a LAN test-mode copy of the site (isolated data directory, never a live account) and link this unit's device id to a test account there. Environment: CF_BENCH_BASE=http://<LAN-IP>:<port>, CF_BENCH_TOKEN=<the unit's 43-character link credential>, CF_DEV_STAGE_A / CF_DEV_STAGE_B = host commands that send one wasm app with manifest id $CF_DEV_APP_ID through the site as the studio does (A with fixtures/breakout.wasm, B with fixtures/stopwatch.wasm, so B is a new version of the same id - the site needs op 'replace' for an app already on the Fidget), CF_DEV_APP_ID=<that id>, CF_DEV_STUDIO_ON = a host command that marks the Studio as sending to this Fidget (POST /api/device-studio-activity.php {device_id, active:true} as the account); the site paces dev mode at 2 s only while the Studio is active (60 s), 30 s otherwise. Run: python test/bench/cf_replay.py test/bench/cases/t379-devmode-poll.json --port <PORT> --out <dir> [--part delivery|exits|latch|bluetooth]. Every part starts and ends with the mode Off. A delivered app's interpreter stack is in PSRAM, so it opens after the network was used with no restart and listening continues beside it while the heap allows; a send of the running app relaunches it in place (no Back press).",
   "parts": [
     {
       "name": "delivery",
@@ -109,16 +109,10 @@
           "do": "command",
           "command": "launch $CF_DEV_APP_ID",
           "expand_env": true,
-          "until": "[wasm] reopen=boot",
-          "timeout_s": 20,
-          "order": [
-            "wifi=off",
-            "[wasm] reopen=restart id=",
-            "radio_used=1",
-            "[boot] fw=",
-            "[awake] boot mode=dev stop=until listen=1",
-            "[wasm] reopen=boot id=",
-            "found=1"
+          "timeout_s": 3,
+          "contains": [
+            "[awake] beside-app=listen",
+            "[cmd] launch.ok=blob"
           ]
         },
         {
@@ -138,7 +132,7 @@
           "do": "command",
           "command": "awake",
           "contains": [
-            "listen=1 worker=0"
+            "listen=1 worker=1"
           ]
         },
         {
@@ -155,25 +149,18 @@
         },
         {
           "do": "watch",
-          "until": "[dev] delivered",
-          "timeout_s": 6,
-          "expect_absent": true
+          "until": "from=app",
+          "timeout_s": 12,
+          "order": [
+            "[dev] delivered batch=",
+            "[dev] relaunch id="
+          ]
         },
         {
-          "do": "command",
-          "command": "launch menu",
-          "until": "[wasm] reopen=boot",
-          "timeout_s": 25,
-          "order": [
-            "[awake] listen=start",
-            "[dev] delivered batch=",
-            "[dev] relaunch id=",
-            "from=menu",
-            "[wasm] reopen=restart",
-            "[boot] fw=",
-            "[wasm] reopen=boot id=",
-            "found=1"
-          ]
+          "do": "watch",
+          "until": "[boot] fw=",
+          "timeout_s": 3,
+          "expect_absent": true
         },
         {
           "do": "wait_cli"
@@ -620,14 +607,9 @@
           "do": "command",
           "command": "launch $CF_DEV_APP_ID",
           "expand_env": true,
-          "until": "[wasm] reopen=boot",
-          "timeout_s": 20,
-          "order": [
-            "[wasm] reopen=restart id=",
-            "radio_used=1",
-            "[boot] fw=",
-            "[wasm] reopen=boot id=",
-            "found=1"
+          "timeout_s": 3,
+          "contains": [
+            "[cmd] launch.ok=blob"
           ]
         },
         {
@@ -907,14 +889,10 @@
           "do": "command",
           "command": "launch $CF_DEV_APP_ID",
           "expand_env": true,
-          "until": "[wasm] reopen=boot",
-          "timeout_s": 30,
-          "order": [
-            "[awake] pause=stuck",
-            "[wasm] reopen=restart id=",
-            "[boot] fw=",
-            "[wasm] reopen=boot id=",
-            "found=1"
+          "timeout_s": 3,
+          "contains": [
+            "[awake] beside-app=listen",
+            "[cmd] launch.ok=blob"
           ]
         },
         {

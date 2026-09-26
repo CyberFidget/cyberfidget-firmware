@@ -295,9 +295,13 @@ allow-list by manifest name): the menu, the boot animation, Status, Updates,
 Check for updates, Awake & dev mode, Particle Sim and Snake - what was
 measured to leave a network session at least 24 KB of internal heap. Every
 other app pauses listening until it ends: the portal, Music Player and Link
-need the radio or the worker, a delivered (WASM) app and the network do not
-fit together (bench: 2 KB free, every check-in failed), Voice Notes dipped to
-13 KB. An app added to the firmware pauses listening until it is measured
+need the radio or the worker, Voice Notes dipped to 13 KB. A delivered
+(WASM) app is not on the list; listening continues beside it when the heap
+allows (`AwakePolicy::listensBesideDeliveredApp`: internal free when it
+opens >= 24 KB floor + 18 KB check-in cost + 8 KB app), and a check-in whose
+trough falls below 24 KB while it runs pauses listening until it ends
+(`[awake] pause=heap`). A send of the running app then relaunches it in
+place, with no Back press. An app added to the firmware pauses listening until it is measured
 and listed. Opening a paused app first shows "Pausing dev mode..." while
 WiFi goes off; if the worker does not stop in time (a stuck network call),
 the app is not opened beside it: a delivered app opens in a fresh start, a
@@ -308,10 +312,10 @@ run this power cycle, that app opens again (through the restart below).
 Anything else just appears in the menu.
 
 **Opening a delivered app after the network was used** (any power cycle, any
-mode): a delivered app's task needs one contiguous 64 KB block of internal
-RAM, and after the network has been used in a power cycle the heap no longer
-has one, even with WiFi off (bench: 61 KB largest after one check-in). The app
-then opens through a restart: "Opening <app>...", `bootcfg.wasmid` (+
+mode): a delivered app's task needs a small internal-RAM block (4 KB stack
+plus its control block) and its interpreter stack (128 KB) in PSRAM, so it
+opens directly after a check-in and beside dev mode listening. Only when
+either cannot be allocated does the app open through a restart: "Opening <app>...", `bootcfg.wasmid` (+
 `wasmcat`, the menu category it was opened from) and `skipanim`, restart, and
 the app starts straight after boot before anything uses the network. The
 one-shot is removed before the app starts (a failing app never loops; an id

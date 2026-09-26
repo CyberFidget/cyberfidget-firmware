@@ -352,6 +352,23 @@ void test_listening_allow_list(void) {
     TEST_ASSERT_FALSE(listensDuring(nullptr));
 }
 
+void test_listening_beside_a_delivered_app(void) {
+    // A delivered app is not on the allow-list; the heap decides. Opening:
+    // the floor, one check-in's cost and the app's own share must fit.
+    const uint32_t need = kListenTroughFloor + kListenPollCost + kDeliveredAppCost;
+    TEST_ASSERT_EQUAL_UINT32(50u * 1024u, need);
+    TEST_ASSERT_TRUE(listensBesideDeliveredApp(need));
+    TEST_ASSERT_FALSE(listensBesideDeliveredApp(need - 1));
+    // Steady listening at the menu measured 61-62 KB free: listening goes on.
+    TEST_ASSERT_TRUE(listensBesideDeliveredApp(61600));
+    // While it runs: a trough under 24 KB pauses listening.
+    TEST_ASSERT_TRUE(troughBelowFloor(kListenTroughFloor - 1));
+    TEST_ASSERT_FALSE(troughBelowFloor(kListenTroughFloor));
+    TEST_ASSERT_FALSE(troughBelowFloor(45200));
+    // The allow-list itself is unchanged.
+    TEST_ASSERT_FALSE(listensDuring("APP_WASM_HOST"));
+}
+
 void test_restart_loop_ends_the_mode(void) {
     uint8_t n = 0;
     n = nextLoopCount(n, true, true);
@@ -401,6 +418,7 @@ int main(int, char**) {
     RUN_TEST(test_marker_for_each_awake_mode);
     RUN_TEST(test_breathing_indicator);
     RUN_TEST(test_listening_allow_list);
+    RUN_TEST(test_listening_beside_a_delivered_app);
     RUN_TEST(test_restart_loop_ends_the_mode);
     RUN_TEST(test_clean_stretch_clears_the_loop_count);
     return UNITY_END();

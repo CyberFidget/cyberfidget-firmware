@@ -74,15 +74,21 @@ extern "C" void* m3_Realloc_Impl(void* i_ptr, size_t i_newSize, size_t i_oldSize
 // other trap and lands in WasmAppShell's error path (OLED error screen)
 // instead of resetting the device.
 //
-// The floor sits kNativeStackReserveBytes above the running task's stack
-// base, reserving headroom for: host imports called at max guest depth
-// (display text rendering is the deepest), wasm3's lazy CompileFunction
-// recursion (per block-nesting level, runs before the callee's op_Entry
-// check), and the panic/trap unwind path itself.
+// The same check runs before every host import call and per block-nesting
+// level of wasm3's lazy compiler (both patched in lib/wasm3), so none of them
+// starts below the floor. The floor sits CF_WASM_NATIVE_STACK_RESERVE above
+// the running task's stack base; the reserve covers what can still run below
+// it: one host import (display text rendering and the serial log are the
+// deepest), one compiler step, and the trap unwind itself. It does NOT bound
+// a long straight run of interpreted ops entered just above the floor (one
+// native frame per op on this CPU, no check inside the run): such a run can
+// still reach the end-of-stack watchpoint and reset the Fidget. The guest
+// stack is in PSRAM (lib/WasmFsApp), sized ~2x the deepest measured app, so
+// that needs an app far deeper than any measured one.
 // ---------------------------------------------------------------------------
 
 #ifndef CF_WASM_NATIVE_STACK_RESERVE
-#define CF_WASM_NATIVE_STACK_RESERVE (10 * 1024)
+#define CF_WASM_NATIVE_STACK_RESERVE (16 * 1024)
 #endif
 
 static volatile uintptr_t s_nativeStackFloor = 0;
