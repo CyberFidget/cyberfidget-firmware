@@ -124,6 +124,18 @@ Automated tests can't drive real hardware. Whenever a change touches LEDs, the O
 4. **Audio.** `stopTone()` (or equivalent) fires on `end()` — no audio bleeding into the menu or the next app.
 5. **Sleep/power-cycle.** If the app's idle state drives LEDs, confirm they also go dark on deep-sleep entry, not just on app exit.
 
+## Developer gotchas
+
+Things that have cost real bench time. None of them is a bug to fix; they are how the hardware and tools behave.
+
+- **Flash dev and bench units with `pio run -e <env> -t upload`.** Every build also writes `merged_firmware.bin` (bootloader, partition table and app in one file, starting at `0x1000`). The gaps in that file are padding, so writing it covers the settings area (NVS at `0x9000`) and erases saved WiFi, the account link and every other stored setting. Use the merged image only for a deliberate factory-fresh flash.
+- **A Fidget that seems frozen may be asleep.** After 60 s without a button press (`TASK_LASTINTERACT`) it goes into deep sleep: the screen is off and the USB serial port stops answering. Press a button to wake it. Settings > Awake & dev mode > Stay awake keeps it up while you work.
+- **Opening the USB serial port resets the board.** Wait for it to start, then send `version` until it answers before sending anything else. A command sent into the boot is lost.
+- **Any WiFi use splits memory for the rest of that power cycle.** After a check-in, the portal or dev mode listening, internal RAM no longer has the single 64 KB block a delivered (WASM) app's task needs, even with WiFi off. A delivered app opened then restarts straight into itself ("Opening <app>..."). That is by design (see `lib/UpdatePolicy/README.md`, "Opening a delivered app after the network was used"). Bench any change that touches memory or app launch by opening a delivered app after a check-in, not only from a cold start.
+- **Native `pio test` envs on Windows need the MSYS2 ucrt64 compiler first on `PATH`.** From Git Bash, the `/mingw64` DLLs on its default `PATH` collide with the ucrt64 toolchain and the compiler dies with no useful message. Run `PATH="/c/msys64/ucrt64/bin:$PATH" pio test -e <env>`.
+- **`pio run -v` fails at the image step on Windows.** Use plain `pio run`.
+- **Rebuild the emulator after changing a header it includes.** The WASM build compiles against this repo's headers in `lib/` (the HAL, `lib/Globals` and the built-in apps, see `wasm/CMakeLists.txt`); a changed struct, constant or signature there leaves an old emulator build out of step with the firmware until you run `wasm/build_wasm.sh` (or `build_wasm.bat`) again.
+
 ## Project Structure
 
 ```
