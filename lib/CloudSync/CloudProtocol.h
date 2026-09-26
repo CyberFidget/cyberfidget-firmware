@@ -104,6 +104,29 @@ struct CheckinFields {
 /// The check-in POST body. Empty on an allocation failure.
 std::string buildCheckinBody(const CheckinFields& fields);
 
+/// RAM-only report history for one worker session. A fresh session starts
+/// without an acknowledged full report, even if a prior boot sent one.
+struct ReportState {
+    bool hasFullCrc = false;
+    uint32_t fullCrc = 0;
+    bool sendReport = false;
+    bool lastFullFailed = false;
+};
+
+/// Whether this check-in must include installed. `hasAck` means both a valid
+/// applied_batch and result will be sent.
+bool fullReportRequired(const ReportState& state, uint32_t manifestCrc, bool hasAck);
+
+/// Pure transition after one HTTP attempt. A transport failure uses status 0;
+/// sendReport is taken only from a successfully parsed 2xx reply.
+ReportState reportAfterCheckin(const ReportState& state, uint32_t manifestCrc,
+                               bool sentFull, int status, bool sendReport);
+
+/// Retain a completed dev check-in connection only across a short wait.
+constexpr uint32_t kDevKeepConnectionMs = 5000;
+bool keepDevConnection(int status, bool cycleOk, uint32_t waitMs,
+                       bool wifiConnected, bool cancelled);
+
 /// Seconds since the epoch for "YYYY-MM-DDTHH:MM:SSZ", or 0.
 uint32_t serverEpoch(const char* iso);
 

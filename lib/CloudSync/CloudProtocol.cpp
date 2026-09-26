@@ -252,6 +252,33 @@ std::string buildCheckinBody(const CheckinFields& f) {
     return body;
 }
 
+bool fullReportRequired(const ReportState& state, uint32_t manifestCrc, bool hasAck) {
+    return !state.hasFullCrc || state.fullCrc != manifestCrc || state.sendReport ||
+           state.lastFullFailed || hasAck;
+}
+
+ReportState reportAfterCheckin(const ReportState& state, uint32_t manifestCrc,
+                               bool sentFull, int status, bool sendReport) {
+    ReportState next = state;
+    const bool accepted = status >= 200 && status < 300;
+    if (sentFull) {
+        next.lastFullFailed = !accepted;
+        if (accepted) {
+            next.hasFullCrc = true;
+            next.fullCrc = manifestCrc;
+            next.sendReport = false;
+        }
+    }
+    if (accepted && sendReport) next.sendReport = true;
+    return next;
+}
+
+bool keepDevConnection(int status, bool cycleOk, uint32_t waitMs,
+                       bool wifiConnected, bool cancelled) {
+    return status >= 200 && status < 300 && cycleOk &&
+           waitMs <= kDevKeepConnectionMs && wifiConnected && !cancelled;
+}
+
 bool devMode(const std::string& mode, uint32_t nextPollMs) {
     return mode == "dev" || mode == "always" || mode == "dev-always" ||
            nextPollMs == kDevPollMs;
