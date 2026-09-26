@@ -295,6 +295,27 @@ void test_server_epoch_rejects_bad_text() {
     TEST_ASSERT_EQUAL_UINT32(0, serverEpoch("2026-09-23T10:00:00Zjunk"));
 }
 
+void test_http_date_epoch_strict_imf_fixdate() {
+    TEST_ASSERT_EQUAL_UINT32(1790395744u, httpDateEpoch("Sat, 26 Sep 2026 04:09:04 GMT"));
+    TEST_ASSERT_EQUAL_UINT32(0, httpDateEpoch("Sun, 26 Sep 2026 04:09:04 GMT"));
+    TEST_ASSERT_EQUAL_UINT32(0, httpDateEpoch("Sat, 26 Foo 2026 04:09:04 GMT"));
+    TEST_ASSERT_EQUAL_UINT32(0, httpDateEpoch("Sat, 32 Sep 2026 04:09:04 GMT"));
+    TEST_ASSERT_EQUAL_UINT32(0, httpDateEpoch("Fri, 30 Feb 2024 04:09:04 GMT"));
+    TEST_ASSERT_EQUAL_UINT32(0, httpDateEpoch("Sat, 26 Sep 2026 24:09:04 GMT"));
+    TEST_ASSERT_EQUAL_UINT32(0, httpDateEpoch("Sat, 26 Sep 2026 04:09:04 GMT extra"));
+    TEST_ASSERT_EQUAL_UINT32(0, httpDateEpoch(""));
+    TEST_ASSERT_EQUAL_UINT32(0, httpDateEpoch(nullptr));
+}
+
+void test_checkin_tracks_server_time_presence_for_date_fallback() {
+    CheckinReply reply;
+    TEST_ASSERT_TRUE(parseCheckin(nullptr, 2000, reply));
+    TEST_ASSERT_FALSE(reply.hasServerTime);
+    TEST_ASSERT_TRUE(parseCheckin("{\"server_time\":\"bad\"}", 0, reply));
+    TEST_ASSERT_TRUE(reply.hasServerTime);
+    TEST_ASSERT_EQUAL_UINT32(0, reply.serverEpoch);
+}
+
 // ---------------------------------------------------------------------------
 // Offer parsing
 // ---------------------------------------------------------------------------
@@ -447,18 +468,34 @@ void test_checkin_body_carries_hardware_fields_when_present() {
 
 void test_full_report_decision_covers_every_trigger() {
     ReportState state;
-    TEST_ASSERT_TRUE(fullReportRequired(state, 0, false)); // first check-in, including CRC zero
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0, nullptr)); // first check-in, including CRC zero
     state = reportAfterCheckin(state, 0x12345678, true, 204, false);
     TEST_ASSERT_TRUE(state.hasFullCrc);
     TEST_ASSERT_EQUAL_UINT32(0x12345678, state.fullCrc);
-    TEST_ASSERT_FALSE(fullReportRequired(state, 0x12345678, false));
-    TEST_ASSERT_TRUE(fullReportRequired(state, 0x87654321, false)); // manifest changed
-    TEST_ASSERT_TRUE(fullReportRequired(state, 0x12345678, true));  // applied_batch + result
+    TEST_ASSERT_FALSE(fullReportRequired(state, 0x12345678, nullptr));
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0x87654321, nullptr)); // manifest changed
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0x12345678, "X"));  // first answer of X
     state.sendReport = true;
-    TEST_ASSERT_TRUE(fullReportRequired(state, 0x12345678, false)); // read-back / CRC request
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0x12345678, nullptr)); // read-back / CRC request
     state.sendReport = false;
     state.lastFullFailed = true;
-    TEST_ASSERT_TRUE(fullReportRequired(state, 0x12345678, false)); // failed full report
+    TEST_ASSERT_TRUE(fullReportRequired(state, 0x12345678, nullptr)); // failed full report
+}
+
+void test_ack_report_is_full_until_that_batch_succeeds() {
+    ReportState state;
+    state = reportAfterCheckin(state, 17, true, 204, false);
+    TEST_ASSERT_TRUE(fullReportRequired(state, 17, "X"));
+    state = reportAfterCheckin(state, 17, true, 429, false, "X");
+    TEST_ASSERT_TRUE(state.lastAckBatch.empty());
+    TEST_ASSERT_TRUE(fullReportRequired(state, 17, "X"));
+    state = reportAfterCheckin(state, 17, true, 204, false, "X");
+    TEST_ASSERT_EQUAL_STRING("X", state.lastAckBatch.c_str());
+    TEST_ASSERT_FALSE(fullReportRequired(state, 17, "X"));
+    TEST_ASSERT_TRUE(fullReportRequired(state, 17, "Y"));
+    state = reportAfterCheckin(state, 17, true, 200, false, "Y");
+    TEST_ASSERT_FALSE(fullReportRequired(state, 17, "Y"));
+    TEST_ASSERT_TRUE(fullReportRequired(state, 17, "X"));
 }
 
 void test_report_history_advances_only_on_successful_full_post() {
@@ -654,6 +691,8 @@ int main(int, char**) {
     RUN_TEST(test_checkin_204_and_429_bodies);
     RUN_TEST(test_checkin_rejects_unreportable_batch_id);
     RUN_TEST(test_server_epoch_rejects_bad_text);
+    RUN_TEST(test_http_date_epoch_strict_imf_fixdate);
+    RUN_TEST(test_checkin_tracks_server_time_presence_for_date_fallback);
     RUN_TEST(test_offer_escaped_doc_hashes_verbatim);
     RUN_TEST(test_offer_doc_crc_mismatch_is_permanent);
     RUN_TEST(test_offer_batch_mismatch_is_rejected);
@@ -665,6 +704,7 @@ int main(int, char**) {
     RUN_TEST(test_checkin_body_omits_unacceptable_answer);
     RUN_TEST(test_checkin_body_carries_hardware_fields_when_present);
     RUN_TEST(test_full_report_decision_covers_every_trigger);
+    RUN_TEST(test_ack_report_is_full_until_that_batch_succeeds);
     RUN_TEST(test_report_history_advances_only_on_successful_full_post);
     RUN_TEST(test_slim_checkin_keeps_crc_and_telemetry);
     RUN_TEST(test_dev_connection_only_survives_short_successful_wait);

@@ -57,6 +57,7 @@ constexpr const char* kUpdNs = "upd";
 constexpr const char* kAvailKeyId = "avail_kid";
 
 constexpr const char* kDidNotFinish = "The update did not finish. Nothing changed.";
+constexpr const char* kCouldNotVerify = "This update could not be verified.";
 
 void rememberFailedVersion(const char* version) {
     Preferences upd;
@@ -345,6 +346,7 @@ bool before(uint32_t deadline) { return (int32_t)(millis() - deadline) < 0; }
     Preferences boot;
     if (boot.begin(kBootNs, false)) {
         boot.putBool("skipanim", true);
+        boot.putBool("verify_fail", !installed && strcmp(reason, "verify") == 0);
         // Set when the session began; only a finished install clears it.
         if (installed && boot.isKey(kBootFailed)) boot.remove(kBootFailed);
         boot.end();
@@ -622,6 +624,7 @@ void finishBoot() {
     // A session that never handed over (set at its start, cleared once the
     // install is ready).
     bool sessionFailed = false;
+    bool verificationFailed = false;
     {
         Preferences boot;
         if (boot.begin(kBootNs, false)) {
@@ -629,6 +632,8 @@ void finishBoot() {
                 sessionFailed = true;
                 boot.remove(kBootFailed);
             }
+            verificationFailed = boot.getBool("verify_fail", false);
+            if (boot.isKey("verify_fail")) boot.remove("verify_fail");
             boot.end();
         }
     }
@@ -691,7 +696,7 @@ void finishBoot() {
         }
     }
     if (sessionFailed) {
-        if (!noticed) postNotice(kDidNotFinish, true);
+        if (!noticed) postNotice(verificationFailed ? kCouldNotVerify : kDidNotFinish, true);
         Serial.println("[update] result=did-not-finish reason=session");
     }
 }
@@ -723,6 +728,7 @@ void runSession(const char* wanted) {
         Preferences boot;
         if (boot.begin(kBootNs, false)) {
             boot.putBool(kBootFailed, true);
+            boot.putBool("verify_fail", false);
             boot.end();
         }
     }
@@ -770,7 +776,7 @@ void runSession(const char* wanted) {
         Serial.printf("[update] verify=%s\n", m.sig[0] ? "unknown-key" : "unsigned");
         if (m.sig[0]) {
             rememberFailedVersion(m.version);
-            endSession(false, "verify", "This update could not be verified.", started);
+            endSession(false, "verify", kCouldNotVerify, started);
         }
         endSession(false, "unsigned", "Install from the website or allow this over USB.", started);
     }
@@ -797,7 +803,7 @@ void runSession(const char* wanted) {
     if (result != OtaUpdate::InstallResult::Ready) {
         if (result == OtaUpdate::InstallResult::VerificationFailed) {
             rememberFailedVersion(m.version);
-            endSession(false, "verify", "This update could not be verified.", started);
+            endSession(false, "verify", kCouldNotVerify, started);
         }
         endSession(false, OtaUpdate::installResultName(result), nullptr, started);
     }

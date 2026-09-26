@@ -118,6 +118,41 @@ static void test_upload_window() {
     TEST_ASSERT_FALSE(w.complete);
 }
 
+static void test_upload_window_drops_duplicate_sequence() {
+    Record records[5] = {};
+    const uint32_t seqs[] = {1813, 1814, 1814, 1815, 1816};
+    for (size_t i = 0; i < 5; ++i) records[i].seq = seqs[i];
+    UploadWindow w = uploadWindow(records, 5, 1812, false);
+    TEST_ASSERT_EQUAL(0, w.first);
+    TEST_ASSERT_EQUAL(4, w.count);
+    TEST_ASSERT_FALSE(w.complete);
+    const uint32_t kept[] = {1813, 1814, 1815, 1816};
+    for (size_t i = 0; i < w.count; ++i)
+        TEST_ASSERT_EQUAL_UINT32(kept[i], records[w.first + i].seq);
+}
+
+static void test_upload_window_drops_decreasing_sequence() {
+    Record records[5] = {};
+    const uint32_t seqs[] = {1813, 1814, 1812, 1815, 1816};
+    for (size_t i = 0; i < 5; ++i) records[i].seq = seqs[i];
+    const UploadWindow w = uploadWindow(records, 5, 1812, false);
+    TEST_ASSERT_EQUAL(4, w.count);
+    TEST_ASSERT_FALSE(w.complete);
+    const uint32_t kept[] = {1813, 1814, 1815, 1816};
+    for (size_t i = 0; i < w.count; ++i)
+        TEST_ASSERT_EQUAL_UINT32(kept[i], records[w.first + i].seq);
+}
+
+static void test_upload_window_normal_run_stays_complete() {
+    Record records[4] = {};
+    for (uint32_t i = 0; i < 4; ++i) records[i].seq = 20 + i;
+    const UploadWindow w = uploadWindow(records, 4, 19, false);
+    TEST_ASSERT_EQUAL(4, w.count);
+    TEST_ASSERT_TRUE(w.complete);
+    for (uint32_t i = 0; i < 4; ++i)
+        TEST_ASSERT_EQUAL_UINT32(20 + i, records[w.first + i].seq);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_codec_round_trip_all_events_and_clamps);
@@ -128,5 +163,8 @@ int main(int, char**) {
     RUN_TEST(test_ring_rotation_math);
     RUN_TEST(test_upload_gate);
     RUN_TEST(test_upload_window);
+    RUN_TEST(test_upload_window_drops_duplicate_sequence);
+    RUN_TEST(test_upload_window_drops_decreasing_sequence);
+    RUN_TEST(test_upload_window_normal_run_stays_complete);
     return UNITY_END();
 }
