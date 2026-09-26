@@ -774,11 +774,15 @@ void runSession(const char* wanted) {
     const bool unsignedAllowed = allowUnsigned();
     if (!OtaUpdate::installPermitted(m.sig[0] != 0, UpdateSigning::knownKey(m.keyId), unsignedAllowed)) {
         Serial.printf("[update] verify=%s\n", m.sig[0] ? "unknown-key" : "unsigned");
-        if (m.sig[0]) {
+        // Nothing was checked yet: a key id this firmware does not know is
+        // not a failed release (the offer stays; the website installs it).
+        if (OtaUpdate::refusalMarksFailed(m.sig[0] != 0, UpdateSigning::knownKey(m.keyId))) {
             rememberFailedVersion(m.version);
             endSession(false, "verify", kCouldNotVerify, started);
         }
-        endSession(false, "unsigned", "Install from the website or allow this over USB.", started);
+        endSession(false, m.sig[0] ? "unknown-key" : "unsigned",
+                   m.sig[0] ? "Install from the website." : "Install from the website or allow this over USB.",
+                   started);
     }
     const char* seen = mc.seen;
     CloudSync::FetchReply reply;
@@ -844,8 +848,14 @@ bool installAllowed() {
 bool armInstall(const char* version, const char** why) {
     const char* ignored = nullptr;
     if (!why) why = &ignored;
-    if (!hasUpdateSlot()) { *why = "no-update-slot"; return false; }
-    if (!installAllowed()) { *why = "unsigned"; return false; }
+    // The automatic check-in's battery floor (batteryVoltage and its
+    // percentage are the loop's last reading).
+    const int32_t vbatMv = batteryVoltage >= 2.0f && batteryVoltage <= 4.6f
+        ? (int32_t)(batteryVoltage * 1000.0f + 0.5f) : -1;
+    const int32_t socPct = batteryVoltagePercentage >= 0.0f && batteryVoltagePercentage <= 110.0f
+        ? (int32_t)batteryVoltagePercentage : -1;
+    const char* refused = OtaUpdate::armRefusal(hasUpdateSlot(), installAllowed(), vbatMv, socPct);
+    if (refused) { *why = refused; return false; }
     if (!version || !version[0] || strlen(version) > OtaUpdate::kMaxVersionLen || strchr(version, ' ')) {
         *why = "version";
         return false;
@@ -880,44 +890,33 @@ void refreshOffer(uint32_t deadlineMs) {
     // The check-in's own short call timeout: a Music Player launch waits
     // for this worker to stop.
     checkManifest(base, nullptr, deadlineMs, kOfferCallMs, mc);
-    if (mc.outcome == OtaUpdate::FetchOutcome::BadManifest && mc.bad &&
-        (strcmp(mc.bad, "sig") == 0 || strcmp(mc.bad, "key_id") == 0)) {
-        Preferences upd;
-        if (upd.begin(kUpdNs, false)) {
-            if (upd.isKey(OtaUpdate::kKeyAvail)) upd.remove(OtaUpdate::kKeyAvail);
-            if (upd.isKey(kAvailKeyId)) upd.remove(kAvailKeyId);
-            upd.end();
-        }
-        return;
-    }
-    if (mc.outcome != OtaUpdate::FetchOutcome::Ok && mc.outcome != OtaUpdate::FetchOutcome::GateRefused) {
+    const OtaUpdate::OfferAction action = OtaUpdate::offerAction(mc.outcome, mc.bad);
+    if (action == OtaUpdate::OfferAction::Unchanged) {
         Serial.printf("[update] offer=unchanged outcome=%d\n", (int)mc.outcome);
         return;
     }
     Preferences upd;
     if (!upd.begin(kUpdNs, false)) return;
     bool ok;
-    if (mc.outcome == OtaUpdate::FetchOutcome::Ok && mc.m.sig[0] &&
-        !UpdateSigning::knownKey(mc.m.keyId)) {
-        Serial.println("[update] verify=unknown-key");
-        upd.putString(OtaUpdate::kKeyFailVer, mc.m.version);
-        ok = !upd.isKey(OtaUpdate::kKeyAvail) || upd.remove(OtaUpdate::kKeyAvail);
-        ok = (!upd.isKey(kAvailKeyId) || upd.remove(kAvailKeyId)) && ok;
-    } else if (mc.outcome == OtaUpdate::FetchOutcome::Ok) {
+    if (action == OtaUpdate::OfferAction::Store) {
+        // A key id this firmware does not know is stored like any other:
+        // installAllowed() then refuses, and the prompt says to update from
+        // the website. Nothing is marked failed.
+        if (mc.m.sig[0] && !UpdateSigning::knownKey(mc.m.keyId)) Serial.println("[update] verify=unknown-key");
         ok = upd.putString(OtaUpdate::kKeyAvail, mc.m.version) == strlen(mc.m.version);
         if (mc.m.sig[0])
             ok = upd.putString(kAvailKeyId, mc.m.keyId) == strlen(mc.m.keyId) && ok;
         else
             ok = (!upd.isKey(kAvailKeyId) || upd.remove(kAvailKeyId)) && ok;
     } else {
-        // A release this Fidget must not take is never offered.
+        // A release this Fidget must not take (a gate said no, or its
+        // signature fields are malformed) is never offered.
         ok = !upd.isKey(OtaUpdate::kKeyAvail) || upd.remove(OtaUpdate::kKeyAvail);
         ok = (!upd.isKey(kAvailKeyId) || upd.remove(kAvailKeyId)) && ok;
     }
     upd.end();
     Serial.printf("[update] offer=%s version=%s gate=%s write=%s\n",
-                  mc.outcome == OtaUpdate::FetchOutcome::Ok &&
-                  (!mc.m.sig[0] || UpdateSigning::knownKey(mc.m.keyId)) ? "stored" : "withdrawn", mc.m.version,
+                  action == OtaUpdate::OfferAction::Store ? "stored" : "withdrawn", mc.m.version,
                   OtaUpdate::verdictName(mc.verdict), ok ? "ok" : "error");
 }
 

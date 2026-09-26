@@ -105,6 +105,10 @@ bool listensDuring(const char* name) {
     return false;
 }
 
+bool stopsAutomaticSession(const char* appEnumName, bool automaticSessionRunning) {
+    return automaticSessionRunning && !listensDuring(appEnumName);
+}
+
 bool listensBesideDeliveredApp(uint32_t freeInternal) {
     return freeInternal >= kListenTroughFloor + kListenPollCost + kDeliveredAppCost;
 }

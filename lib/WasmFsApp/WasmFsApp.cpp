@@ -110,7 +110,11 @@ void guestMain() {
         WasmCmd c = s_cmd;
         if (c == CMD_UPDATE) {
             if (s_shell) s_shell->update();
-            selfSampleGuestStack();
+            // The high-water mark scans the unused part of the PSRAM stack
+            // (up to ~100 KB) and never goes back up, so every 32nd frame
+            // (and at begin and end) loses nothing but freshness.
+            static uint8_t frames = 0;
+            if ((++frames & 31u) == 0) selfSampleGuestStack();
             xSemaphoreGive(s_cmdDone);
         } else {                            // CMD_END
             if (s_shell) s_shell->end();

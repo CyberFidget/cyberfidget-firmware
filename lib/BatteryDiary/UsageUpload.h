@@ -22,6 +22,13 @@ inline bool uploadDue(bool enabled, bool linked, bool batteryEligible,
            remainingMs >= 8000U;
 }
 
+// Whether an upload attempt stores its time (upd.usage_at) and so waits the
+// full gap before the next one. Any answer from the site does - accepted,
+// refused (non-2xx), or an answer the device could not use - so a site that
+// refuses is not re-sent up to 98 KB every automatic session. Only no answer
+// at all (status 0: no connection, timeout) tries again next session.
+inline bool uploadStartsWait(int httpStatus) { return httpStatus >= 100; }
+
 struct UploadWindow {
     size_t first = 0;
     size_t count = 0;

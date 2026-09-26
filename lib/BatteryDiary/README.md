@@ -85,7 +85,9 @@ or saved network names. It leaves `complete: false` when older unsent records
 were dropped by the ring or omitted by the bounded upload window. Sequence
 numbers permit the server to ignore records it already accepted. The
 accepted sequence and upload time are stored in `upd.usage_seq` and
-`upd.usage_at`. A failed upload does not advance either value.
+`upd.usage_at`. An upload the site answers but does not accept stores
+only `upd.usage_at` (the same records go at the next upload, a day later);
+an upload with no answer at all advances neither value.
 
 ## Referenced outside the firmware
 

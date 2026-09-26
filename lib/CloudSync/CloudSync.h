@@ -63,6 +63,9 @@ bool consumeResult(Result& out);
 bool cancelPending();
 void requestCancel();
 bool busy();
+// True while a scheduled or recovery check-in runs (Boot, Daily, Awake,
+// Recovery) - not a Manual check, dev mode listening, or a link worker.
+bool automaticSessionRunning();
 // True while a session may be changing the app store: any session except
 // dev mode listening between its check-ins. Serial transfers wait for it.
 bool storeBusy();

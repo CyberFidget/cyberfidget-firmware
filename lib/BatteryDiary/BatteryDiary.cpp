@@ -10,6 +10,8 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <esp_attr.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 namespace BatteryDiary {
 namespace {
@@ -61,6 +63,35 @@ static uint32_t s_nextSampleTick = kFirstAwakeTicks;
 static uint8_t s_onTimeSubticks = 0;
 static bool s_firstAwakeSample = true;
 static ChargeCycleDetector s_cycleDetector;
+
+// The cloud worker reads the upload snapshot while the loop task appends and
+// rotates: one recursive lock around every public entry point that touches
+// the ring, the stats or s_ready (recursive: entry points call each other).
+// Held only for file work, never across a network call.
+SemaphoreHandle_t diaryLock() {
+    static SemaphoreHandle_t lock = nullptr;
+    static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    if (lock) return lock;
+    SemaphoreHandle_t created = xSemaphoreCreateRecursiveMutex();
+    portENTER_CRITICAL(&mux);
+    if (!lock) {
+        lock = created;
+        created = nullptr;
+    }
+    portEXIT_CRITICAL(&mux);
+    if (created) vSemaphoreDelete(created);
+    return lock;
+}
+
+class Guard {
+public:
+    Guard() : lock_(diaryLock()) { if (lock_) xSemaphoreTakeRecursive(lock_, portMAX_DELAY); }
+    ~Guard() { if (lock_) xSemaphoreGiveRecursive(lock_); }
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
+private:
+    SemaphoreHandle_t lock_;
+};
 
 void defaultStats(Stats* stats) {
     if (stats == nullptr) return;
@@ -287,6 +318,7 @@ bool mountForTimerFlush() {
 }  // namespace
 
 bool begin(const char* wake_cause_name) {
+    Guard guard;
     if (!ensureDirectory()) return false;
     if (!loadStats(&s_stats)) defaultStats(&s_stats);
     uint32_t nextSeq = s_stats.records_written + 1U;
@@ -323,6 +355,7 @@ bool begin(const char* wake_cause_name) {
 }
 
 void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr) {
+    Guard guard;
     if (!s_ready) return;
     ++s_awakeTicks;
     if (++s_onTimeSubticks >= 5U) {
@@ -346,6 +379,7 @@ void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr) {
 }
 
 void onTimerCheckin(int32_t vcell_mv) {
+    Guard guard;
     if (!rtcValid()) resetRtc(1, 0, 0);
     ++s_rtc.checkin_count;
     int16_t mv = (vcell_mv >= INT16_MIN && vcell_mv <= INT16_MAX)
@@ -354,10 +388,12 @@ void onTimerCheckin(int32_t vcell_mv) {
 }
 
 bool timerFlushDue() {
+    Guard guard;
     return rtcValid() && s_rtc.count >= kRtcFlushThreshold;
 }
 
 bool flushTimerCheckins() {
+    Guard guard;
     if (!mountForTimerFlush()) return false;
     if (!loadStats(&s_stats)) defaultStats(&s_stats);
     bool ok = flushRtcInternal();
@@ -367,6 +403,7 @@ bool flushTimerCheckins() {
 }
 
 void onTimerShutdown(int32_t vcell_mv) {
+    Guard guard;
     if (!rtcValid()) resetRtc(1, 0, 0);
     int16_t mv = (vcell_mv >= INT16_MIN && vcell_mv <= INT16_MAX)
                      ? (int16_t)vcell_mv : -1;
@@ -375,6 +412,7 @@ void onTimerShutdown(int32_t vcell_mv) {
 }
 
 void onSleepEnter(float vcell, float soc_pct, float crate_pct_hr) {
+    Guard guard;
     if (!s_ready) return;
     appendRtc(makeNextRecord(SLEEP_ENTER, millis(), millivolts(vcell),
                              hundredths(soc_pct), hundredths(crate_pct_hr)));
@@ -382,6 +420,7 @@ void onSleepEnter(float vcell, float soc_pct, float crate_pct_hr) {
 }
 
 void onRuntimeShutdown(float vcell, float soc_pct, float crate_pct_hr) {
+    Guard guard;
     if (!s_ready) return;
     appendRtc(makeNextRecord(SHUTDOWN_RUNTIME, millis(), millivolts(vcell),
                              hundredths(soc_pct), hundredths(crate_pct_hr)));
@@ -390,12 +429,14 @@ void onRuntimeShutdown(float vcell, float soc_pct, float crate_pct_hr) {
 
 void onFlushMarker(uint32_t app_index, float vcell, float soc_pct,
                    float crate_pct_hr) {
+    Guard guard;
     if (!s_ready) return;
     appendDirect(FLUSH_MARKER, app_index, millivolts(vcell),
                  hundredths(soc_pct), hundredths(crate_pct_hr));
 }
 
 bool getStats(Stats* stats) {
+    Guard guard;
     if (!s_ready || stats == nullptr) return false;
     *stats = s_stats;
     if (rtcValid() && s_rtc.checkin_count > stats->checkin_count)
@@ -404,6 +445,7 @@ bool getStats(Stats* stats) {
 }
 
 size_t readLastRecords(Record* records, size_t capacity, uint32_t* total_records) {
+    Guard guard;
     if (total_records != nullptr) *total_records = 0;
     if (!s_ready || records == nullptr || capacity == 0) return 0;
     File file = LittleFS.open(kRingPath, FILE_READ);
@@ -428,6 +470,7 @@ size_t readLastRecords(Record* records, size_t capacity, uint32_t* total_records
 
 size_t readUploadSnapshot(Record* records, size_t capacity, uint32_t* total_records,
                           uint8_t stats_bytes[38]) {
+    Guard guard;
     if (total_records) *total_records = 0;
     if (!records || !capacity || !stats_bytes) return 0;
     // Normal boots already own a mounted LittleFS through LoadoutStore.
@@ -451,6 +494,7 @@ size_t readUploadSnapshot(Record* records, size_t capacity, uint32_t* total_reco
 }
 
 bool clear() {
+    Guard guard;
     if (!s_ready || !ensureDirectory()) return false;
     // Sequence is the server's de-duplication key. Keep its next value even
     // when the ring and the other counters are deliberately reset.

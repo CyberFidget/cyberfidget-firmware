@@ -9,6 +9,7 @@
 #include <cJSON.h>
 
 #include "OtaManifest.h"
+#include "CheckinPolicy.h"
 #include "PromptPolicy.h"
 
 namespace OtaUpdate {
@@ -304,6 +305,29 @@ bool fallbackAllowed(FetchOutcome outcome) {
 
 bool installPermitted(bool hasSignature, bool knownKey, bool allowUnsigned) {
     return hasSignature ? knownKey : allowUnsigned;
+}
+
+OfferAction offerAction(FetchOutcome outcome, const char* badField) {
+    if (outcome == FetchOutcome::Ok) return OfferAction::Store;
+    if (outcome == FetchOutcome::GateRefused) return OfferAction::Withdraw;
+    if (outcome == FetchOutcome::BadManifest && badField &&
+        (strcmp(badField, "sig") == 0 || strcmp(badField, "key_id") == 0)) {
+        return OfferAction::Withdraw;
+    }
+    return OfferAction::Unchanged;
+}
+
+bool refusalMarksFailed(bool hasSignature, bool knownKey) { return hasSignature && knownKey; }
+
+const char* armRefusal(bool hasUpdateSlot, bool installAllowed, int32_t vbatMv, int32_t socPct) {
+    if (!hasUpdateSlot) return "no-update-slot";
+    if (!installAllowed) return "unsigned";
+    if (!CheckinPolicy::batteryEligible(vbatMv, socPct)) return "battery";
+    return nullptr;
+}
+
+const char* armRefusalCopy(const char* reason) {
+    return reason && strcmp(reason, "battery") == 0 ? "Charge your Fidget first." : nullptr;
 }
 
 bool formatPending(const Pending& p, char* out, size_t len) {
