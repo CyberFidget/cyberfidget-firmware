@@ -20,8 +20,8 @@ gains no cycle through AppManager).
    newer than the running version and not skipped.
 2. **Install now** arms the `bootcfg` one-shot (`bootupd`, `updver` = the
    version chosen, `skipanim`) and restarts - but only on a Fidget with
-   `upd.unsig_ok` set (below). Every other Fidget keeps the "update from the
-   website" message.
+   a known signing key in the offer or `upd.unsig_ok` set over USB. Every
+   other Fidget keeps the "update from the website" message.
 3. **Update session** (that boot, right after hardware start-up, before the
    menu, the check-in scheduler or anything that could start Bluetooth):
    the one-shot is removed first, so a crash never loops into another
@@ -36,7 +36,8 @@ gains no cycle through AppManager).
    pinned SDK does not allow plain HTTP there, and the bench site is HTTP.
 4. **Order of the last steps** (`Installer::complete`): byte count, then the
    digest against the manifest (mismatch: `esp_ota_abort`, the boot slot is
-   never touched), then `esp_ota_end`, then the pending record
+   never touched), then signature verification against that exact digest,
+   then `esp_ota_end`, then the pending record
    `upd.pend_img` is stored, then `esp_ota_set_boot_partition`, then a
    restart. Any failure before the last step leaves the running slot
    selected.
@@ -85,6 +86,24 @@ update slot shows a website update instruction in the prompt once per offered
 version, with no Install now choice. The same instruction remains a scrolling
 Settings > Updates line while that version is eligible. No update session is
 started from that offer.
+
+## Signing keys
+
+The manifest may carry both `sig` (canonical base64 DER ECDSA P-256,
+at most 104 characters) and `key_id` (1 to 31 lowercase letters, digits or
+hyphens). Both fields must be present together. No fields means unsigned.
+An unknown id or a bad signature is refused even with USB unsigned opt-in;
+an unsigned image needs that opt-in. A verification refusal records the
+version in `upd.fail_ver`, so it is not offered automatically again.
+
+The public key table is in `lib/CloudSync/UpdateSigning.cpp`. Its production
+slot is empty until the owner supplies public keys. Add the release and
+backup public PEMs with distinct ids there, and configure the release
+environment variable `FIRMWARE_SIGNING_KEY_ID` to name the signer. Keep
+private keys outside this repository. To rotate after compromise, sign an
+update with the already trusted backup key; that update can drop the
+compromised public key from the table. The test fixture key exists only
+in `CF_TEST_CLI` images; a release image refuses its id explicitly.
 
 `LoadoutStore::begin` also refuses to format while the running image is
 pending (a second guard; the self-test runs before it anyway).

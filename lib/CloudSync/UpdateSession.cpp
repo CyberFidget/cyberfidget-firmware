@@ -26,9 +26,11 @@
 #include "OtaUpdate.h"
 #include "SavedWifi.h"
 #include "StatusService.h"
+#include "UpdateSigning.h"
 #include "globals.h"
 
 namespace UpdateSession {
+bool allowUnsigned();
 namespace {
 
 using OtaUpdate::Pending;
@@ -52,8 +54,17 @@ constexpr int kFailScreenMs = 4000;
 constexpr const char* kBootNs = "bootcfg";
 constexpr const char* kBootKey = OtaUpdate::kBootSession;
 constexpr const char* kUpdNs = "upd";
+constexpr const char* kAvailKeyId = "avail_kid";
 
 constexpr const char* kDidNotFinish = "The update did not finish. Nothing changed.";
+
+void rememberFailedVersion(const char* version) {
+    Preferences upd;
+    if (upd.begin(kUpdNs, false)) {
+        upd.putString(OtaUpdate::kKeyFailVer, version);
+        upd.end();
+    }
+}
 
 bool pending = false;
 bool updateSlotAvailable = false;
@@ -391,6 +402,18 @@ private:
     mbedtls_sha256_context ctx_;
 };
 
+class SignatureVerifier : public OtaUpdate::Verifier {
+public:
+    OtaUpdate::VerifyResult verify(const OtaUpdate::Manifest& m, const uint8_t digest[32]) override {
+        const auto result = UpdateSigning::verify(m, digest);
+        const char* name = result == OtaUpdate::VerifyResult::Ok ? "ok" :
+            result == OtaUpdate::VerifyResult::Unsigned ? "unsigned" :
+            result == OtaUpdate::VerifyResult::UnknownKey ? "unknown-key" : "bad";
+        Serial.printf("[update] verify=%s\n", name);
+        return result;
+    }
+};
+
 struct TextSink {
     char* buf;
     size_t cap;
@@ -502,8 +525,11 @@ void checkManifest(const char* base, const char* wanted, uint32_t deadline, uint
     }
     heap_caps_free(text);
     if (out.outcome != OtaUpdate::FetchOutcome::Ok) {
-        if (out.bad && out.outcome == OtaUpdate::FetchOutcome::BadManifest)
+        if (out.bad && out.outcome == OtaUpdate::FetchOutcome::BadManifest) {
             Serial.printf("[update] manifest=invalid field=%s\n", out.bad);
+            if (strcmp(out.bad, "sig") == 0 || strcmp(out.bad, "key_id") == 0)
+                Serial.println("[update] verify=bad");
+        }
         return;
     }
     OtaUpdate::Context ctx;
@@ -706,7 +732,6 @@ void runSession(const char* wanted) {
     watched = setWatchdogPeriod(kSessionWdtMs) && esp_task_wdt_add(nullptr) == ESP_OK;
     Serial.printf("[update] session=start wanted=%s watchdog=%d\n", wanted, watched ? 1 : 0);
     if (!watched) endSession(false, "watchdog", nullptr, started);
-    if (!installAllowed()) endSession(false, "unsigned", nullptr, started);
     if (!CloudSync::useExternalTlsMemory()) endSession(false, "tls-allocator", nullptr, started);
 
     char base[128];
@@ -740,6 +765,15 @@ void runSession(const char* wanted) {
     if (mc.outcome == OtaUpdate::FetchOutcome::BadManifest) endSession(false, "manifest", nullptr, started);
     if (mc.outcome != OtaUpdate::FetchOutcome::Ok) endSession(false, "manifest-refused", nullptr, started);
     const OtaUpdate::Manifest& m = mc.m;
+    const bool unsignedAllowed = allowUnsigned();
+    if (!OtaUpdate::installPermitted(m.sig[0] != 0, UpdateSigning::knownKey(m.keyId), unsignedAllowed)) {
+        Serial.printf("[update] verify=%s\n", m.sig[0] ? "unknown-key" : "unsigned");
+        if (m.sig[0]) {
+            rememberFailedVersion(m.version);
+            endSession(false, "verify", "This update could not be verified.", started);
+        }
+        endSession(false, "unsigned", "Install from the website or allow this over USB.", started);
+    }
     const char* seen = mc.seen;
     CloudSync::FetchReply reply;
     char url[640];
@@ -747,7 +781,8 @@ void runSession(const char* wanted) {
     // ---- image ----
     SlotTarget target;
     Sha256 hasher;
-    OtaUpdate::Installer installer(target, hasher);
+    SignatureVerifier verifier;
+    OtaUpdate::Installer installer(target, hasher, &verifier, unsignedAllowed);
     if (!installer.begin(m, seen)) endSession(false, "begin", nullptr, started);
     Serial.printf("[update] slot=%s\n", target.slot ? target.slot->label : "?");
     drawSession(nullptr, 0);
@@ -759,8 +794,13 @@ void runSession(const char* wanted) {
     const OtaUpdate::InstallResult result = installer.complete();
     Serial.printf("[update] install=%s http=%d bytes=%lu ms=%lu\n", OtaUpdate::installResultName(result),
                   reply.status, (unsigned long)installer.received(), (unsigned long)(millis() - dlStart));
-    if (result != OtaUpdate::InstallResult::Ready)
+    if (result != OtaUpdate::InstallResult::Ready) {
+        if (result == OtaUpdate::InstallResult::VerificationFailed) {
+            rememberFailedVersion(m.version);
+            endSession(false, "verify", "This update could not be verified.", started);
+        }
         endSession(false, OtaUpdate::installResultName(result), nullptr, started);
+    }
     {
         // Handed over: from here the new image reports its own outcome, so a
         // failure in the tear-down below must not read as "did not finish".
@@ -775,10 +815,22 @@ void runSession(const char* wanted) {
 
 // ---- Install now -----------------------------------------------------------------
 
-bool installAllowed() {
+bool allowUnsigned() {
     Preferences upd;
     if (!upd.begin(kUpdNs, true)) return false;
     const bool allowed = upd.isKey(OtaUpdate::kKeyUnsigOk) && upd.getBool(OtaUpdate::kKeyUnsigOk, false);
+    upd.end();
+    return allowed;
+}
+
+bool installAllowed() {
+    Preferences upd;
+    if (!upd.begin(kUpdNs, true)) return false;
+    char keyId[OtaUpdate::kMaxKeyIdLen + 1] = {0};
+    upd.getString(kAvailKeyId, keyId, sizeof(keyId));
+    const bool allowed = OtaUpdate::installPermitted(keyId[0] != 0,
+        UpdateSigning::knownKey(keyId),
+        upd.isKey(OtaUpdate::kKeyUnsigOk) && upd.getBool(OtaUpdate::kKeyUnsigOk, false));
     upd.end();
     return allowed;
 }
@@ -791,6 +843,14 @@ bool armInstall(const char* version, const char** why) {
     if (!version || !version[0] || strlen(version) > OtaUpdate::kMaxVersionLen || strchr(version, ' ')) {
         *why = "version";
         return false;
+    }
+    if (!allowUnsigned()) {
+        Preferences upd;
+        if (!upd.begin(kUpdNs, true)) { *why = "storage"; return false; }
+        char offered[OtaUpdate::kMaxVersionLen + 1] = {0};
+        upd.getString(OtaUpdate::kKeyAvail, offered, sizeof(offered));
+        upd.end();
+        if (strcmp(version, offered) != 0) { *why = "version"; return false; }
     }
     Preferences boot;
     if (!boot.begin(kBootNs, false)) { *why = "storage"; return false; }
@@ -814,6 +874,16 @@ void refreshOffer(uint32_t deadlineMs) {
     // The check-in's own short call timeout: a Music Player launch waits
     // for this worker to stop.
     checkManifest(base, nullptr, deadlineMs, kOfferCallMs, mc);
+    if (mc.outcome == OtaUpdate::FetchOutcome::BadManifest && mc.bad &&
+        (strcmp(mc.bad, "sig") == 0 || strcmp(mc.bad, "key_id") == 0)) {
+        Preferences upd;
+        if (upd.begin(kUpdNs, false)) {
+            if (upd.isKey(OtaUpdate::kKeyAvail)) upd.remove(OtaUpdate::kKeyAvail);
+            if (upd.isKey(kAvailKeyId)) upd.remove(kAvailKeyId);
+            upd.end();
+        }
+        return;
+    }
     if (mc.outcome != OtaUpdate::FetchOutcome::Ok && mc.outcome != OtaUpdate::FetchOutcome::GateRefused) {
         Serial.printf("[update] offer=unchanged outcome=%d\n", (int)mc.outcome);
         return;
@@ -821,15 +891,27 @@ void refreshOffer(uint32_t deadlineMs) {
     Preferences upd;
     if (!upd.begin(kUpdNs, false)) return;
     bool ok;
-    if (mc.outcome == OtaUpdate::FetchOutcome::Ok) {
+    if (mc.outcome == OtaUpdate::FetchOutcome::Ok && mc.m.sig[0] &&
+        !UpdateSigning::knownKey(mc.m.keyId)) {
+        Serial.println("[update] verify=unknown-key");
+        upd.putString(OtaUpdate::kKeyFailVer, mc.m.version);
+        ok = !upd.isKey(OtaUpdate::kKeyAvail) || upd.remove(OtaUpdate::kKeyAvail);
+        ok = (!upd.isKey(kAvailKeyId) || upd.remove(kAvailKeyId)) && ok;
+    } else if (mc.outcome == OtaUpdate::FetchOutcome::Ok) {
         ok = upd.putString(OtaUpdate::kKeyAvail, mc.m.version) == strlen(mc.m.version);
+        if (mc.m.sig[0])
+            ok = upd.putString(kAvailKeyId, mc.m.keyId) == strlen(mc.m.keyId) && ok;
+        else
+            ok = (!upd.isKey(kAvailKeyId) || upd.remove(kAvailKeyId)) && ok;
     } else {
         // A release this Fidget must not take is never offered.
         ok = !upd.isKey(OtaUpdate::kKeyAvail) || upd.remove(OtaUpdate::kKeyAvail);
+        ok = (!upd.isKey(kAvailKeyId) || upd.remove(kAvailKeyId)) && ok;
     }
     upd.end();
     Serial.printf("[update] offer=%s version=%s gate=%s write=%s\n",
-                  mc.outcome == OtaUpdate::FetchOutcome::Ok ? "stored" : "withdrawn", mc.m.version,
+                  mc.outcome == OtaUpdate::FetchOutcome::Ok &&
+                  (!mc.m.sig[0] || UpdateSigning::knownKey(mc.m.keyId)) ? "stored" : "withdrawn", mc.m.version,
                   OtaUpdate::verdictName(mc.verdict), ok ? "ok" : "error");
 }
 
@@ -854,6 +936,7 @@ void printSlots() {
 }
 
 #ifdef CF_TEST_CLI
+bool verifyTestFixture() { return UpdateSigning::verifyTestFixture(); }
 int clearSeen() {
     // Collect first, then remove: never edit a namespace mid-iteration.
     char keys[8][16];

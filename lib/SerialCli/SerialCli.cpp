@@ -747,13 +747,17 @@ void SerialCli::dispatch(const char* line) {
             else Serial.printf("[cmd] upd.seen_clear=%d\n", n);
             return;
         }
+        if (ieq(arg, "verify-test")) {
+            Serial.printf("[cmd] upd.verify_test=%s\n", UpdateSession::verifyTestFixture() ? "ok" : "fail");
+            return;
+        }
         if (verbWithArg(arg, "fault", &value)) {
             Serial.printf("[cmd] upd.fault=%s\n", UpdateSession::setTestFault(value) ? value : "error");
             return;
         }
         Serial.println("[err] upd.usage=upd [offer <version> [source] | install <version> | "
                        "fault <none|crash|hang|hal-hang|loop-crash|version|mount|session-hang> | "
-                       "seen-clear | slot | "
+                       "seen-clear | verify-test | slot | "
                        "allow-unsigned on|off]");
         return;
     }

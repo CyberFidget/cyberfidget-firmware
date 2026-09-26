@@ -37,6 +37,8 @@ constexpr uint32_t kSlotSize = 3342336;
 constexpr size_t kMaxVersionLen = 31;
 constexpr size_t kMaxUrlLen = 300;
 constexpr size_t kMaxSourceLen = 150;   // "fork:" + owner (39) + "/" + repo (100)
+constexpr size_t kMaxKeyIdLen = 31;
+constexpr size_t kMaxSignatureLen = 104; // base64 of at most 78 DER bytes
 constexpr size_t kSeenKeyLen = 13;      // "seen_" + 8 hex digits
 
 // NVS keys (at most 15 characters). Namespace `upd`:
@@ -75,6 +77,8 @@ struct Manifest {
     char version[kMaxVersionLen + 1] = {0};
     uint32_t size = 0;
     char sha256[65] = {0};              ///< 64 lowercase hex digits
+    char sig[kMaxSignatureLen + 1] = {0}; ///< optional base64 DER ECDSA signature
+    char keyId[kMaxKeyIdLen + 1] = {0};  ///< optional signing key identifier
     char url[kMaxUrlLen + 1] = {0};     ///< a path on the same site ("/...")
     char minRev[16] = {0};
     char maxRev[16] = {0};
@@ -86,7 +90,7 @@ struct Manifest {
 
 /// Parses and validates the whole manifest. Returns nullptr on success, else
 /// a short reason ("json", "version", "size", "sha256", "url", "hw",
-/// "channel", "source", "release_id", "released_at"). Text that does not fit
+/// "channel", "source", "release_id", "released_at", "sig", "key_id"). Text that does not fit
 /// is refused, never truncated.
 const char* parseManifest(const char* json, size_t len, Manifest& out);
 
@@ -149,6 +153,10 @@ enum class FetchOutcome : uint8_t {
 /// refusal.
 bool fallbackAllowed(FetchOutcome outcome);
 
+/// A signed offer is installable only when its id is compiled in. Verification
+/// still happens after download; unsigned offers require the USB opt-in.
+bool installPermitted(bool hasSignature, bool knownKey, bool allowUnsigned);
+
 // ---- install ----------------------------------------------------------------
 
 /// Where the image goes. On the device: esp_ota_begin/write/end/abort, NVS,
@@ -172,6 +180,13 @@ public:
     virtual void finish(uint8_t out[32]) = 0;
 };
 
+enum class VerifyResult : uint8_t { Ok, Unsigned, Bad, UnknownKey };
+class Verifier {
+public:
+    virtual ~Verifier() {}
+    virtual VerifyResult verify(const Manifest& m, const uint8_t digest[32]) = 0;
+};
+
 struct Pending {
     char sha256[65] = {0};
     uint32_t size = 0;
@@ -191,6 +206,7 @@ enum class InstallResult : uint8_t {
     TooLong,        ///< more bytes than the manifest's size
     Short,          ///< fewer bytes than the manifest's size
     HashMismatch,
+    VerificationFailed,
     ImageInvalid,   ///< the finished image did not validate
     StoreFailed,    ///< the pending record could not be stored
     BootFailed,     ///< the boot slot could not be selected
@@ -200,7 +216,8 @@ const char* installResultName(InstallResult r);
 
 class Installer {
 public:
-    Installer(Target& target, Hasher& hasher) : target_(target), hasher_(hasher) {}
+    Installer(Target& target, Hasher& hasher, Verifier* verifier = nullptr, bool allowUnsigned = true)
+        : target_(target), hasher_(hasher), verifier_(verifier), allowUnsigned_(allowUnsigned) {}
     /// Starts an image of m.size bytes. False: nothing was begun.
     bool begin(const Manifest& m, const char* seenKeyText);
     /// Streams one piece. False: the install is over (see result()).
@@ -217,6 +234,9 @@ public:
 private:
     Target& target_;
     Hasher& hasher_;
+    Verifier* verifier_;
+    bool allowUnsigned_;
+    Manifest manifest_;
     Pending pending_;
     uint32_t received_ = 0;
     bool begun_ = false;
