@@ -1627,6 +1627,7 @@ const char* reasonName(Reason reason) {
 }
 
 bool runSession(Reason reason, bool applyWaiting) {
+    if (UpdateSession::imagePending()) return false;
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
     recoverClearBeforeSession();
@@ -1687,6 +1688,7 @@ bool runSession(Reason reason, bool applyWaiting) {
 }
 
 static bool beginPairWorker(WorkerKind kind) {
+    if (UpdateSession::imagePending()) return false;
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
     recoverClearBeforeSession();

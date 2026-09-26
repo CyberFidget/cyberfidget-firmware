@@ -43,6 +43,7 @@ constexpr size_t kSeenKeyLen = 13;      // "seen_" + 8 hex digits
 constexpr const char* kKeyPendImg  = "pend_img";   ///< the expected new image
 constexpr const char* kKeyUnsigOk  = "unsig_ok";   ///< installing allowed (USB serial)
 constexpr const char* kKeyFailVer  = "fail_ver";   ///< a version whose self-test failed
+constexpr const char* kKeyPowerAbort = "pwr_abort"; ///< critical battery shutdown before checks pass
 constexpr const char* kKeyAvail    = "avail";      ///< the version the prompt may offer
 // Namespace `bootcfg` (one-shots):
 constexpr const char* kBootSession = "bootupd";    ///< run the update session
@@ -253,6 +254,11 @@ SelfTestResult decideSelfTest(const SelfTestInputs& in);
 /// first frame (a full main-loop pass), still under the watchdog and the
 /// wall-clock budget. `elapsedMs` counts from the start of the self-test.
 enum class ConfirmStep : uint8_t { Wait, Confirm, RollBack };
+enum class SleepStep : uint8_t { Proceed, Defer, KeepFirst, AbortWithoutFailure };
+/// Any reset while PENDING_VERIFY returns to the old image. Ordinary sleep
+/// waits for the first frame or confirmation deadline; critical voltage may
+/// sleep immediately, keeping passed checks first or suppressing fail_ver.
+SleepStep sleepStep(bool imagePending, bool checksPassed, bool criticalVoltage);
 ConfirmStep confirmStep(bool checksPassed, bool frameDrawn, uint32_t elapsedMs, uint32_t budgetMs);
 
 /// Automatic offers (the post-boot popup) skip a version whose self-test
@@ -267,7 +273,8 @@ enum class BootNotice : uint8_t {
 
 /// A boot that is NOT pending verification, with `recordPresent` =
 /// `upd.pend_img` exists. `runningIsRecord`: the running image hashes to it.
-BootNotice bootNotice(bool recordPresent, bool recordValid, bool runningIsRecord);
+BootNotice bootNotice(bool recordPresent, bool recordValid, bool runningIsRecord,
+                      bool criticalPowerAbort = false);
 
 }  // namespace OtaUpdate
 

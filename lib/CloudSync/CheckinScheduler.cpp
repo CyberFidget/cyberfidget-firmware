@@ -23,6 +23,7 @@
 #include "LoadoutStore.h"
 #include "ModalPrompt.h"
 #include "SavedWifi.h"
+#include "UpdateSession.h"
 
 namespace CheckinScheduler {
 namespace {
@@ -180,6 +181,7 @@ void startBootWindow(bool oneShotBoot) {
     const Schedule st = readStored();
     Inputs in = baseInputs(st);
     in.oneShotBoot = oneShotBoot || AppManager::instance().activeApp() != APP_BOOT_ANIMATION;
+    in.imagePending = UpdateSession::imagePending();
     in.timerWake = strcmp(HAL::bootWakeupCauseName(), "timer") == 0;
     in.vbatMv = awakeVbatMv();
     in.socPct = awakeSocPct();

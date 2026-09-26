@@ -628,7 +628,7 @@ void test_boot_notice_after_a_normal_boot(void) {
 
 void test_nvs_keys_fit(void) {
     // Every key the update work stores, in every namespace.
-    const char* keys[] = {kKeyPendImg, kKeyUnsigOk, kKeyFailVer, kKeyAvail,
+    const char* keys[] = {kKeyPendImg, kKeyUnsigOk, kKeyFailVer, kKeyPowerAbort, kKeyAvail,
                           kBootSession, kBootVersion, kBootFailed, kTestFault};
     for (const char* k : keys) {
         TEST_ASSERT_TRUE_MESSAGE(strlen(k) > 0 && strlen(k) <= kMaxNvsKeyLen, k);
@@ -681,6 +681,21 @@ void test_confirm_only_after_the_first_frame(void) {
     TEST_ASSERT_EQUAL(ConfirmStep::RollBack, confirmStep(false, true, 10, kConfirmBudgetMs));
 }
 
+void test_pending_sleep_waits_or_handles_critical_voltage(void) {
+    TEST_ASSERT_EQUAL(SleepStep::Proceed, sleepStep(false, false, false));
+    TEST_ASSERT_EQUAL(SleepStep::Proceed, sleepStep(false, true, true));
+    TEST_ASSERT_EQUAL(SleepStep::Defer, sleepStep(true, false, false));
+    TEST_ASSERT_EQUAL(SleepStep::Defer, sleepStep(true, true, false));
+    TEST_ASSERT_EQUAL(SleepStep::AbortWithoutFailure, sleepStep(true, false, true));
+    TEST_ASSERT_EQUAL(SleepStep::KeepFirst, sleepStep(true, true, true));
+}
+
+void test_critical_power_abort_is_not_a_failed_boot_notice(void) {
+    TEST_ASSERT_EQUAL(BootNotice::DidNotFinish, bootNotice(true, true, false));
+    TEST_ASSERT_EQUAL(BootNotice::None, bootNotice(true, true, false, true));
+    TEST_ASSERT_EQUAL(BootNotice::None, bootNotice(true, false, false, true));
+}
+
 void test_a_failed_version_is_not_offered_automatically(void) {
     TEST_ASSERT_TRUE(automaticOfferAllowed("1.4.0", ""));
     TEST_ASSERT_TRUE(automaticOfferAllowed("1.4.0", nullptr));
@@ -721,6 +736,8 @@ int main(int, char**) {
     RUN_TEST(test_time_limits_can_each_fire);
     RUN_TEST(test_self_test_deadline_expiry_rolls_back);
     RUN_TEST(test_confirm_only_after_the_first_frame);
+    RUN_TEST(test_pending_sleep_waits_or_handles_critical_voltage);
+    RUN_TEST(test_critical_power_abort_is_not_a_failed_boot_notice);
     RUN_TEST(test_a_failed_version_is_not_offered_automatically);
     return UNITY_END();
 }
