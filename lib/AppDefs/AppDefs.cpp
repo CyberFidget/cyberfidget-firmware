@@ -134,10 +134,13 @@ void buildNestedMenu() {
        return;
    }
 
-   // Fallback: no/unreadable manifest => compiled-in order (today's
-   // behavior, nested categoryPaths and all).
+   // Fallback: no/unreadable manifest (a first boot, or Reset to factory
+   // formatted app storage) => compiled-in order, nested categoryPaths and
+   // all. Internal slots (no name: the menu, the delivered-app host) are
+   // never rows - the same rule the manifest merge applies.
    ESP_LOGI("AppDefs", "No loadout manifest; menu uses compiled-in order");
-   for (int i=0; i<(int)APP_COUNT; i++){
+   auto registry = buildLoadoutRegistryView();
+   for (int i : LoadoutManifest::compiledMenuRows(registry.data(), (int)registry.size())) {
        ESP_LOGI("AppDefs","i=%d name=%s path=%s beginFunc? %s",
                 i, appDefs[i].name, appDefs[i].categoryPath,
                 (appDefs[i].beginFunc ? "YES":"NO"));

@@ -5,7 +5,6 @@
 #define WEB_PORTAL_APP_H
 
 #include <Arduino.h>
-#include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
@@ -15,6 +14,7 @@
 #include "ButtonManager.h"
 #include "CaptionWrap.h"
 #include "LiveLinkProtocol.h"
+#include "OpenAddressHint.h"
 #include "ShellStamp.h"
 
 class WebPortalApp {
@@ -50,9 +50,17 @@ private:
 
     static constexpr const char* AP_SSID = "CyberFidget";
 
-    // Web server + DNS (heap-allocated server for clean lifecycle)
+    // Web server + DNS (heap-allocated server for clean lifecycle). The DNS
+    // (AP address only) answers every name with the Fidget (CaptiveDns.h),
+    // so a joining device's network check reaches the portal.
     AsyncWebServer* server = nullptr;
-    DNSServer dnsServer;
+    void startCaptiveDns();
+    void stopCaptiveDns();
+
+    // The portal's address replaces the bottom line when a device joined
+    // but never opened the page (OpenAddressHint.h).
+    OpenAddressHint openHint;
+    unsigned long lastStationPollMs = 0;
 
     // AP bring-up state: false when WiFi.softAP() failed (surfaced on the OLED
     // and gates captive DNS instead of silently binding 0.0.0.0).

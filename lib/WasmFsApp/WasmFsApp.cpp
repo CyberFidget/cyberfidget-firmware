@@ -193,6 +193,16 @@ void unregisterPreShellErrorCallbacks() {
     s_preShellErrorCallbacks = false;
 }
 
+// Every pre-shell failure (nothing staged, missing/empty/oversized file,
+// out of memory, read error, no guest task, ABI refused) ends here: the
+// error screen AND the any-button-returns-to-menu callbacks, together. The
+// menu dropped its own callbacks when this app began, so an error screen
+// without these would ignore every button until a hard reset.
+void showLoadError(const char* line1, const char* line2) {
+    drawLoadError(line1, line2);
+    registerPreShellErrorCallbacks();
+}
+
 // The whole loadout partition is 1.5 MB; a single app image far smaller.
 // Cap the read so a corrupt manifest path can't try to allocate the world.
 constexpr size_t kMaxModuleBytes = 512 * 1024;
@@ -272,7 +282,7 @@ void wasmFsAppBegin() {
 
     if (path.empty()) {
         snprintf(s_loadErr, sizeof(s_loadErr), "no app staged");
-        drawLoadError("no app staged", nullptr);
+        showLoadError("no app staged", nullptr);
         return;
     }
 
@@ -290,14 +300,14 @@ void wasmFsAppBegin() {
     if (!f || f.isDirectory()) {
         if (f) f.close();
         snprintf(s_loadErr, sizeof(s_loadErr), "missing: %s", path.c_str());
-        drawLoadError("file not found", path.c_str());
+        showLoadError("file not found", path.c_str());
         return;
     }
     size_t size = f.size();
     if (size == 0 || size > kMaxModuleBytes) {
         f.close();
         snprintf(s_loadErr, sizeof(s_loadErr), "bad size %u", (unsigned)size);
-        drawLoadError(size == 0 ? "empty file" : "file too large", path.c_str());
+        showLoadError(size == 0 ? "empty file" : "file too large", path.c_str());
         return;
     }
 
@@ -307,7 +317,7 @@ void wasmFsAppBegin() {
     if (!s_bytes) {
         f.close();
         snprintf(s_loadErr, sizeof(s_loadErr), "out of memory (%u B)", (unsigned)size);
-        drawLoadError("out of memory", nullptr);
+        showLoadError("out of memory", nullptr);
         return;
     }
     size_t got = f.read(s_bytes, size);
@@ -315,7 +325,7 @@ void wasmFsAppBegin() {
     if (got != size) {
         freeBuffer();
         snprintf(s_loadErr, sizeof(s_loadErr), "read %u/%u", (unsigned)got, (unsigned)size);
-        drawLoadError("read failed", path.c_str());
+        showLoadError("read failed", path.c_str());
         return;
     }
     s_len = size;
@@ -345,8 +355,7 @@ void wasmFsAppBegin() {
         delete s_shell; s_shell = nullptr;
         freeBuffer();
         snprintf(s_loadErr, sizeof(s_loadErr), "guest task alloc failed");
-        drawLoadError("out of memory", nullptr);
-        registerPreShellErrorCallbacks();
+        showLoadError("out of memory", nullptr);
         return;
     }
     xSemaphoreTake(s_cmdDone, portMAX_DELAY);         // wait for shell->begin() (deep app_begin)
@@ -363,8 +372,11 @@ void wasmFsAppRun() {
         }
         return;
     }
-    // Pre-shell load failure: hold the error screen; any button escapes via
-    // the menu's own Back handling (the app manager still owns navigation).
+    // Pre-shell load failure: hold the error screen. No shell means nothing
+    // else owns the buttons, so (re)assert the any-button-returns-to-menu
+    // callbacks every frame (idempotent): no path into this state can leave
+    // the buttons dead.
+    registerPreShellErrorCallbacks();
     if (strcmp(s_loadErr, "abi_unsupported") == 0) {
         drawAbiUnsupported();
         return;
