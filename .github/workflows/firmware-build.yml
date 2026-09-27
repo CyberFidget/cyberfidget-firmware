@@ -1,0 +1,104 @@
+# Firmware build guard.
+#
+# Builds the release firmware env on every push to main and every pull request
+# that touches firmware sources, so a change that breaks the build, or makes it
+# drastically slower, shows up on the commit that caused it instead of at the
+# next release. Nothing is published.
+#
+# The build-time half: CF_BUILD_PERF_STRICT makes scripts/memoize_lib_build.py
+# fail the build if its patch to PlatformIO's library setup did not apply, or if
+# the dependency scan or library setup blew its budget. The budgets sit far above
+# normal, so a slow or busy runner does not trip them; a structural regression
+# (library setup going from ~1 s back to minutes) does. The step timeout bounds a
+# hung build; a normal build takes a few minutes here.
+
+name: Firmware build
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - 'include/**'
+      - 'scripts/**'
+      - 'platformio.ini'
+      - 'version.txt'
+      - 'wasm/device_module/cf_hal_abi.h'
+      - 'tools/*.mjs'
+      - '.github/workflows/firmware-build.yml'
+      - '.github/workflows/build-release.yml'
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'lib/**'
+      - 'include/**'
+      - 'scripts/**'
+      - 'platformio.ini'
+      - 'version.txt'
+      - 'wasm/device_module/cf_hal_abi.h'
+      - 'tools/*.mjs'
+      - '.github/workflows/firmware-build.yml'
+      - '.github/workflows/build-release.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: firmware-build-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Keep in step with build-release.yml: both builds must run the same Core,
+  # or the memoize patch could be verified on one version and ship on another.
+  PLATFORMIO_VERSION: '6.2.0'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # generate_version.py reads tags and history
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # The release workflow must build on the same Core this guard checks,
+      # or the library-setup patch is proven on one version and shipped on
+      # another.
+      - name: Check the PlatformIO pin matches the release workflow
+        run: |
+          pin() { sed -n "s/^  PLATFORMIO_VERSION: '\(.*\)'$/\1/p" "$1"; }
+          REL="$(pin .github/workflows/build-release.yml)"
+          OURS="$(pin .github/workflows/firmware-build.yml)"
+          echo "release: $REL, this workflow: $OURS"
+          if [ -z "$REL" ] || [ "$REL" != "$OURS" ]; then
+            echo "::error::PLATFORMIO_VERSION differs between build-release.yml ($REL) and firmware-build.yml ($OURS)"
+            exit 1
+          fi
+
+      - name: Install PlatformIO
+        run: pip install "platformio==${PLATFORMIO_VERSION}"
+
+      - name: Build firmware
+        timeout-minutes: 30
+        env:
+          CF_BUILD_PERF_STRICT: '1'
+        run: |
+          set -o pipefail
+          pio run -e local 2>&1 | tee build.log
+          grep -q '^\[memoize_lib_build\] library setup memoized' build.log \
+            || { echo "::error::memoize_lib_build did not run; see platformio.ini extra_scripts"; exit 1; }
+          grep -q '^\[memoize_lib_build\] dependency scan' build.log \
+            || { echo "::error::build-time tripwire did not report; budgets unchecked"; exit 1; }
+
+      - name: Report build phase times
+        if: always()
+        run: |
+          {
+            echo "### Firmware build"
+            grep -E '^\[memoize_lib_build\] dependency scan' build.log || echo "no phase timings (build did not reach library setup)"
+            grep -E '^(RAM|Flash):' build.log || true
+          } >> "$GITHUB_STEP_SUMMARY"
