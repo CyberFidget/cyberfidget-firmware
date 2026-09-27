@@ -173,8 +173,8 @@ bool handOff(const char* version, const char** refusal) {
 }
 
 void onFirmwareDone(int result) {
-    // Until updates are signed, only a Fidget allowed over USB installs here;
-    // every other one keeps the "update from the website" message.
+    // A signed release (known key) or a Fidget allowed over USB installs here;
+    // every other offer keeps the "update from the website" message.
     const FwEffect e = firmwareChoice(result, UpdateSession::installAllowed());
     StatusService& svc = StatusService::instance();
     bool stored = false;

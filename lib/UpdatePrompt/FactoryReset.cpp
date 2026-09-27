@@ -18,6 +18,7 @@
 #include "FactoryResetPolicy.h"
 #include "HAL.h"
 #include "LoadoutStore.h"
+#include "RGBController.h"
 #include "MenuManager.h"
 #include "SerialCli.h"
 #include "UpdateSession.h"

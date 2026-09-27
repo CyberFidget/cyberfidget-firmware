@@ -64,9 +64,10 @@ constexpr const char* kBootCheckExplanation =
 constexpr const char* kRestartingToCheck = "Restarting to check...";
 constexpr const char* kChecking = "Checking for updates...";
 constexpr const char* kAlreadyChecking = "A check is already running";
-/// Install now while no update session exists on the device yet.
+/// Install now for an offer this Fidget will not install over WiFi (not
+/// signed with a key it knows, and not opted in over USB).
 constexpr const char* kInstallComingSoon =
-    "Installing on your Fidget is coming soon. Update it from the website for now.";
+    "This version installs from the website. Plug in and use the Update page.";
 constexpr const char* kWebsiteUpdateCopy =
     "Update once on website for WiFi updates";
 constexpr const char* kKeyWebsiteSeen = "web_seen";

@@ -157,7 +157,8 @@ uses, the other one) and their update states, whether an update record is
 stored, and whether installing is allowed; it changes nothing.
 `upd allow-unsigned` sets `upd.unsig_ok`, which lets the update prompt's
 Install now hand off to the update session (`lib/OtaUpdate/README.md`).
-Until updates are signed only a Fidget with it set installs updates; it is a
+Official releases are signed and install without it; it lets a Fidget
+install unsigned (self-built) images over WiFi. It is a
 USB serial command in every build so that holding the cable is the proof,
 and nothing on the network can set it.
 
