@@ -20,7 +20,7 @@
 #include "AudioTools/CoreAudio/AudioLogger.h"
 #include "AudioTools/Disk/AudioSource.h"
 #include "AudioTools/CoreAudio/AudioPlayer.h"
-#include "AudioTools/AudioLibs/A2DPStream.h"
+#include "AudioTools/Communication/A2DPStream.h"
 #include "AudioTools/CoreAudio/AudioStreams.h"
 #include "AudioTools/Disk/AudioSourceIdxSD.h"
 #include "AudioTools/AudioCodecs/CodecMP3Helix.h"

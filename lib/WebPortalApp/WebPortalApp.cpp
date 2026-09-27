@@ -1409,7 +1409,9 @@ void WebPortalApp::handleUpload(AsyncWebServerRequest* req, const String& filena
 
     if (uploadFile && len > 0) {
         size_t written = uploadFile.write(data, len);
-        uploadBytesReceived += written;
+        // Explicit read-then-write: C++20 deprecates compound assignment on a
+        // volatile. Same code as +=, without the warning.
+        uploadBytesReceived = uploadBytesReceived + written;
         if (written < len) {
             WP_LOGF("upload: write error, %u of %u", (unsigned)written, (unsigned)len);
             uploadFile.close();
