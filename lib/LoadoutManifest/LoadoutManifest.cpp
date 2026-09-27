@@ -463,6 +463,16 @@ Loadout buildFromRegistry(const RegistryApp* apps, int count) {
     return loadout;
 }
 
+std::vector<int> compiledMenuRows(const RegistryApp* apps, int count) {
+    std::vector<int> rows;
+    if (!apps || count <= 0) return rows;
+    for (int i = 0; i < count; i++) {
+        if (apps[i].name.empty()) continue; // internal slot, not a menu item
+        rows.push_back(i);
+    }
+    return rows;
+}
+
 std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
                                          const RegistryApp* apps, int count) {
     std::vector<MergedApp> out;

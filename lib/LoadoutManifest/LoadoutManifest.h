@@ -133,6 +133,15 @@ std::string serializeManifest(const Loadout& loadout);
 Loadout buildFromRegistry(const RegistryApp* apps, int count);
 
 /**
+ * The registry rows the menu shows when there is no readable manifest
+ * (after Reset to factory formats app storage, or on a first boot), in
+ * compile order. Same rule as the merge: a row with an empty name is an
+ * internal slot - the menu itself, the delivered-app host every ferried
+ * app launches through - and never a menu entry.
+ */
+std::vector<int> compiledMenuRows(const RegistryApp* apps, int count);
+
+/**
  * Merge a manifest with the compiled-in registry to produce the menu:
  *  - manifest entries first, in manifest order; a manifest category
  *    overrides the registry one ("" falls back to the registry category)
