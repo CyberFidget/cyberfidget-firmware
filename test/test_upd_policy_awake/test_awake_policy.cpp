@@ -376,6 +376,15 @@ void test_listening_beside_a_delivered_app(void) {
     TEST_ASSERT_FALSE(listensBesideDeliveredApp(need - 1));
     // Steady listening at the menu measured 61-62 KB free: listening goes on.
     TEST_ASSERT_TRUE(listensBesideDeliveredApp(61600));
+    // The level decided on is the steady one: the free the last check-in
+    // ended at, not a dip while a check-in or the launch holds heap (bench:
+    // 53.5 KB at rest, 49.4 KB mid check-in, 51.2-51.7 KB during the launch).
+    TEST_ASSERT_EQUAL_UINT32(53508u, steadyListeningFree(49428u, 53508u));
+    TEST_ASSERT_TRUE(listensBesideDeliveredApp(steadyListeningFree(49428u, 53508u)));
+    TEST_ASSERT_EQUAL_UINT32(54160u, steadyListeningFree(54160u, 53508u));
+    // No check-in has ended yet (0): the free right now.
+    TEST_ASSERT_EQUAL_UINT32(49428u, steadyListeningFree(49428u, 0u));
+    TEST_ASSERT_FALSE(listensBesideDeliveredApp(steadyListeningFree(49428u, 0u)));
     // While it runs: a trough under 24 KB pauses listening.
     TEST_ASSERT_TRUE(troughBelowFloor(kListenTroughFloor - 1));
     TEST_ASSERT_FALSE(troughBelowFloor(kListenTroughFloor));

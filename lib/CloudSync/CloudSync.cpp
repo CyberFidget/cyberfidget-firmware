@@ -1614,8 +1614,11 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         if (!keepDevConnection(out.status, r.ok, wait,
                                WiFi.status() == WL_CONNECTED, cancelRequested))
             checkinConnection.clear();
+        // The steady listening level (what a delivered app's launch decides on).
+        const uint32_t restFree = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         portENTER_CRITICAL(&devLock);
         devView.connected = WiFi.status() == WL_CONNECTED;
+        devView.restFree = restFree;
         devView.polls = polls;
         devView.failures = failures;
         devView.lastPollMs = millis();
@@ -1630,9 +1633,7 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
                       "largest_min=%u free=%u at_ms=%lu\n",
                       (unsigned)polls, out.status, r.ok ? (r.none ? "none" : "ok") : "error", r.err,
                       (unsigned)r.totalMs, (unsigned)wait, (unsigned)r.heapMin,
-                      (unsigned)r.largestMin,
-                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                      (unsigned long)millis());
+                      (unsigned)r.largestMin, (unsigned)restFree, (unsigned long)millis());
         devTlsProbe();
 #else
         // Release builds print only the changes.

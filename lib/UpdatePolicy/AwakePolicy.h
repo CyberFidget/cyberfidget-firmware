@@ -171,6 +171,13 @@ constexpr uint32_t kDeliveredAppCost = 8u * 1024u;
 /// free right then (listening already running) leaves the app its share and
 /// the next check-in's trough above the floor.
 bool listensBesideDeliveredApp(uint32_t freeInternal);
+/// The steady listening level that decision takes: the internal free the
+/// last check-in ended at, or the free right now when that is higher (or no
+/// check-in has ended yet). A snapshot taken while a check-in is under way,
+/// or while the launch itself holds a few KB, would count that check-in's
+/// cost twice (kListenPollCost already covers it) and the answer would
+/// depend on the moment the app opened.
+uint32_t steadyListeningFree(uint32_t freeNow, uint32_t lastCheckinEndFree);
 /// Checked after each check-in while the app runs: a trough below the floor
 /// pauses listening until the app ends.
 bool troughBelowFloor(uint32_t trough);

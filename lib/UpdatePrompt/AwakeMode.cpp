@@ -586,13 +586,17 @@ void noteButton() {
 
 bool interceptSwitch(AppIndex newApp) {
     if (newApp == APP_WASM_HOST) {
-        // Decided now, with listening (if running) at its steady level.
+        // Decided now, on listening's steady level: the free the last
+        // check-in ended at, not a dip while one is under way.
         const uint32_t freeInt = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
-        besideAppOk = listensBesideDeliveredApp(freeInt);
+        const bool listening = CloudSync::devListening();
+        const uint32_t restInt = listening ? CloudSync::devSnapshot().restFree : 0;
+        besideAppOk = listensBesideDeliveredApp(steadyListeningFree(freeInt, restInt));
         besideAppSinceMs = millis();
         if (listenBoot)
-            Serial.printf("[awake] beside-app=%s free_int=%u listening=%d\n", besideAppOk ? "listen" : "pause",
-                          (unsigned)freeInt, CloudSync::devListening() ? 1 : 0);
+            Serial.printf("[awake] beside-app=%s free_int=%u rest_int=%u listening=%d\n",
+                          besideAppOk ? "listen" : "pause", (unsigned)freeInt, (unsigned)restInt,
+                          listening ? 1 : 0);
     }
     if (newApp != APP_MUSIC_PLAYER || !bluetoothAppNeedsRestart(listenBoot)) {
         if (CloudSync::devListening() && pausesListening(newApp)) {

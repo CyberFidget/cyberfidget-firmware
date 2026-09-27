@@ -427,7 +427,10 @@ awake crash <n>               -> [cmd] awake.crash=<n>         (cftest: panic <n
 Dev mode restarts. Dev mode listening prints one line per check-in in test
 builds (`[dev] poll=<n> http=<status> result=<ok|none|error> err=<code>
 ms=<cycle> wait_ms=<next wait> heap_min=<B> largest_min=<B> free=<B>
-at_ms=<ms>`), `[dev] delivered batch=<id>` when an apply changed the menu,
+at_ms=<ms>`; `free` is the internal free when the check-in ended, the steady
+level a delivered app's launch decides on), `[awake] beside-app=<listen|pause>
+free_int=<B> rest_int=<B> listening=<0|1>` when a delivered app opens (`rest_int`
+= that steady level, 0 before the first check-in ends), `[dev] delivered batch=<id>` when an apply changed the menu,
 and `[dev] relaunch id=<id> path=<file> from=<app|menu>` when a new version
 of the running (or last-run) app starts. With `awake tls` set, each check-in
 is followed by `[dev] tls ok=<0|1> http=<status> ms=<ms> free=<B> largest=<B>

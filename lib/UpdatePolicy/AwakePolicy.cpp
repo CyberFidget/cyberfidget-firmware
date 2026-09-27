@@ -113,6 +113,10 @@ bool listensBesideDeliveredApp(uint32_t freeInternal) {
     return freeInternal >= kListenTroughFloor + kListenPollCost + kDeliveredAppCost;
 }
 
+uint32_t steadyListeningFree(uint32_t freeNow, uint32_t lastCheckinEndFree) {
+    return lastCheckinEndFree > freeNow ? lastCheckinEndFree : freeNow;
+}
+
 bool troughBelowFloor(uint32_t trough) { return trough < kListenTroughFloor; }
 
 uint8_t nextLoopCount(uint8_t previous, bool abnormalReset, bool awakeLatched) {

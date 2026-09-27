@@ -298,8 +298,11 @@ measured to leave a network session at least 24 KB of internal heap. Every
 other app pauses listening until it ends: the portal, Music Player and Link
 need the radio or the worker, Voice Notes dipped to 13 KB. A delivered
 (WASM) app is not on the list; listening continues beside it when the heap
-allows (`AwakePolicy::listensBesideDeliveredApp`: internal free when it
-opens >= 24 KB floor + 18 KB check-in cost + 8 KB app), and a check-in whose
+allows (`AwakePolicy::listensBesideDeliveredApp`: listening's steady internal
+free when it opens >= 24 KB floor + 18 KB check-in cost + 8 KB app; the steady
+level is `AwakePolicy::steadyListeningFree`, the free the last check-in ended at
+or the free right then if higher, so a launch that lands mid check-in does not
+count that check-in twice), and a check-in whose
 trough falls below 24 KB while it runs pauses listening until it ends
 (`[awake] pause=heap`). A send of the running app then relaunches it in
 place, with no Back press. An app added to the firmware pauses listening until it is measured

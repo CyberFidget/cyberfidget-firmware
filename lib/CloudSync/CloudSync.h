@@ -86,6 +86,7 @@ struct DevSnapshot {
     uint32_t lastPollMs = 0;     // millis() when the last check-in ended
     uint32_t heapMin = 0;        // lowest internal free heap over the worker
     uint32_t largestMin = 0;     // smallest largest free block over the worker
+    uint32_t restFree = 0;       // internal free heap when the last check-in ended
     char lastBatch[41] = "-";    // the last delivered batch
     Result last;                 // the last check-in's result
 };
