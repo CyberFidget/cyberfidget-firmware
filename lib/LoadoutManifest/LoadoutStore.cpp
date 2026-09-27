@@ -108,6 +108,12 @@ bool formatForFactoryReset() {
     if (mounted) {
         LittleFS.end();
         mounted = false;
+    } else {
+        // format() needs the partition label that only begin() records; a
+        // start-up that finishes an interrupted reset has not mounted yet.
+        // The mount result does not matter (the storage may be half erased).
+        LittleFS.begin(false);
+        LittleFS.end();
     }
     return LittleFS.format();
 }

@@ -519,6 +519,10 @@ void SerialCli::dispatch(const char* line) {
         FactoryReset::confirmFromCli();
         return;
     }
+    if (ieq(line, "reset factory confirm hold")) {
+        FactoryReset::confirmFromCli(true);
+        return;
+    }
 #endif
     if (CloudSync::storeBusy()) {
         // Refuse writes while a network pull owns the store (dev mode

@@ -168,6 +168,10 @@ and nothing on the network can set it.
 erase routine as the Settings screen, prints `[reset] factory=done` just before
 restart, and is absent from release builds. It refuses an unverified firmware
 image or armed update session. It erases LittleFS and NVS; use a bench device.
+`reset factory confirm hold` is the same but waits 10 s after the LittleFS
+format (`[reset] factory=formatted hold_ms=10000`) so the bench can cut power
+before the NVS erase; the next start-up then prints `[reset] factory=finishing`
+and `[reset] factory=done` and finishes the reset.
 
 ### Application and network controls
 

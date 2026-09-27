@@ -2463,12 +2463,12 @@ void WebPortalApp::render() {
 
     // Keep the join details visible in Setup WiFi, the general portal and
     // the no-card state. A caption session returns here when it disconnects.
-    char groupedPassword[10];
-    PortalPassword::grouped(portalPassword, groupedPassword);
+    // The password is shown exactly as typed: eight digits, no space
+    // (about 72 px in the 16 px font, centred on the 128 px screen).
     display.drawString(64, 15, "Join CyberFidget");
     display.drawString(64, 26, "Password");
     display.setFont(ArialMT_Plain_16);
-    display.drawString(64, 37, groupedPassword);
+    display.drawString(64, 37, portalPassword);
     display.setFont(ArialMT_Plain_10);
     if (wifiLanding) {
         display.drawString(64, 53, staConnected ? "BACK to finish" :

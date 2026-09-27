@@ -17,6 +17,7 @@
 #include "UpdateSession.h"
 #include "DeviceIdentity.h"
 #include "UpdatePrompt.h"
+#include "FactoryReset.h"
 #include "PromptPolicy.h"
 #include "AwakeMode.h"
 #include "AwakePolicy.h"
@@ -163,6 +164,9 @@ void AppManager::setup() {
     // Pending image: pass, or restart into the previous image.
     UpdateSession::finishBoot();
     BOOT_MARK("finish");
+    // A reset to factory cut off by power loss finishes here, before
+    // anything reads WiFi, the account link or the apps (it restarts).
+    FactoryReset::finishIfInterrupted();
     {
         // "Install now" restarted into the update session: it never
         // returns (it restarts), and nothing else starts in this power cycle.

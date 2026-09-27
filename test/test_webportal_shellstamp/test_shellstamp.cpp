@@ -99,10 +99,11 @@ void test_portal_password_has_eight_digits_and_preserves_leading_zeroes(void) {
     char password[9];
     PortalPassword::generate(password, []() { return uint32_t(100000001); });
     TEST_ASSERT_EQUAL_STRING("00000001", password);
-    char grouped[10];
-    PortalPassword::grouped(password, grouped);
-    TEST_ASSERT_EQUAL_STRING("0000 0001", grouped);
-    TEST_ASSERT_EQUAL_STRING("00000001", password);
+    // The screen now draws this same string (no "0000 0001" grouping: the
+    // space read as part of the password), so it must be exactly eight
+    // digits with nothing between them.
+    TEST_ASSERT_EQUAL_size_t(8, strlen(password));
+    for (int i = 0; i < 8; ++i) TEST_ASSERT_TRUE(password[i] >= '0' && password[i] <= '9');
 }
 
 void test_portal_password_rejects_biased_random_values(void) {
