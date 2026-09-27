@@ -453,7 +453,7 @@ bool readAppliedRecord(LoadoutManifest::AppliedRecord& out) {
     return n > 0 && LoadoutManifest::parseAppliedRecord(buf, out);
 }
 
-std::string checkinBody(const Session& s, const char* answerBatch, const char* answer,
+std::string checkinBody(const Session& s, bool autoapply, const char* answerBatch, const char* answer,
                         uint32_t& crc, bool& full, std::string& ackBatch) {
     LoadoutManifest::Loadout loadout;
     std::string manifest;
@@ -478,6 +478,7 @@ std::string checkinBody(const Session& s, const char* answerBatch, const char* a
     fields.manifestCrc = present ? SyncProtocol::crc32(manifest.data(), manifest.size()) : 0;
     crc = fields.manifestCrc;
     fields.mode = s.mode;
+    fields.applyApps = autoapply;
     if (answerBatch && answer) {
         fields.appliedBatch = answerBatch;
         fields.result = answer;
@@ -1054,7 +1055,7 @@ Step checkinWithRetry(Session& s, CloudPlanner& plan, const std::string& body,
         const uint32_t retryMs = reply.retry > 0 ? (uint32_t)reply.retry * 1000 : 0;
         Step step = followUp ? plan.ack(reply.status, parsed.nextPollMs, retryMs)
                              : plan.checkin(reply.status, parsed.hasBatch, parsed.firmwareOffer,
-                                            autoapply, parsed.nextPollMs, retryMs);
+                                            autoapply, parsed.nextPollMs, retryMs, parsed.waiting);
         if (step != Step::Backoff) {
             rememberPoll(plan.nextMs(), reply.status, reply.retry);
             if (step == Step::Error) setError(r, followUp ? "ack-http" : "checkin-http");
@@ -1132,7 +1133,7 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
     uint32_t manifestCrc = 0;
     bool sentFull = false;
     std::string ackBatch;
-    std::string body = checkinBody(s, nullptr, nullptr, manifestCrc, sentFull, ackBatch);
+    std::string body = checkinBody(s, autoapply, nullptr, nullptr, manifestCrc, sentFull, ackBatch);
     if (body.empty()) { setError(r, "checkin-body"); return; }
     HttpReply check;
     Step step = checkinWithRetry(s, plan, body, manifestCrc, sentFull, ackBatch,
@@ -1316,7 +1317,7 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
         r.ok = false;
         return;
     }
-    body = checkinBody(s, batchId.c_str(), answer, manifestCrc, sentFull, ackBatch);
+    body = checkinBody(s, autoapply, batchId.c_str(), answer, manifestCrc, sentFull, ackBatch);
     if (body.empty()) { setError(r, "ack-body"); r.ok = false; return; }
     HttpReply follow;
     CheckinReply followParsed;

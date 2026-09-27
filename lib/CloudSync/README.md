@@ -47,19 +47,25 @@ check-in and loadout answers, builds the check-in body, and picks waits.
 `CloudPlanner` decides each step; the worker acts on every step it returns.
 
 1. Check-in: device id, firmware, ABI, board revision, LittleFS totals,
-   `lapply_cap=batch1`, manifest CRC, and the last applied batch record when
-   it belongs to the current pair identity. `installed` is sent on the first
-   check-in of each session, when the manifest CRC differs from the last
+   `lapply_cap=batch1`, manifest CRC, `apply_apps` (1 when this session may
+   apply app changes, 0 when Auto-apply is off), and the last applied batch
+   record when it belongs to the current pair identity. "Get them now" sends
+   1 for that check, as does Dev mode. The field is also sent on follow-up
+   check-ins. `installed` is sent on the first check-in of each session,
+   when the manifest CRC differs from the last
    successful full report, after `send_report`, with an applied-batch answer,
    or after a full report failed. Other check-ins omit `installed`; the site
    keeps its stored list. The last successful full CRC lives only in worker
    RAM, with no per-poll flash write.
-2. A 200 with `batch_id` and `upd.autoapply` on (default) fetches the offer.
-   Autoapply off posts "App changes waiting" and leaves the batch, unless the
-   session was started with `applyWaiting` (the update prompt's "Get them
-   now", `runSession(reason, true)` / `CheckinScheduler::checkNow(true)`),
-   which applies it this once. That flag is not kept across the restart a
-   check takes after Bluetooth use.
+2. With `apply_apps=0` and pending changes, the site leaves them unsealed and
+   replies 200 with `waiting=true` and `batch_id=null`; with nothing pending,
+   it replies 204. The device posts "App changes
+   waiting" through the same status and prompt path as an older batch offer
+   seen with Auto-apply off. With `apply_apps=1`, a 200 with `batch_id` fetches
+   the offer. "Get them now" starts a check with `applyWaiting`
+   (`runSession(reason, true)` / `CheckinScheduler::checkNow(true)`) and applies
+   it this once. That flag is kept across the restart a check takes after
+   Bluetooth use.
 3. The offer's `doc` bytes (after JSON un-escaping) must hash to `doc_crc` and
    carry the check-in's batch id and a base. Every blob row must be a
    same-origin URL with a SHA-256 and size, hash prefixes must be unique, and

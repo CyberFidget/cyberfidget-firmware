@@ -31,7 +31,8 @@ class CloudPlanner {
 public:
     Step start(bool bluetoothIdle);
     Step checkin(int http, bool hasBatch, bool firmwareOffer,
-                 bool autoapply, uint32_t nextMs, uint32_t retryMs);
+                 bool autoapply, uint32_t nextMs, uint32_t retryMs,
+                 bool waiting = false);
     Step loadout(int http, OfferVerdict verdict);
     Step blob(BlobVerdict verdict);
     Step applied(bool success);

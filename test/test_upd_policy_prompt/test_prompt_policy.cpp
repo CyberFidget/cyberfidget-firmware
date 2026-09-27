@@ -318,6 +318,17 @@ void test_autoapply_defaults_on_and_off_leaves_batches_pending(void) {
     TEST_ASSERT_EQUAL_INT((int)AppBatch::Apply, (int)appBatch(false, true));   // Get them now
 }
 
+void test_waiting_result_keeps_the_existing_prompt_and_get_now_choice(void) {
+    const PromptPlan boot = bootPlan(Policy::Auto, false, true);
+    const PromptPlan manual = manualPlan(Policy::Auto, false, true);
+    TEST_ASSERT_TRUE(boot.apps);
+    TEST_ASSERT_TRUE(manual.apps);
+    TEST_ASSERT_EQUAL_STRING("Get them now", kAppOptions[(int)AppChoice::GetNow]);
+    TEST_ASSERT_TRUE(appChoice((int)AppChoice::GetNow).applyNow);
+    TEST_ASSERT_EQUAL_INT((int)AppBatch::Apply, (int)appBatch(false, true));
+    TEST_ASSERT_TRUE(appChoice((int)AppChoice::Later).keepInBar);
+}
+
 void test_settings_are_independent_and_firmware_stays_an_offer(void) {
     // Every combination of the two settings.
     const Policy policies[2] = {Policy::Auto, Policy::Never};
@@ -408,6 +419,7 @@ int main(int, char**) {
     RUN_TEST(test_resumed_check_screen_shows_one_result);
     RUN_TEST(test_early_animation_frame_only_on_an_ordinary_start);
     RUN_TEST(test_autoapply_defaults_on_and_off_leaves_batches_pending);
+    RUN_TEST(test_waiting_result_keeps_the_existing_prompt_and_get_now_choice);
     RUN_TEST(test_settings_are_independent_and_firmware_stays_an_offer);
     RUN_TEST(test_dev_mode_values);
     RUN_TEST(test_test_versions_default_and_explicit_selection);
