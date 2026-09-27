@@ -2589,9 +2589,11 @@ void WebPortalApp::render() {
     display.setFont(ArialMT_Plain_16);
     display.drawString(64, 37, portalPassword);
     display.setFont(ArialMT_Plain_10);
-    if (openHint.show((uint32_t)millis()) && !uploadInProgress) {
+    if (openHint.showAddressNow((uint32_t)millis()) && !uploadInProgress) {
         // A device joined but its sign-in page never came (e.g. a laptop
-        // that also has a wired connection): say where the portal is.
+        // that also has a wired connection): say where the portal is, in
+        // turns with the usual line below. Once the page is opened the
+        // usual line stays.
         display.drawString(64, 53, String("Open ") + WiFi.softAPIP().toString());
     } else if (wifiLanding) {
         display.drawString(64, 53, staConnected ? "BACK to finish" :
