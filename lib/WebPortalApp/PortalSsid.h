@@ -7,8 +7,9 @@
 // The portal's network name: "CyberFidget-" + the last four characters of
 // the unit's canonical 12-character id (SyncProtocol::formatDeviceId), the
 // same four the website shows as the unit's fingerprint. Several Fidgets in
-// one room (a classroom) then never share a network name. Pure, so it is
-// unit-tested natively.
+// one room (a classroom) then almost never share a network name: four hex
+// characters give 65,536 names, so two of 30 units match about 0.7% of the
+// time. Pure, so it is unit-tested natively.
 
 #include <stddef.h>
 #include <string.h>

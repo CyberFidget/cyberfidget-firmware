@@ -67,7 +67,7 @@ private:
     bool apReady = false;
     char portalPassword[9] = {0};  // RAM only; fresh for each portal start
     // "CyberFidget-" + the last four of the unit id (PortalSsid.h), so
-    // Fidgets in one room never share a network name.
+    // Fidgets in one room almost never share a network name.
     char apSsid[PortalSsid::kMaxLen + 1] = {0};
 
     // SD state
