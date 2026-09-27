@@ -15,6 +15,7 @@
 #include "CaptionWrap.h"
 #include "LiveLinkProtocol.h"
 #include "OpenAddressHint.h"
+#include "PortalSsid.h"
 #include "ShellStamp.h"
 
 class WebPortalApp {
@@ -48,7 +49,6 @@ private:
     static bool wifiLanding;
     ButtonManager& buttonManager;
 
-    static constexpr const char* AP_SSID = "CyberFidget";
 
     // Web server + DNS (heap-allocated server for clean lifecycle). The DNS
     // (AP address only) answers every name with the Fidget (CaptiveDns.h),
@@ -66,6 +66,9 @@ private:
     // and gates captive DNS instead of silently binding 0.0.0.0).
     bool apReady = false;
     char portalPassword[9] = {0};  // RAM only; fresh for each portal start
+    // "CyberFidget-" + the last four of the unit id (PortalSsid.h), so
+    // Fidgets in one room never share a network name.
+    char apSsid[PortalSsid::kMaxLen + 1] = {0};
 
     // SD state
     bool sdReady = false;

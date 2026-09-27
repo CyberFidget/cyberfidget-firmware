@@ -22,6 +22,7 @@
 #include "SavedWifi.h"   // the saved networks (lib/CloudSync)
 #include "WifiRequest.h" // their request bodies (lib/CloudSync)
 #include "PortalPassword.h"
+#include "SyncProtocol.h" // formatDeviceId: the canonical unit id
 #include "CaptiveDns.h"
 
 #include <lwip/udp.h>
@@ -485,10 +486,13 @@ void WebPortalApp::begin() {
     WiFi.persistent(false);
     WiFi.mode(WIFI_AP_STA);
     PortalPassword::generate(portalPassword, []() { return esp_random(); });
-    apReady = WiFi.softAP(AP_SSID, portalPassword);
+    char deviceId[13];
+    SyncProtocol::formatDeviceId(ESP.getEfuseMac(), deviceId);
+    PortalSsid::build(deviceId, apSsid);
+    apReady = WiFi.softAP(apSsid, portalPassword);
     delay(100);
     if (apReady) {
-        WP_LOGF("begin: AP started, SSID=%s IP=%s", AP_SSID,
+        WP_LOGF("begin: AP started, SSID=%s IP=%s", apSsid,
                 WiFi.softAPIP().toString().c_str());
     } else {
         ESP_LOGE(TAG_MAIN,
@@ -2584,7 +2588,11 @@ void WebPortalApp::render() {
     // the no-card state. A caption session returns here when it disconnects.
     // The password is shown exactly as typed: eight digits, no space
     // (about 72 px in the 16 px font, centred on the 128 px screen).
-    display.drawString(64, 15, "Join CyberFidget");
+    // "Join CyberFidget-xxxx": 105 px at most in this font (every hex digit
+    // is 6 px or narrower), centred on the 128 px screen.
+    char joinLine[8 + PortalSsid::kMaxLen];
+    snprintf(joinLine, sizeof(joinLine), "Join %s", apSsid);
+    display.drawString(64, 15, joinLine);
     display.drawString(64, 26, "Password");
     display.setFont(ArialMT_Plain_16);
     display.drawString(64, 37, portalPassword);
