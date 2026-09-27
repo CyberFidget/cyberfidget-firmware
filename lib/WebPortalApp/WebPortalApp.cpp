@@ -22,6 +22,7 @@
 #include "SavedWifi.h"   // the saved networks (lib/CloudSync)
 #include "WifiRequest.h" // their request bodies (lib/CloudSync)
 #include "PortalPassword.h"
+#include "CaptiveDns.h"
 
 
 #include <SD.h>
@@ -495,10 +496,11 @@ void WebPortalApp::begin() {
     // Auto-connect to the saved network (only touches the radio if creds exist).
     loadWifiCreds();
 
-    // Start captive portal DNS (binds to AP interface only). Skip if the AP
-    // never came up -- otherwise it just binds the dead 0.0.0.0 address.
+    // Start captive portal DNS. Skip if the AP never came up -- otherwise
+    // it would answer with the dead 0.0.0.0 address.
+    openHint.reset();
     if (apReady) {
-        dnsServer.start(53, "*", WiFi.softAPIP());
+        startCaptiveDns();
     }
 
     // Create web server
@@ -541,7 +543,7 @@ void WebPortalApp::teardown() {
     }
 
     // Stop DNS + mDNS
-    dnsServer.stop();
+    captiveDns.close();
     stopMDNS();
 
     // Stop WiFi (STA + AP)
@@ -636,6 +638,13 @@ void WebPortalApp::releaseBluetoothMemory() {
 void WebPortalApp::update() {
     // Keep device awake
     millis_APP_LASTINTERACTION = millis_NOW;
+
+    // Who is on the Fidget's own network (for the open-address hint). A
+    // device counts from association, well before it can ask for a page.
+    if (apReady && millis() - lastStationPollMs >= 200) {
+        lastStationPollMs = millis();
+        openHint.onStations(WiFi.softAPgetStationNum(), (uint32_t)millis());
+    }
 
     // Track STA connection state
     if (staSSID.length() && !staConnected) {
@@ -845,6 +854,43 @@ static bool takeWifiBody(AsyncWebServerRequest* req, WifiRequest::Kind kind,
     return false;
 }
 
+void WebPortalApp::startCaptiveDns() {
+    captiveDns.close();
+    const IPAddress ap = WiFi.softAPIP();
+    captiveDns.onPacket([this, ap](AsyncUDPPacket& pkt) {
+        const uint8_t ip[4] = {ap[0], ap[1], ap[2], ap[3]};
+        uint8_t out[CaptiveDns::kMaxReplyBytes];
+        CaptiveDns::Question q;
+        const size_t n = CaptiveDns::buildReply(pkt.data(), pkt.length(), ip, out, &q);
+        if (n == 0) return;
+#ifdef CF_TEST_CLI
+        // Test builds only: what joining devices look up (bench captive checks).
+        Serial.printf("[portal] dns name=%s type=%u from=%s\n", q.name, (unsigned)q.type,
+                      pkt.remoteIP().toString().c_str());
+#endif
+        captiveDns.writeTo(out, n, pkt.remoteIP(), pkt.remotePort());
+    });
+    if (!captiveDns.listen(53)) {
+        ESP_LOGE(TAG_MAIN, "[WebPortal] captive DNS failed to start");
+    }
+}
+
+#ifdef CF_TEST_CLI
+// Test builds only: every HTTP request a joining device makes (bench captive
+// checks - which probe arrived, and whether the page itself was fetched).
+static void logPortalRequest(AsyncWebServerRequest* req, const char* answer) {
+    const AsyncWebHeader* host = req->getHeader("Host");
+    const AsyncWebHeader* agent = req->getHeader("User-Agent");
+    Serial.printf("[portal] http %s host=%s url=%s from=%s answer=%s ua=%.60s\n",
+                  req->methodToString(), host ? host->value().c_str() : "-",
+                  req->url().c_str(), req->client()->remoteIP().toString().c_str(), answer,
+                  agent ? agent->value().c_str() : "-");
+}
+#define PORTAL_LOG_REQUEST(req, answer) logPortalRequest((req), (answer))
+#else
+#define PORTAL_LOG_REQUEST(req, answer) ((void)0)
+#endif
+
 void WebPortalApp::setupRoutes() {
     // Main portal page, gzipped in flash (~87 KB raw -> ~23 KB stored).
     //
@@ -858,7 +904,9 @@ void WebPortalApp::setupRoutes() {
     // handles gzip. If a quirky client ever turns up that does not, the tell
     // would be a blank sign-in sheet, and the check is whether its request
     // carried Accept-Encoding: gzip.
-    server->on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
+    server->on("/", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        PORTAL_LOG_REQUEST(req, "page");
+        openHint.onPageRequest();
         AsyncWebServerResponse* resp = req->beginResponse(
             200, "text/html", PORTAL_PAGE_GZ, sizeof(PORTAL_PAGE_GZ));
         resp->addHeader("Content-Encoding", "gzip");
@@ -1097,6 +1145,12 @@ void WebPortalApp::setupRoutes() {
         }
         // Opened from Setup WiFi: a joining phone or laptop lands straight
         // on the WiFi settings (the page also opens them when asked for "/").
+        // This redirect is also the captive-portal answer to every OS
+        // network check (Windows /connecttest.txt and /redirect, Apple
+        // /hotspot-detect.html, Android /generate_204): anything but the
+        // expected reply marks the network as needing sign-in, and the
+        // sign-in window follows the redirect to the portal.
+        PORTAL_LOG_REQUEST(req, "redirect");
         req->redirect(wifiLanding ? "http://192.168.4.1/#settings" : "http://192.168.4.1/");
     });
 }
@@ -2470,7 +2524,11 @@ void WebPortalApp::render() {
     display.setFont(ArialMT_Plain_16);
     display.drawString(64, 37, portalPassword);
     display.setFont(ArialMT_Plain_10);
-    if (wifiLanding) {
+    if (openHint.show((uint32_t)millis()) && !uploadInProgress) {
+        // A device joined but its sign-in page never came (e.g. a laptop
+        // that also has a wired connection): say where the portal is.
+        display.drawString(64, 53, String("Open ") + WiFi.softAPIP().toString());
+    } else if (wifiLanding) {
         display.drawString(64, 53, staConnected ? "BACK to finish" :
                            (staSSID.length() ? "Connecting..." : "Pick network on phone"));
     } else if (!sdReady) {
