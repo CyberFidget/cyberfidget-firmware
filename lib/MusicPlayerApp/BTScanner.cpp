@@ -154,7 +154,9 @@ bool BTScanner::addResult(const char* name, esp_bd_addr_t addr, int rssi) {
     _results[idx].name[sizeof(_results[idx].name) - 1] = '\0';
     memcpy(_results[idx].address, addr, ESP_BD_ADDR_LEN);
     _results[idx].rssi = rssi;
-    _resultCount++;
+    // Explicit read-then-write: C++20 deprecates ++ on a volatile. Same code,
+    // without the warning; the critical section already makes it atomic.
+    _resultCount = _resultCount + 1;
 
     portEXIT_CRITICAL(&_mutex);
     return true;
