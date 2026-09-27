@@ -66,12 +66,15 @@ The screen refuses while a new firmware image is pending verification or an
 update-session boot request is armed. On confirmation it shows "Erasing...",
 waits for the cloud/dev worker to stop, switches off WiFi and Bluetooth,
 closes serial file transfers, writes a "reset in progress" mark (NVS
-`freset/busy`), formats LittleFS, erases the default NVS partition (which
+`freset/busy`) and reads it back, formats LittleFS, erases the default NVS partition (which
 clears the mark) and restarts. This removes delivered apps, menu order, battery
 history, dev files, saved WiFi, settings and the account link. The current
 firmware and the memory card stay in place. If shutdown fails, nothing is
-erased and no mark is written. If formatting fails, NVS is not erased but the
-mark stays.
+erased and no mark is written. If the mark cannot be written or does not read
+back, nothing is erased either: the screen says "Could not start the reset.
+Nothing was erased." and the log says `[reset] factory=refused
+reason=mark-write` (or `mark-readback`). If formatting fails, NVS is not
+erased but the mark stays.
 
 A power cut after the mark is written leaves it set: the next start-up
 (`FactoryReset::finishIfInterrupted`, right after `UpdateSession::finishBoot`
@@ -83,10 +86,26 @@ If the finish itself crashes twice since power-on (RTC counter), the third
 start-up skips the LittleFS format and still erases NVS, so a fault in the
 format cannot become a restart loop.
 
+A finish that did not format LittleFS (the format failed, or was skipped by
+that guard) is never reported as done: after the NVS erase it writes one key,
+`freset/partial`, logs `[reset] factory=partial saved=1` and restarts. The next
+normal start-up (not a timer wake) logs `[reset] factory=partial`, shows "The
+reset could not erase apps. Run Reset to factory again." for 6 s and clears
+the key.
+
+If the mark cannot be read at start-up (an NVS error other than "not
+found"), the read is retried once; if it still fails the start-up logs
+`[reset] factory=mark-unreadable` and `factory=boot-normal mark=unreadable`
+and starts normally. It does not erase on a guess; a mark that is really there
+stays for a later start-up.
+
 `reset factory confirm` is a `CF_TEST_CLI`-only bench verb;
 `reset factory confirm hold` also waits 10 s between the LittleFS format and
 the NVS erase (log `[reset] factory=formatted hold_ms=10000`) so a bench can
-cut power there.
+cut power there. `reset factory confirm failmark` makes the mark write fail
+(the reset must refuse); `reset factory confirm failfs` makes the LittleFS
+format fail now and on the start-up after the next software restart (for
+example `reboot`), which must end as partial.
 
 ## Test-build hooks
 

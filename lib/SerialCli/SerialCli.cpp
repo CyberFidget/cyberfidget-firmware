@@ -523,6 +523,14 @@ void SerialCli::dispatch(const char* line) {
         FactoryReset::confirmFromCli(true);
         return;
     }
+    if (ieq(line, "reset factory confirm failmark")) {
+        FactoryReset::confirmFromCli(false, FactoryReset::Fault::MarkWrite);
+        return;
+    }
+    if (ieq(line, "reset factory confirm failfs")) {
+        FactoryReset::confirmFromCli(false, FactoryReset::Fault::Format);
+        return;
+    }
 #endif
     if (CloudSync::storeBusy()) {
         // Refuse writes while a network pull owns the store (dev mode
