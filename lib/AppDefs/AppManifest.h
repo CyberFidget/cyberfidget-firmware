@@ -74,3 +74,4 @@ APP_ENTRY(APP_AWAKE,                 "Awake & dev mode",    "Settings",       Aw
 APP_ENTRY(APP_SETUP_WIFI,            "Setup WiFi",          "Settings",       [](){ WebPortalApp::requestWifiLanding(); webPortalApp.begin(); }, [](){ webPortalApp.end(); }, [](){ webPortalApp.update(); })
 // Settings > Saved WiFi: names in the order tried, Use this first / Forget.
 APP_ENTRY(APP_SAVED_WIFI,            "Saved WiFi",          "Settings",       SavedWifiScreen::begin,                          SavedWifiScreen::end,                          SavedWifiScreen::update                    )
+APP_ENTRY(APP_FACTORY_RESET,         "Reset to factory",   "Settings",       FactoryReset::begin,                             FactoryReset::end,                             FactoryReset::update                       )

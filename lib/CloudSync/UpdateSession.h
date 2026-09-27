@@ -45,6 +45,9 @@ void loopTick(bool frameDrawnLastPass);
 /// True from the first line of pending-image setup until the image is kept.
 bool imagePending();
 
+/// Read the update-session boot one-shot without consuming it.
+bool sessionRequestArmed();
+
 /// Gate every HAL deep-sleep entry. False defers ordinary sleep while the
 /// image is pending; a critical-voltage shutdown may keep passed checks or
 /// discard the pending record so battery loss cannot set fail_ver.
@@ -71,8 +74,9 @@ bool armInstall(const char* version, const char** why);
 /// Check-in worker, when the site offers firmware: reads the update
 /// manifest, runs every gate, and stores `upd.avail` (what the prompt may
 /// offer) - or removes it when a gate refuses the release. A fetch that
-/// fails leaves the stored offer as it was. Nothing is downloaded.
-void refreshOffer(uint32_t deadlineMs);
+/// fails leaves the stored offer as it was. Nothing is downloaded. Returns
+/// true when the site answered, so the caller can stamp the refresh.
+bool refreshOffer(uint32_t deadlineMs);
 
 /// Serial `upd allow-unsigned on|off` (every build: holding the USB cable is
 /// the proof). Never settable over the network.

@@ -29,6 +29,7 @@ constexpr int kMaxRetryAfterSec = 90;
 struct CheckinReply {
     bool hasBatch = false;
     std::string batchId;
+    bool waiting = false;        ///< unsealed app changes remain on the site
     bool sendReport = false;
     bool firmwareOffer = false;
     std::string firmwareUrl;
@@ -100,6 +101,7 @@ struct CheckinFields {
     /// "normal", "dev" or "always" (what the Awake & dev mode setting says);
     /// null or empty sends no mode.
     const char* mode = nullptr;
+    bool applyApps = true;        ///< this session may apply app changes
 };
 
 /// The check-in POST body. Empty on an allocation failure.

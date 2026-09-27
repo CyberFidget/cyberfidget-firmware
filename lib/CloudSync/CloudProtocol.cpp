@@ -165,6 +165,7 @@ bool parseCheckin(const char* body, uint32_t headerNextMs, CheckinReply& out) {
     } else if (batch && !cJSON_IsNull(batch)) {
         ok = false;
     }
+    out.waiting = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "waiting"));
     out.sendReport = cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(root, "send_report"));
     const cJSON* fw = cJSON_GetObjectItemCaseSensitive(root, "firmware");
     if (cJSON_IsObject(fw) && cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(fw, "offer"))) {
@@ -265,6 +266,7 @@ std::string buildCheckinBody(const CheckinFields& f) {
     cJSON_AddNumberToObject(root, "fs_used", f.fsUsed);
     cJSON_AddStringToObject(root, "lapply_cap", SyncProtocol::kLapplyCapability);
     cJSON_AddStringToObject(root, "manifest_crc", crcText);
+    cJSON_AddNumberToObject(root, "apply_apps", f.applyApps ? 1 : 0);
     if (f.mode && *f.mode) cJSON_AddStringToObject(root, "mode", f.mode);
     if (f.appliedBatch && f.result && validBatchId(f.appliedBatch) && validResult(f.result)) {
         cJSON_AddStringToObject(root, "applied_batch", f.appliedBatch);

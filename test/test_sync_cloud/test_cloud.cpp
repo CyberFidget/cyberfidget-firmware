@@ -129,6 +129,21 @@ void test_waiting_leaves_batch_and_firmware_only_offered() {
     TEST_ASSERT_EQUAL_INT((int)Step::Waiting, (int)plan.step());
 }
 
+void test_unsealed_waiting_reply_uses_the_same_waiting_step() {
+    CheckinReply reply;
+    TEST_ASSERT_TRUE(parseCheckin(
+        "{\"waiting\":true,\"batch_id\":null,\"next_poll_ms\":86400000}", 0, reply));
+    TEST_ASSERT_TRUE(reply.waiting);
+    TEST_ASSERT_FALSE(reply.hasBatch);
+    CloudPlanner plan;
+    plan.start(true);
+    TEST_ASSERT_EQUAL_INT((int)Step::Waiting,
+        (int)plan.checkin(200, reply.hasBatch, reply.firmwareOffer, false,
+                          reply.nextPollMs, 0, reply.waiting));
+    TEST_ASSERT_EQUAL_INT((int)Step::Waiting, (int)plan.step());
+    TEST_ASSERT_EQUAL_UINT32(86400000, plan.nextMs());
+}
+
 // Permanent offer/blob defects are answered (rejected), not left to wedge
 // the queue; transport-like failures stay retryable errors.
 void test_bad_offer_and_sha_never_reach_apply() {
@@ -271,6 +286,7 @@ void test_checkin_204_and_429_bodies() {
     CheckinReply reply;
     TEST_ASSERT_TRUE(parseCheckin(nullptr, 2000, reply));
     TEST_ASSERT_FALSE(reply.hasBatch);
+    TEST_ASSERT_FALSE(reply.waiting);
     TEST_ASSERT_EQUAL_UINT32(2000, reply.nextPollMs);
     TEST_ASSERT_EQUAL_UINT32(kDevFloorMs, followupFloorMs(reply));
 
@@ -279,6 +295,14 @@ void test_checkin_204_and_429_bodies() {
     TEST_ASSERT_EQUAL_UINT32(43000, retryWaitMs(42));
     TEST_ASSERT_EQUAL_UINT32(0, retryWaitMs(0));
     TEST_ASSERT_EQUAL_UINT32(0, retryWaitMs(3600));
+}
+
+void test_checkin_waiting_false_and_absent() {
+    CheckinReply reply;
+    TEST_ASSERT_TRUE(parseCheckin("{\"waiting\":false,\"batch_id\":null}", 0, reply));
+    TEST_ASSERT_FALSE(reply.waiting);
+    TEST_ASSERT_TRUE(parseCheckin("{\"batch_id\":null}", 0, reply));
+    TEST_ASSERT_FALSE(reply.waiting);
 }
 
 void test_checkin_rejects_unreportable_batch_id() {
@@ -407,6 +431,27 @@ void test_rejection_strings_match_server_rule() {
 // ---------------------------------------------------------------------------
 // Check-in body
 // ---------------------------------------------------------------------------
+
+void test_checkin_body_carries_apply_decision_on_full_and_slim_posts() {
+    CheckinFields f;
+    f.deviceId = "a1b2c3d4e5f6";
+    LoadoutManifest::Loadout installed;
+    f.installed = &installed;
+    f.applyApps = false;
+    cJSON* root = cJSON_Parse(buildCheckinBody(f).c_str());
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_EQUAL_INT(0, (int)cJSON_GetObjectItem(root, "apply_apps")->valuedouble);
+    TEST_ASSERT_NOT_NULL(cJSON_GetObjectItem(root, "installed"));
+    cJSON_Delete(root);
+
+    f.installed = nullptr;
+    f.applyApps = true; // Auto-apply On, Get them now, and Dev sessions
+    root = cJSON_Parse(buildCheckinBody(f).c_str());
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_EQUAL_INT(1, (int)cJSON_GetObjectItem(root, "apply_apps")->valuedouble);
+    TEST_ASSERT_NULL(cJSON_GetObjectItem(root, "installed"));
+    cJSON_Delete(root);
+}
 
 void test_checkin_body_carries_answer_and_report() {
     LoadoutManifest::Loadout installed;
@@ -679,6 +724,7 @@ int main(int, char**) {
     RUN_TEST(test_no_change_and_rate_limit_backoff);
     RUN_TEST(test_offer_then_download_apply_and_ack);
     RUN_TEST(test_waiting_leaves_batch_and_firmware_only_offered);
+    RUN_TEST(test_unsealed_waiting_reply_uses_the_same_waiting_step);
     RUN_TEST(test_bad_offer_and_sha_never_reach_apply);
     RUN_TEST(test_apply_refusal_is_still_acknowledged);
     RUN_TEST(test_failed_radio_teardown_requires_reboot);
@@ -689,6 +735,7 @@ int main(int, char**) {
     RUN_TEST(test_checkin_null_batch_with_firmware_offer_is_no_action);
     RUN_TEST(test_checkin_with_batch_and_dev_mode);
     RUN_TEST(test_checkin_204_and_429_bodies);
+    RUN_TEST(test_checkin_waiting_false_and_absent);
     RUN_TEST(test_checkin_rejects_unreportable_batch_id);
     RUN_TEST(test_server_epoch_rejects_bad_text);
     RUN_TEST(test_http_date_epoch_strict_imf_fixdate);
@@ -701,6 +748,7 @@ int main(int, char**) {
     RUN_TEST(test_offer_unreadable_body_is_retryable);
     RUN_TEST(test_rejection_strings_match_server_rule);
     RUN_TEST(test_checkin_body_carries_answer_and_report);
+    RUN_TEST(test_checkin_body_carries_apply_decision_on_full_and_slim_posts);
     RUN_TEST(test_checkin_body_omits_unacceptable_answer);
     RUN_TEST(test_checkin_body_carries_hardware_fields_when_present);
     RUN_TEST(test_full_report_decision_covers_every_trigger);

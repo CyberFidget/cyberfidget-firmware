@@ -105,7 +105,7 @@ void test_settings_rows_fresh_device(void) {
         "Check at start-up: On",
         "Share battery data: Off",
         "Apply app changes automatically: On",
-        "Channel: stable",
+        "Versions: Stable",
         "Source: cyberfidget.com",
         "Skip: no update waiting",
         "Link this Fidget",

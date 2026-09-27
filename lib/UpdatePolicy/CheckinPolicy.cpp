@@ -7,6 +7,15 @@
 
 namespace CheckinPolicy {
 
+bool manifestRefreshDue(ManifestSession session, bool offered, uint32_t nowSec,
+                        uint32_t lastSec, bool budgetAvailable) {
+    if (!budgetAvailable) return false;
+    if (session == ManifestSession::Manual) return true;
+    if (session == ManifestSession::Dev) return offered;
+    return offered || !clockPlausible(nowSec) || !clockPlausible(lastSec) ||
+           nowSec < lastSec || nowSec - lastSec >= kManifestRefreshSec;
+}
+
 Policy parsePolicy(const char* stored) {
     return stored && strcmp(stored, "never") == 0 ? Policy::Never : Policy::Auto;
 }

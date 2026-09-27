@@ -48,6 +48,8 @@ constexpr const char* kPolicyAuto  = "auto";
 constexpr const char* kPolicyNever = "never";
 constexpr const char* kDefaultSource  = "cyberfidget.com";
 constexpr const char* kDefaultChannel = "stable";
+/// Explicit selection wins; an unset selection follows a running prerelease.
+const char* selectedChannel(const char* stored, const char* running);
 
 // ---- Copy (what the screen says) ---------------------------------------------
 
@@ -62,9 +64,10 @@ constexpr const char* kBootCheckExplanation =
 constexpr const char* kRestartingToCheck = "Restarting to check...";
 constexpr const char* kChecking = "Checking for updates...";
 constexpr const char* kAlreadyChecking = "A check is already running";
-/// Install now while no update session exists on the device yet.
+/// Install now for an offer this Fidget will not install over WiFi (not
+/// signed with a key it knows, and not opted in over USB).
 constexpr const char* kInstallComingSoon =
-    "Installing on your Fidget is coming soon. Update it from the website for now.";
+    "This version installs from the website. Plug in and use the Update page.";
 constexpr const char* kWebsiteUpdateCopy =
     "Update once on website for WiFi updates";
 constexpr const char* kKeyWebsiteSeen = "web_seen";
@@ -182,6 +185,24 @@ struct CheckResume {
     bool applyWaiting = false;      ///< ...applying waiting app changes
 };
 CheckResume resumeAfterRestart(bool bootcloud, bool bootapply, bool otherAppFirst);
+
+/// What decides the first screen of a start, read before the filesystem is
+/// mounted.
+struct StartShots {
+    bool imagePending = false;   ///< a just-installed update not yet kept
+    bool timerWake = false;      ///< the battery timer wake (never draws)
+    bool skipanim = false;
+    bool portal = false;         ///< bootapp
+    bool music = false;          ///< bootmusic
+    bool link = false;           ///< bootlink
+    bool wasmApp = false;        ///< a delivered app to reopen (wasmid set)
+    bool bootcloud = false;      ///< a check resumed after a restart
+};
+/// True when this start opens on the start-up animation for certain, so its
+/// first frame can be drawn before the slower start-up steps. Any restart
+/// one-shot, a pending update or a timer wake says no (those starts draw
+/// their own first screen, or none).
+bool earlyAnimationFrame(const StartShots& s);
 
 enum class CheckEntry : uint8_t { StartNew, WatchSession };
 

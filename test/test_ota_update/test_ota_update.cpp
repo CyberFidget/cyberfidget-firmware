@@ -840,6 +840,17 @@ void test_a_failed_version_is_not_offered_automatically(void) {
     TEST_ASSERT_FALSE(automaticOfferAllowed("", ""));
 }
 
+void test_freshness_floor_is_bounded_by_trusted_time(void) {
+    const uint32_t now = 1790000000u;
+    const uint32_t cap = now + 2u * 86400u;
+    TEST_ASSERT_EQUAL_UINT32(cap, boundedSeenFloor(0, now + 30u * 86400u, now));
+    TEST_ASSERT_EQUAL_UINT32(cap, boundedSeenFloor(now + 30u * 86400u, 0, now));
+    TEST_ASSERT_EQUAL_UINT32(now - 100u, boundedSeenFloor(now - 200u, now - 100u, now));
+    TEST_ASSERT_EQUAL_UINT32(now - 200u, boundedSeenFloor(now - 200u, now - 300u, now));
+    TEST_ASSERT_EQUAL_UINT32(0, boundedSeenFloor(0, now + 30u * 86400u, 0));
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, boundedSeenFloor(0, UINT32_MAX, UINT32_MAX));
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -848,6 +859,7 @@ int main(int, char**) {
     RUN_TEST(test_parses_the_site_manifest);
     RUN_TEST(test_every_field_is_required_and_validated);
     RUN_TEST(test_fork_source_and_rc_channel_parse);
+    RUN_TEST(test_freshness_floor_is_bounded_by_trusted_time);
     RUN_TEST(test_optional_signature_pair_is_strict);
     RUN_TEST(test_install_permission_matrix);
     RUN_TEST(test_an_unknown_signing_key_keeps_the_offer);

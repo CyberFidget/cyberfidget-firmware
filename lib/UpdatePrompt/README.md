@@ -11,6 +11,7 @@ host-tested there:
 | `UpdatePrompt.*` | the post-boot update popup, root "Check for updates" (`APP_CHECK_UPDATES`), Settings > Updates (`APP_UPDATES`) | `lib/UpdatePolicy/PromptPolicy`, `CheckinPolicy` |
 | `AwakeMode.*` | Settings > Awake & dev mode (`APP_AWAKE`), the stored mode and its stop rules, dev mode listening, the Bluetooth-app prompt | `lib/UpdatePolicy/AwakePolicy` |
 | `SavedWifiScreen.*` | Settings > Saved WiFi (`APP_SAVED_WIFI`) | `lib/CloudSync/WifiList` (via `SavedWifi`) |
+| `FactoryReset.*` | Settings > Reset to factory (`APP_FACTORY_RESET`) | `lib/UpdatePolicy/FactoryResetPolicy.h` |
 
 Behavior, stored keys and on-screen copy for the first two are described in
 `lib/UpdatePolicy/README.md` (sections "Update prompt" and "Awake & dev
@@ -56,6 +57,19 @@ Storage (up to three networks in NVS `wificfg`, migration of the older
 single-network keys) and the join order are in `lib/CloudSync/WifiList.h` and
 `lib/CloudSync/SavedWifi.h`; the rules are host-tested in
 `test/test_sync_wifilist`.
+
+## Reset to factory
+
+The Settings row opens a full-screen warning. Hold Enter for three seconds;
+the bar fills while held, release resets the bar, and Back returns to Settings.
+The screen refuses while a new firmware image is pending verification or an
+update-session boot request is armed. On confirmation it shows "Erasing...",
+waits for the cloud/dev worker to stop, switches off WiFi and Bluetooth,
+closes serial file transfers, formats LittleFS, erases the default NVS
+partition and restarts. This removes delivered apps, menu order, battery
+history, dev files, saved WiFi, settings and the account link. The current
+firmware and the memory card stay in place. If shutdown or formatting fails,
+NVS is not erased. `reset factory confirm` is a `CF_TEST_CLI`-only bench verb.
 
 ## Test-build hooks
 

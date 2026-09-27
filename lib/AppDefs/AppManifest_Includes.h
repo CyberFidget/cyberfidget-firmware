@@ -39,3 +39,4 @@
 #include "UpdatePrompt.h"
 #include "AwakeMode.h"
 #include "SavedWifiScreen.h"
+#include "FactoryReset.h"

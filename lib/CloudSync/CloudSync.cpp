@@ -453,7 +453,7 @@ bool readAppliedRecord(LoadoutManifest::AppliedRecord& out) {
     return n > 0 && LoadoutManifest::parseAppliedRecord(buf, out);
 }
 
-std::string checkinBody(const Session& s, const char* answerBatch, const char* answer,
+std::string checkinBody(const Session& s, bool autoapply, const char* answerBatch, const char* answer,
                         uint32_t& crc, bool& full, std::string& ackBatch) {
     LoadoutManifest::Loadout loadout;
     std::string manifest;
@@ -478,6 +478,7 @@ std::string checkinBody(const Session& s, const char* answerBatch, const char* a
     fields.manifestCrc = present ? SyncProtocol::crc32(manifest.data(), manifest.size()) : 0;
     crc = fields.manifestCrc;
     fields.mode = s.mode;
+    fields.applyApps = autoapply;
     if (answerBatch && answer) {
         fields.appliedBatch = answerBatch;
         fields.result = answer;
@@ -1054,7 +1055,7 @@ Step checkinWithRetry(Session& s, CloudPlanner& plan, const std::string& body,
         const uint32_t retryMs = reply.retry > 0 ? (uint32_t)reply.retry * 1000 : 0;
         Step step = followUp ? plan.ack(reply.status, parsed.nextPollMs, retryMs)
                              : plan.checkin(reply.status, parsed.hasBatch, parsed.firmwareOffer,
-                                            autoapply, parsed.nextPollMs, retryMs);
+                                            autoapply, parsed.nextPollMs, retryMs, parsed.waiting);
         if (step != Step::Backoff) {
             rememberPoll(plan.nextMs(), reply.status, reply.retry);
             if (step == Step::Error) setError(r, followUp ? "ack-http" : "checkin-http");
@@ -1076,6 +1077,7 @@ Step checkinWithRetry(Session& s, CloudPlanner& plan, const std::string& body,
 portMUX_TYPE devLock = portMUX_INITIALIZER_UNLOCKED;
 DevSnapshot devView;
 std::atomic<bool> devWake{false};
+std::atomic<bool> devManualRefresh{false};
 // Inside a check-in (not waiting between them): the store may change.
 std::atomic<bool> devInCycle{false};
 #ifdef CF_TEST_CLI
@@ -1131,7 +1133,7 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
     uint32_t manifestCrc = 0;
     bool sentFull = false;
     std::string ackBatch;
-    std::string body = checkinBody(s, nullptr, nullptr, manifestCrc, sentFull, ackBatch);
+    std::string body = checkinBody(s, autoapply, nullptr, nullptr, manifestCrc, sentFull, ackBatch);
     if (body.empty()) { setError(r, "checkin-body"); return; }
     HttpReply check;
     Step step = checkinWithRetry(s, plan, body, manifestCrc, sentFull, ackBatch,
@@ -1160,16 +1162,32 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
             offered.putString("fw_url", s.reply.firmwareUrl.c_str());
             offered.end();
         }
-        // What the prompt may offer: the manifest, through every gate
-        // (UpdateSession). Every session reads it, scheduled ones too
-        // (the post-boot popup shows what the daily wake cached): one
-        // call, never a wait, and only when the remaining budget still
-        // leaves the usual reserve.
-        // Dev mode reads it at most once an hour, never ahead of an app
-        // that is waiting to be delivered.
-        if (budgetCovers(kCallMs, s.elapsed(), s.limitMs, kReserveMs) &&
-            (!dev || (!s.reply.hasBatch && devOfferDue())))
-            UpdateSession::refreshOffer(s.started + s.limitMs - kReserveMs);
+    }
+    // A quiet check-in may be 204 with no offer. Manual and stale scheduled
+    // checks still read the update site, within the same deadline reserve.
+    const time_t clock = time(nullptr);
+    const uint32_t now = clock > 0 && (uint64_t)clock <= UINT32_MAX ? (uint32_t)clock : 0;
+    uint32_t lastManifest = 0;
+    Preferences manifestStamp;
+    if (manifestStamp.begin("upd", true)) {
+        lastManifest = manifestStamp.getUInt(CheckinPolicy::kKeyManifestAt, 0);
+        manifestStamp.end();
+    }
+    const bool manualDev = dev && devManualRefresh.exchange(false);
+    const CheckinPolicy::ManifestSession manifestSession = manualDev ? CheckinPolicy::ManifestSession::Manual :
+        dev ? CheckinPolicy::ManifestSession::Dev :
+        (sessionReason == Reason::Manual || sessionReason == Reason::Recovery)
+            ? CheckinPolicy::ManifestSession::Manual : CheckinPolicy::ManifestSession::Scheduled;
+    const bool budget = budgetCovers(kCallMs, s.elapsed(), s.limitMs, kReserveMs);
+    if (CheckinPolicy::manifestRefreshDue(manifestSession, s.reply.firmwareOffer, now,
+                                          lastManifest, budget) &&
+        (!dev || manualDev || (!s.reply.hasBatch && devOfferDue()))) {
+        if (s.checkinConnection) s.checkinConnection->clear();
+        const bool answered = UpdateSession::refreshOffer(s.started + s.limitMs - kReserveMs);
+        if (answered && CheckinPolicy::clockPlausible(now) && manifestStamp.begin("upd", false)) {
+            manifestStamp.putUInt(CheckinPolicy::kKeyManifestAt, now);
+            manifestStamp.end();
+        }
     }
     if (step == Step::Done) { r.ok = true; r.none = true; return; }
     if (step == Step::Waiting) { r.ok = true; r.none = true; r.waiting = true; return; }
@@ -1299,7 +1317,7 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
         r.ok = false;
         return;
     }
-    body = checkinBody(s, batchId.c_str(), answer, manifestCrc, sentFull, ackBatch);
+    body = checkinBody(s, autoapply, batchId.c_str(), answer, manifestCrc, sentFull, ackBatch);
     if (body.empty()) { setError(r, "ack-body"); r.ok = false; return; }
     HttpReply follow;
     CheckinReply followParsed;
@@ -1367,7 +1385,10 @@ void uploadDailyUsage(const Session& s, const Result& r) {
     if (!BatteryDiary::uploadDue(enabled, s.token[0] != 0,
             CheckinPolicy::batteryEligible(dailyVbatMv, dailySocPct), true, r.ok, now, last, remaining)) return;
 
-    std::vector<BatteryDiary::Record> records(BatteryDiary::kUploadRecords + 1);
+    // The whole ring (48 KiB, lands in PSRAM): the window sends the OLDEST
+    // unsent records first, so a Fidget that was offline for weeks catches
+    // up over a few daily uploads instead of losing its older records.
+    std::vector<BatteryDiary::Record> records(BatteryDiary::kMaxRecords);
     uint8_t stats[38];
     uint32_t total = 0;
     const size_t count = BatteryDiary::readUploadSnapshot(records.data(), records.size(), &total, stats);
@@ -1594,8 +1615,11 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         if (!keepDevConnection(out.status, r.ok, wait,
                                WiFi.status() == WL_CONNECTED, cancelRequested))
             checkinConnection.clear();
+        // The steady listening level (what a delivered app's launch decides on).
+        const uint32_t restFree = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         portENTER_CRITICAL(&devLock);
         devView.connected = WiFi.status() == WL_CONNECTED;
+        devView.restFree = restFree;
         devView.polls = polls;
         devView.failures = failures;
         devView.lastPollMs = millis();
@@ -1610,9 +1634,7 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
                       "largest_min=%u free=%u at_ms=%lu\n",
                       (unsigned)polls, out.status, r.ok ? (r.none ? "none" : "ok") : "error", r.err,
                       (unsigned)r.totalMs, (unsigned)wait, (unsigned)r.heapMin,
-                      (unsigned)r.largestMin,
-                      (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
-                      (unsigned long)millis());
+                      (unsigned)r.largestMin, (unsigned)restFree, (unsigned long)millis());
         devTlsProbe();
 #else
         // Release builds print only the changes.
@@ -1915,6 +1937,7 @@ bool runSession(Reason reason, bool applyWaiting, int32_t dailyVbat, int32_t dai
         devView = DevSnapshot();
         portEXIT_CRITICAL(&devLock);
         devWake = false;
+        devManualRefresh = false;
         devInCycle = false;
     }
     if (xTaskCreate(worker, "cloudsync", kStackBytes, nullptr, 1, nullptr) != pdPASS) {
@@ -2111,7 +2134,7 @@ DevSnapshot devSnapshot() {
     return copy;
 }
 
-void devPollNow() { devWake = true; }
+void devPollNow() { devManualRefresh = true; devWake = true; }
 
 // A full update URL (the site plus a path and query): longer than a site
 // base, same scheme rules.

@@ -29,6 +29,9 @@ namespace LoadoutStore {
 /// @return true if the filesystem is available.
 bool begin();
 
+/// Close our mount and format only the LittleFS partition. No other flash partition.
+bool formatForFactoryReset();
+
 /// Read /loadout.json into jsonOut. @return false if absent/unreadable.
 bool load(std::string& jsonOut);
 

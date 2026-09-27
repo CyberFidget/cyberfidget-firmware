@@ -19,11 +19,13 @@
 #include <nvs.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "CloudSync.h"
 #include "DisplayProxy.h"
 #include "HAL.h"
 #include "OtaUpdate.h"
+#include "PromptPolicy.h"
 #include "SavedWifi.h"
 #include "StatusService.h"
 #include "UpdateSigning.h"
@@ -153,7 +155,10 @@ void recordSeen(const Pending& p) {
     Preferences upd;
     if (!upd.begin(kUpdNs, false)) return;
     const uint32_t current = upd.isKey(p.seenKey) ? upd.getUInt(p.seenKey, 0) : 0;
-    if (p.releasedAt > current) upd.putUInt(p.seenKey, p.releasedAt);
+    const time_t clock = time(nullptr);
+    const uint32_t now = clock > 0 && (uint64_t)clock <= UINT32_MAX ? (uint32_t)clock : 0;
+    const uint32_t floor = OtaUpdate::boundedSeenFloor(current, p.releasedAt, now);
+    if (floor != current) upd.putUInt(p.seenKey, floor);
     upd.end();
 }
 
@@ -491,12 +496,20 @@ void checkManifest(const char* base, const char* wanted, uint32_t deadline, uint
         upd.end();
     }
     const char* src = OtaUpdate::normalizeSource(source);
-    const char* chan = OtaUpdate::normalizeChannel(channel);
+    const char* chan = PromptPolicy::selectedChannel(channel, getFirmwareVersionString());
     OtaUpdate::seenKey(src, chan, out.seen);
     if (upd.begin(kUpdNs, true)) {
         if (upd.isKey(out.seen)) seenTs = upd.getUInt(out.seen, 0);
         upd.end();
     }
+    const time_t clock = time(nullptr);
+    const uint32_t now = clock > 0 && (uint64_t)clock <= UINT32_MAX ? (uint32_t)clock : 0;
+    const uint32_t bounded = OtaUpdate::boundedSeenFloor(seenTs, 0, now);
+    if (bounded != seenTs && upd.begin(kUpdNs, false)) {
+        upd.putUInt(out.seen, bounded);
+        upd.end();
+    }
+    seenTs = bounded;
     char url[640];
     const char* slash = strncmp(src, "fork:", 5) == 0 ? strchr(src + 5, '/') : nullptr;
     if (slash) {
@@ -701,6 +714,16 @@ void finishBoot() {
     }
 }
 
+bool sessionRequestArmed() {
+    Preferences boot;
+    // Read-write open also creates an absent namespace on a first boot.
+    // Read-only open reports that ordinary empty state as a failure.
+    if (!boot.begin(kBootNs, false)) return true; // unreadable state is unsafe to erase
+    const bool armed = boot.getBool(kBootKey, false);
+    boot.end();
+    return armed;
+}
+
 bool takeSessionRequest(char* version, size_t len) {
     version[0] = '\0';
     Preferences boot;
@@ -883,20 +906,22 @@ bool armInstall(const char* version, const char** why) {
     return ok;
 }
 
-void refreshOffer(uint32_t deadlineMs) {
+bool refreshOffer(uint32_t deadlineMs) {
     char base[128];
-    if (!CloudSync::siteBase(base, sizeof(base))) return;
+    if (!CloudSync::siteBase(base, sizeof(base))) return false;
     ManifestCheck mc;
     // The check-in's own short call timeout: a Music Player launch waits
     // for this worker to stop.
     checkManifest(base, nullptr, deadlineMs, kOfferCallMs, mc);
+    const bool answered = mc.outcome != OtaUpdate::FetchOutcome::Transport &&
+                          mc.outcome != OtaUpdate::FetchOutcome::ServerError;
     const OtaUpdate::OfferAction action = OtaUpdate::offerAction(mc.outcome, mc.bad);
     if (action == OtaUpdate::OfferAction::Unchanged) {
         Serial.printf("[update] offer=unchanged outcome=%d\n", (int)mc.outcome);
-        return;
+        return answered;
     }
     Preferences upd;
-    if (!upd.begin(kUpdNs, false)) return;
+    if (!upd.begin(kUpdNs, false)) return answered;
     bool ok;
     if (action == OtaUpdate::OfferAction::Store) {
         // A key id this firmware does not know is stored like any other:
@@ -918,6 +943,7 @@ void refreshOffer(uint32_t deadlineMs) {
     Serial.printf("[update] offer=%s version=%s gate=%s write=%s\n",
                   action == OtaUpdate::OfferAction::Store ? "stored" : "withdrawn", mc.m.version,
                   OtaUpdate::verdictName(mc.verdict), ok ? "ok" : "error");
+    return answered;
 }
 
 bool setAllowUnsigned(bool allow) {

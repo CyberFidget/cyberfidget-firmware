@@ -23,8 +23,10 @@
 #include "StatusService.h"
 #include "WasmFsApp.h"
 #include "WebPortalApp.h"
+#include "BootAnimation.h"
 #include <Preferences.h>
 #include <esp_heap_caps.h>
+#include <cstring>
 #include <string>
 
 void (*keep_functions[])() = {menuBegin, menuEnd, menuRun};
@@ -99,6 +101,34 @@ static bool testAllowBtAfterWifi = false;
 void AppManager::setTestAllowBtAfterWifi(bool allow) { testAllowBtAfterWifi = allow; }
 #endif
 
+#ifdef CF_TEST_CLI
+// Bench only: when each start-up step finished, printed once after the
+// first frame (`[boot] first_frame_ms=`). Never compiled into a release.
+namespace {
+struct BootMark { const char* name; uint32_t ms; };
+BootMark s_bootMarks[24];
+int s_bootMarkCount = 0;
+}
+#define BOOT_MARK(n) do { if (s_bootMarkCount < 24) s_bootMarks[s_bootMarkCount++] = {(n), (uint32_t)millis()}; } while (0)
+static void printBootMarks()
+{
+    // The first frame is the early animation frame when there was one,
+    // otherwise the active app's first pass (which has just finished).
+    uint32_t first = (uint32_t)millis();
+    for (int i = 0; i < s_bootMarkCount; ++i)
+        if (strcmp(s_bootMarks[i].name, "frame") == 0) first = s_bootMarks[i].ms;
+    Serial.printf("[boot] first_frame_ms=%lu loop_frame_ms=%lu app=%d wake=%s\n",
+                  (unsigned long)first, (unsigned long)millis(), (int)appActive,
+                  HAL::bootWakeupCauseName());
+    Serial.print("[boot] steps");
+    for (int i = 0; i < s_bootMarkCount; ++i)
+        Serial.printf(" %s=%lu", s_bootMarks[i].name, (unsigned long)s_bootMarks[i].ms);
+    Serial.println();
+}
+#else
+#define BOOT_MARK(n) do {} while (0)
+#endif
+
 // Prompts pause the menu only (and the boot screen that hands over to it).
 // Apps that need a prompt must extend this deliberately: the prompt pauses
 // whatever app is underneath, and most apps are not written to be paused.
@@ -122,13 +152,17 @@ AppManager::AppManager() {
 void AppManager::setup() {
     // A freshly installed image checks itself before anything else runs:
     // nothing below may start while it is still unconfirmed.
+    BOOT_MARK("setup");
     UpdateSession::beginSelfTest();
+    BOOT_MARK("selftest");
     HAL::configureWakeupPins();
     esp_log_level_set("*", ESP_LOG_VERBOSE);
     esp_log_level_set(TAG_MAIN, ESP_LOG_VERBOSE);
     HAL::initHardware();
+    BOOT_MARK("hw");
     // Pending image: pass, or restart into the previous image.
     UpdateSession::finishBoot();
+    BOOT_MARK("finish");
     {
         // "Install now" restarted into the update session: it never
         // returns (it restarts), and nothing else starts in this power cycle.
@@ -142,19 +176,9 @@ void AppManager::setup() {
         CheckinScheduler::runHeadless(wakeVcellMv, wakeSocPct);
     }
     HAL::setBeforeSleep(CheckinScheduler::armBeforeSleep);
+    BOOT_MARK("session");
     DeviceIdentity::checkStored();
-
-    // Mount the filesystem before the first menu build: MenuManager::begin
-    // -> buildNestedMenu reads /loadout.json through LoadoutStore.
-    LoadoutStore::begin();
-    BatteryDiary::begin(HAL::bootWakeupCauseName());
-
-    ESP_LOGI(TAG_MAIN, "AppManager setup complete");
-
-    ESP_LOGI(TAG_MAIN, "AppManager setup start");
-    // Force creation of MenuManager now, so we can see if it bombs
-    MenuManager &m = MenuManager::instance();
-    ESP_LOGI(TAG_MAIN, "MenuManager::instance() returned: %p", (void*)&m);
+    BOOT_MARK("ident");
 
     // Portal entry and exit set these one-shots immediately before reboot.
     // Read-write mode is required so the same boot consumes the flags.
@@ -195,11 +219,47 @@ void AppManager::setup() {
     } else {
         ESP_LOGW(TAG_MAIN, "Failed to open boot preferences");
     }
+    BOOT_MARK("bootcfg");
+
+    // An ordinary start opens on the start-up animation: its first frame
+    // goes up now, before the filesystem and the rest of start-up (which can
+    // take a second or more), so a wake press gets an answer at once.
+    PromptPolicy::StartShots shots;
+    shots.imagePending = UpdateSession::imagePending();
+    shots.timerWake = strcmp(HAL::bootWakeupCauseName(), "timer") == 0;
+    shots.skipanim = skipBootAnimation;
+    shots.portal = bootPortal;
+    shots.music = bootMusic;
+    shots.link = bootLink;
+    shots.wasmApp = !bootWasmId.empty();
+    shots.bootcloud = bootCloud;
+    if (PromptPolicy::earlyAnimationFrame(shots)) {
+        BootAnimationApp::showFirstFrame();
+        BOOT_MARK("frame");
+    }
+
+    // Mount the filesystem before the first menu build: MenuManager::begin
+    // -> buildNestedMenu reads /loadout.json through LoadoutStore.
+    LoadoutStore::begin();
+    BOOT_MARK("fs");
+    BatteryDiary::begin(HAL::bootWakeupCauseName());
+    BOOT_MARK("diary");
+
+    ESP_LOGI(TAG_MAIN, "AppManager setup complete");
+
+    ESP_LOGI(TAG_MAIN, "AppManager setup start");
+    // Force creation of MenuManager now, so we can see if it bombs
+    MenuManager &m = MenuManager::instance();
+    ESP_LOGI(TAG_MAIN, "MenuManager::instance() returned: %p", (void*)&m);
+    BOOT_MARK("menu");
+
     CloudSync::recoverFailure();
+    BOOT_MARK("recover");
     // Awake & dev mode: a dev mode power cycle frees the Bluetooth memory
     // here, before anything starts (not in the restart that runs the Music
     // Player; dev mode comes back at the next restart).
     AwakeMode::beginBoot(bootMusic);
+    BOOT_MARK("awake");
     // A manual check that restarted after Bluetooth use continues here.
     const PromptPolicy::CheckResume resume =
         PromptPolicy::resumeAfterRestart(bootCloud, bootApply, bootPortal || bootMusic);
@@ -252,8 +312,10 @@ void AppManager::setup() {
     ESP_LOGI(TAG_MAIN, "menuEnd address: %p", (void*)menuEnd);
     ESP_LOGI(TAG_MAIN, "menuRun address: %p", (void*)menuRun);
 
+    BOOT_MARK("resume");
     // Start the menu
     appDefs[appActive].beginFunc();
+    BOOT_MARK("begin");
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
     if (bootLink && !CloudSync::busy()) CloudSync::startLink();
     if (resume.runCheck) {
@@ -269,6 +331,7 @@ void AppManager::setup() {
     // The update popup follows the start-up animation only.
     if (appActive == APP_BOOT_ANIMATION) UpdatePrompt::armBootPopup();
 
+    BOOT_MARK("setup_end");
     ESP_LOGI(TAG_MAIN, "Returned from beginFunc() for appActive=%d", (int)appActive);
 }
 
@@ -280,6 +343,7 @@ void AppManager::loop() {
     UpdateSession::loopTick(frameDrawn);
     HAL::loopHardware();
 
+    if (!frameDrawn) BOOT_MARK("hwloop");
     if (bootWindowPending) {
         // loopHardware() has read the battery by now. Starting the check
         // only creates its task: the animation and menu never wait for it.
@@ -292,6 +356,7 @@ void AppManager::loop() {
     AwakeMode::loop();
     CheckinScheduler::loop();
     UpdatePrompt::loop();
+    if (!frameDrawn) BOOT_MARK("loops");
 
     // The first frame must finish before an input can open a radio app or a
     // serial command can restart the still-pending image.
@@ -309,6 +374,9 @@ void AppManager::loop() {
     if ((millis_NOW - millis_APP_TASK_20MS) >= TASK_20MS) {
         millis_APP_TASK_20MS = millis_NOW;
         runActiveApp();
+#ifdef CF_TEST_CLI
+        if (!frameDrawn) printBootMarks();
+#endif
         frameDrawn = true;
     }
 

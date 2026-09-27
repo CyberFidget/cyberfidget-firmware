@@ -12,6 +12,8 @@ void drawBootAnimation();
 class BootAnimationApp {
     public:
         BootAnimationApp(ButtonManager& btnMgr);
+        // Draws the opening frame before the rest of start-up (screen on).
+        static void showFirstFrame();
         void begin();
         void end();
         void update();

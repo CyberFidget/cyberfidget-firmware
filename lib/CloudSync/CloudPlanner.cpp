@@ -12,7 +12,8 @@ Step CloudPlanner::start(bool bluetoothIdle) {
 }
 
 Step CloudPlanner::checkin(int http, bool hasBatch, bool firmwareOffer,
-                           bool autoapply, uint32_t nextMs, uint32_t retryMs) {
+                           bool autoapply, uint32_t nextMs, uint32_t retryMs,
+                           bool waiting) {
     if (step_ != Step::Checkin) return step_ = Step::Error;
     firmwareOffered_ = firmwareOffer;
     nextMs_ = nextMs;
@@ -23,7 +24,7 @@ Step CloudPlanner::checkin(int http, bool hasBatch, bool firmwareOffer,
     }
     if (http == 204) return step_ = Step::Done;
     if (http != 200) return step_ = Step::Error;
-    if (!hasBatch) return step_ = Step::Done;
+    if (!hasBatch) return step_ = waiting ? Step::Waiting : Step::Done;
     return step_ = autoapply ? Step::Loadout : Step::Waiting;
 }
 

@@ -10,11 +10,14 @@ gains no cycle through AppManager).
 
 ## Flow
 
-1. **Offer.** When a check-in answers with a firmware offer, the check-in
-   worker - in every session, scheduled ones (boot window, daily wake,
-   awake) included, when the remaining budget covers one more call and its
-   usual reserve; it never waits for this - reads the update site's manifest
-   (`update/firmware.php?manifest=1&channel=<chan>`), runs every gate below
+1. **Offer.** After a manual check-in, the worker reads the update site's
+   manifest even when the check-in returns 204 with no offer. Scheduled
+   sessions (boot window, daily wake, awake) read it on an offer or when
+   the last answered refresh is at least 20 hours old. The worker needs
+   enough time for the call and its usual reserve; it never waits. Dev
+   mode reads only on a check-in offer, at most once per hour, unless the
+   person explicitly opens Check for updates. The worker reads
+   `update/firmware.php?manifest=1&channel=<chan>`, runs every gate below
    and stores `upd.avail` (or removes it when a gate refuses). Nothing is
    downloaded. The prompt (lib/UpdatePrompt) offers `avail` only when it is
    newer than the running version and not skipped.
@@ -102,9 +105,7 @@ not know is not a failure: the check-in keeps it on offer (`avail`,
 `avail_kid`) like an unsigned one without the opt-in, so the owner is told to
 update from the website (`OtaUpdate::offerAction`, `refusalMarksFailed`).
 
-The public key table is in `lib/CloudSync/UpdateSigning.cpp`. Its production
-slot is empty until the owner supplies public keys. Add the release and
-backup public PEMs with distinct ids there, and configure the release
+The public key table is in `lib/CloudSync/UpdateSigning.cpp`. Configure the release
 environment variable `FIRMWARE_SIGNING_KEY_ID` to name the signer. Keep
 private keys outside this repository. To rotate after compromise, sign an
 update with the already trusted backup key; that update can drop the
@@ -128,7 +129,11 @@ stable releases only, an rc Fidget takes both); freshness (a release whose
 
 Freshness lives in `upd.seen_<8 hex>` (u32 epoch seconds): the hex is an
 FNV-1a hash of `<source>|<channel>`, so every key is 13 characters. It is
-written only after a new image passes its self-test and only moves forward.
+written only after a new image passes its self-test. When the clock is set,
+the stored floor is capped at the device's current time plus two days; an
+unset clock cannot raise it. This also repairs an existing future floor when
+the clock becomes valid. `released_at` is not signed, so signing the release
+metadata is the long-term fix against a compromised update site.
 
 ## Version match
 

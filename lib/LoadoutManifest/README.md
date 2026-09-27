@@ -8,6 +8,11 @@ merges the manifest with the compiled-in registry to build the menu;
 without a manifest the menu falls back to compiled-in order exactly as
 before T-115.
 
+Normal boot mounts LittleFS with format-on-failed-mount (one attempt, no
+retry loop); a pending firmware image instead mounts without formatting until
+it is verified. Factory reset unmounts and formats this partition, so an
+interrupted reset boots with either its old manifest or the compiled-in menu.
+
 This library has two halves:
 
 | File | Runs on | Purpose |

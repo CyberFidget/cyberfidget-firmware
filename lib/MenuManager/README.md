@@ -5,6 +5,11 @@ highlight, cross-slide transitions, long-press reorder). The library also
 holds two small UI primitives other screens share: `ModalPrompt` and
 `ScrollLabel`.
 
+The Settings category is assembled from `AppManifest.h`. Its "Reset to
+factory" row opens `FactoryReset` in `lib/UpdatePrompt`; Back or a refusal
+returns to this category. The reset action and three-second hold are described
+in `lib/UpdatePrompt/README.md`.
+
 ## Manifest changes while the menu is showing
 
 A loadout change (a check-in that delivers an app, a USB send) marks the menu

@@ -119,10 +119,15 @@ static void test_upload_window() {
     TEST_ASSERT_EQUAL(2, w.first);
     TEST_ASSERT_EQUAL(3, w.count);
     TEST_ASSERT_TRUE(w.complete);
+    // More unsent than one upload holds: the OLDEST go first (was: the
+    // newest, first == 3), so the next upload continues from there.
     w = uploadWindow(records, 5, 0, false, 2);
-    TEST_ASSERT_EQUAL(3, w.first);
+    TEST_ASSERT_EQUAL(0, w.first);
     TEST_ASSERT_EQUAL(2, w.count);
     TEST_ASSERT_FALSE(w.complete);
+    w = uploadWindow(records, 5, records[1].seq, false, 2);
+    TEST_ASSERT_EQUAL(2, w.first);
+    TEST_ASSERT_EQUAL(2, w.count);
     w = uploadWindow(records, 5, 8, true, 5);
     TEST_ASSERT_EQUAL(5, w.count);
     TEST_ASSERT_FALSE(w.complete);

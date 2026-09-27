@@ -47,19 +47,25 @@ check-in and loadout answers, builds the check-in body, and picks waits.
 `CloudPlanner` decides each step; the worker acts on every step it returns.
 
 1. Check-in: device id, firmware, ABI, board revision, LittleFS totals,
-   `lapply_cap=batch1`, manifest CRC, and the last applied batch record when
-   it belongs to the current pair identity. `installed` is sent on the first
-   check-in of each session, when the manifest CRC differs from the last
+   `lapply_cap=batch1`, manifest CRC, `apply_apps` (1 when this session may
+   apply app changes, 0 when Auto-apply is off), and the last applied batch
+   record when it belongs to the current pair identity. "Get them now" sends
+   1 for that check, as does Dev mode. The field is also sent on follow-up
+   check-ins. `installed` is sent on the first check-in of each session,
+   when the manifest CRC differs from the last
    successful full report, after `send_report`, with an applied-batch answer,
    or after a full report failed. Other check-ins omit `installed`; the site
    keeps its stored list. The last successful full CRC lives only in worker
    RAM, with no per-poll flash write.
-2. A 200 with `batch_id` and `upd.autoapply` on (default) fetches the offer.
-   Autoapply off posts "App changes waiting" and leaves the batch, unless the
-   session was started with `applyWaiting` (the update prompt's "Get them
-   now", `runSession(reason, true)` / `CheckinScheduler::checkNow(true)`),
-   which applies it this once. That flag is not kept across the restart a
-   check takes after Bluetooth use.
+2. With `apply_apps=0` and pending changes, the site leaves them unsealed and
+   replies 200 with `waiting=true` and `batch_id=null`; with nothing pending,
+   it replies 204. The device posts "App changes
+   waiting" through the same status and prompt path as an older batch offer
+   seen with Auto-apply off. With `apply_apps=1`, a 200 with `batch_id` fetches
+   the offer. "Get them now" starts a check with `applyWaiting`
+   (`runSession(reason, true)` / `CheckinScheduler::checkNow(true)`) and applies
+   it this once. That flag is kept across the restart a check takes after
+   Bluetooth use.
 3. The offer's `doc` bytes (after JSON un-escaping) must hash to `doc_crc` and
    carry the check-in's batch id and a base. Every blob row must be a
    same-origin URL with a SHA-256 and size, hash prefixes must be unique, and
@@ -274,17 +280,17 @@ not upload usage data.
 
 ## Firmware offers
 
-The check-in always offers firmware. The session stores `firmware.url` in
-`upd.fw_url` and then - in every session, the scheduled Boot, Daily
-(including the headless daily wake, which is what the post-boot popup's
-cached result comes from) and Awake ones too - reads the update manifest when
-the remaining budget covers one more call (4 s) plus the usual reserve. It is
-one call, never a wait, so a scheduled session still never holds WiFi on to
-wait. It then runs the install gates (`UpdateSession::refreshOffer`, rules in
+An idle check-in may be 204 with no body. A manual check reads the update
+site after check-in regardless of an offer. Boot, Daily (including the
+headless daily wake) and Awake sessions read it on an offer or when the
+last answered refresh is at least 20 hours old (`upd.manifest_at`). All
+reads need time for a 4 s call plus the usual reserve. Dev polls read only
+on an offer, at most once per hour, unless the person asks to check now.
+The session stores an offered `firmware.url` in `upd.fw_url`. The update
+read runs the install gates (`UpdateSession::refreshOffer`, rules in
 `lib/OtaUpdate`): a release that passes is stored in `upd.avail` for the
-prompt, a refused one is removed from it, a failed read leaves it. Nothing is
-downloaded in a check-in. A 204 check-in carries no offer, so it leaves
-`avail` as it was.
+prompt, a refused one is removed from it, a failed read leaves it. Nothing
+is downloaded in a check-in.
 
 Installing is the update session (`UpdateSession.cpp`, described in
 `lib/OtaUpdate/README.md`): its own boot after "Install now", station only,

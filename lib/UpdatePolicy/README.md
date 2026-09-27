@@ -151,11 +151,12 @@ in `test/test_core_updatemenu`, `pio test -e test_core`). The device glue is
   (`MAJOR.MINOR.PATCH`, optional `-prerelease`, optional `+build`, at most
   31 characters), validated as a whole: anything else is never offered. A
   prerelease sorts below its final; build metadata does not count. An empty `avail` is no
-  notification, not an error. The check-in says that a firmware manifest
-  exists (`offered=fw`, `upd.fw_url`); the check-in worker then reads that
-  manifest, runs the install gates and writes (or removes) `avail`
-  (`UpdateSession::refreshOffer`, lib/OtaUpdate), in every check-in
-  session including the scheduled ones. The bench can also use
+  notification, not an error. The check-in may hint that firmware exists
+  (`offered=fw`, `upd.fw_url`), but a manual check reads the update site
+  even after a 204 reply. Scheduled sessions also read it when the last
+  refresh is at least 20 hours old. The worker runs the install gates and
+  writes (or removes) `avail` (`UpdateSession::refreshOffer`, lib/OtaUpdate).
+  The bench can also use
   `upd offer`.
 - A version whose update did not keep itself on this Fidget (`upd.fail_ver`,
   written by the previous image after the rollback) is not offered by the
@@ -297,8 +298,11 @@ measured to leave a network session at least 24 KB of internal heap. Every
 other app pauses listening until it ends: the portal, Music Player and Link
 need the radio or the worker, Voice Notes dipped to 13 KB. A delivered
 (WASM) app is not on the list; listening continues beside it when the heap
-allows (`AwakePolicy::listensBesideDeliveredApp`: internal free when it
-opens >= 24 KB floor + 18 KB check-in cost + 8 KB app), and a check-in whose
+allows (`AwakePolicy::listensBesideDeliveredApp`: listening's steady internal
+free when it opens >= 24 KB floor + 18 KB check-in cost + 8 KB app; the steady
+level is `AwakePolicy::steadyListeningFree`, the free the last check-in ended at
+or the free right then if higher, so a launch that lands mid check-in does not
+count that check-in twice), and a check-in whose
 trough falls below 24 KB while it runs pauses listening until it ends
 (`[awake] pause=heap`). A send of the running app then relaunches it in
 place, with no Back press. An app added to the firmware pauses listening until it is measured
@@ -346,3 +350,12 @@ Bench: `awake` verbs (`lib/SerialCli/README.md`), case
 Bench: `upd` (read-only list of every `upd` key) and `upd offer <version>`
 (test builds; see `lib/SerialCli/README.md`), case
 `test/bench/cases/t391-prompt-options.json`.
+
+## Reset to factory
+
+Settings also has a separate "Reset to factory" row (outside Settings >
+Updates). `FactoryResetPolicy.h` is the pure refusal and Enter-hold rule:
+pending firmware verification or an armed update-session boot request refuses
+the reset; otherwise Enter must stay down for 3000 ms. Releasing early or
+pressing Back cancels. `test/test_upd_policy_factory_reset` covers the rules.
+The device flow and storage effects are in `lib/UpdatePrompt/README.md`.
