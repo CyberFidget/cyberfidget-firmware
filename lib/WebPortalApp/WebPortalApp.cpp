@@ -24,6 +24,10 @@
 #include "PortalPassword.h"
 #include "CaptiveDns.h"
 
+#include <lwip/udp.h>
+#include <lwip/ip.h>
+#include <lwip/priv/tcpip_priv.h>
+
 
 #include <SD.h>
 #include <WiFi.h>
@@ -542,8 +546,8 @@ void WebPortalApp::teardown() {
         ws = nullptr;
     }
 
-    // Stop DNS + mDNS
-    captiveDns.close();
+    // Stop DNS (port released, nothing answered from here on) + mDNS
+    stopCaptiveDns();
     stopMDNS();
 
     // Stop WiFi (STA + AP)
@@ -854,25 +858,84 @@ static bool takeWifiBody(AsyncWebServerRequest* req, WifiRequest::Kind kind,
     return false;
 }
 
-void WebPortalApp::startCaptiveDns() {
-    captiveDns.close();
-    const IPAddress ap = WiFi.softAPIP();
-    captiveDns.onPacket([this, ap](AsyncUDPPacket& pkt) {
-        const uint8_t ip[4] = {ap[0], ap[1], ap[2], ap[3]};
-        uint8_t out[CaptiveDns::kMaxReplyBytes];
-        CaptiveDns::Question q;
-        const size_t n = CaptiveDns::buildReply(pkt.data(), pkt.length(), ip, out, &q);
-        if (n == 0) return;
+// Captive DNS on raw lwIP UDP: bound to the AP address only (a query to
+// the Fidget's home-network address is never answered), each reply leaves
+// on the interface its query came in on, and stopping removes the socket
+// in the network thread - the only thread that runs onCaptiveDnsQuery -
+// so once stopCaptiveDns() returns no query is answered and the port is
+// free. (The framework's AsyncUDP close() only disconnects: the port stays
+// bound and queued packets still reach the handler.)
+namespace {
+struct udp_pcb* s_dnsPcb = nullptr;       // network thread only (via tcpip_api_call)
+uint8_t s_dnsIp[4] = {0, 0, 0, 0};
+
+struct DnsCall {
+    struct tcpip_api_call_data call;      // must be first (lwIP casts it)
+    ip_addr_t addr;
+};
+
+void onCaptiveDnsQuery(void*, struct udp_pcb* pcb, struct pbuf* p,
+                       const ip_addr_t* addr, u16_t port) {
+    if (!p) return;
+    // Static, not on the stack: the network thread's stack is 4 KB, and only
+    // that thread ever runs this (one query at a time).
+    static uint8_t query[CaptiveDns::kMaxReplyBytes];
+    static uint8_t out[CaptiveDns::kMaxReplyBytes];
+    static CaptiveDns::Question q;
+    const u16_t len = pbuf_copy_partial(p, query, sizeof(query), 0);
+    pbuf_free(p);
+    if (pcb != s_dnsPcb) return;
+    const size_t n = CaptiveDns::buildReply(query, len, s_dnsIp, out, &q);
+    if (n == 0) return;
 #ifdef CF_TEST_CLI
-        // Test builds only: what joining devices look up (bench captive checks).
-        Serial.printf("[portal] dns name=%s type=%u from=%s\n", q.name, (unsigned)q.type,
-                      pkt.remoteIP().toString().c_str());
+    // Test builds only: what joining devices look up (bench captive checks).
+    Serial.printf("[portal] dns name=%s type=%u from=%s\n", q.name, (unsigned)q.type,
+                  ipaddr_ntoa(addr));
 #endif
-        captiveDns.writeTo(out, n, pkt.remoteIP(), pkt.remotePort());
-    });
-    if (!captiveDns.listen(53)) {
+    struct pbuf* reply = pbuf_alloc(PBUF_TRANSPORT, (u16_t)n, PBUF_RAM);
+    if (!reply) return;
+    memcpy(reply->payload, out, n);
+    struct netif* in = ip_current_input_netif();
+    if (in) udp_sendto_if(pcb, reply, addr, port, in);
+    else udp_sendto(pcb, reply, addr, port);
+    pbuf_free(reply);
+}
+
+err_t captiveDnsStartApi(struct tcpip_api_call_data* data) {
+    DnsCall* c = reinterpret_cast<DnsCall*>(data);
+    if (s_dnsPcb) { udp_recv(s_dnsPcb, nullptr, nullptr); udp_remove(s_dnsPcb); s_dnsPcb = nullptr; }
+    struct udp_pcb* pcb = udp_new_ip_type(IPADDR_TYPE_V4);
+    if (!pcb) return ERR_MEM;
+    const err_t err = udp_bind(pcb, &c->addr, 53);
+    if (err != ERR_OK) { udp_remove(pcb); return err; }
+    udp_recv(pcb, onCaptiveDnsQuery, nullptr);
+    s_dnsPcb = pcb;
+    return ERR_OK;
+}
+
+err_t captiveDnsStopApi(struct tcpip_api_call_data*) {
+    if (s_dnsPcb) {
+        udp_recv(s_dnsPcb, nullptr, nullptr);
+        udp_remove(s_dnsPcb);
+        s_dnsPcb = nullptr;
+    }
+    return ERR_OK;
+}
+}  // namespace
+
+void WebPortalApp::startCaptiveDns() {
+    const IPAddress ap = WiFi.softAPIP();
+    for (int i = 0; i < 4; i++) s_dnsIp[i] = ap[i];
+    DnsCall c;
+    ap.to_ip_addr_t(&c.addr);
+    if (tcpip_api_call(captiveDnsStartApi, &c.call) != ERR_OK) {
         ESP_LOGE(TAG_MAIN, "[WebPortal] captive DNS failed to start");
     }
+}
+
+void WebPortalApp::stopCaptiveDns() {
+    DnsCall c;
+    tcpip_api_call(captiveDnsStopApi, &c.call);
 }
 
 #ifdef CF_TEST_CLI

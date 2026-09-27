@@ -5,7 +5,6 @@
 #define WEB_PORTAL_APP_H
 
 #include <Arduino.h>
-#include <AsyncUDP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
@@ -52,11 +51,11 @@ private:
     static constexpr const char* AP_SSID = "CyberFidget";
 
     // Web server + DNS (heap-allocated server for clean lifecycle). The DNS
-    // answers every name with the Fidget (CaptiveDns.h), so a joining
-    // device's network check reaches the portal.
+    // (AP address only) answers every name with the Fidget (CaptiveDns.h),
+    // so a joining device's network check reaches the portal.
     AsyncWebServer* server = nullptr;
-    AsyncUDP captiveDns;
     void startCaptiveDns();
+    void stopCaptiveDns();
 
     // The portal's address replaces the bottom line when a device joined
     // but never opened the page (OpenAddressHint.h).

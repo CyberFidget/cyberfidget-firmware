@@ -12,8 +12,10 @@
 // additional records, so a query carrying an EDNS(0) OPT record (sent by
 // Android, Apple and many browsers' own resolvers) got "no such name"; and
 // it answered EVERY query type with an A record, so an AAAA or HTTPS query
-// got a mismatched answer. Here: A (and ANY) get the address, every other
-// type gets an empty "no records of that type" answer, EDNS or not.
+// got a mismatched answer. Here, EDNS or not: an A query - and an ANY
+// query, answered with just the A record - gets the Fidget's address; every
+// other type (AAAA, HTTPS, TXT, ...) gets an empty "no records of that type"
+// answer.
 
 #include <stddef.h>
 #include <stdint.h>

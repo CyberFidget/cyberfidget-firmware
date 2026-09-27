@@ -136,6 +136,27 @@ void test_hint_rearms_for_a_new_join(void) {
     TEST_ASSERT_FALSE(h.show(100000));
 }
 
+// The page can be fetched between two station polls: the device joins, the
+// sign-in page loads, and only then does the main loop see the station.
+// That page must still count.
+void test_page_before_the_first_poll_after_a_join_counts(void) {
+    OpenAddressHint h;
+    h.onStations(0, 0);                              // nobody on the network
+    h.onPageRequest();                               // joined + fetched between polls
+    h.onStations(1, 200);                            // first poll to see the station
+    TEST_ASSERT_FALSE(h.show(200 + OpenAddressHint::kDelayMs * 2));
+    // Also when no empty poll ever happened (page before the first poll at all).
+    OpenAddressHint first;
+    first.reset();
+    first.onPageRequest();
+    first.onStations(1, 0);
+    TEST_ASSERT_FALSE(first.show(OpenAddressHint::kDelayMs * 2));
+    // A later join still needs its own page.
+    first.onStations(0, 30000);
+    first.onStations(1, 30200);
+    TEST_ASSERT_TRUE(first.show(30200 + OpenAddressHint::kDelayMs));
+}
+
 void test_hint_survives_millis_wrap(void) {
     OpenAddressHint h;
     h.onStations(1, 0xFFFFF000u);
@@ -155,6 +176,7 @@ int main(int, char**) {
     RUN_TEST(test_hint_waits_ten_seconds_after_a_join);
     RUN_TEST(test_hint_never_shows_once_the_page_opened);
     RUN_TEST(test_hint_rearms_for_a_new_join);
+    RUN_TEST(test_page_before_the_first_poll_after_a_join_counts);
     RUN_TEST(test_hint_survives_millis_wrap);
     return UNITY_END();
 }
