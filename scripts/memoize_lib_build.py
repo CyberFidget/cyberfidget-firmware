@@ -17,6 +17,13 @@ include/lib paths its env already holds and return the same list of library
 nodes. This caches that list on the first repeat and returns it on later
 repeats, so the build graph, flags and image are unchanged.
 
+The dependency scan has a second hot spot: for every include it finds, it
+asks each of the ~80 libraries "is this file yours?" (is_common_builder), and
+every "no" costs two os.path.realpath calls, which are slow on Windows. The
+answer depends only on the two paths, which don't change during a build, so
+it is cached. That halves the scan on the workstation (~55 s to ~25 s), again
+with the graph and image unchanged.
+
 SCons loads PlatformIO's builder tools from a toolpath under its own module
 name, so `import platformio.builder.tools.piolib` would patch a second, unused
 copy. The class is found in the loaded modules instead. If it is missing the
@@ -51,13 +58,35 @@ def _memoize(lib_builder_base):
     lib_builder_base.build = memoized_build
 
 
+def _cache_common_builder(lib_builder_base):
+    original = lib_builder_base.is_common_builder
+    results = {}
+
+    def cached_is_common_builder(self, root_path, child_path):
+        key = (root_path, child_path)
+        if key not in results:
+            results[key] = original(self, root_path, child_path)
+        return results[key]
+
+    cached_is_common_builder._cf_memoized = True
+    lib_builder_base.is_common_builder = cached_is_common_builder
+
+
 _patched = 0
+_scan_cached = 0
 for _module in list(sys.modules.values()):
     _cls = getattr(_module, "LibBuilderBase", None)
     if isinstance(_cls, type) and hasattr(_cls, "build"):
         if not getattr(_cls.build, "_cf_memoized", False):
             _memoize(_cls)
         _patched += 1
+        if hasattr(_cls, "is_common_builder"):
+            if not getattr(_cls.is_common_builder, "_cf_memoized", False):
+                _cache_common_builder(_cls)
+            _scan_cached += 1
+
+if _patched and not _scan_cached:
+    print("[memoize_lib_build] WARNING: is_common_builder not found; scan not cached")
 
 _STRICT = os.environ.get("CF_BUILD_PERF_STRICT") == "1"
 
@@ -95,7 +124,7 @@ else:
 
 # Tripwire: time the dependency scan and the library setup on every build and
 # shout when either passes its budget. The budgets are far above normal
-# (setup takes ~1 s and the scan ~45 s on the workstation), so only a
+# (setup takes ~1 s and the scan ~25 s on the workstation), so only a
 # structural regression trips them, not a slow or busy machine. Override with
 # CF_BUILD_BUDGET_SCAN_S / CF_BUILD_BUDGET_SETUP_S (0 forces the alarm, to
 # test it).
@@ -141,7 +170,7 @@ else:
                         % (setup, _SETUP_BUDGET_S))
         if over:
             _alarm(["BUILD PERFORMANCE REGRESSION: " + over[0]] + over[1:] + [
-                "Normal is ~45 s scan and ~1 s setup. Find the cause before",
+                "Normal is ~25 s scan and ~1 s setup. Find the cause before",
                 "living with it: profile the stuck build (py-spy dump --pid).",
             ])
         return result
