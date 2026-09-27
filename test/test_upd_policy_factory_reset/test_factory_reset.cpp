@@ -9,6 +9,11 @@ using FactoryResetPolicy::Refusal;
 using FactoryResetPolicy::refusal;
 using FactoryResetPolicy::BootStep;
 using FactoryResetPolicy::bootStep;
+using FactoryResetPolicy::MarkRead;
+using FactoryResetPolicy::markConfirmed;
+using FactoryResetPolicy::finishFormats;
+using FactoryResetPolicy::FinishResult;
+using FactoryResetPolicy::finishResult;
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -75,6 +80,35 @@ void test_boot_with_mark_waits_while_image_is_on_probation() {
     TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Wait), static_cast<int>(bootStep(true, true)));
 }
 
+void test_unreadable_mark_is_its_own_step_not_clear_or_finish() {
+    TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Unreadable), static_cast<int>(bootStep(MarkRead::Error, false)));
+    TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Unreadable), static_cast<int>(bootStep(MarkRead::Error, true)));
+    TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Normal), static_cast<int>(bootStep(MarkRead::Clear, false)));
+    TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Finish), static_cast<int>(bootStep(MarkRead::Set, false)));
+    TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Wait), static_cast<int>(bootStep(MarkRead::Set, true)));
+}
+
+void test_reset_starts_only_when_mark_written_and_read_back() {
+    TEST_ASSERT_TRUE(markConfirmed(true, MarkRead::Set));
+    TEST_ASSERT_FALSE(markConfirmed(false, MarkRead::Set));    // write reported failure
+    TEST_ASSERT_FALSE(markConfirmed(true, MarkRead::Clear));   // write "ok" but not there
+    TEST_ASSERT_FALSE(markConfirmed(true, MarkRead::Error));   // cannot read it back
+    TEST_ASSERT_FALSE(markConfirmed(false, MarkRead::Error));
+}
+
+void test_startup_finish_formats_twice_then_skips() {
+    TEST_ASSERT_TRUE(finishFormats(1));
+    TEST_ASSERT_TRUE(finishFormats(2));
+    TEST_ASSERT_FALSE(finishFormats(3));
+    TEST_ASSERT_FALSE(finishFormats(100));
+}
+
+void test_finish_without_apps_erase_is_partial_never_done() {
+    TEST_ASSERT_EQUAL(static_cast<int>(FinishResult::Done), static_cast<int>(finishResult(true)));
+    // Covers a failed format and the skipped (anti-loop) try alike.
+    TEST_ASSERT_EQUAL(static_cast<int>(FinishResult::Partial), static_cast<int>(finishResult(false)));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_refusal_priority_and_clear_path);
@@ -85,5 +119,9 @@ int main(int, char**) {
     RUN_TEST(test_boot_without_mark_starts_normally);
     RUN_TEST(test_boot_with_mark_finishes_the_cut_off_reset);
     RUN_TEST(test_boot_with_mark_waits_while_image_is_on_probation);
+    RUN_TEST(test_unreadable_mark_is_its_own_step_not_clear_or_finish);
+    RUN_TEST(test_reset_starts_only_when_mark_written_and_read_back);
+    RUN_TEST(test_startup_finish_formats_twice_then_skips);
+    RUN_TEST(test_finish_without_apps_erase_is_partial_never_done);
     return UNITY_END();
 }

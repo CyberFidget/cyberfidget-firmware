@@ -172,6 +172,12 @@ image or armed update session. It erases LittleFS and NVS; use a bench device.
 format (`[reset] factory=formatted hold_ms=10000`) so the bench can cut power
 before the NVS erase; the next start-up then prints `[reset] factory=finishing`
 and `[reset] factory=done` and finishes the reset.
+`reset factory confirm failmark` fakes a failed mark write (expect
+`[reset] factory=refused reason=mark-write`, nothing erased).
+`reset factory confirm failfs` fakes a failed LittleFS format: the reset
+refuses with the mark kept, and the start-up after the next `reboot` finishes
+it without the format (`[reset] factory=partial saved=1`); the start-up after
+that prints `[reset] factory=partial` and shows the notice once.
 
 ### Application and network controls
 
