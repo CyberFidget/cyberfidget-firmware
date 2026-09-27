@@ -7,6 +7,8 @@
 using FactoryResetPolicy::Hold;
 using FactoryResetPolicy::Refusal;
 using FactoryResetPolicy::refusal;
+using FactoryResetPolicy::BootStep;
+using FactoryResetPolicy::bootStep;
 
 void setUp(void) {}
 void tearDown(void) {}
@@ -58,6 +60,21 @@ void test_hold_timer_wraps_with_millis() {
     TEST_ASSERT_TRUE(h.tick(0x00000AB8u));
 }
 
+void test_boot_without_mark_starts_normally() {
+    TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Normal), static_cast<int>(bootStep(false, false)));
+    TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Normal), static_cast<int>(bootStep(false, true)));
+}
+
+void test_boot_with_mark_finishes_the_cut_off_reset() {
+    TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Finish), static_cast<int>(bootStep(true, false)));
+}
+
+void test_boot_with_mark_waits_while_image_is_on_probation() {
+    // Consistent with the reset's own refusal: never erase under a pending image.
+    TEST_ASSERT_EQUAL(static_cast<int>(Refusal::PendingImage), static_cast<int>(refusal(true, false)));
+    TEST_ASSERT_EQUAL(static_cast<int>(BootStep::Wait), static_cast<int>(bootStep(true, true)));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_refusal_priority_and_clear_path);
@@ -65,5 +82,8 @@ int main(int, char**) {
     RUN_TEST(test_early_release_cancels_and_next_press_starts_fresh);
     RUN_TEST(test_back_cancels_even_during_hold);
     RUN_TEST(test_hold_timer_wraps_with_millis);
+    RUN_TEST(test_boot_without_mark_starts_normally);
+    RUN_TEST(test_boot_with_mark_finishes_the_cut_off_reset);
+    RUN_TEST(test_boot_with_mark_waits_while_image_is_on_probation);
     return UNITY_END();
 }

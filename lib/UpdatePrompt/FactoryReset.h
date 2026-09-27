@@ -8,8 +8,11 @@ namespace FactoryReset {
 void begin();
 void end();
 void update();
+// Early start-up: finishes a reset that a power cut interrupted.
+void finishIfInterrupted();
 #ifdef CF_TEST_CLI
-void confirmFromCli();
+// holdBetweenErases: wait 10 s after the apps erase (bench power-cut aim).
+void confirmFromCli(bool holdBetweenErases = false);
 #endif
 } // namespace FactoryReset
 

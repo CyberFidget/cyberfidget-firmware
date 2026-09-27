@@ -65,11 +65,28 @@ the bar fills while held, release resets the bar, and Back returns to Settings.
 The screen refuses while a new firmware image is pending verification or an
 update-session boot request is armed. On confirmation it shows "Erasing...",
 waits for the cloud/dev worker to stop, switches off WiFi and Bluetooth,
-closes serial file transfers, formats LittleFS, erases the default NVS
-partition and restarts. This removes delivered apps, menu order, battery
+closes serial file transfers, writes a "reset in progress" mark (NVS
+`freset/busy`), formats LittleFS, erases the default NVS partition (which
+clears the mark) and restarts. This removes delivered apps, menu order, battery
 history, dev files, saved WiFi, settings and the account link. The current
-firmware and the memory card stay in place. If shutdown or formatting fails,
-NVS is not erased. `reset factory confirm` is a `CF_TEST_CLI`-only bench verb.
+firmware and the memory card stay in place. If shutdown fails, nothing is
+erased and no mark is written. If formatting fails, NVS is not erased but the
+mark stays.
+
+A power cut after the mark is written leaves it set: the next start-up
+(`FactoryReset::finishIfInterrupted`, right after `UpdateSession::finishBoot`
+and before anything reads WiFi, the account link or the apps) shows
+"Finishing reset...", formats LittleFS, erases NVS and restarts. It never does
+this while a new image is pending verification (`FactoryResetPolicy::bootStep`,
+host-tested in `test/test_upd_policy_factory_reset`); the mark then waits.
+If the finish itself crashes twice since power-on (RTC counter), the third
+start-up skips the LittleFS format and still erases NVS, so a fault in the
+format cannot become a restart loop.
+
+`reset factory confirm` is a `CF_TEST_CLI`-only bench verb;
+`reset factory confirm hold` also waits 10 s between the LittleFS format and
+the NVS erase (log `[reset] factory=formatted hold_ms=10000`) so a bench can
+cut power there.
 
 ## Test-build hooks
 

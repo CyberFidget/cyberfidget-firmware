@@ -7,6 +7,7 @@
 #include <WiFi.h>
 #include <esp_bt.h>
 #include <esp_bt_main.h>
+#include <esp_sleep.h>
 #include <esp_system.h>
 #include <nvs.h>
 #include <nvs_flash.h>
@@ -33,6 +34,39 @@ FactoryResetPolicy::Hold hold;
 const char* message = nullptr;
 uint32_t messageAt = 0;
 bool erasing = false;
+#ifdef CF_TEST_CLI
+bool holdAfterFormat = false;  // bench: time to cut power between the two erases
+#endif
+
+// "Reset in progress" mark. It lives in the settings store itself, so the
+// settings erase that ends a reset also clears it; a power cut before that
+// leaves it for the next start-up to finish the job.
+// Start-ups that tried to finish a reset since power-on. A crash inside the
+// finish would otherwise repeat on every start: the third try skips the
+// apps erase and still erases the settings (which clears the mark).
+RTC_NOINIT_ATTR uint32_t finishTries;
+RTC_NOINIT_ATTR uint32_t finishTriesMagic;
+constexpr uint32_t kFinishTriesMagic = 0x46524553;  // "FRES"
+
+constexpr const char* kMarkNs = "freset";
+constexpr const char* kMarkKey = "busy";
+
+bool writeMark() {
+    nvs_handle_t h;
+    if (nvs_open(kMarkNs, NVS_READWRITE, &h) != ESP_OK) return false;
+    const bool ok = nvs_set_u8(h, kMarkKey, 1) == ESP_OK && nvs_commit(h) == ESP_OK;
+    nvs_close(h);
+    return ok;
+}
+
+bool markSet() {
+    nvs_handle_t h;
+    if (nvs_open(kMarkNs, NVS_READONLY, &h) != ESP_OK) return false;
+    uint8_t value = 0;
+    const bool set = nvs_get_u8(h, kMarkKey, &value) == ESP_OK && value != 0;
+    nvs_close(h);
+    return set;
+}
 
 FactoryResetPolicy::Refusal refusal() {
     return FactoryResetPolicy::refusal(UpdateSession::imagePending(),
@@ -94,11 +128,25 @@ bool eraseAndRestart() {
         refuseOrFail("Bluetooth is busy");
         return false;
     }
+    // From here on the reset must finish, if need be on the next start-up.
+    // Without the mark the reset still runs (as before the mark existed).
+    finishTriesMagic = kFinishTriesMagic;
+    finishTries = 0;
+    Serial.println(writeMark() ? "[reset] factory=marked" : "[reset] factory=mark-failed");
     if (!LoadoutStore::formatForFactoryReset()) {
+        // The mark stays: the apps may be half erased, so the next start-up
+        // finishes the reset rather than leave that state.
         erasing = false;
         refuseOrFail("Could not erase apps");
         return false;
     }
+#ifdef CF_TEST_CLI
+    if (holdAfterFormat) {
+        Serial.println("[reset] factory=formatted hold_ms=10000");
+        Serial.flush();
+        delay(10000);
+    }
+#endif
     const esp_err_t deinit = nvs_flash_deinit();
     if (deinit != ESP_OK && deinit != ESP_ERR_NVS_NOT_INITIALIZED) {
         erasing = false;
@@ -130,6 +178,37 @@ void onBack(const ButtonEvent& event) {
 }
 
 } // namespace
+
+void finishIfInterrupted() {
+    const auto step = FactoryResetPolicy::bootStep(markSet(), UpdateSession::imagePending());
+    if (step == FactoryResetPolicy::BootStep::Normal) return;
+    if (step == FactoryResetPolicy::BootStep::Wait) {
+        Serial.println("[reset] factory=interrupted wait=pending-image");
+        return;
+    }
+    Serial.println("[reset] factory=finishing");
+    // A timer wake has not started the screen; the restart below brings it up.
+    if (esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) showMessage("Finishing reset...");
+    if (esp_reset_reason() == ESP_RST_POWERON || finishTriesMagic != kFinishTriesMagic) {
+        finishTriesMagic = kFinishTriesMagic;
+        finishTries = 0;
+    }
+    ++finishTries;
+    // Nothing has mounted the app storage or started a radio yet.
+    if (finishTries > 2) Serial.println("[reset] factory=skip-fs retries");
+    else if (!LoadoutStore::formatForFactoryReset()) Serial.println("[reset] factory=error fs");
+    nvs_flash_deinit();
+    if (nvs_flash_erase() != ESP_OK) {
+        // Start normally and try again next time rather than restart in a loop.
+        Serial.println("[reset] factory=error nvs");
+        nvs_flash_init();
+        return;
+    }
+    Serial.println("[reset] factory=done");
+    Serial.flush();
+    esp_restart();
+    for (;;) {}
+}
 
 void begin() {
     hold.back();
@@ -184,7 +263,7 @@ void update() {
 }
 
 #ifdef CF_TEST_CLI
-void confirmFromCli() {
+void confirmFromCli(bool holdBetweenErases) {
     const auto reason = refusal();
     if (reason != FactoryResetPolicy::Refusal::None) {
         Serial.printf("[cmd] reset.factory=refused reason=%s\n", refusalText(reason));
@@ -202,6 +281,7 @@ void confirmFromCli() {
         Serial.println("[cmd] reset.factory=refused reason=app-busy");
         return;
     }
+    holdAfterFormat = holdBetweenErases;
     Serial.println("[cmd] reset.factory=start");
     Serial.flush();
     eraseAndRestart();

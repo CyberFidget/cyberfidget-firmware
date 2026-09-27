@@ -26,14 +26,6 @@ void generate(char out[9], Random32 random32) {
     out[8] = '\0';
 }
 
-// OLED display form. The network password itself has no space.
-inline void grouped(const char password[9], char out[10]) {
-    for (int i = 0; i < 4; ++i) out[i] = password[i];
-    out[4] = ' ';
-    for (int i = 4; i < 8; ++i) out[i + 1] = password[i];
-    out[9] = '\0';
-}
-
 }  // namespace PortalPassword
 
 #endif

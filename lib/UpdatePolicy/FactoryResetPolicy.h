@@ -16,6 +16,22 @@ inline Refusal refusal(bool imagePending, bool sessionArmed) {
     return Refusal::None;
 }
 
+// What a start-up does with the "reset in progress" mark. The mark is
+// written just before the apps are erased and goes with the settings erase
+// that follows, so a mark seen at start-up means a reset was cut off
+// between the two (power loss): the start-up finishes it before anything
+// reads WiFi, the account link or the apps. A just-installed image still
+// on probation never erases (the reset refuses then too); the mark waits
+// for a later start. The mark can only have been written when the reset
+// was allowed, so this is a guard, not an expected path.
+enum class BootStep { Normal, Finish, Wait };
+
+inline BootStep bootStep(bool markSet, bool imagePending) {
+    if (!markSet) return BootStep::Normal;
+    if (imagePending) return BootStep::Wait;
+    return BootStep::Finish;
+}
+
 class Hold {
 public:
     static constexpr uint32_t kDurationMs = 3000;
