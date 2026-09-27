@@ -254,11 +254,15 @@ uint32_t devCheckAt = 0;
 constexpr uint32_t kDevCheckTimeoutMs = 20000;
 char checkLine[48] = {0};
 const char* checkNote = "";
+// The one-line headline when the off-explanation takes the screen (no room
+// for the result line and its note); "" = use the note, else the line.
+const char* checkHeadline = "";
 bool checkExplainOff = false;
 
 const char* errorNote(const char* err) {
     if (strcmp(err, "no-wifi") == 0) return "No saved network yet";
-    if (strcmp(err, "not-linked") == 0) return "Link this Fidget first";
+    // Says where: the Link screen shows the code and the web address.
+    if (strcmp(err, "not-linked") == 0) return "Settings > Link";
     if (strcmp(err, "join") == 0 || strcmp(err, "no-network") == 0) return "Network not in range";
     return "Try again later";
 }
@@ -276,9 +280,12 @@ void finishCheck(const CloudSync::Result& r) {
                                      sameVersion(st.avail, st.websiteSeen));
     checkExplainOff = plan.explainOff;
     checkNote = "";
+    checkHeadline = "";
     if (!r.ok) {
-        snprintf(checkLine, sizeof(checkLine), "Could not check");
+        const bool notLinked = strcmp(r.err, "not-linked") == 0;
+        snprintf(checkLine, sizeof(checkLine), notLinked ? "Not linked yet" : "Could not check");
         checkNote = errorNote(r.err);
+        if (notLinked) checkHeadline = "Not linked: Settings > Link";
     } else if (r.appliedNow) {
         snprintf(checkLine, sizeof(checkLine), "App changes applied");
     } else if (r.waiting) {
@@ -586,8 +593,10 @@ void checkUpdate() {
     display.setTextAlignment(TEXT_ALIGN_CENTER);
     if (checkExplainOff) {
         // No title bar: the explanation needs three lines, so a failed
-        // check shows its reason ("Link this Fidget first") as the headline.
-        display.drawString(64, 1, checkNote[0] ? checkNote : checkLine);
+        // check shows its reason as the headline ("Not linked: Settings >
+        // Link", 121 px of the 124 available).
+        display.drawString(64, 1, checkHeadline[0] ? checkHeadline
+                                  : (checkNote[0] ? checkNote : checkLine));
         display.drawStringMaxWidth(64, 16, kScreenW - 4, kOffExplanation);
     } else {
         display.fillRect(0, 0, kScreenW, kTitleH);
