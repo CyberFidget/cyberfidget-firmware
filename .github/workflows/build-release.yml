@@ -371,10 +371,24 @@ jobs:
       # is silently discarded and the binary comes out branded "1.3.3 / ci-dev"
       # while the run is cutting v1.3.3-rc2. CYBERFIDGET_RELEASE_TAG is ours and
       # nothing stomps it. Both paths then produce identical version strings.
+      #
+      # Build-time guard: CF_BUILD_PERF_STRICT makes scripts/memoize_lib_build.py
+      # fail the build if its library-setup patch did not apply or a build phase
+      # blew its budget (both budgets are far above normal, so a slow runner does
+      # not trip them). The grep catches the script not running at all. The step
+      # timeout bounds a hung build; a normal build takes ~4 min here.
       - name: Build firmware
+        timeout-minutes: 30
         env:
           CYBERFIDGET_RELEASE_TAG: ${{ steps.plan.outputs.tag }}
-        run: pio run -e local
+          CF_BUILD_PERF_STRICT: '1'
+        run: |
+          set -o pipefail
+          pio run -e local 2>&1 | tee build.log
+          grep -q '^\[memoize_lib_build\] library setup memoized' build.log \
+            || { echo "::error::memoize_lib_build did not run; see platformio.ini extra_scripts"; exit 1; }
+          grep -q '^\[memoize_lib_build\] dependency scan' build.log \
+            || { echo "::error::build-time tripwire did not report; budgets unchecked"; exit 1; }
 
       # Cheap insurance against shipping a binary that reports the wrong thing.
       # The device's boot banner and `version` CLI report FW_VERSION_FULL_STRING
