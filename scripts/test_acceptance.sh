@@ -361,6 +361,25 @@ assert_grep 'Verify embedded version matches the tag' "$WF" \
 assert_grep 'platformio==' "$WF" \
     "build-release.yml pins the PlatformIO version"
 
+# Build-time guard (both workflows that build firmware). Strict mode makes a
+# missing library-setup patch or a blown phase budget fail CI, and both must
+# run the same PlatformIO Core or the patch is verified on one and shipped on
+# the other.
+FB=".github/workflows/firmware-build.yml"
+for f in "$WF" "$FB"; do
+    assert_grep "CF_BUILD_PERF_STRICT: '1'" "$f" \
+        "$(basename "$f") builds in strict build-time mode"
+    assert_grep 'library setup memoized' "$f" \
+        "$(basename "$f") checks the library-setup patch ran"
+done
+PIO_REL="$(sed -n "s/^  PLATFORMIO_VERSION: '\(.*\)'$/\1/p" "$WF")"
+PIO_FB="$(sed -n "s/^  PLATFORMIO_VERSION: '\(.*\)'$/\1/p" "$FB")"
+if [ -n "$PIO_REL" ] && [ "$PIO_REL" = "$PIO_FB" ]; then
+    pass "firmware-build.yml and build-release.yml pin the same PlatformIO ($PIO_REL)"
+else
+    fail "PlatformIO pins differ: build-release.yml '$PIO_REL', firmware-build.yml '$PIO_FB'"
+fi
+
 # Guards added after an adversarial review of the release state machine. Each
 # one closes a way to publish something wrong; grep-level coverage here is a
 # tripwire against a future edit quietly dropping one.
