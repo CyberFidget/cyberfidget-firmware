@@ -164,6 +164,22 @@ void test_hint_survives_millis_wrap(void) {
     TEST_ASSERT_TRUE(h.show(0xFFFFF000u + OpenAddressHint::kDelayMs));  // wraps past 0
 }
 
+// While due, the address takes turns with the usual line (the way out), and
+// once the page opens the usual line stays.
+void test_address_takes_turns_with_the_usual_line(void) {
+    const uint32_t d = OpenAddressHint::kDelayMs, a = OpenAddressHint::kAlternateMs;
+    OpenAddressHint h;
+    h.onStations(1, 1000);
+    TEST_ASSERT_FALSE(h.showAddressNow(1000 + d - 1));      // not yet due
+    TEST_ASSERT_TRUE(h.showAddressNow(1000 + d));           // address first
+    TEST_ASSERT_TRUE(h.showAddressNow(1000 + d + a - 1));
+    TEST_ASSERT_FALSE(h.showAddressNow(1000 + d + a));      // usual line's turn
+    TEST_ASSERT_FALSE(h.showAddressNow(1000 + d + 2 * a - 1));
+    TEST_ASSERT_TRUE(h.showAddressNow(1000 + d + 2 * a));   // and back
+    h.onPageRequest();
+    TEST_ASSERT_FALSE(h.showAddressNow(1000 + d + 4 * a));  // page opened: usual line only
+}
+
 void setUp(void) {}
 void tearDown(void) {}
 
@@ -178,5 +194,6 @@ int main(int, char**) {
     RUN_TEST(test_hint_rearms_for_a_new_join);
     RUN_TEST(test_page_before_the_first_poll_after_a_join_counts);
     RUN_TEST(test_hint_survives_millis_wrap);
+    RUN_TEST(test_address_takes_turns_with_the_usual_line);
     return UNITY_END();
 }

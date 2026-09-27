@@ -24,6 +24,7 @@
 class OpenAddressHint {
 public:
     static constexpr uint32_t kDelayMs = 10000;
+    static constexpr uint32_t kAlternateMs = 3000;
 
     // Main loop: how many devices are on the Fidget's network now.
     void onStations(int count, uint32_t nowMs) {
@@ -44,6 +45,15 @@ public:
         return joined_ &&
                pages_.load(std::memory_order_relaxed) == pagesWhenEmpty_ &&
                (uint32_t)(nowMs - joinedAtMs_) >= kDelayMs;
+    }
+
+    // Main loop: while the hint is due, the address takes turns with the
+    // screen's usual bottom line (e.g. "BACK to finish"), kAlternateMs each,
+    // address first - so the way out never disappears.
+    bool showAddressNow(uint32_t nowMs) const {
+        if (!show(nowMs)) return false;
+        const uint32_t since = (uint32_t)(nowMs - joinedAtMs_) - kDelayMs;
+        return (since / kAlternateMs) % 2 == 0;
     }
 
     // Main loop, at portal start (before the web server runs).
