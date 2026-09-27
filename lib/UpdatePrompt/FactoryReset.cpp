@@ -58,6 +58,7 @@ void showMessage(const char* text) {
 }
 
 void refuseOrFail(const char* text) {
+    Serial.printf("[reset] factory=refused reason=%s\n", text);
     message = text;
     messageAt = millis();
     hold.back();
@@ -83,8 +84,12 @@ bool eraseAndRestart() {
         return false;
     }
     WebPortalApp::releaseBluetoothForNetwork();
-    if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE ||
-        esp_bluedroid_get_status() != ESP_BLUEDROID_STATUS_UNINITIALIZED) {
+    // Only a RUNNING stack blocks the erase; after the release (or the boot-time
+    // memory release) a layer may sit initialized-but-off, which is safe.
+    if (esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_ENABLED ||
+        esp_bluedroid_get_status() == ESP_BLUEDROID_STATUS_ENABLED) {
+        Serial.printf("[reset] factory=refused bt_ctrl=%d bluedroid=%d\n",
+                      (int)esp_bt_controller_get_status(), (int)esp_bluedroid_get_status());
         erasing = false;
         refuseOrFail("Bluetooth is busy");
         return false;
