@@ -292,10 +292,13 @@ namespace HAL
         pinMode(POWER_PIN_AUX, OUTPUT);
         digitalWrite(POWER_PIN_AUX, HIGH);
 
-        // Sync is stop-and-wait: one announced 4096-byte fwdata chunk plus
-        // framing is the maximum in flight before the host waits for fwdata.ok.
-        // 8192 keeps 2x headroom and must be set before begin() to take effect.
-        Serial.setRxBufferSize(8192);
+        // Sync is stop-and-wait: one command and its payload are the most in
+        // flight before the host waits for the reply. The largest payload is
+        // an lapply document (SyncProtocol::kMaxApplyBytes, 8192), and a
+        // write that waits for a check-in leaves it queued here unread, so
+        // the ring holds that plus its header line with room to spare.
+        // Must be set before begin() to take effect.
+        Serial.setRxBufferSize(12288);
         Serial.begin(921600);
         printFirmwareBanner();
 

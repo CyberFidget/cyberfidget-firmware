@@ -1542,6 +1542,7 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
     s.checkinConnection = &checkinConnection;
     uint8_t failures = 0;
     uint32_t polls = 0;
+    bool holdLogged = false;  // one "[dev] hold=usb" line per USB session
     devOfferRead = false;
     devRecordedAt = 0;
     if (firstWaitMs) {
@@ -1555,16 +1556,25 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         // new serial write waits for this cycle (storeBusy), and a USB sync
         // session under way (an open transfer, or sync commands in the last
         // few seconds) makes this poll skip.
-        devInCycle = true;
-        if (SerialCli::instance().holdsCheckins()) {
+        // The first look, before the claim, keeps a held poll from touching
+        // storeBusy() at all (a parked serial write would see it); the look
+        // after the claim is the one that makes the two exclusive.
+        bool held = SerialCli::instance().holdsCheckins();
+        if (!held) {
+            devInCycle = true;
+            held = SerialCli::instance().holdsCheckins();
+            if (held) devInCycle = false;
+        }
+        if (held) {
             checkinConnection.clear();
-            devInCycle = false;
 #ifdef CF_TEST_CLI
-            Serial.printf("[dev] hold=usb at_ms=%lu\n", (unsigned long)millis());
+            if (!holdLogged) Serial.printf("[dev] hold=usb at_ms=%lu\n", (unsigned long)millis());
 #endif
+            holdLogged = true;
             if (!devSleep(kDevPollMs)) break;
             continue;
         }
+        holdLogged = false;
         Result r;
         r.reason = Reason::Dev;
         CycleOut out;
@@ -1581,6 +1591,10 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         if (SerialCli::instance().holdsCheckins()) {
             checkinConnection.clear();
             devInCycle = false;
+#ifdef CF_TEST_CLI
+            Serial.printf("[dev] hold=usb at_ms=%lu\n", (unsigned long)millis());
+#endif
+            holdLogged = true;
             if (!devSleep(kDevPollMs)) break;
             continue;
         }

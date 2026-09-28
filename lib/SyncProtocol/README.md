@@ -122,6 +122,14 @@ lapply <len> <crc32>              -> [cmd] lapply.ok=applied <n> entries <n>   (
   <len raw bytes of ops JSON follow the line>
 ```
 
+Hosts must stay stop-and-wait: send one command (and its payload), then wait
+for its reply before the next. A write that waits for a cloud check-in
+(`SerialCli`: up to `kBusyWaitMs`) leaves its payload unread in the device's
+serial receive buffer (12 KB: one maximum `lapply` document, 8 KB, plus its
+header); a host that streams further commands behind it can overrun that
+buffer. The released website is stop-and-wait (`sync_protocol.mjs`,
+`lapply()` awaits each reply).
+
 `lapply` payload is a staged-ops document with adds, removes, hides, and one
 declarative `arrange`:
 

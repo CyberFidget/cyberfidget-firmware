@@ -78,9 +78,10 @@ private:
     SerialCli(const SerialCli&) = delete;
     SerialCli& operator=(const SerialCli&) = delete;
 
-    // `mayDefer` false: a store-writing verb that finds the store busy is
-    // refused at once (the deferred retry, after its wait ran out).
-    void dispatch(const char* line, bool mayDefer = true);
+    // `retry`: the parked verb run again from pollDeferred(). A store-writing
+    // verb that finds the store busy is parked until SyncProtocol::kBusyWaitMs
+    // after its first arrival, and refused only once that has passed.
+    void dispatch(const char* line, bool retry = false);
     // Runs a deferred store-writing verb once the store is free, or refuses
     // it when the wait runs out. True while it is still waiting.
     bool pollDeferred();

@@ -258,6 +258,23 @@ public:
     void drain(size_t n) override { drainBytes(n, kPayloadGapMs); }
 };
 
+// Reads and discards the payload a `fwdata` / `lapply` line announces (none
+// for the other verbs), so a refused verb leaves the stream in frame.
+void drainPayloadOf(const char* line) {
+    const char* arg = nullptr;
+    uint32_t offset = 0, len = 0, crc = 0;
+    size_t payload = 0;
+    if (verbWithArg(line, "fwdata", &arg)) {
+        if (SyncProtocol::parseChunkHeader(arg, offset, len, crc)) payload = len;
+    } else if (verbWithArg(line, "lapply", &arg)) {
+        if (SyncProtocol::parseApplyHeader(arg, len, crc)) payload = len;
+    }
+    if (payload > 0) {
+        UartByteSource in;
+        in.drain(payload);
+    }
+}
+
 // The serial and WiFi drivers use the same LittleFS ferry adapter.
 SyncProtocol::LittleFsFerryStorage g_ferryStorage;
 SyncProtocol::FerrySession g_ferry(g_ferryStorage);
@@ -443,6 +460,13 @@ bool SerialCli::holdsCheckins() const {
 void SerialCli::closeStorageForFactoryReset() {
     if (g_ferry.active()) g_ferry.abort();
     releaseReadPayload();
+    // A parked write must not run against the formatted store; its payload
+    // is drained so the stream stays in frame.
+    if (deferredPending) {
+        deferredPending = false;
+        drainPayloadOf(deferred);
+        Serial.println("[err] sync.busy");
+    }
 }
 
 bool SerialCli::radioBusy() const {
@@ -535,12 +559,15 @@ bool SerialCli::pollDeferred() {
         SyncProtocol::busyStep(CloudSync::storeBusy(), deferredAtMs, millis());
     if (step == SyncProtocol::BusyStep::Wait) return true;
     deferredPending = false;
-    // Run it now, or refuse it as busy if the check-in is still going.
-    dispatch(deferred, false);
-    return false;
+    // Run it now. If the store turned busy again in between (a dev poll
+    // claims it for a moment before it sees the USB session and skips),
+    // dispatch parks it again until the same deadline; only a store still
+    // busy past the deadline refuses it.
+    dispatch(deferred, true);
+    return deferredPending;
 }
 
-void SerialCli::dispatch(const char* line, bool mayDefer) {
+void SerialCli::dispatch(const char* line, bool retry) {
     const char* arg = nullptr;
     // Any sync verb marks a USB session in progress; it is stamped before the
     // store is looked at, so a check-in deciding right now either sees the
@@ -573,27 +600,22 @@ void SerialCli::dispatch(const char* line, bool mayDefer) {
         // runs from poll() once the store is free, for up to
         // SyncProtocol::kBusyWaitMs. The loop keeps running meanwhile, so
         // the screen, buttons and the check-in's own loop-side work go on.
-        if (mayDefer) {
-            strncpy(deferred, line, sizeof(deferred) - 1);
-            deferred[sizeof(deferred) - 1] = '\0';
-            deferredAtMs = millis();
+        // A retry keeps the deadline of the first arrival (and is already
+        // in `deferred`).
+        if (!retry || SyncProtocol::busyStep(true, deferredAtMs, millis()) ==
+                          SyncProtocol::BusyStep::Wait) {
+            if (!retry) {
+                strncpy(deferred, line, sizeof(deferred) - 1);
+                deferred[sizeof(deferred) - 1] = '\0';
+                deferredAtMs = millis();
+            }
             deferredPending = true;
             return;
         }
         // Still busy after the wait: refuse. A refused fwdata/lapply still
         // drains its payload first, as FerrySession does on its own early
         // refusals, so the stream stays in frame.
-        uint32_t offset = 0, len = 0, crc = 0;
-        size_t payload = 0;
-        if (verbWithArg(line, "fwdata", &arg)) {
-            if (SyncProtocol::parseChunkHeader(arg, offset, len, crc)) payload = len;
-        } else if (verbWithArg(line, "lapply", &arg)) {
-            if (SyncProtocol::parseApplyHeader(arg, len, crc)) payload = len;
-        }
-        if (payload > 0) {
-            UartByteSource in;
-            in.drain(payload);
-        }
+        drainPayloadOf(line);
         Serial.println("[err] sync.busy");
         return;
     }

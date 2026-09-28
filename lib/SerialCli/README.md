@@ -378,7 +378,14 @@ check-ins). A refused `fwdata` or `lapply` still drains the payload length
 from its header first, so the stream stays in frame. The sync verbs (`info`,
 `syncinfo`, `lget`, the file verbs, `lapply`; not `version`) also hold off
 new dev mode and awake check-ins for 10 s after the last one, so a browser
-send is not interrupted by a check-in starting part-way through.
+send is not interrupted by a check-in starting part-way through. The hold
+only stops those two from starting: a start-up, daily, recovery or "Check
+for updates" check-in still starts during a USB session, and it keeps the
+store busy for its whole run (join, handshake, any download - often longer
+than 5 s), so a write that meets one usually still answers `[err] sync.busy`
+after the wait. Senders must still handle `sync.busy` (the website re-reads
+the menu and tries again). While a write waits, every other command sent
+behind it (including `version`) waits too, up to 5 s.
 `tlsprobe` answers `radio-busy` during a session, and a session will not start
 while a probe runs.
 

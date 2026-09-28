@@ -242,7 +242,11 @@ temporary buffer is wiped after setting it.
   check-in, so serial transfers work between check-ins; a check-in is skipped
   while a USB sync session is under way (`SerialCli::holdsCheckins()`: a
   serial transfer is open, or a sync command arrived in the last 10 s). The
-  awake check-in (`Reason::Awake`) waits out the same hold.
+  awake check-in (`Reason::Awake`) waits out the same hold. Start-up, daily,
+  recovery and manual check-ins do not: they start during a USB session and
+  keep `storeBusy()` true for their whole run (often more than the 5 s a
+  serial write waits), so a USB write that meets one is still refused with
+  `sync.busy`.
 - `lib/UpdatePrompt/AwakeMode` cancels the worker while any app outside its
   allow-list is in front (the portal, Music Player, Link, delivered apps,
   Voice Notes ...; see `lib/UpdatePolicy/README.md`) and starts it again
