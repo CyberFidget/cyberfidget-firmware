@@ -168,6 +168,43 @@ bool admitListEntry(ListProgress& progress);
 size_t formatListSummary(char* out, size_t cap, const char* dir,
                          const ListProgress& progress);
 
+// ---------------------------------------------------------------------------
+// USB sync session vs. cloud check-ins. A browser send is a short burst of
+// sync verbs; a cloud check-in that starts in the middle of it would hold
+// the store and refuse the rest. The device treats recent sync traffic as a
+// session in progress (no new wire verb: older senders work unchanged).
+// ---------------------------------------------------------------------------
+
+/// How long after the last sync verb a new cloud check-in stays held off.
+constexpr uint32_t kUsbSessionHoldMs = 10000;
+
+/// How long a store-writing verb waits for a check-in already in progress
+/// to finish before it is refused with `[err] sync.busy`. Below the
+/// sender's shortest reply wait (10 s), so a refusal still arrives in time.
+constexpr uint32_t kBusyWaitMs = 5000;
+
+/// True if `line` is a sync-session verb: the ones a browser send, update
+/// check or recovery issues (`info`, `syncinfo`, `lget`, `lapply`, the
+/// `fwrite` family, `fdelete`, `flist`, `fstat`, `fread`). `version` is not
+/// one: bench tools poll it constantly and it says nothing about a send.
+bool isSessionVerb(const char* line);
+
+/// True if `line` is a verb that writes the store (`fwrite`, `fwdata`,
+/// `fwcommit`, `fwabort`, `fdelete`, `lapply`) and so must not run while a
+/// cloud check-in owns it.
+bool isStoreWriteVerb(const char* line);
+
+/// True while a USB sync session holds off new check-ins: a session verb was
+/// `seen`, most recently at `lastAtMs`, less than kUsbSessionHoldMs before
+/// `nowMs` (millis() wrap-safe).
+bool sessionHeld(bool seen, uint32_t lastAtMs, uint32_t nowMs);
+
+/// Next step for a store-writing verb that arrived while the store may be
+/// busy: Run once it is free, Wait while it is busy and kBusyWaitMs has not
+/// passed since `waitingSinceMs`, Refuse after that.
+enum class BusyStep { Run, Wait, Refuse };
+BusyStep busyStep(bool busy, uint32_t waitingSinceMs, uint32_t nowMs);
+
 } // namespace SyncProtocol
 
 #endif // SYNC_PROTOCOL_H

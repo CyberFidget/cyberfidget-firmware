@@ -350,6 +350,62 @@ void test_delivered_blob_name_shape(void) {
 void setUp(void)    {}
 void tearDown(void) {}
 
+// ---------- USB sync session vs. cloud check-ins ----------
+
+void test_session_and_store_write_verbs(void) {
+    // The verbs a browser send issues, in any case, with or without args.
+    const char* const writes[] = {
+        "fwrite /apps/a.wasm 5 3610a686", "fwdata 0 5 3610a686", "fwcommit",
+        "fwabort", "fdelete /apps/a.wasm", "lapply 42 deadbeef", "LAPPLY 1 0", "lapply",
+    };
+    for (const char* line : writes) {
+        TEST_ASSERT_TRUE_MESSAGE(isStoreWriteVerb(line), line);
+        TEST_ASSERT_TRUE_MESSAGE(isSessionVerb(line), line);
+    }
+    const char* const reads[] = {
+        "info", "INFO", "syncinfo", "lget", "flist /apps", "fstat /apps/a.wasm",
+        "fread /apps/a.wasm 0 16",
+    };
+    for (const char* line : reads) {
+        TEST_ASSERT_FALSE_MESSAGE(isStoreWriteVerb(line), line);
+        TEST_ASSERT_TRUE_MESSAGE(isSessionVerb(line), line);
+    }
+    // Not session verbs: identification polls, bench verbs, look-alikes.
+    const char* const others[] = {
+        "version", "help", "battery", "screencap", "menutree", "infox", "lgets",
+        "fwritex /apps/a 1 0", "lapplyx", "", "awake set dev",
+    };
+    for (const char* line : others) {
+        TEST_ASSERT_FALSE_MESSAGE(isSessionVerb(line), line);
+        TEST_ASSERT_FALSE_MESSAGE(isStoreWriteVerb(line), line);
+    }
+    TEST_ASSERT_FALSE(isSessionVerb(nullptr));
+}
+
+void test_session_hold_window(void) {
+    TEST_ASSERT_FALSE(sessionHeld(false, 0, 0));
+    TEST_ASSERT_FALSE(sessionHeld(false, 1000, 1500));
+    TEST_ASSERT_TRUE(sessionHeld(true, 1000, 1000));
+    TEST_ASSERT_TRUE(sessionHeld(true, 1000, 1000 + kUsbSessionHoldMs - 1));
+    TEST_ASSERT_FALSE(sessionHeld(true, 1000, 1000 + kUsbSessionHoldMs));
+    TEST_ASSERT_FALSE(sessionHeld(true, 1000, 1000 + 60000));
+    // Across the millis() wrap.
+    TEST_ASSERT_TRUE(sessionHeld(true, 0xFFFFF000u, 0x00000100u));
+    TEST_ASSERT_FALSE(sessionHeld(true, 0xFFFFF000u, 0xFFFFF000u + kUsbSessionHoldMs));
+    TEST_ASSERT_EQUAL_UINT32(10000u, kUsbSessionHoldMs);
+}
+
+void test_busy_wait_steps(void) {
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Run, (int)busyStep(false, 1000, 1000));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Run, (int)busyStep(false, 1000, 1000 + 60000));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Wait, (int)busyStep(true, 1000, 1000));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Wait, (int)busyStep(true, 1000, 1000 + kBusyWaitMs - 1));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Refuse, (int)busyStep(true, 1000, 1000 + kBusyWaitMs));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Wait, (int)busyStep(true, 0xFFFFFF00u, 0x00000100u));
+    // The wait ends before the sender's shortest reply wait (10 s).
+    TEST_ASSERT_TRUE(kBusyWaitMs < 10000u);
+}
+
 int main(int /*argc*/, char** /*argv*/) {
     UNITY_BEGIN();
     RUN_TEST(test_device_id_uses_efuse_byte_order_and_keeps_leading_zero);
@@ -380,5 +436,8 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_flist_nontruncated_summary);
     RUN_TEST(test_confinement_rejects_applied_record);
     RUN_TEST(test_delivered_blob_name_shape);
+    RUN_TEST(test_session_and_store_write_verbs);
+    RUN_TEST(test_session_hold_window);
+    RUN_TEST(test_busy_wait_steps);
     return UNITY_END();
 }

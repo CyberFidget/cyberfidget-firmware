@@ -5,6 +5,7 @@
 #define SERIAL_CLI_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 // Line-buffered Serial command processor for USB UART. The always-on verbs
 // are identification (`version`, `info`, `help`), bench observation/control
@@ -47,6 +48,10 @@ public:
     void poll();
     // A network pull must not overlap a partially written serial blob.
     bool ferryActive() const;
+    // True while a USB sync session is under way: a serial transfer is open,
+    // or a sync verb arrived within SyncProtocol::kUsbSessionHoldMs. A cloud
+    // check-in does not start while this holds.
+    bool holdsCheckins() const;
     // Close an unfinished serial file transfer before LittleFS is formatted.
     void closeStorageForFactoryReset();
     // True while a test-build radio probe owns WiFi.
@@ -73,7 +78,13 @@ private:
     SerialCli(const SerialCli&) = delete;
     SerialCli& operator=(const SerialCli&) = delete;
 
-    void dispatch(const char* line);
+    // `retry`: the parked verb run again from pollDeferred(). A store-writing
+    // verb that finds the store busy is parked until SyncProtocol::kBusyWaitMs
+    // after its first arrival, and refused only once that has passed.
+    void dispatch(const char* line, bool retry = false);
+    // Runs a deferred store-writing verb once the store is free, or refuses
+    // it when the wait runs out. True while it is still waiting.
+    bool pollDeferred();
     void cmdVersion();
     void cmdInfo();
     void cmdHelp();
@@ -140,6 +151,12 @@ private:
     char   buffer[kBufferSize] = {0};
     size_t bufferLen           = 0;
     bool   overflow            = false;
+    // A store-writing verb that arrived while a cloud check-in owned the
+    // store waits here (its payload stays in the UART buffer) instead of
+    // being refused at once.
+    char     deferred[kBufferSize] = {0};
+    bool     deferredPending       = false;
+    uint32_t deferredAtMs          = 0;
 };
 
 #endif  // SERIAL_CLI_H

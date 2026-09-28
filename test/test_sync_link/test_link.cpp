@@ -538,8 +538,53 @@ void test_confirm_extends_session_limit_once_bounded() {
 void setUp(void) {}
 void tearDown(void) {}
 
+// Advance widths of printable ASCII (0x20..0x7E) in ArialMT_Plain_10, copied
+// from the display library's font table (its jump table's width byte).
+const uint8_t kArial10Widths[95] = {
+    3, 3, 4, 6, 6, 9, 7, 2, 3, 3, 4, 6, 3, 3, 3, 3, 6, 6, 6, 6, 6, 6, 6, 6,
+    6, 6, 3, 3, 6, 6, 6, 6, 10, 7, 7, 7, 7, 7, 6, 8, 7, 3, 5, 7, 6, 8, 7, 8,
+    7, 8, 7, 7, 6, 7, 7, 9, 7, 7, 6, 3, 3, 3, 5, 6, 3, 6, 6, 5, 6, 6, 3, 6,
+    6, 2, 2, 5, 2, 8, 6, 6, 6, 6, 3, 5, 3, 6, 5, 7, 5, 5, 5, 3, 3, 3, 6,
+};
+
+int arial10Width(const char* s) {
+    int w = 0;
+    for (; *s; ++s) {
+        TEST_ASSERT_TRUE_MESSAGE(*s >= 0x20 && *s <= 0x7E, "link screen text must be printable ASCII");
+        w += kArial10Widths[*s - 0x20];
+    }
+    return w;
+}
+
+void test_link_error_text_names_the_fix_and_fits_the_screen() {
+    LinkErrorText t = linkErrorText("no-wifi");
+    TEST_ASSERT_EQUAL_STRING("Needs WiFi first", t.line1);
+    TEST_ASSERT_EQUAL_STRING("Settings > Setup WiFi", t.line2);
+    t = linkErrorText("join");
+    TEST_ASSERT_EQUAL_STRING("Can't reach WiFi", t.line1);
+    TEST_ASSERT_EQUAL_STRING("Check it's in range", t.line2);
+    // Every other code the link session can publish, plus none at all.
+    const char* const others[] = {
+        "link-mismatch", "storage", "tls-allocator", "invalid-base", "radio-busy",
+        "sta-mode", "try-again", "begin", "begin-reply", "request", "reply",
+        "cancelled", "task-create", "", nullptr,
+    };
+    for (const char* code : others) {
+        t = linkErrorText(code);
+        TEST_ASSERT_EQUAL_STRING("Could not link", t.line1);
+        TEST_ASSERT_EQUAL_STRING("Try again later", t.line2);
+    }
+    const char* const codes[] = {"no-wifi", "join", "begin"};
+    for (const char* code : codes) {
+        t = linkErrorText(code);
+        TEST_ASSERT_LESS_OR_EQUAL_INT(128, arial10Width(t.line1));
+        TEST_ASSERT_LESS_OR_EQUAL_INT(128, arial10Width(t.line2));
+    }
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_link_error_text_names_the_fix_and_fits_the_screen);
     RUN_TEST(test_wait_confirm_store_and_lost_reply);
     RUN_TEST(test_decline_and_expiry);
     RUN_TEST(test_change_of_hands_decision);

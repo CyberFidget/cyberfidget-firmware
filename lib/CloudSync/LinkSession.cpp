@@ -3,6 +3,8 @@
 
 #include "LinkSession.h"
 
+#include <cstring>
+
 namespace CloudSync {
 
 void LinkSession::reply(const std::string& status, const std::string& account,
@@ -285,6 +287,12 @@ bool setLinkTimeIfMissing(LinkStore& store, uint32_t serverTime) {
         store.getString("tok").empty()) return false;
     if (store.getUInt("at")) return true;
     return store.putUInt("at", serverTime);
+}
+
+LinkErrorText linkErrorText(const char* err) {
+    if (err && strcmp(err, "no-wifi") == 0) return {"Needs WiFi first", "Settings > Setup WiFi"};
+    if (err && strcmp(err, "join") == 0) return {"Can't reach WiFi", "Check it's in range"};
+    return {"Could not link", "Try again later"};
 }
 
 } // namespace CloudSync
