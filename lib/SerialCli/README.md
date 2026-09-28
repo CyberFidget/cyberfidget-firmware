@@ -371,9 +371,14 @@ limit can make a successful session last over one minute. `err=` carries a
 override is read only by test builds.
 
 While a session runs, `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete` and `lapply`
-answer `[err] sync.busy` (dev mode listening only while it is inside a
-check-in, not in the wait between check-ins). A refused `fwdata` or `lapply` still drains the
-payload length from its header first, so the stream stays in frame.
+wait for it for up to 5 s (nothing more is read meanwhile; the payload stays
+queued), then run, or answer `[err] sync.busy` if it is still running (dev
+mode listening only while it is inside a check-in, not in the wait between
+check-ins). A refused `fwdata` or `lapply` still drains the payload length
+from its header first, so the stream stays in frame. The sync verbs (`info`,
+`syncinfo`, `lget`, the file verbs, `lapply`; not `version`) also hold off
+new dev mode and awake check-ins for 10 s after the last one, so a browser
+send is not interrupted by a check-in starting part-way through.
 `tlsprobe` answers `radio-busy` during a session, and a session will not start
 while a probe runs.
 
