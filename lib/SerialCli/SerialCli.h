@@ -52,6 +52,10 @@ public:
     // or a sync verb arrived within SyncProtocol::kUsbSessionHoldMs. A cloud
     // check-in does not start while this holds.
     bool holdsCheckins() const;
+    // True (once) if a verb that moves data (SyncProtocol::isIdleActivityVerb)
+    // arrived since the last call; AppManager treats it as use for the idle
+    // sleep, like a button press.
+    bool consumeUsbActivity();
     // Close an unfinished serial file transfer before LittleFS is formatted.
     void closeStorageForFactoryReset();
     // True while a test-build radio probe owns WiFi.
@@ -101,6 +105,8 @@ private:
     void cmdFwdata(const char* args);
     void cmdFwcommit();
     void cmdFwabort();
+    // Drops an open write session idle for SyncProtocol::kTransferIdleMs.
+    void expireIdleTransfer();
     void cmdFdelete(const char* args);
     void cmdFlist(const char* args);
     void cmdFstat(const char* args);
@@ -157,6 +163,9 @@ private:
     char     deferred[kBufferSize] = {0};
     bool     deferredPending       = false;
     uint32_t deferredAtMs          = 0;
+    // When the open write session last saw fwrite/fwdata.
+    uint32_t ferryAtMs             = 0;
+    bool     usbActivity           = false;
 };
 
 #endif  // SERIAL_CLI_H

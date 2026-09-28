@@ -406,6 +406,44 @@ void test_busy_wait_steps(void) {
     TEST_ASSERT_TRUE(kBusyWaitMs < 10000u);
 }
 
+void test_idle_activity_verbs(void) {
+    // Verbs that move data count as use for the idle-to-sleep timer.
+    const char* const counted[] = {
+        "fwrite /apps/a.wasm 5 3610a686", "fwdata 0 5 3610a686", "FWDATA 0 5 0",
+        "fwcommit", "fwabort", "fdelete /apps/a.wasm", "lapply 42 deadbeef",
+        "fread /apps/a.wasm 0 16",
+    };
+    for (const char* line : counted) {
+        TEST_ASSERT_TRUE_MESSAGE(isIdleActivityVerb(line), line);
+    }
+    // Status reads a connected host may repeat, identification polls, bench
+    // verbs and look-alikes do not keep the device awake.
+    const char* const notCounted[] = {
+        "version", "info", "syncinfo", "lget", "flist /apps", "fstat /apps/a.wasm",
+        "help", "battery", "screencap", "screenstream 500", "freadx /apps/a 0 1",
+        "", "awake set dev",
+    };
+    for (const char* line : notCounted) {
+        TEST_ASSERT_FALSE_MESSAGE(isIdleActivityVerb(line), line);
+    }
+    TEST_ASSERT_FALSE(isIdleActivityVerb(nullptr));
+}
+
+void test_transfer_idle_timeout(void) {
+    TEST_ASSERT_EQUAL_UINT32(60000u, kTransferIdleMs);
+    // No open transfer never expires.
+    TEST_ASSERT_FALSE(transferExpired(false, 1000, 1000 + kTransferIdleMs * 10));
+    TEST_ASSERT_FALSE(transferExpired(true, 1000, 1000));
+    TEST_ASSERT_FALSE(transferExpired(true, 1000, 1000 + kTransferIdleMs - 1));
+    TEST_ASSERT_TRUE(transferExpired(true, 1000, 1000 + kTransferIdleMs));
+    // Across the millis() wrap.
+    TEST_ASSERT_FALSE(transferExpired(true, 0xFFFFF000u, 0x00000100u));
+    TEST_ASSERT_TRUE(transferExpired(true, 0xFFFFF000u, 0xFFFFF000u + kTransferIdleMs));
+    // A live sender answers each chunk within its reply wait (10 s, and 30 s
+    // for a commit), well inside the timeout.
+    TEST_ASSERT_TRUE(kTransferIdleMs >= 2u * 30000u);
+}
+
 int main(int /*argc*/, char** /*argv*/) {
     UNITY_BEGIN();
     RUN_TEST(test_device_id_uses_efuse_byte_order_and_keeps_leading_zero);
@@ -439,5 +477,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_session_and_store_write_verbs);
     RUN_TEST(test_session_hold_window);
     RUN_TEST(test_busy_wait_steps);
+    RUN_TEST(test_idle_activity_verbs);
+    RUN_TEST(test_transfer_idle_timeout);
     return UNITY_END();
 }

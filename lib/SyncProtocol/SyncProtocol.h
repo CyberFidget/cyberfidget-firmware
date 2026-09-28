@@ -205,6 +205,23 @@ bool sessionHeld(bool seen, uint32_t lastAtMs, uint32_t nowMs);
 enum class BusyStep { Run, Wait, Refuse };
 BusyStep busyStep(bool busy, uint32_t waitingSinceMs, uint32_t nowMs);
 
+/// True if `line` counts as use for the device's idle-to-sleep timer, like a
+/// button press: the verbs that move data (the store-writing verbs and
+/// `fread`). The metadata reads (`info`, `syncinfo`, `lget`, `flist`,
+/// `fstat`) and `version` do not: a connected host may repeat those to show
+/// status, and that alone must not keep the screen on forever.
+bool isIdleActivityVerb(const char* line);
+
+/// How long an open write session (`fwrite` with no `fwcommit`/`fwabort`)
+/// may go without an `fwrite`/`fwdata` before the device abandons it and
+/// releases the store. A live sender answers each chunk within its 10 s
+/// reply wait, so this only fires for a sender that has gone away.
+constexpr uint32_t kTransferIdleMs = 60000;
+
+/// True when an `active` write session last saw a transfer verb at
+/// `lastAtMs`, kTransferIdleMs or more before `nowMs` (millis() wrap-safe).
+bool transferExpired(bool active, uint32_t lastAtMs, uint32_t nowMs);
+
 } // namespace SyncProtocol
 
 #endif // SYNC_PROTOCOL_H

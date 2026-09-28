@@ -88,6 +88,19 @@ fwabort                           -> [cmd] fwabort.ok
 * **Restartable, not resumable-across-disconnect**: to recover from an
   interrupted transfer, re-issue `fwrite` (discards the partial temp) and
   resend. Within a live session, individual chunks retry by offset.
+* **Abandoned sessions expire**: a session with no `fwrite`/`fwdata` for
+  `kTransferIdleMs` (60 s) is dropped exactly as `fwabort` drops it (temp
+  file removed, store released, cloud check-ins free to run again). The
+  device logs one `[sync] fwrite.expired idle_ms=60000` line - deliberately
+  not a `[cmd]`/`[err]` reply, so a returning sender never mistakes it for
+  an answer. A late `fwdata` then gets `[err] fwdata.nosession` (payload
+  drained, stream stays in frame). A live sender answers each chunk within
+  its reply wait (10 s), far inside the timeout.
+* **Idle sleep**: the verbs that move data (the store-writing verbs and
+  `fread`) count as use for the device's 60 s idle-to-sleep timer, like a
+  button press. `version` and the status reads (`info`, `syncinfo`, `lget`,
+  `flist`, `fstat`) do not, so a host that only polls status cannot keep the
+  screen on forever.
 
 ### Delete
 
