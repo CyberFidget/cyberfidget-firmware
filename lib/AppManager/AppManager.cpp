@@ -412,6 +412,12 @@ void AppManager::loop() {
     if (CloudSync::busy()) {
         millis_APP_LASTINTERACTION = millis_NOW;
     }
+    // A USB send moving data is use, like a button press, so a long send
+    // with no buttons touched does not sleep mid-transfer. Status polls
+    // (`version`, `info`, ...) do not count: see isIdleActivityVerb.
+    if (SerialCli::instance().consumeUsbActivity()) {
+        millis_APP_LASTINTERACTION = millis_NOW;
+    }
 
     if ((millis_NOW - millis_APP_LASTINTERACTION) >= TASK_LASTINTERACT) {
         // An open prompt does not keep the device awake: it closes with no

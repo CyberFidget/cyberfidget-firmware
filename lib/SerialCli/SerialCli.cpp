@@ -551,6 +551,9 @@ void SerialCli::poll() {
         }
         buffer[bufferLen++] = c;
     }
+    // Checked after the queued input has run, so a chunk already waiting in
+    // the buffer counts before the session is judged abandoned.
+    expireIdleTransfer();
 }
 
 bool SerialCli::pollDeferred() {
@@ -576,6 +579,9 @@ void SerialCli::dispatch(const char* line, bool retry) {
         g_sessionAtMs = millis();
         g_sessionSeen = true;
     }
+    // A verb that moves data is use, like a button press, so a long USB send
+    // does not hit the idle sleep (AppManager consumes this).
+    if (SyncProtocol::isIdleActivityVerb(line)) usbActivity = true;
 #ifdef CF_TEST_CLI
     if (ieq(line, "reset factory confirm")) {
         FactoryReset::confirmFromCli();
@@ -1390,11 +1396,32 @@ void SerialCli::cmdHelp() {
 // and prints the reply.
 void SerialCli::cmdFwrite(const char* args) {
     sendReply(g_ferry.open(args));
+    ferryAtMs = millis();
 }
 
 void SerialCli::cmdFwdata(const char* args) {
     UartByteSource in;
     sendReply(g_ferry.chunk(args, in));
+    ferryAtMs = millis();
+}
+
+// An open write session whose sender has gone away (unplugged, tab closed)
+// would otherwise hold the store, and cloud check-ins, forever. After
+// SyncProtocol::kTransferIdleMs with no fwrite/fwdata it is dropped exactly
+// as fwabort drops it; a late fwdata then gets `[err] fwdata.nosession`
+// with its payload drained. The log line is not a [cmd]/[err] reply, so a
+// sender that comes back never reads it as the answer to its next verb.
+void SerialCli::expireIdleTransfer() {
+    if (!SyncProtocol::transferExpired(g_ferry.active(), ferryAtMs, millis())) return;
+    g_ferry.abort();
+    Serial.printf("[sync] fwrite.expired idle_ms=%lu\n",
+                  (unsigned long)SyncProtocol::kTransferIdleMs);
+}
+
+bool SerialCli::consumeUsbActivity() {
+    const bool was = usbActivity;
+    usbActivity = false;
+    return was;
 }
 
 void SerialCli::cmdFwcommit() {

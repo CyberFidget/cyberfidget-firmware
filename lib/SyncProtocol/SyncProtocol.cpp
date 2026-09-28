@@ -356,4 +356,12 @@ BusyStep busyStep(bool busy, uint32_t waitingSinceMs, uint32_t nowMs) {
                                                             : BusyStep::Refuse;
 }
 
+bool isIdleActivityVerb(const char* line) {
+    return isStoreWriteVerb(line) || firstTokenIs(line, "fread");
+}
+
+bool transferExpired(bool active, uint32_t lastAtMs, uint32_t nowMs) {
+    return active && (uint32_t)(nowMs - lastAtMs) >= kTransferIdleMs;
+}
+
 } // namespace SyncProtocol
