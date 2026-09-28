@@ -89,6 +89,17 @@ uint32_t confirmSessionLimit(uint32_t limitMs, uint32_t elapsedMs, uint32_t grac
 uint32_t pairPollWait(uint32_t interval, int httpStatus, int retryAfter);
 bool setLinkTimeIfMissing(LinkStore& store, uint32_t serverTime);
 
+// What the link screen says for a link that ended in error: two short lines,
+// each within the 128 px screen width in ArialMT_Plain_10. `err` is the
+// session's error code (LinkSnapshot::error): no saved network ("no-wifi")
+// and a network that could not be joined ("join") say what to do; any other
+// code (or none) gets the general line.
+struct LinkErrorText {
+    const char* line1;
+    const char* line2;
+};
+LinkErrorText linkErrorText(const char* err);
+
 } // namespace CloudSync
 
 #endif // LINK_SESSION_H

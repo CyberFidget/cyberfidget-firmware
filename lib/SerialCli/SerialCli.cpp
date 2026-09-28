@@ -6,6 +6,7 @@
 #include <Arduino.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+#include <atomic>
 
 #include <FS.h>
 #include <LittleFS.h>
@@ -428,6 +429,17 @@ void tlsProbeTask(void*) {
 
 bool SerialCli::ferryActive() const { return g_ferry.active(); }
 
+namespace {
+// When the last sync verb arrived (loop task writes, the check-in task reads).
+std::atomic<bool> g_sessionSeen{false};
+std::atomic<uint32_t> g_sessionAtMs{0};
+}  // namespace
+
+bool SerialCli::holdsCheckins() const {
+    return g_ferry.active() ||
+           SyncProtocol::sessionHeld(g_sessionSeen.load(), g_sessionAtMs.load(), millis());
+}
+
 void SerialCli::closeStorageForFactoryReset() {
     if (g_ferry.active()) g_ferry.abort();
     releaseReadPayload();
@@ -482,6 +494,9 @@ void SerialCli::poll() {
             Serial.println("[cmd] link.state=unlinked");
     }
 #endif
+    // While a store-writing verb waits for a check-in to finish, nothing more
+    // is read: its payload and anything after it stay queued, in order.
+    if (pollDeferred()) return;
     while (Serial.available() > 0) {
         int byte = Serial.read();
         if (byte < 0) break;
@@ -501,6 +516,8 @@ void SerialCli::poll() {
             if (c == '\r') swallowPairedLf();
             dispatch(buffer);
             bufferLen = 0;
+            // A deferred verb stops reading here (see pollDeferred).
+            if (deferredPending) return;
             continue;
         }
         if (bufferLen + 1 >= kBufferSize) {
@@ -512,8 +529,26 @@ void SerialCli::poll() {
     }
 }
 
-void SerialCli::dispatch(const char* line) {
+bool SerialCli::pollDeferred() {
+    if (!deferredPending) return false;
+    const SyncProtocol::BusyStep step =
+        SyncProtocol::busyStep(CloudSync::storeBusy(), deferredAtMs, millis());
+    if (step == SyncProtocol::BusyStep::Wait) return true;
+    deferredPending = false;
+    // Run it now, or refuse it as busy if the check-in is still going.
+    dispatch(deferred, false);
+    return false;
+}
+
+void SerialCli::dispatch(const char* line, bool mayDefer) {
     const char* arg = nullptr;
+    // Any sync verb marks a USB session in progress; it is stamped before the
+    // store is looked at, so a check-in deciding right now either sees the
+    // session (and skips) or is already running (and this verb waits).
+    if (SyncProtocol::isSessionVerb(line)) {
+        g_sessionAtMs = millis();
+        g_sessionSeen = true;
+    }
 #ifdef CF_TEST_CLI
     if (ieq(line, "reset factory confirm")) {
         FactoryReset::confirmFromCli();
@@ -532,31 +567,35 @@ void SerialCli::dispatch(const char* line) {
         return;
     }
 #endif
-    if (CloudSync::storeBusy()) {
-        // Refuse writes while a network pull owns the store (dev mode
-        // listening only while it is inside a check-in). A refused
-        // fwdata/lapply still drains its payload first, as FerrySession
-        // does on its own early refusals, so the stream stays in frame.
-        uint32_t offset = 0, len = 0, crc = 0;
-        size_t payload = 0;
-        bool refuse = ieq(line, "fwcommit") || ieq(line, "fwabort") ||
-                      ieq(line, "lapply") || verbWithArg(line, "fwrite", &arg) ||
-                      verbWithArg(line, "fdelete", &arg);
-        if (!refuse && verbWithArg(line, "fwdata", &arg)) {
-            refuse = true;
-            if (SyncProtocol::parseChunkHeader(arg, offset, len, crc)) payload = len;
-        } else if (!refuse && verbWithArg(line, "lapply", &arg)) {
-            refuse = true;
-            if (SyncProtocol::parseApplyHeader(arg, len, crc)) payload = len;
-        }
-        if (refuse) {
-            if (payload > 0) {
-                UartByteSource in;
-                in.drain(payload);
-            }
-            Serial.println("[err] sync.busy");
+    if (SyncProtocol::isStoreWriteVerb(line) && CloudSync::storeBusy()) {
+        // A network pull owns the store (dev mode listening only while it
+        // is inside a check-in). First wait for it: the verb is kept and
+        // runs from poll() once the store is free, for up to
+        // SyncProtocol::kBusyWaitMs. The loop keeps running meanwhile, so
+        // the screen, buttons and the check-in's own loop-side work go on.
+        if (mayDefer) {
+            strncpy(deferred, line, sizeof(deferred) - 1);
+            deferred[sizeof(deferred) - 1] = '\0';
+            deferredAtMs = millis();
+            deferredPending = true;
             return;
         }
+        // Still busy after the wait: refuse. A refused fwdata/lapply still
+        // drains its payload first, as FerrySession does on its own early
+        // refusals, so the stream stays in frame.
+        uint32_t offset = 0, len = 0, crc = 0;
+        size_t payload = 0;
+        if (verbWithArg(line, "fwdata", &arg)) {
+            if (SyncProtocol::parseChunkHeader(arg, offset, len, crc)) payload = len;
+        } else if (verbWithArg(line, "lapply", &arg)) {
+            if (SyncProtocol::parseApplyHeader(arg, len, crc)) payload = len;
+        }
+        if (payload > 0) {
+            UartByteSource in;
+            in.drain(payload);
+        }
+        Serial.println("[err] sync.busy");
+        return;
     }
     if (ieq(line, "version")) { cmdVersion(); return; }
     if (ieq(line, "info"))    { cmdInfo();    return; }

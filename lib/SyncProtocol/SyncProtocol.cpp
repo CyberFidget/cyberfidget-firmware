@@ -304,4 +304,56 @@ size_t formatListSummary(char* out, size_t cap, const char* dir,
     return (size_t)n;
 }
 
+namespace {
+
+// True if the first token of `line` is `verb` (case-insensitive), ended by
+// the line's end or a space.
+bool firstTokenIs(const char* line, const char* verb) {
+    if (!line) return false;
+    size_t i = 0;
+    for (; verb[i]; ++i) {
+        char c = line[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != verb[i]) return false;
+    }
+    return line[i] == '\0' || line[i] == ' ';
+}
+
+bool firstTokenIn(const char* line, const char* const* verbs, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (firstTokenIs(line, verbs[i])) return true;
+    }
+    return false;
+}
+
+const char* const kStoreWriteVerbs[] = {
+    "fwrite", "fwdata", "fwcommit", "fwabort", "fdelete", "lapply",
+};
+const char* const kSessionReadVerbs[] = {
+    "info", "syncinfo", "lget", "flist", "fstat", "fread",
+};
+
+} // namespace
+
+bool isStoreWriteVerb(const char* line) {
+    return firstTokenIn(line, kStoreWriteVerbs,
+                        sizeof(kStoreWriteVerbs) / sizeof(kStoreWriteVerbs[0]));
+}
+
+bool isSessionVerb(const char* line) {
+    return isStoreWriteVerb(line) ||
+           firstTokenIn(line, kSessionReadVerbs,
+                        sizeof(kSessionReadVerbs) / sizeof(kSessionReadVerbs[0]));
+}
+
+bool sessionHeld(bool seen, uint32_t lastAtMs, uint32_t nowMs) {
+    return seen && (uint32_t)(nowMs - lastAtMs) < kUsbSessionHoldMs;
+}
+
+BusyStep busyStep(bool busy, uint32_t waitingSinceMs, uint32_t nowMs) {
+    if (!busy) return BusyStep::Run;
+    return (uint32_t)(nowMs - waitingSinceMs) < kBusyWaitMs ? BusyStep::Wait
+                                                            : BusyStep::Refuse;
+}
+
 } // namespace SyncProtocol

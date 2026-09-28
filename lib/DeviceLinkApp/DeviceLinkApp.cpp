@@ -12,6 +12,7 @@
 #include "DeviceIdentity.h"
 #include "DisplayProxy.h"
 #include "HAL.h"
+#include "LinkSession.h"
 #include "MenuManager.h"
 #include "ModalPrompt.h"
 
@@ -166,11 +167,20 @@ void update() {
             screen.display();
             return;
         }
+        if (snap.state == CloudSync::LinkState::Error) {
+            // Says why, and what to do, where the reason is one the person
+            // can fix (no saved WiFi, or WiFi out of reach).
+            const CloudSync::LinkErrorText text = CloudSync::linkErrorText(snap.error);
+            screen.drawString(64, 12, text.line1);
+            screen.drawString(64, 26, text.line2);
+            screen.drawString(64, 45, "Enter: try again");
+            screen.display();
+            return;
+        }
         const char* message = snap.state == CloudSync::LinkState::Linked ?
                                   (snap.error[0] ? "Linked - apps remain" : "Linked") :
                               snap.state == CloudSync::LinkState::Declined ? "Link cancelled" :
                               snap.state == CloudSync::LinkState::Expired ? "Code expired" :
-                              snap.state == CloudSync::LinkState::Error ? "Could not link" :
                               snap.state == CloudSync::LinkState::Idle ? "Not linked" :
                               snap.state == CloudSync::LinkState::Confirming ? "Finishing link..." :
                               "Connecting...";

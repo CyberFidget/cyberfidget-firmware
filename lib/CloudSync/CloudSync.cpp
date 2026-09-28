@@ -1552,12 +1552,16 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
     for (;;) {
         if (cancelRequested) break;
         // Claim the store before looking at the serial side: from here a
-        // new serial transfer is refused (storeBusy), and one already open
-        // makes this poll skip.
+        // new serial write waits for this cycle (storeBusy), and a USB sync
+        // session under way (an open transfer, or sync commands in the last
+        // few seconds) makes this poll skip.
         devInCycle = true;
-        if (SerialCli::instance().ferryActive()) {
+        if (SerialCli::instance().holdsCheckins()) {
             checkinConnection.clear();
             devInCycle = false;
+#ifdef CF_TEST_CLI
+            Serial.printf("[dev] hold=usb at_ms=%lu\n", (unsigned long)millis());
+#endif
             if (!devSleep(kDevPollMs)) break;
             continue;
         }
@@ -1573,8 +1577,8 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         if (!connected) checkinConnection.clear();
         if (!connected) connected = devRejoin();
         if (cancelRequested) { devInCycle = false; break; }
-        // A rejoin can take seconds: a transfer that opened meanwhile wins.
-        if (SerialCli::instance().ferryActive()) {
+        // A rejoin can take seconds: a USB session that started meanwhile wins.
+        if (SerialCli::instance().holdsCheckins()) {
             checkinConnection.clear();
             devInCycle = false;
             if (!devSleep(kDevPollMs)) break;
@@ -1894,6 +1898,10 @@ bool runSession(Reason reason, bool applyWaiting, int32_t dailyVbat, int32_t dai
     if (UpdateSession::imagePending()) return false;
     if (running || finished || SerialCli::instance().ferryActive() ||
         SerialCli::instance().radioBusy()) return false;
+    // The periodic awake check-in also waits out a USB sync session; it is
+    // tried again on a later tick. (Dev mode listening skips its polls the
+    // same way, in devLoop.)
+    if (reason == Reason::Awake && SerialCli::instance().holdsCheckins()) return false;
     recoverClearBeforeSession();
     // Never under an app that owns a radio: it would share the power cycle.
     const AppIndex active = AppManager::instance().activeApp();
