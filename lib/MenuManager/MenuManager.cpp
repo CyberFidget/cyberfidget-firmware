@@ -7,8 +7,11 @@
 #include "globals.h"      // If you have global for 'millis_NOW', etc.
 #include "AppDefs.h"      // For AppIndex enum
 #include "WasmFsApp.h"    // T-183: stage a ferried wasm app before launch
+#include "StatusView.h"   // status bar across the top, Status item badge
+#include "CategoryPath.h" // splitCategoryPath (no <sstream>)
+#include "LoadoutStore.h"  // manifest lock for the in-place rebuild
+#include "MenuIdentity.h"  // same item across a rebuild
 
-#include <sstream>        // For path parsing
 #include <algorithm>  // for std::min/max if needed
 #include <string>
 
@@ -20,9 +23,17 @@ static auto &buttonManager = HAL::buttonManager();
 static const int SCREEN_WIDTH  = 128; 
 static const int SCREEN_HEIGHT = 64;
 
+// The status bar (StatusView) owns the top rows of every menu screen; the
+// list lives in the area below it. Before the bar: 16 px rows from y=0,
+// text at row+2, 4 visible. Now: 13 px rows (ArialMT_Plain_10's own line
+// height; capitals on rows 3..9, descenders on 10..11, highlight border on
+// 0 and 12) from y=12, text at row+0, still 4 visible (12 + 4*13 = 64).
+static const int MENU_TOP         = StatusView::kBarHeight;
+static const int MENU_AREA_HEIGHT = SCREEN_HEIGHT - MENU_TOP;
+
 // Row spacing for text in the menu:
-static const int MENU_ITEM_HEIGHT = 16;
-static const int MENU_ITEM_Y_OFFSET = 2;
+static const int MENU_ITEM_HEIGHT = 13;
+static const int MENU_ITEM_Y_OFFSET = 0;
 
 // We’ll offset the highlight bar a bit from the left edge:
 static const int HIGHLIGHT_X_OFFSET = 4;
@@ -40,18 +51,7 @@ static int crossSlideDuration = 400;
 // Helper to parse path like "Tools/WiFi" => ["Tools","WiFi"]
 std::vector<std::string> MenuManager::parseCategoryPath(const std::string &path)
 {
-    std::vector<std::string> result;
-    if (path.empty()) {
-        return result; // no subcategories
-    }
-    std::stringstream ss(path);
-    std::string segment;
-    while (std::getline(ss, segment, '/')) {
-        if (!segment.empty()) {
-            result.push_back(segment);
-        }
-    }
-    return result;
+    return splitCategoryPath(path);
 }
 
 /**
@@ -164,24 +164,48 @@ void drawOneMenu(std::vector<MenuItem>* items,
 {
     if (!items) return;
 
-    // Draw each item with horizontal offset
+    const bool badge = StatusService::instance().badge();
+    // Dev mode listening: Bluetooth apps carry a small Bluetooth mark (they
+    // ask to restart first). No strikethrough: that reads as broken.
+    const bool btMark = StatusService::instance().bluetoothNeedsRestart();
+
+    // Draw each item with horizontal offset. yPos is list-relative; the
+    // list area starts below the status bar (MENU_TOP). Rows scrolling up
+    // past it are painted over when the bar draws.
     for (int i = 0; i < (int)items->size(); i++)
     {
         int yPos = (i * MENU_ITEM_HEIGHT) - scrollOffset;
-        if (yPos >= -MENU_ITEM_HEIGHT && yPos < SCREEN_HEIGHT)
+        if (yPos >= -MENU_ITEM_HEIGHT && yPos < MENU_AREA_HEIGHT)
         {
             int drawX = 10 + menuX;
-            int drawY = yPos + 2; // offset
-            
+            int drawY = MENU_TOP + yPos + MENU_ITEM_Y_OFFSET;
+            const MenuItem &mi = (*items)[i];
+
             display.setTextAlignment(TEXT_ALIGN_LEFT);
             display.setFont(ArialMT_Plain_10);
-            display.drawString(drawX, drawY, (*items)[i].label.c_str());
+            display.drawString(drawX, drawY, mi.label.c_str());
+
+            // The Status item carries a dot while something needs attention.
+            if (badge && !mi.isCategory && mi.appIndex == APP_STATUS) {
+                const int w = display.getStringWidth(mi.label.c_str(),
+                                                     (uint16_t)mi.label.size());
+                display.fillCircle(drawX + w + 5, drawY + 6, 2);
+            }
+            if (btMark && !mi.isCategory && mi.appIndex == APP_MUSIC_PLAYER) {
+                static const char *const kRune[] = {
+                    "..#..", "..##.", "#.#.#", ".###.", "#.#.#", "..##.", "..#.."};
+                const int w = display.getStringWidth(mi.label.c_str(),
+                                                     (uint16_t)mi.label.size());
+                for (int r = 0; r < 7; r++)
+                    for (int c = 0; c < 5; c++)
+                        if (kRune[r][c] == '#') display.setPixel(drawX + w + 4 + c, drawY + 3 + r);
+            }
         }
     }
 
     // Also draw highlight
     int hlX = highlight.getX() + menuX;
-    int hlY = highlight.getY();
+    int hlY = highlight.getY() + MENU_TOP;
     drawHighlightShape(hlX, 
                        hlY,
                        highlight.getWidth(),
@@ -233,6 +257,7 @@ void MenuManager::begin()
         ESP_LOGI(TAG_MAIN, "Menu already built; not rebuilding");
         registerMenuCallbacks();
         menuActive = true;
+        if (restorePending) applyRestore();
         return;
     }
     manifestDirty = false;
@@ -251,6 +276,7 @@ void MenuManager::begin()
     ESP_LOGI(TAG_MAIN, "MenuManager.cpp - Pre buildNestedMenu");
     buildNestedMenu(); 
     ESP_LOGI(TAG_MAIN, "MenuManager.cpp - Post buildNestedMenu");
+    if (restorePending) applyRestore();
     // buildNestedMenu calls something like:
     // for i in [0..APP_COUNT-1]:
     //    addAppToMenu(appDefs[i].name, appDefs[i].categoryPath, i);
@@ -270,11 +296,107 @@ void MenuManager::update()
 {
     if (!menuActive) return; // If an app is running, do nothing
 
+    // A manifest change while the menu is showing (an app delivered by a
+    // check-in) is picked up here once the menu is idle at the root: no
+    // submenu, no slide, no reorder. (An open prompt pauses this update.)
+    if (manifestDirty && navigationStack.empty() &&
+        crossSlideState == CROSS_SLIDE_NONE && !moveMode) {
+        rebuildInPlace();
+    }
+
     // Update (animate) highlight, etc.
     tweenAll();        // from your UITween.cpp
     updateTmp();         // if needed from your code
     handleCrossSlide();  // Process the cross slide transition if needed
     drawMenu();          // Redraw the menu each frame (or only if something changed).
+}
+
+// Rebuilds the root list from the manifest while it is on screen, keeping
+// the highlight on the same item (MenuIdentity.h: app index or manifest id,
+// label only for categories) when it still exists. Only called at the root,
+// so no saved navigation state points into the old lists.
+void MenuManager::rebuildInPlace()
+{
+    const bool keep = currentIndex >= 0 && currentIndex < (int)rootMenuItems.size();
+    const MenuItem kept = keep ? rootMenuItems[currentIndex] : MenuItem("", true, APP_COUNT);
+    {
+        // The network worker writes the manifest under the same lock.
+        LoadoutStore::Guard manifestGuard;
+        manifestDirty = false;
+        rootMenuItems.clear();
+        buildNestedMenu();
+    }
+    currentItemList = &rootMenuItems;
+    const int found = keep ? findSameMenuItem(rootMenuItems, kept) : -1;
+    currentIndex = found >= 0 ? found : 0;
+
+    // Snap the scroll and highlight to the (possibly moved) item.
+    auto scrollTween = tweensInt.find(&scrollOffset);
+    if (scrollTween != tweensInt.end()) {
+        delete scrollTween->second;
+        tweensInt.erase(scrollTween);
+    }
+    finalizeHighlightAnimation(&highlightElement);
+    const int itemTop = currentIndex * MENU_ITEM_HEIGHT;
+    const int bottomY = MENU_AREA_HEIGHT - MENU_ITEM_HEIGHT;
+    if (itemTop < scrollOffset) scrollOffset = itemTop;
+    else if (itemTop - scrollOffset > bottomY) scrollOffset = itemTop - bottomY;
+    highlightElement.setY(itemTop - scrollOffset);
+    ESP_LOGI(TAG_MAIN, "Menu rebuilt in place (%d root items)", (int)rootMenuItems.size());
+}
+
+std::string MenuManager::currentCategory() const
+{
+    if (navigationStack.empty()) return std::string();
+    const MenuNavState &top = navigationStack.front();
+    if (!top.itemList || top.index < 0 || top.index >= (int)top.itemList->size())
+        return std::string();
+    return (*top.itemList)[top.index].label;
+}
+
+void MenuManager::restoreAfterRestart(const std::string &category, const std::string &blobId)
+{
+    restoreCategory = category;
+    restoreBlobId = blobId;
+    restorePending = true;
+}
+
+// Opens the saved category (one level: manifest categories are flat) and
+// selects the saved app; anything no longer there falls back to the top.
+void MenuManager::applyRestore()
+{
+    restorePending = false;
+    navigationStack.clear();
+    currentItemList = &rootMenuItems;
+    currentIndex = 0;
+    scrollOffset = 0;
+    const int bottomY = MENU_AREA_HEIGHT - MENU_ITEM_HEIGHT;
+    auto scrollFor = [bottomY](int index) {
+        const int top = index * MENU_ITEM_HEIGHT;
+        return top > bottomY ? top - bottomY : 0;
+    };
+    if (!restoreCategory.empty()) {
+        for (int i = 0; i < (int)rootMenuItems.size(); i++) {
+            if (rootMenuItems[i].isCategory && rootMenuItems[i].label == restoreCategory) {
+                MenuNavState s;
+                s.itemList = &rootMenuItems;
+                s.index = i;
+                s.savedScrollOffset = scrollFor(i);
+                navigationStack.push_back(s);
+                currentItemList = &rootMenuItems[i].children;
+                break;
+            }
+        }
+    }
+    for (int i = 0; i < (int)currentItemList->size(); i++) {
+        if (!(*currentItemList)[i].isCategory && (*currentItemList)[i].blobId == restoreBlobId) {
+            currentIndex = i;
+            break;
+        }
+    }
+    scrollOffset = scrollFor(currentIndex);
+    highlightElement.setY(currentIndex * MENU_ITEM_HEIGHT - scrollOffset);
+    ESP_LOGI(TAG_MAIN, "Menu restored to %s / %d", restoreCategory.c_str(), currentIndex);
 }
 
 // Called by an app to hand control back to the menu
@@ -310,7 +432,8 @@ void MenuManager::registerApp(const std::string &path,
 void MenuManager::registerBlobApp(const std::string &path,
                                     const std::string &label,
                                     const std::string &blobPath,
-                                    int blobAbi)
+                                    int blobAbi,
+                                    const std::string &blobId)
 {
     auto categories = parseCategoryPath(path);
     std::vector<MenuItem> *level = &rootMenuItems;
@@ -323,6 +446,7 @@ void MenuManager::registerBlobApp(const std::string &path,
     leaf.blobPath  = blobPath;
     leaf.blobLabel = label;
     leaf.blobAbi   = blobAbi;
+    leaf.blobId    = blobId;
     level->push_back(leaf);
 }
 
@@ -369,8 +493,8 @@ void MenuManager::updateScrollForCurrentIndex()
     // Pixel top of the current item within the list
     int itemTop = currentIndex * MENU_ITEM_HEIGHT;
 
-    // Screen-relative top of the bottom row
-    int bottomY = SCREEN_HEIGHT - MENU_ITEM_HEIGHT;
+    // List-area-relative top of the bottom row (the area sits below the bar)
+    int bottomY = MENU_AREA_HEIGHT - MENU_ITEM_HEIGHT;
 
     // Adjust the desired scrollOffset based on the current item's top
     int newScroll = scrollOffset;
@@ -555,7 +679,8 @@ void MenuManager::selectCurrentItem()
         // A ferried wasm leaf stages its file, then launches the shared
         // WASM_HOST slot; builtins launch by their own AppIndex (T-183).
         if (!mi.blobPath.empty()) {
-            WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str(), mi.blobAbi);
+            WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str(), mi.blobAbi,
+                                  mi.blobId.c_str());
         }
         AppManager::instance().switchToApp(mi.appIndex);
     }
@@ -743,6 +868,9 @@ void MenuManager::drawMenu()
                         scrollOffset);
         }
     }
+
+    // The bar stays put during slides and covers rows scrolled up under it.
+    StatusView::drawBar();
 
     display.display();
 }

@@ -22,6 +22,12 @@
 
 #define USE_APPMANAGER  // Uncomment this line to use the AppManager approach
 
+// A freshly installed update must prove itself before it is kept. Without
+// this the Arduino core marks it good before setup() even runs; with it,
+// the update's own self-test (lib/CloudSync/UpdateSession) decides, and a
+// failure or a crash before that returns the Fidget to the previous image.
+extern "C" bool verifyRollbackLater() { return true; }
+
 /********************************************************************
 *   OPTION 1: APPMANAGER APPROACH
 *   ---------------------------------

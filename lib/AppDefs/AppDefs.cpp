@@ -5,7 +5,6 @@
 #include <vector>
 #include <string>
 #include <cstring>
-#include <iostream>
 #include "esp_log.h"
 
 #include "LoadoutManifest.h"
@@ -13,9 +12,10 @@
 
 #include "AppManifest_Includes.h"
 
-// Print APP_COUNT value when the program starts
+// Print APP_COUNT value when the program starts. Uses the project log
+// (not std::cout) so the image does not link iostream.
 void printAppCount() {
-    std::cout << "APP_COUNT is " << APP_COUNT << std::endl;
+    ESP_LOGI("AppDefs", "APP_COUNT is %d", (int)APP_COUNT);
 }
 
 // This definition should only exist in ONE .cpp file
@@ -126,7 +126,7 @@ void buildNestedMenu() {
                // Ferried wasm app (T-183): register a blob leaf launched
                // through the shared WASM_HOST slot.
                MenuManager::instance().registerBlobApp(
-                   m.category, m.label, m.blobPath, m.abi);
+                   m.category, m.label, m.blobPath, m.abi, m.id);
                continue;
            }
            addAppToMenu(appDefs[m.appIndex].name, m.category.c_str(), m.appIndex);
@@ -134,10 +134,13 @@ void buildNestedMenu() {
        return;
    }
 
-   // Fallback: no/unreadable manifest => compiled-in order (today's
-   // behavior, nested categoryPaths and all).
+   // Fallback: no/unreadable manifest (a first boot, or Reset to factory
+   // formatted app storage) => compiled-in order, nested categoryPaths and
+   // all. Internal slots (no name: the menu, the delivered-app host) are
+   // never rows - the same rule the manifest merge applies.
    ESP_LOGI("AppDefs", "No loadout manifest; menu uses compiled-in order");
-   for (int i=0; i<(int)APP_COUNT; i++){
+   auto registry = buildLoadoutRegistryView();
+   for (int i : LoadoutManifest::compiledMenuRows(registry.data(), (int)registry.size())) {
        ESP_LOGI("AppDefs","i=%d name=%s path=%s beginFunc? %s",
                 i, appDefs[i].name, appDefs[i].categoryPath,
                 (appDefs[i].beginFunc ? "YES":"NO"));

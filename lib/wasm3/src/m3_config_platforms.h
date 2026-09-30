@@ -105,7 +105,11 @@
 
 #define M3_INIT(field) memset(&field, 0, sizeof(field))
 
-#define M3_COUNT_OF(x) ((sizeof(x)/sizeof(0[x])) / ((size_t)(!(sizeof(x) % sizeof(0[x])))))
+// CYBERFIDGET PATCH: upstream spells the element as 0[x]. PlatformIO's deep+
+// dependency scan evaluates every #define body as Python, where 0[x] becomes
+// an int subscript and prints a SyntaxWarning per scanned library. x[0] is the
+// same C expression and scans silently. Both callers pass plain C arrays.
+#define M3_COUNT_OF(x) ((sizeof(x)/sizeof(x[0])) / ((size_t)(!(sizeof(x) % sizeof(x[0])))))
 
 #if defined(__AVR__)
 

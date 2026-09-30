@@ -1,0 +1,6 @@
+{
+    "name": "UpdatePolicy",
+    "version": "1.0.0",
+    "description": "When the device checks in: pure policy (the device scheduler is in CloudSync)",
+    "dependencies": []
+}

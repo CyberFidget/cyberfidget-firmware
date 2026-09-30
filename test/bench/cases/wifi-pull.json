@@ -1,0 +1,23 @@
+{
+  "name": "WiFi pull through the site's LAN test server",
+  "reviewer_setup": "On the site worktree, enable CF_TEST_MODE in a local-only config and start C:/php/php.exe -S 0.0.0.0:8000 -t . from the site root. Use the site's device-pair test flow to link this device id and stage one wasm add with a blob. Set CF_BENCH_BASE to http://<LAN-IP>:8000, CF_BENCH_TOKEN to the 43-character linked device credential, CF_BENCH_BAD_TOKEN to a different unlinked 43-character credential, CF_BENCH_APP_NAME to the staged entry's menu name, and CF_BENCH_APP_ID to its manifest id. The local_test firmware and saved wificfg STA credentials are required. The server enforces a 60-second check-in floor, so each cloud check can take over a minute. Run python test/bench/cf_replay.py test/bench/cases/wifi-pull.json --port <PORT>. Use an isolated test data directory; never use a live account. The start-up check-in would otherwise take the staged app before the first cloud check: the case unlinks the unit (link forget, test builds only) before its reset and checks that the start-up check did not run, then sets the credential. Opening the port also restarts the unit, so start with the unit not linked with CF_BENCH_TOKEN (the case ends unlinked, so reruns are fine).",
+  "steps": [
+    {"do": "reset"},
+    {"do": "wait_cli"},
+    {"do": "command", "command": "link forget", "contains": ["[cmd] link.forget=ok"]},
+    {"do": "reset", "until": "[checkin] reason=boot", "timeout_s": 25, "contains": ["reason=boot skip="]},
+    {"do": "wait_cli"},
+    {"do": "command", "command": "cloud base $CF_BENCH_BASE", "expand_env": true, "contains": ["[cmd] cloud.base=ok"]},
+    {"do": "command", "command": "cloud token $CF_BENCH_TOKEN", "expand_env": true, "contains": ["[cmd] cloud.token=ok"]},
+    {"do": "command", "command": "cloud autoapply on", "contains": ["[cmd] cloud.autoapply=ok"]},
+    {"do": "command", "command": "cloud check", "until": " heap_min=", "timeout_s": 155, "matches": "cloud\\.result=ok err=none applied=[A-Za-z0-9_-]{1,40} offered=(fw|-) next_ms=[0-9]+ heap_min=[0-9]"},
+    {"do": "nav_to_menu"},
+    {"do": "assert_menutree", "has": "$CF_BENCH_APP_NAME", "expand_env": true},
+    {"do": "assert_lget", "id": "$CF_BENCH_APP_ID"},
+    {"do": "command", "command": "cloud check", "until": " heap_min=", "timeout_s": 155, "contains": ["cloud.result=none", "applied=-"]},
+    {"do": "command", "command": "cloud token $CF_BENCH_BAD_TOKEN", "expand_env": true, "contains": ["[cmd] cloud.token=ok"]},
+    {"do": "command", "command": "cloud check", "until": " heap_min=", "timeout_s": 155, "contains": ["cloud.result=error", "applied=-"]},
+    {"do": "assert_menutree", "has": "$CF_BENCH_APP_NAME", "expand_env": true},
+    {"do": "command", "command": "link forget", "contains": ["[cmd] link.forget=ok"]}
+  ]
+}

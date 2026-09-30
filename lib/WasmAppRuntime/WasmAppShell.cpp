@@ -191,7 +191,13 @@ void WasmAppShell::drawErrorScreen() {
     d.setTextAlignment(TEXT_ALIGN_CENTER);
     d.setFont(ArialMT_Plain_10);
     d.drawString(64, 10, appName);
-    d.drawString(64, 26, "wasm error:");
-    d.drawString(64, 40, errBuf);
+    // The interpreter's own words ("[trap] ...") stay on the serial log; an
+    // app that went deeper than its stack gets a plain sentence.
+    if (strcmp(errBuf, m3Err_trapStackOverflow) == 0) {
+        d.drawString(64, 26, "stopped: out of memory");
+    } else {
+        d.drawString(64, 26, "stopped with an error");
+    }
+    d.drawString(64, 52, "press any button");
     d.display();
 }

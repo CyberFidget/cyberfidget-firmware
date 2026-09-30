@@ -5,7 +5,6 @@
 #define WEB_PORTAL_APP_H
 
 #include <Arduino.h>
-#include <DNSServer.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <Preferences.h>
@@ -15,6 +14,8 @@
 #include "ButtonManager.h"
 #include "CaptionWrap.h"
 #include "LiveLinkProtocol.h"
+#include "OpenAddressHint.h"
+#include "PortalSsid.h"
 #include "ShellStamp.h"
 
 class WebPortalApp {
@@ -29,21 +30,45 @@ public:
     static void onButtonEnter(const ButtonEvent& event);
     static void onButtonUp(const ButtonEvent& event);   // caption font toggle
     static bool bluetoothReleasedThisPowerCycle();
+    // Dev mode start-up (lib/UpdatePrompt/AwakeMode): frees the Bluetooth
+    // memory exactly as the portal does, for a power cycle that uses the
+    // network and never Bluetooth.
+    static void releaseBluetoothForNetwork() { releaseBluetoothMemory(); }
+
+    // Settings > Setup WiFi: the next portal start lands on its WiFi page
+    // (the captive-portal redirect and the page itself open it). Stored as
+    // the `bootcfg` one-shot `bootwifi` too, so a start that goes through a
+    // restart (Bluetooth used, or a check that would not stop) still lands
+    // there; AppManager consumes it at boot and calls resumeWifiLanding().
+    static void requestWifiLanding();
+    static void resumeWifiLanding() { wifiLanding = true; }
 
 private:
     static WebPortalApp* instance;
     static bool btReleasedThisPowerCycle;
+    static bool wifiLanding;
     ButtonManager& buttonManager;
 
-    static constexpr const char* AP_SSID = "CyberFidget";
 
-    // Web server + DNS (heap-allocated server for clean lifecycle)
+    // Web server + DNS (heap-allocated server for clean lifecycle). The DNS
+    // (AP address only) answers every name with the Fidget (CaptiveDns.h),
+    // so a joining device's network check reaches the portal.
     AsyncWebServer* server = nullptr;
-    DNSServer dnsServer;
+    void startCaptiveDns();
+    void stopCaptiveDns();
+
+    // The portal's address replaces the bottom line when a device joined
+    // but never opened the page (OpenAddressHint.h).
+    OpenAddressHint openHint;
+    unsigned long lastStationPollMs = 0;
 
     // AP bring-up state: false when WiFi.softAP() failed (surfaced on the OLED
     // and gates captive DNS instead of silently binding 0.0.0.0).
     bool apReady = false;
+    char portalPassword[9] = {0};  // RAM only; fresh for each portal start
+    // "CyberFidget-" + the last four of the unit id (PortalSsid.h), so
+    // Fidgets in one room almost never share a network name.
+    char apSsid[PortalSsid::kMaxLen + 1] = {0};
 
     // SD state
     bool sdReady = false;
@@ -139,15 +164,14 @@ private:
 
     // WiFi STA helpers
     void loadWifiCreds();
-    void connectSTA(const String& ssid, const String& pass, bool save);
-    void disconnectSTA();
+    void connectSTA(const char* ssid, const char* pass);
     void tryStartMDNS();
     void stopMDNS();
 
     // Shared lifecycle body for AppManager-driven exit and confirmed reboot.
     void teardown();
     void confirmExitAndRestart();
-    void releaseBluetoothMemory();
+    static void releaseBluetoothMemory();
 
     // Web server setup
     void setupRoutes();
@@ -172,9 +196,11 @@ private:
 
     // WiFi route handlers
     void handleWifiScan(AsyncWebServerRequest* req);
-    void handleWifiConnect(AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total);
+    // The POST routes run once the body is in (collected per request).
+    void handleWifiConnect(AsyncWebServerRequest* req);
     void handleWifiStatus(AsyncWebServerRequest* req);
     void handleWifiForget(AsyncWebServerRequest* req);
+    void handleWifiFirst(AsyncWebServerRequest* req);
 
     // OLED rendering
     void render();

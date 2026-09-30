@@ -7,6 +7,8 @@
 #include <unity.h>
 #include <cstring>
 #include "ShellStamp.h"
+#include "PortalPassword.h"
+#include "PortalSsid.h"
 
 using namespace ShellStamp;
 
@@ -94,6 +96,64 @@ void test_extraction_rejects_unescaped_or_oversized_values(void) {
     TEST_ASSERT_FALSE(findShellStamp(longValue, sizeof(longValue) - 1, stamp, sizeof(stamp)));
 }
 
+void test_portal_password_has_eight_digits_and_preserves_leading_zeroes(void) {
+    char password[9];
+    PortalPassword::generate(password, []() { return uint32_t(100000001); });
+    TEST_ASSERT_EQUAL_STRING("00000001", password);
+    // The screen now draws this same string (no "0000 0001" grouping: the
+    // space read as part of the password), so it must be exactly eight
+    // digits with nothing between them.
+    TEST_ASSERT_EQUAL_size_t(8, strlen(password));
+    for (int i = 0; i < 8; ++i) TEST_ASSERT_TRUE(password[i] >= '0' && password[i] <= '9');
+}
+
+void test_portal_password_rejects_biased_random_values(void) {
+    char password[9];
+    int calls = 0;
+    PortalPassword::generate(password, [&calls]() {
+        return ++calls == 1 ? uint32_t(0) : uint32_t(199999999);
+    });
+    TEST_ASSERT_EQUAL_INT(2, calls);
+    TEST_ASSERT_EQUAL_STRING("99999999", password);
+}
+
+void test_portal_password_changes_with_supplied_random_value(void) {
+    char first[9], second[9];
+    PortalPassword::generate(first, []() { return uint32_t(100000000); });
+    PortalPassword::generate(second, []() { return uint32_t(112345678); });
+    TEST_ASSERT_EQUAL_STRING("00000000", first);
+    TEST_ASSERT_EQUAL_STRING("12345678", second);
+}
+
+// The portal network name: prefix + last four of the canonical unit id
+// (HIL-A's id 004b12a30b50 -> "CyberFidget-0b50", the website's fingerprint).
+void test_portal_ssid_uses_last_four_of_the_unit_id(void) {
+    char ssid[PortalSsid::kMaxLen + 1];
+    PortalSsid::build("004b12a30b50", ssid);
+    TEST_ASSERT_EQUAL_STRING("CyberFidget-0b50", ssid);
+    PortalSsid::build("004b12a30570", ssid);
+    TEST_ASSERT_EQUAL_STRING("CyberFidget-0570", ssid);
+    TEST_ASSERT_TRUE(strlen(ssid) <= 32);
+    TEST_ASSERT_EQUAL_size_t(PortalSsid::kMaxLen, strlen(ssid));
+}
+
+void test_portal_ssid_is_lowercase(void) {
+    char ssid[PortalSsid::kMaxLen + 1];
+    PortalSsid::build("004B12A3ABCD", ssid);
+    TEST_ASSERT_EQUAL_STRING("CyberFidget-abcd", ssid);
+    for (const char* p = ssid + strlen(PortalSsid::kPrefix); *p; ++p) {
+        TEST_ASSERT_FALSE(*p >= 'A' && *p <= 'Z');
+    }
+}
+
+void test_portal_ssid_short_or_missing_id(void) {
+    char ssid[PortalSsid::kMaxLen + 1];
+    PortalSsid::build("ab", ssid);
+    TEST_ASSERT_EQUAL_STRING("CyberFidget-ab", ssid);
+    PortalSsid::build(nullptr, ssid);
+    TEST_ASSERT_EQUAL_STRING("CyberFidget-", ssid);
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -112,5 +172,11 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_stamp_truncated_at_buffer_end_is_clean_miss);
     RUN_TEST(test_non_terminated_buffer_is_supported);
     RUN_TEST(test_extraction_rejects_unescaped_or_oversized_values);
+    RUN_TEST(test_portal_password_has_eight_digits_and_preserves_leading_zeroes);
+    RUN_TEST(test_portal_password_rejects_biased_random_values);
+    RUN_TEST(test_portal_password_changes_with_supplied_random_value);
+    RUN_TEST(test_portal_ssid_uses_last_four_of_the_unit_id);
+    RUN_TEST(test_portal_ssid_is_lowercase);
+    RUN_TEST(test_portal_ssid_short_or_missing_id);
     return UNITY_END();
 }

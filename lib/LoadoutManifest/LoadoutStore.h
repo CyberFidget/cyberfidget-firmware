@@ -29,11 +29,29 @@ namespace LoadoutStore {
 /// @return true if the filesystem is available.
 bool begin();
 
+/// Close our mount and format only the LittleFS partition. No other flash partition.
+bool formatForFactoryReset();
+
 /// Read /loadout.json into jsonOut. @return false if absent/unreadable.
 bool load(std::string& jsonOut);
 
 /// Write /loadout.json via temp-file + rename. @return true on success.
 bool save(const std::string& json);
+
+/// Serializes manifest read-modify-write across tasks (the loop's menu
+/// reorder and the network worker's apply share /loadout.json.tmp).
+/// Recursive: a holder may call helpers that take it again.
+void lock();
+void unlock();
+
+/// Holds lock() for a scope.
+class Guard {
+public:
+    Guard() { lock(); }
+    ~Guard() { unlock(); }
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
+};
 
 } // namespace LoadoutStore
 

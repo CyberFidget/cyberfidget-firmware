@@ -211,6 +211,172 @@ void test_ops_shallow_nested_unknown_field_applies(void) {
     TEST_ASSERT_NOT_EQUAL(-1, indexOf(l, "APP_E"));
 }
 
+// ---------- batch contract: batch / base fields and the replace op ----------
+
+void test_ops_batch_and_base_fields_accepted(void) {
+    Loadout l = makeBaseline();
+    const char* doc =
+        "{\"batch\":\"b-1\",\"base\":\"0a1B2c3D\","
+        "\"ops\":[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true}]}";
+    int applied = 0;
+    TEST_ASSERT_TRUE(applyOps(l, doc, &applied));
+    TEST_ASSERT_EQUAL_INT(1, applied);
+    TEST_ASSERT_TRUE(l.entries[0].hidden);
+
+    OpsMeta meta;
+    TEST_ASSERT_TRUE(parseOpsMeta(doc, meta));
+    TEST_ASSERT_TRUE(meta.hasBatch);
+    TEST_ASSERT_EQUAL_STRING("b-1", meta.batch.c_str());
+    TEST_ASSERT_TRUE(meta.hasBase);
+    TEST_ASSERT_EQUAL_UINT32(0x0a1b2c3du, meta.base);
+
+    OpsMeta none;
+    TEST_ASSERT_TRUE(parseOpsMeta("{\"ops\":[]}", none));
+    TEST_ASSERT_FALSE(none.hasBatch);
+    TEST_ASSERT_FALSE(none.hasBase);
+}
+
+void test_ops_invalid_batch_or_base_rejects_document(void) {
+    const char* bad[] = {
+        "{\"batch\":\"\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}",
+        "{\"batch\":\"has space\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}",
+        "{\"batch\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}",
+        "{\"batch\":1,\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}",
+        "{\"base\":\"\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}",
+        "{\"base\":\"12g45678\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}",
+        "{\"base\":\"123456789\",\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}",
+        "{\"base\":12345678,\"ops\":[{\"op\":\"remove\",\"id\":\"APP_A\"}]}",
+    };
+    for (const char* doc : bad) {
+        Loadout l = makeBaseline();
+        TEST_ASSERT_FALSE_MESSAGE(applyOps(l, doc, nullptr), doc);
+        TEST_ASSERT_EQUAL_INT(4, (int)l.entries.size());
+        OpsMeta meta;
+        TEST_ASSERT_FALSE_MESSAGE(parseOpsMeta(doc, meta), doc);
+    }
+    // Exactly 40 bytes is the longest accepted id.
+    Loadout l = makeBaseline();
+    TEST_ASSERT_TRUE(applyOps(l,
+        "{\"batch\":\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\",\"ops\":[]}", nullptr));
+}
+
+void test_ops_replace_swaps_blob_fields_only(void) {
+    Loadout l = makeBaseline();
+    l.entries[1].format    = "wasm";
+    l.entries[1].blobPath  = "/apps/APP_B-00000001.wasm";
+    l.entries[1].version   = "1";
+    l.entries[1].abi       = "1";
+    l.entries[1].signature = "sig";
+    l.entries[1].hidden    = true;
+    const char* doc =
+        "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_B\",\"name\":\"New B\","
+        "\"category\":\"Tools\",\"hidden\":false,\"position\":3,\"format\":\"blob\","
+        "\"blobPath\":\"/apps/APP_B-00000002.wasm\",\"version\":\"2\",\"abi\":\"3\"}}]}";
+    int applied = 0;
+    TEST_ASSERT_TRUE(applyOps(l, doc, &applied));
+    TEST_ASSERT_EQUAL_INT(1, applied);
+    TEST_ASSERT_EQUAL_INT(1, indexOf(l, "APP_B"));
+    const LoadoutEntry& e = l.entries[1];
+    TEST_ASSERT_EQUAL_STRING("/apps/APP_B-00000002.wasm", e.blobPath.c_str());
+    TEST_ASSERT_EQUAL_STRING("2", e.version.c_str());
+    TEST_ASSERT_EQUAL_STRING("3", e.abi.c_str());
+    TEST_ASSERT_EQUAL_STRING("New B", e.name.c_str());
+    TEST_ASSERT_EQUAL_STRING("Games", e.category.c_str());
+    TEST_ASSERT_TRUE(e.hidden);
+    TEST_ASSERT_EQUAL_STRING("wasm", e.format.c_str());
+    // The old blob's signature must not follow a new blob.
+    TEST_ASSERT_EQUAL_STRING("", e.signature.c_str());
+    TEST_ASSERT_EQUAL_INT(4, (int)l.entries.size());
+
+    const char* signedDoc =
+        "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_B\","
+        "\"blobPath\":\"/apps/APP_B-00000003.wasm\",\"signature\":\"sig3\"}}]}";
+    TEST_ASSERT_TRUE(applyOps(l, signedDoc, &applied));
+    TEST_ASSERT_EQUAL_STRING("sig3", l.entries[1].signature.c_str());
+}
+
+void test_ops_replace_unknown_or_blobless_rejected(void) {
+    const char* bad[] = {
+        "{\"ops\":[{\"op\":\"hide\",\"id\":\"APP_A\",\"hidden\":true},"
+        "{\"op\":\"replace\",\"entry\":{\"id\":\"APP_Z\",\"blobPath\":\"/apps/z-00000000.wasm\"}}]}",
+        "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\"}}]}",
+        "{\"ops\":[{\"op\":\"replace\",\"id\":\"APP_A\"}]}",
+    };
+    for (const char* doc : bad) {
+        Loadout l = makeBaseline();
+        TEST_ASSERT_FALSE_MESSAGE(applyOps(l, doc, nullptr), doc);
+        TEST_ASSERT_FALSE(l.entries[0].hidden);
+        TEST_ASSERT_EQUAL_INT(4, (int)l.entries.size());
+    }
+}
+
+void test_ops_replace_only_on_delivered_blob_entries(void) {
+    const char* formats[] = { "builtin", "cfsprite", "" };
+    for (const char* f : formats) {
+        Loadout l = makeBaseline();
+        l.entries[0].format = f;
+        l.entries[0].blobPath = "/apps/APP_A.bin";
+        TEST_ASSERT_FALSE_MESSAGE(applyOps(l,
+            "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
+            "\"blobPath\":\"/apps/APP_A-00000001.wasm\"}}]}", nullptr), f);
+        TEST_ASSERT_EQUAL_STRING("/apps/APP_A.bin", l.entries[0].blobPath.c_str());
+    }
+    const char* ok[] = { "wasm", "blob" };
+    for (const char* f : ok) {
+        Loadout l = makeBaseline();
+        l.entries[0].format = f;
+        TEST_ASSERT_TRUE_MESSAGE(applyOps(l,
+            "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
+            "\"blobPath\":\"/apps/APP_A-00000001.wasm\"}}]}", nullptr), f);
+    }
+}
+
+void test_collect_op_blob_paths(void) {
+    std::vector<std::string> paths;
+    TEST_ASSERT_TRUE(collectOpBlobPaths(
+        "{\"batch\":\"b\",\"ops\":["
+        "{\"op\":\"add\",\"entry\":{\"id\":\"A\",\"blobPath\":\"/apps/a.wasm\"}},"
+        "{\"op\":\"hide\",\"id\":\"A\",\"hidden\":true},"
+        "{\"op\":\"add\",\"entry\":{\"id\":\"B\"}},"
+        "{\"entry\":{\"id\":\"C\",\"blobPath\":\"/x\"},\"op\":\"replace\"}]}", paths));
+    TEST_ASSERT_EQUAL_INT(2, (int)paths.size());
+    TEST_ASSERT_EQUAL_STRING("/apps/a.wasm", paths[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("/x", paths[1].c_str());
+    TEST_ASSERT_TRUE(collectOpBlobPaths("{}", paths));
+    TEST_ASSERT_EQUAL_INT(0, (int)paths.size());
+    TEST_ASSERT_FALSE(collectOpBlobPaths("{\"ops\":[", paths));
+}
+
+void test_applied_record_round_trip(void) {
+    AppliedRecord rec;
+    rec.batch = "b-\"q\"";
+    rec.result = "applied";
+    rec.crcAfter = 0x00c0ffeeu;
+    rec.at = 1790000000u;
+    rec.ops = 3;
+    rec.entries = 12;
+    rec.docCrc = 0x0000abcdu;
+    const std::string json = serializeAppliedRecord(rec);
+    TEST_ASSERT_EQUAL_STRING(
+        "{\"batch\":\"b-\\\"q\\\"\",\"result\":\"applied\",\"crc_after\":\"00c0ffee\","
+        "\"at\":1790000000,\"ops\":3,\"entries\":12,\"doc_crc\":\"0000abcd\"}\n",
+        json.c_str());
+    AppliedRecord back;
+    TEST_ASSERT_TRUE(parseAppliedRecord(json.c_str(), back));
+    TEST_ASSERT_EQUAL_STRING(rec.batch.c_str(), back.batch.c_str());
+    TEST_ASSERT_EQUAL_STRING("applied", back.result.c_str());
+    TEST_ASSERT_EQUAL_UINT32(rec.crcAfter, back.crcAfter);
+    TEST_ASSERT_EQUAL_UINT32(rec.at, back.at);
+    TEST_ASSERT_EQUAL_INT(3, back.ops);
+    TEST_ASSERT_EQUAL_INT(12, back.entries);
+    TEST_ASSERT_EQUAL_UINT32(0x0000abcdu, back.docCrc);
+
+    AppliedRecord junk;
+    TEST_ASSERT_FALSE(parseAppliedRecord("{\"result\":\"applied\"}", junk));
+    TEST_ASSERT_FALSE(parseAppliedRecord("{\"batch\":\"b\"", junk));
+    TEST_ASSERT_FALSE(parseAppliedRecord("", junk));
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -227,5 +393,12 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_ops_missing_required_field_rejected);
     RUN_TEST(test_ops_deeply_nested_unknown_field_rejected);
     RUN_TEST(test_ops_shallow_nested_unknown_field_applies);
+    RUN_TEST(test_ops_batch_and_base_fields_accepted);
+    RUN_TEST(test_ops_invalid_batch_or_base_rejects_document);
+    RUN_TEST(test_ops_replace_swaps_blob_fields_only);
+    RUN_TEST(test_ops_replace_unknown_or_blobless_rejected);
+    RUN_TEST(test_ops_replace_only_on_delivered_blob_entries);
+    RUN_TEST(test_collect_op_blob_paths);
+    RUN_TEST(test_applied_record_round_trip);
     return UNITY_END();
 }

@@ -1,0 +1,6 @@
+{
+    "name": "UpdatePrompt",
+    "version": "1.0.0",
+    "description": "Update prompt, Check for updates and Settings > Updates screens",
+    "dependencies": []
+}

@@ -6,6 +6,7 @@
 #include "globals.h"
 #include "HAL.h"
 #include "MenuManager.h"
+#include "UpdateSession.h"
 
 PowerManager powermanager(HAL::buttonManager());
 
@@ -59,6 +60,7 @@ void PowerManager::onButtonPressCallback(const ButtonEvent &event) {
         if (event.eventType == ButtonEvent_Pressed) {
             unsigned long currentTime = millis();
             if (currentTime - instance->lastTapTime <= DOUBLE_TAP_THRESHOLD_MS) {
+                if (!UpdateSession::prepareDeepSleep(false)) return;
                 // Detected a double-tap
                 instance->display.clear();
                 instance->display.setTextAlignment(TEXT_ALIGN_CENTER);
@@ -90,6 +92,7 @@ void PowerManager::onButtonBackPressed(const ButtonEvent& event)
 }
 
 void PowerManager::deepSleep(bool force) {
+    if (!UpdateSession::prepareDeepSleep(false)) return;
     // Go to deep sleep
     if (!force && preventSleepWhileCharging) {
         if(batteryChangeRate < sleepChargingChangeThreshold){ // If discharging greater than 10% per hour, shut down
@@ -119,6 +122,7 @@ void PowerManager::deepSleep(bool force) {
 }
 
 void PowerManager::shutdownForEmptyBattery() {
+    UpdateSession::prepareDeepSleep(true);
     buttonManager.saveButtonCounters();
 
     display.clear();

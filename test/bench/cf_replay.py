@@ -94,6 +94,27 @@ class Tunnel:
         self.send(line)
         return self.drain(wait)
 
+    def lget(self):
+        self.drain(0.1)
+        self.send("lget")
+        header = self.read_cmd()
+        match = re.search(r"lget\.present=1 .* len=(\d+) crc=([0-9a-f]{8})", header)
+        if not match:
+            return header, None
+        size = int(match.group(1))
+        end = time.time() + 5.0
+        while len(self.rx) < size and time.time() < end:
+            self.rx += self.s.read(size - len(self.rx))
+        if len(self.rx) < size:
+            return header, None
+        raw, self.rx = self.rx[:size], self.rx[size:]
+        if "%08x" % (zlib.crc32(raw) & 0xffffffff) != match.group(2):
+            return header, None
+        try:
+            return header, json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError):
+            return header, None
+
     # --- composite primitives cases lean on ---
     def nav_to_menu(self, tries=10):
         for _ in range(tries):
@@ -172,19 +193,129 @@ class Result:
         print("  [ .. ] %-16s %s" % (do, detail[:120]))
 
 
+def _expand(st):
+    """`expand_env` on a reset/command/ppk/watch step also expands the texts
+    it waits for and checks (until, contains, matches, order)."""
+    if not st.get("expand_env"):
+        return st
+    st = dict(st)
+    for key in ("until", "matches"):
+        if isinstance(st.get(key), str):
+            st[key] = os.path.expandvars(st[key])
+    for key in ("contains", "order"):
+        if isinstance(st.get(key), list):
+            st[key] = [os.path.expandvars(v) for v in st[key]]
+    return st
+
+
+def _checks(st, out):
+    """contains (all present), matches (regex), order (substrings appear in
+    this order, each after the previous one)."""
+    ok = all(token in out for token in st.get("contains", []))
+    if "matches" in st:
+        ok = ok and re.search(st["matches"], out) is not None
+    at = 0
+    for token in st.get("order", []):
+        found = out.find(token, at)
+        if found < 0:
+            return False
+        at = found + len(token)
+    return ok
+
+
+class Ppk:
+    """Bench power (PPK2 source mode) for units that run only while it
+    sources (HIL-B). Imported lazily from cyberfidget-hil so cases without a
+    `ppk` step never need it; run those cases with the hil venv's python.
+    The output is always switched off when the case ends."""
+
+    def __init__(self):
+        self.bench = None
+
+    def _open(self):
+        if self.bench is None:
+            hil = os.environ.get("CF_HIL_PATH") or os.path.join(
+                os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "cyberfidget-hil")
+            sys.path.insert(0, os.path.abspath(hil))
+            from cfhil.ppk2 import PPK2Bench
+            self.bench = PPK2Bench(os.environ.get("CF_PPK_PORT") or None)
+        return self.bench
+
+    def on(self, volts):
+        b = self._open()
+        b.set_source_voltage(volts)
+        b.output_on()
+
+    def off(self):
+        if self.bench is not None:
+            self.bench.output_off()
+
+    def close(self):
+        if self.bench is not None:
+            try:
+                self.bench.output_off()
+            finally:
+                try:
+                    self.bench.close()
+                finally:
+                    self.bench = None
+
+
 def run_case(case, port, outdir):
     name = case.get("name", "unnamed")
     fixdir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
     print("=== CASE: %s  (port %s) ===" % (name, port))
     res = Result(name)
     t = Tunnel(port)
+    ppk = Ppk()
     caps = {}
     try:
         for st in case.get("steps", []):
             do = st.get("do")
+            if do in ("reset", "command", "ppk"):
+                st = _expand(st)
+            if do == "ppk":
+                # Power for PPK-sourced units. `on` may wait for boot output
+                # (`until`, checked like `command`); `off` is an instant cut.
+                action = st.get("action")
+                if action == "on":
+                    t.s.reset_input_buffer()
+                    ppk.on(float(st.get("voltage", 3.7)))
+                    until = st.get("until")
+                    if until:
+                        out = ""
+                        end = time.time() + float(st.get("timeout_s", 25.0))
+                        while time.time() < end and until not in out:
+                            out += t.drain(0.2)
+                        print(out, end="" if out.endswith("\n") else "\n")
+                        res.step("ppk", until in out and _checks(st, out), out.strip())
+                    else:
+                        res.note("ppk", "on %.2f V" % float(st.get("voltage", 3.7)))
+                elif action == "off":
+                    ppk.off()
+                    res.note("ppk", "off")
+                else:
+                    res.step("ppk", False, "action must be on or off")
+                continue
             if do == "reset":
-                t.reset(); time.sleep(0.3); t.drain(2.5)
-                res.note("reset")
+                until = st.get("until")
+                if until:
+                    # Only output from this boot counts, not bytes queued
+                    # while an earlier step waited.
+                    t.s.reset_input_buffer()
+                t.reset(); time.sleep(0.3)
+                if until:
+                    # Keep the boot output: a case can assert on what the
+                    # device prints while it starts (e.g. a boot-time check).
+                    out = ""
+                    end = time.time() + float(st.get("timeout_s", 25.0))
+                    while time.time() < end and until not in out:
+                        out += t.drain(0.2)
+                    print(out, end="" if out.endswith("\n") else "\n")
+                    res.step("reset", until in out and _checks(st, out), out.strip())
+                else:
+                    t.drain(2.5)
+                    res.note("reset")
             elif do == "wait_cli":
                 v = t.wait_cli()
                 res.step("wait_cli", v is not None, v or "no CLI")
@@ -194,6 +325,96 @@ def run_case(case, port, outdir):
             elif do == "wait":
                 time.sleep(st.get("ms", 500) / 1000.0)
                 res.note("wait", "%dms" % st.get("ms", 500))
+            elif do == "command":
+                command = st["command"]
+                if st.get("expand_env"):
+                    command = os.path.expandvars(command)
+                until = st.get("until")
+                if until:
+                    t.drain(0.1)
+                    t.send(command)
+                    out = ""
+                    end = time.time() + float(st.get("timeout_s", 25.0))
+                    while time.time() < end and until not in out:
+                        out += t.drain(0.2)
+                else:
+                    out = t.cmd(command, float(st.get("timeout_s", 0.9)))
+                print(out, end="" if out.endswith("\n") else "\n")
+                ok = _checks(st, out)
+                if until:
+                    ok = ok and until in out
+                res.step("command", ok, out.strip())
+                if "probe_limits" in st and until and until in out:
+                    line = next((line for line in out.splitlines() if until in line), "")
+                    values = dict(re.findall(r"(\w+)=([^\s]+)", line))
+                    limits = st["probe_limits"]
+                    failed = []
+                    # The handshake trough happens between samples, so the
+                    # since-boot low-water mark is the conservative floor even
+                    # when it predates the probe.
+                    boot_min = int(values.get("heap_min_boot", 0))
+                    if boot_min > 0:
+                        values["heap_free_min"] = str(min(int(values.get("heap_free_min", 0)), boot_min))
+                    for key in ("heap_free_min", "largest_min", "stack_hw"):
+                        if int(values.get(key, 0)) < limits[key]:
+                            failed.append("%s<%d" % (key, limits[key]))
+                    if int(values.get("join_ms", 0)) > limits["join_ms"]:
+                        failed.append("join_ms>%d" % limits["join_ms"])
+                    if values.get("state") != "done":
+                        failed.append("whole_probe_limit_ms=%d" % limits["whole_ms"])
+                    if values.get("ok") != "1" or values.get("http") != "200":
+                        failed.append("authenticated_get!=200")
+                    pull = not failed
+                    res.step("gate.pull", pull,
+                             "limits=%s failures=%s" % (limits, failed or "none"))
+                    boot_failed = list(failed)
+                    join_tls = int(values.get("join_ms", 0)) + int(values.get("tls_ms", 0))
+                    if join_tls > limits["join_tls_ms"]:
+                        boot_failed.append("join_tls_ms=%d>%d" % (join_tls, limits["join_tls_ms"]))
+                    res.step("gate.boot", not boot_failed,
+                             "join_tls_ms=%d limit=%d failures=%s" %
+                             (join_tls, limits["join_tls_ms"], boot_failed or "none"))
+            elif do == "watch":
+                # Read what the device prints (no command) until `until`
+                # appears; `count` + `max_count` / `min_count` bound how
+                # often a token appeared before it (e.g. check-ins before a
+                # delivery).
+                st = _expand(st)
+                until = st.get("until")
+                out = ""
+                started = time.time()
+                end = started + float(st.get("timeout_s", 25.0))
+                while time.time() < end and not (until and until in out):
+                    out += t.drain(0.2)
+                print(out, end="" if out.endswith("\n") else "\n")
+                found = bool(until) and until in out
+                # `expect_absent`: passes when `until` did NOT appear in time.
+                ok = _checks(st, out) and (not until or found != bool(st.get("expect_absent")))
+                detail = "elapsed_s=%.1f" % (time.time() - started)
+                if "count" in st:
+                    head = out.split(until, 1)[0] if until and until in out else out
+                    n = head.count(st["count"])
+                    detail += " count(%s)=%d" % (st["count"], n)
+                    if "max_count" in st:
+                        ok = ok and n <= st["max_count"]
+                    if "min_count" in st:
+                        ok = ok and n >= st["min_count"]
+                res.step("watch", ok, detail + " " + out.strip()[-200:])
+            elif do == "host":
+                # A host-side step between device steps (e.g. a studio send
+                # through the reviewer's site fixture). Passes on exit code 0
+                # and any `contains` in its output.
+                import subprocess
+                command = os.path.expandvars(st["command"]) if st.get("expand_env") else st["command"]
+                try:
+                    proc = subprocess.run(command, shell=True, capture_output=True, text=True,
+                                          timeout=float(st.get("timeout_s", 60.0)))
+                    out = (proc.stdout or "") + (proc.stderr or "")
+                    ok = proc.returncode == 0 and all(tok in out for tok in st.get("contains", []))
+                except subprocess.TimeoutExpired:
+                    out, ok = "timeout", False
+                print(out, end="" if out.endswith("\n") else "\n")
+                res.step("host", ok, out.strip()[-160:])
             elif do == "btn":
                 out = t.cmd("btn %d %s" % (st["index"], st.get("action", "tap")), 0.5)
                 res.note("btn", out.strip().splitlines()[-1] if out.strip() else "")
@@ -242,6 +463,9 @@ def run_case(case, port, outdir):
                 mt = t.cmd("menutree", 1.2)
                 has = st.get("has")
                 nhas = st.get("not_has")
+                if st.get("expand_env"):
+                    has = os.path.expandvars(has) if has is not None else None
+                    nhas = os.path.expandvars(nhas) if nhas is not None else None
                 ok = True; d = ""
                 if has is not None:
                     found = any(has in l for l in mt.splitlines())
@@ -269,10 +493,19 @@ def run_case(case, port, outdir):
                 si = t.cmd("syncinfo", 1.0)
                 ok = all(str(v) in si for v in st.get("contains", []))
                 res.step("assert_syncinfo", ok, ("contains %s" % st.get("contains", [])))
+            elif do == "assert_lget":
+                header, manifest = t.lget()
+                wanted = os.path.expandvars(st["id"])
+                entries = manifest.get("entries", []) if isinstance(manifest, dict) else []
+                found = any(isinstance(entry, dict) and entry.get("id") == wanted for entry in entries)
+                res.step("assert_lget", found, "id=%s present=%s header=%s" % (wanted, found, header))
             else:
                 res.step(do or "?", False, "unknown step verb")
     finally:
-        t.close()
+        try:
+            ppk.close()
+        finally:
+            t.close()
 
     print("=== RESULT: %s ===" % ("PASS" if res.ok else "FAIL"))
     if outdir:
@@ -291,15 +524,34 @@ def main(argv):
     ap.add_argument("--port", default=os.environ.get("CF_BENCH_PORT"),
                     help="serial port (or set CF_BENCH_PORT); e.g. COM30 or /dev/ttyUSB0")
     ap.add_argument("--out", default=None, help="dir for screencaps + result.json")
+    ap.add_argument("--part", action="append", default=None,
+                    help="run only this part of a multi-part case (repeatable)")
     args = ap.parse_args(argv)
-    if not args.port:
-        ap.error("no serial port: pass --port or set CF_BENCH_PORT "
-                 "(Windows COMx, Linux /dev/ttyUSB0)")
     case = json.load(open(args.case))
     outdir = args.out
     if outdir:
         os.makedirs(outdir, exist_ok=True)
-    ok = run_case(case, args.port, outdir)
+    if "parts" not in case:
+        if not args.port:
+            ap.error("no serial port: pass --port or set CF_BENCH_PORT "
+                     "(Windows COMx, Linux /dev/ttyUSB0)")
+        ok = run_case(case, args.port, outdir)
+        return 0 if ok else 1
+    # A multi-part case: each part names the env var holding its unit's port
+    # (`port_env`, default CF_BENCH_PORT), so one file can span two units.
+    ok = True
+    for part in case["parts"]:
+        if args.part and part.get("name") not in args.part:
+            continue
+        port = os.environ.get(part.get("port_env", "CF_BENCH_PORT")) or args.port
+        if not port:
+            ap.error("part %s: set %s or pass --port" % (part.get("name"), part.get("port_env", "CF_BENCH_PORT")))
+        sub = dict(part)
+        sub["name"] = "%s / %s" % (case.get("name", "case"), part.get("name", "part"))
+        partdir = os.path.join(outdir, part.get("name", "part")) if outdir else None
+        if partdir:
+            os.makedirs(partdir, exist_ok=True)
+        ok = run_case(sub, port, partdir) and ok
     return 0 if ok else 1
 
 

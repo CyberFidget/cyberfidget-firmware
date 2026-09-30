@@ -19,6 +19,16 @@
 #include "globals.h"
 #include "RecNaming.h"   // shared index.csv row parser (lib/VoiceRecorderApp)
 #include "SDManager.h"
+#include "SavedWifi.h"   // the saved networks (lib/CloudSync)
+#include "WifiRequest.h" // their request bodies (lib/CloudSync)
+#include "PortalPassword.h"
+#include "SyncProtocol.h" // formatDeviceId: the canonical unit id
+#include "CaptiveDns.h"
+
+#include <lwip/udp.h>
+#include <lwip/ip.h>
+#include <lwip/priv/tcpip_priv.h>
+
 
 #include <SD.h>
 #include <WiFi.h>
@@ -27,9 +37,6 @@
 #include <esp_heap_caps.h>  // internal-heap health in /api/status
 #include <esp_system.h>
 #include <sys/time.h>    // settimeofday for POST /api/time + the time WS frame
-
-// External fonts (thingpulse OLED lib) for the caption screen's large mode
-extern const uint8_t ArialMT_Plain_16[];
 
 // ---------------------------------------------------------------------------
 // Debug logging
@@ -322,7 +329,17 @@ static void collectMP3Paths(const char* dir, String& json, bool& first) {
 // ---------------------------------------------------------------------------
 WebPortalApp* WebPortalApp::instance = nullptr;
 bool WebPortalApp::btReleasedThisPowerCycle = false;
+bool WebPortalApp::wifiLanding = false;
 WebPortalApp webPortalApp(HAL::buttonManager());
+
+void WebPortalApp::requestWifiLanding() {
+    wifiLanding = true;
+    Preferences prefs;
+    if (prefs.begin("bootcfg", false)) {
+        if (prefs.putBool("bootwifi", true) == 0) WP_LOG("wifi landing: failed to write one-shot");
+        prefs.end();
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -369,6 +386,7 @@ void WebPortalApp::begin() {
     }
 
     WP_LOG("begin: enter");
+    Serial.printf("[portal] start wifi_page=%d\n", wifiLanding ? 1 : 0);
     instance = this;
 
     // Register portal controls + the caption-screen font toggle
@@ -462,11 +480,19 @@ void WebPortalApp::begin() {
     // broadcasting. Don't swallow it: surface on the OLED + gate captive DNS.
     staConnected = false;
     WP_LOG("begin: starting WiFi AP+STA");
+    // RAM only: the WiFi driver must not copy the portal password or the
+    // network being joined into its own flash area (saved networks live
+    // only in SavedWifi, and every join below passes them explicitly).
+    WiFi.persistent(false);
     WiFi.mode(WIFI_AP_STA);
-    apReady = WiFi.softAP(AP_SSID);
+    PortalPassword::generate(portalPassword, []() { return esp_random(); });
+    char deviceId[13];
+    SyncProtocol::formatDeviceId(ESP.getEfuseMac(), deviceId);
+    PortalSsid::build(deviceId, apSsid);
+    apReady = WiFi.softAP(apSsid, portalPassword);
     delay(100);
     if (apReady) {
-        WP_LOGF("begin: AP started, SSID=%s IP=%s", AP_SSID,
+        WP_LOGF("begin: AP started, SSID=%s IP=%s", apSsid,
                 WiFi.softAPIP().toString().c_str());
     } else {
         ESP_LOGE(TAG_MAIN,
@@ -478,10 +504,11 @@ void WebPortalApp::begin() {
     // Auto-connect to the saved network (only touches the radio if creds exist).
     loadWifiCreds();
 
-    // Start captive portal DNS (binds to AP interface only). Skip if the AP
-    // never came up -- otherwise it just binds the dead 0.0.0.0 address.
+    // Start captive portal DNS. Skip if the AP never came up -- otherwise
+    // it would answer with the dead 0.0.0.0 address.
+    openHint.reset();
     if (apReady) {
-        dnsServer.start(53, "*", WiFi.softAPIP());
+        startCaptiveDns();
     }
 
     // Create web server
@@ -523,14 +550,15 @@ void WebPortalApp::teardown() {
         ws = nullptr;
     }
 
-    // Stop DNS + mDNS
-    dnsServer.stop();
+    // Stop DNS (port released, nothing answered from here on) + mDNS
+    stopCaptiveDns();
     stopMDNS();
 
     // Stop WiFi (STA + AP)
     WiFi.disconnect(false);
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_OFF);
+    memset(portalPassword, 0, sizeof(portalPassword));
     staConnected = false;
     delay(100);
     WP_LOG("end: WiFi stopped");
@@ -619,11 +647,20 @@ void WebPortalApp::update() {
     // Keep device awake
     millis_APP_LASTINTERACTION = millis_NOW;
 
+    // Who is on the Fidget's own network (for the open-address hint). A
+    // device counts from association, well before it can ask for a page.
+    if (apReady && millis() - lastStationPollMs >= 200) {
+        lastStationPollMs = millis();
+        openHint.onStations(WiFi.softAPgetStationNum(), (uint32_t)millis());
+    }
+
     // Track STA connection state
     if (staSSID.length() && !staConnected) {
         if (WiFi.status() == WL_CONNECTED) {
             staConnected = true;
             WP_LOGF("STA connected, IP=%s", WiFi.localIP().toString().c_str());
+            // It worked: tried first next time, at this access point.
+            SavedWifi::noteJoined(staSSID.c_str());
             tryStartMDNS();
         } else if (millis() - staConnectStart > STA_TIMEOUT_MS) {
             WP_LOG("STA connect timeout");
@@ -723,47 +760,29 @@ void WebPortalApp::invalidateMusicCache() {
 // WiFi STA helpers
 // ---------------------------------------------------------------------------
 void WebPortalApp::loadWifiCreds() {
-    Preferences prefs;
-    prefs.begin("wificfg", true);  // read-only
-    staSSID = prefs.getString("ssid", "");
-    String pass = prefs.getString("pass", "");
-    prefs.end();
-    if (staSSID.length()) {
+    // The first saved network (the last one that worked). No scan here: the
+    // portal's own network must stay responsive while it starts.
+    WifiList::List list;
+    SavedWifi::load(list);
+    staSSID = "";
+    if (list.count > 0) {
+        staSSID = list.nets[0].name;
         WP_LOGF("auto-connecting to: %s", staSSID.c_str());
-        WiFi.begin(staSSID.c_str(), pass.c_str());
+        WiFi.begin(list.nets[0].name, list.nets[0].pass);
         staConnectStart = millis();
     }
+    WifiList::wipe(list);
 }
 
-void WebPortalApp::connectSTA(const String& ssid, const String& pass, bool save) {
+void WebPortalApp::connectSTA(const char* ssid, const char* pass) {
     stopMDNS();
     WiFi.disconnect(false);  // disconnect STA only, keep AP
     delay(100);
-    WiFi.begin(ssid.c_str(), pass.c_str());
+    WiFi.begin(ssid, pass);
     staSSID = ssid;
     staConnectStart = millis();
     staConnected = false;
-    WP_LOGF("connecting to: %s", ssid.c_str());
-    if (save) {
-        Preferences prefs;
-        prefs.begin("wificfg", false);
-        prefs.putString("ssid", ssid);
-        prefs.putString("pass", pass);
-        prefs.end();
-        WP_LOG("saved WiFi credentials");
-    }
-}
-
-void WebPortalApp::disconnectSTA() {
-    stopMDNS();
-    WiFi.disconnect(false);
-    staSSID = "";
-    staConnected = false;
-    Preferences prefs;
-    prefs.begin("wificfg", false);
-    prefs.clear();
-    prefs.end();
-    WP_LOG("WiFi credentials cleared");
+    WP_LOGF("connecting to: %s", ssid);
 }
 
 void WebPortalApp::tryStartMDNS() {
@@ -808,6 +827,137 @@ void WebPortalApp::confirmExitAndRestart() {
 // ---------------------------------------------------------------------------
 // Web server routes
 // ---------------------------------------------------------------------------
+// The saved-network routes' small JSON bodies. Each request collects its own
+// body (hung on the request, freed with it) - never a shared buffer - and it
+// is wiped as soon as it is read, or when the client goes away, because it
+// can hold a password. Rules: lib/CloudSync/WifiRequest.h.
+static void collectWifiBody(AsyncWebServerRequest* req, uint8_t* data, size_t len,
+                            size_t index, size_t total) {
+    WifiRequest::Body* body = static_cast<WifiRequest::Body*>(req->_tempObject);
+    if (!body) {
+        if (index != 0) return;   // no start seen: the reply is a 400
+        body = static_cast<WifiRequest::Body*>(malloc(sizeof(WifiRequest::Body)));
+        if (!body) return;
+        WifiRequest::begin(*body);
+        req->_tempObject = body;
+        req->onDisconnect([req]() {
+            if (req->_tempObject) WifiRequest::wipe(*static_cast<WifiRequest::Body*>(req->_tempObject));
+        });
+    }
+    WifiRequest::collect(*body, data, len, index, total);
+}
+
+// Reads the collected body for this route; replies 400/413 itself and
+// returns false when it cannot. The body is wiped either way.
+static bool takeWifiBody(AsyncWebServerRequest* req, WifiRequest::Kind kind,
+                         char* name, char* pass) {
+    WifiRequest::Body* body = static_cast<WifiRequest::Body*>(req->_tempObject);
+    const bool tooBig = req->contentLength() > WifiRequest::kBodyMax;
+    const bool whole = body && !body->failed && body->total > 0 && body->len == body->total;
+    const bool ok = whole && WifiRequest::parse(body->text, body->len, kind, name, pass);
+    if (body) WifiRequest::wipe(*body);
+    if (ok) return true;
+    if (tooBig) req->send(413, "application/json", "{\"error\":\"too-big\"}");
+    else req->send(400, "application/json", "{\"error\":\"invalid\"}");
+    return false;
+}
+
+// Captive DNS on raw lwIP UDP: bound to the AP address only (a query to
+// the Fidget's home-network address is never answered), each reply leaves
+// on the interface its query came in on, and stopping removes the socket
+// in the network thread - the only thread that runs onCaptiveDnsQuery -
+// so once stopCaptiveDns() returns no query is answered and the port is
+// free. (The framework's AsyncUDP close() only disconnects: the port stays
+// bound and queued packets still reach the handler.)
+namespace {
+struct udp_pcb* s_dnsPcb = nullptr;       // network thread only (via tcpip_api_call)
+uint8_t s_dnsIp[4] = {0, 0, 0, 0};
+
+struct DnsCall {
+    struct tcpip_api_call_data call;      // must be first (lwIP casts it)
+    ip_addr_t addr;
+};
+
+void onCaptiveDnsQuery(void*, struct udp_pcb* pcb, struct pbuf* p,
+                       const ip_addr_t* addr, u16_t port) {
+    if (!p) return;
+    // Static, not on the stack: the network thread's stack is 4 KB, and only
+    // that thread ever runs this (one query at a time).
+    static uint8_t query[CaptiveDns::kMaxReplyBytes];
+    static uint8_t out[CaptiveDns::kMaxReplyBytes];
+    static CaptiveDns::Question q;
+    const u16_t len = pbuf_copy_partial(p, query, sizeof(query), 0);
+    pbuf_free(p);
+    if (pcb != s_dnsPcb) return;
+    const size_t n = CaptiveDns::buildReply(query, len, s_dnsIp, out, &q);
+    if (n == 0) return;
+#ifdef CF_TEST_CLI
+    // Test builds only: what joining devices look up (bench captive checks).
+    Serial.printf("[portal] dns name=%s type=%u from=%s\n", q.name, (unsigned)q.type,
+                  ipaddr_ntoa(addr));
+#endif
+    struct pbuf* reply = pbuf_alloc(PBUF_TRANSPORT, (u16_t)n, PBUF_RAM);
+    if (!reply) return;
+    memcpy(reply->payload, out, n);
+    struct netif* in = ip_current_input_netif();
+    if (in) udp_sendto_if(pcb, reply, addr, port, in);
+    else udp_sendto(pcb, reply, addr, port);
+    pbuf_free(reply);
+}
+
+err_t captiveDnsStartApi(struct tcpip_api_call_data* data) {
+    DnsCall* c = reinterpret_cast<DnsCall*>(data);
+    if (s_dnsPcb) { udp_recv(s_dnsPcb, nullptr, nullptr); udp_remove(s_dnsPcb); s_dnsPcb = nullptr; }
+    struct udp_pcb* pcb = udp_new_ip_type(IPADDR_TYPE_V4);
+    if (!pcb) return ERR_MEM;
+    const err_t err = udp_bind(pcb, &c->addr, 53);
+    if (err != ERR_OK) { udp_remove(pcb); return err; }
+    udp_recv(pcb, onCaptiveDnsQuery, nullptr);
+    s_dnsPcb = pcb;
+    return ERR_OK;
+}
+
+err_t captiveDnsStopApi(struct tcpip_api_call_data*) {
+    if (s_dnsPcb) {
+        udp_recv(s_dnsPcb, nullptr, nullptr);
+        udp_remove(s_dnsPcb);
+        s_dnsPcb = nullptr;
+    }
+    return ERR_OK;
+}
+}  // namespace
+
+void WebPortalApp::startCaptiveDns() {
+    const IPAddress ap = WiFi.softAPIP();
+    for (int i = 0; i < 4; i++) s_dnsIp[i] = ap[i];
+    DnsCall c;
+    ap.to_ip_addr_t(&c.addr);
+    if (tcpip_api_call(captiveDnsStartApi, &c.call) != ERR_OK) {
+        ESP_LOGE(TAG_MAIN, "[WebPortal] captive DNS failed to start");
+    }
+}
+
+void WebPortalApp::stopCaptiveDns() {
+    DnsCall c;
+    tcpip_api_call(captiveDnsStopApi, &c.call);
+}
+
+#ifdef CF_TEST_CLI
+// Test builds only: every HTTP request a joining device makes (bench captive
+// checks - which probe arrived, and whether the page itself was fetched).
+static void logPortalRequest(AsyncWebServerRequest* req, const char* answer) {
+    const AsyncWebHeader* host = req->getHeader("Host");
+    const AsyncWebHeader* agent = req->getHeader("User-Agent");
+    Serial.printf("[portal] http %s host=%s url=%s from=%s answer=%s ua=%.60s\n",
+                  req->methodToString(), host ? host->value().c_str() : "-",
+                  req->url().c_str(), req->client()->remoteIP().toString().c_str(), answer,
+                  agent ? agent->value().c_str() : "-");
+}
+#define PORTAL_LOG_REQUEST(req, answer) logPortalRequest((req), (answer))
+#else
+#define PORTAL_LOG_REQUEST(req, answer) ((void)0)
+#endif
+
 void WebPortalApp::setupRoutes() {
     // Main portal page, gzipped in flash (~87 KB raw -> ~23 KB stored).
     //
@@ -821,7 +971,9 @@ void WebPortalApp::setupRoutes() {
     // handles gzip. If a quirky client ever turns up that does not, the tell
     // would be a blank sign-in sheet, and the check is whether its request
     // carried Accept-Encoding: gzip.
-    server->on("/", HTTP_GET, [](AsyncWebServerRequest* req) {
+    server->on("/", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        PORTAL_LOG_REQUEST(req, "page");
+        openHint.onPageRequest();
         AsyncWebServerResponse* resp = req->beginResponse(
             200, "text/html", PORTAL_PAGE_GZ, sizeof(PORTAL_PAGE_GZ));
         resp->addHeader("Content-Encoding", "gzip");
@@ -953,13 +1105,9 @@ void WebPortalApp::setupRoutes() {
 
     // API: WiFi connect (POST with JSON body)
     server->on("/api/wifi/connect", HTTP_POST,
-        [](AsyncWebServerRequest* req) {
-            // Handled in body callback
-        },
+        [this](AsyncWebServerRequest* req) { handleWifiConnect(req); },
         nullptr,
-        [this](AsyncWebServerRequest* req, uint8_t* data, size_t len, size_t index, size_t total) {
-            handleWifiConnect(req, data, len, index, total);
-        }
+        collectWifiBody
     );
 
     // API: WiFi status
@@ -967,10 +1115,19 @@ void WebPortalApp::setupRoutes() {
         handleWifiStatus(req);
     });
 
-    // API: WiFi forget
-    server->on("/api/wifi/forget", HTTP_POST, [this](AsyncWebServerRequest* req) {
-        handleWifiForget(req);
-    });
+    // API: WiFi forget one saved network (POST {"ssid":"..."})
+    server->on("/api/wifi/forget", HTTP_POST,
+        [this](AsyncWebServerRequest* req) { handleWifiForget(req); },
+        nullptr,
+        collectWifiBody
+    );
+
+    // API: "Use this first" for a saved network (POST {"ssid":"..."})
+    server->on("/api/wifi/first", HTTP_POST,
+        [this](AsyncWebServerRequest* req) { handleWifiFirst(req); },
+        nullptr,
+        collectWifiBody
+    );
 
     // Catch-all: serves the companion from SD (with correct content-types)
     // and is the captive-portal redirect for everything else.
@@ -1053,7 +1210,15 @@ void WebPortalApp::setupRoutes() {
             req->send(404, "text/plain", "not found");
             return;
         }
-        req->redirect("http://192.168.4.1/");
+        // Opened from Setup WiFi: a joining phone or laptop lands straight
+        // on the WiFi settings (the page also opens them when asked for "/").
+        // This redirect is also the captive-portal answer to every OS
+        // network check (Windows /connecttest.txt and /redirect, Apple
+        // /hotspot-detect.html, Android /generate_204): anything but the
+        // expected reply marks the network as needing sign-in, and the
+        // sign-in window follows the redirect to the portal.
+        PORTAL_LOG_REQUEST(req, "redirect");
+        req->redirect(wifiLanding ? "http://192.168.4.1/#settings" : "http://192.168.4.1/");
     });
 }
 
@@ -1248,7 +1413,9 @@ void WebPortalApp::handleUpload(AsyncWebServerRequest* req, const String& filena
 
     if (uploadFile && len > 0) {
         size_t written = uploadFile.write(data, len);
-        uploadBytesReceived += written;
+        // Explicit read-then-write: C++20 deprecates compound assignment on a
+        // volatile. Same code as +=, without the warning.
+        uploadBytesReceived = uploadBytesReceived + written;
         if (written < len) {
             WP_LOGF("upload: write error, %u of %u", (unsigned)written, (unsigned)len);
             uploadFile.close();
@@ -1847,36 +2014,27 @@ void WebPortalApp::handleWifiScan(AsyncWebServerRequest* req) {
     req->send(200, "application/json", json);
 }
 
-void WebPortalApp::handleWifiConnect(AsyncWebServerRequest* req, uint8_t* data,
-                                      size_t len, size_t index, size_t total) {
-    static String body;
-    if (index == 0) body = "";
-    body += String((char*)data, len);
+void WebPortalApp::handleWifiConnect(AsyncWebServerRequest* req) {
+    char name[WifiList::kNameMax + 1];
+    char pass[WifiList::kPassMax + 1];
+    if (!takeWifiBody(req, WifiRequest::Kind::Connect, name, pass)) return;
 
-    if (index + len >= total) {
-        // Parse JSON: {"ssid":"...","pass":"..."}
-        String ssid, pass;
-        int ssidStart = body.indexOf("\"ssid\"");
-        if (ssidStart >= 0) {
-            int valStart = body.indexOf('"', body.indexOf(':', ssidStart) + 1);
-            int valEnd = body.indexOf('"', valStart + 1);
-            if (valStart >= 0 && valEnd > valStart) ssid = body.substring(valStart + 1, valEnd);
-        }
-        int passStart = body.indexOf("\"pass\"");
-        if (passStart >= 0) {
-            int valStart = body.indexOf('"', body.indexOf(':', passStart) + 1);
-            int valEnd = body.indexOf('"', valStart + 1);
-            if (valStart >= 0 && valEnd > valStart) pass = body.substring(valStart + 1, valEnd);
-        }
-
-        if (!ssid.length()) {
-            req->send(400, "application/json", "{\"error\":\"Missing ssid\"}");
-            return;
-        }
-
-        connectSTA(ssid, pass, true);
-        req->send(200, "application/json", "{\"status\":\"connecting\"}");
+    // Saved first, as the first network to try; a fourth is refused so
+    // nothing is dropped without the person choosing which.
+    const WifiList::AddResult saved = SavedWifi::add(name, pass);
+    if (saved == WifiList::AddResult::Full) {
+        memset(pass, 0, sizeof(pass));
+        req->send(409, "application/json", "{\"error\":\"full\"}");
+        return;
     }
+    if (saved == WifiList::AddResult::Invalid) {
+        memset(pass, 0, sizeof(pass));
+        req->send(400, "application/json", "{\"error\":\"invalid\"}");
+        return;
+    }
+    connectSTA(name, pass);
+    memset(pass, 0, sizeof(pass));
+    req->send(200, "application/json", "{\"status\":\"connecting\"}");
 }
 
 void WebPortalApp::handleWifiStatus(AsyncWebServerRequest* req) {
@@ -1893,12 +2051,51 @@ void WebPortalApp::handleWifiStatus(AsyncWebServerRequest* req) {
         json += ",\"status\":\"connecting\"";
     }
     json += ",\"ap_ip\":\"" + WiFi.softAPIP().toString() + "\"";
+    // The saved networks, names only, in the order they are tried.
+    char names[WifiList::kMax][WifiList::kNameMax + 1];
+    const int count = SavedWifi::names(names, WifiList::kMax);
+    json += ",\"saved\":[";
+    for (int i = 0; i < count; i++) {
+        if (i) json += ",";
+        json += "\"" + escJSON(String(names[i])) + "\"";
+    }
+    json += "],\"max\":" + String(WifiList::kMax);
+    json += ",\"landing\":" + String(wifiLanding ? "true" : "false");
     json += "}";
     req->send(200, "application/json", json);
 }
 
 void WebPortalApp::handleWifiForget(AsyncWebServerRequest* req) {
-    disconnectSTA();
+    char name[WifiList::kNameMax + 1];
+    if (!takeWifiBody(req, WifiRequest::Kind::NameOnly, name, nullptr)) return;
+    if (!SavedWifi::forget(name)) {
+        req->send(404, "application/json", "{\"error\":\"not-saved\"}");
+        return;
+    }
+    if (staSSID == name) {
+        // Forgetting the network the portal is on (or joining) leaves it.
+        stopMDNS();
+        WiFi.disconnect(false);
+        staSSID = "";
+        staConnected = false;
+    }
+    WP_LOG("saved network forgotten");
+    req->send(200, "application/json", "{\"status\":\"ok\"}");
+}
+
+void WebPortalApp::handleWifiFirst(AsyncWebServerRequest* req) {
+    char name[WifiList::kNameMax + 1];
+    if (!takeWifiBody(req, WifiRequest::Kind::NameOnly, name, nullptr)) return;
+    // Already first is fine too.
+    bool ok = SavedWifi::useFirst(name);
+    if (!ok) {
+        char first[1][WifiList::kNameMax + 1];
+        ok = SavedWifi::names(first, 1) == 1 && strcmp(first[0], name) == 0;
+    }
+    if (!ok) {
+        req->send(404, "application/json", "{\"error\":\"not-saved\"}");
+        return;
+    }
     req->send(200, "application/json", "{\"status\":\"ok\"}");
 }
 
@@ -2375,55 +2572,52 @@ void WebPortalApp::render() {
     display.setColor(BLACK);
     display.setFont(ArialMT_Plain_10);
     display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(64, 1, "CyberFidget Web");
+    display.drawString(64, 1, wifiLanding ? "Setup WiFi" : "CyberFidget Web");
     display.setColor(WHITE);
 
-    if (!sdReady) {
-        display.setTextAlignment(TEXT_ALIGN_CENTER);
-        display.drawString(64, 30, "No SD Card");
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.setFont(ArialMT_Plain_10);
+    if (!apReady) {
+        display.drawString(64, 24, "Could not start WiFi");
+        display.drawString(64, 40, "Exit and try again");
         display.display();
         return;
     }
 
+    // Keep the join details visible in Setup WiFi, the general portal and
+    // the no-card state. A caption session returns here when it disconnects.
+    // The password is shown exactly as typed: eight digits, no space
+    // (about 72 px in the 16 px font, centred on the 128 px screen).
+    // "Join CyberFidget-xxxx": 105 px at most in this font (every hex digit
+    // is 6 px or narrower), centred on the 128 px screen.
+    char joinLine[8 + PortalSsid::kMaxLen];
+    snprintf(joinLine, sizeof(joinLine), "Join %s", apSsid);
+    display.drawString(64, 15, joinLine);
+    display.drawString(64, 26, "Password");
+    display.setFont(ArialMT_Plain_16);
+    display.drawString(64, 37, portalPassword);
     display.setFont(ArialMT_Plain_10);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
-
-    // AP info
-    if (apReady) {
-        display.drawString(4, 16, String("AP: ") + WiFi.softAPIP().toString());
-    } else {
-        display.drawString(4, 16, "AP failed (low mem)");
-    }
-
-    // STA info
-    if (staConnected) {
-        display.drawString(4, 28, staSSID + " " + WiFi.localIP().toString());
-        if (mdnsStarted) {
-            display.drawString(4, 40, "cyberfidget.local");
-        } else {
-            display.drawString(4, 40, String("Files: ") + String(fileCount));
-        }
-    } else if (staSSID.length()) {
-        display.drawString(4, 28, "Connecting: " + staSSID);
-        display.drawString(4, 40, String("Files: ") + String(fileCount));
-    } else {
-        display.drawString(4, 28, "WiFi: not connected");
-        display.drawString(4, 40, String("Files: ") + String(fileCount));
-    }
-
-    if (uploadInProgress && uploadBytesTotal > 0) {
-        // Upload progress (overwrites bottom line)
+    if (openHint.showAddressNow((uint32_t)millis()) && !uploadInProgress) {
+        // A device joined but its sign-in page never came (e.g. a laptop
+        // that also has a wired connection): say where the portal is, in
+        // turns with the usual line below. Once the page is opened the
+        // usual line stays.
+        display.drawString(64, 53, String("Open ") + WiFi.softAPIP().toString());
+    } else if (wifiLanding) {
+        display.drawString(64, 53, staConnected ? "BACK to finish" :
+                           (staSSID.length() ? "Connecting..." : "Pick network on phone"));
+    } else if (!sdReady) {
+        display.drawString(64, 53, "No memory card");
+    } else if (uploadInProgress && uploadBytesTotal > 0) {
         int pct = (int)((uint64_t)uploadBytesReceived * 100 / uploadBytesTotal);
         if (pct > 100) pct = 100;
-        display.drawProgressBar(4, 54, 100, 8, pct);
-        display.setTextAlignment(TEXT_ALIGN_RIGHT);
-        display.drawString(124, 52, String(pct) + "%");
+        display.drawString(64, 53, String("Uploading ") + String(pct) + "%");
+    } else if (staConnected) {
+        // Also reachable from the home network without joining the Fidget's.
+        display.drawString(64, 53, mdnsStarted ? String("cyberfidget.local")
+                                               : WiFi.localIP().toString());
     } else {
-        // File count + clients
-        int clients = WiFi.softAPgetStationNum();
-        String info = String(fileCount) + " files";
-        if (clients > 0) info += " | " + String(clients) + " client" + (clients > 1 ? "s" : "");
-        display.drawString(4, 52, info);
+        display.drawString(64, 53, WiFi.softAPIP().toString());
     }
 
     display.display();

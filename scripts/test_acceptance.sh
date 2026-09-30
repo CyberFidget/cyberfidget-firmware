@@ -361,6 +361,25 @@ assert_grep 'Verify embedded version matches the tag' "$WF" \
 assert_grep 'platformio==' "$WF" \
     "build-release.yml pins the PlatformIO version"
 
+# Build-time guard (both workflows that build firmware). Strict mode makes a
+# missing library-setup patch or a blown phase budget fail CI, and both must
+# run the same PlatformIO Core or the patch is verified on one and shipped on
+# the other.
+FB=".github/workflows/firmware-build.yml"
+for f in "$WF" "$FB"; do
+    assert_grep "CF_BUILD_PERF_STRICT: '1'" "$f" \
+        "$(basename "$f") builds in strict build-time mode"
+    assert_grep 'library setup memoized' "$f" \
+        "$(basename "$f") checks the library-setup patch ran"
+done
+PIO_REL="$(sed -n "s/^  PLATFORMIO_VERSION: '\(.*\)'$/\1/p" "$WF")"
+PIO_FB="$(sed -n "s/^  PLATFORMIO_VERSION: '\(.*\)'$/\1/p" "$FB")"
+if [ -n "$PIO_REL" ] && [ "$PIO_REL" = "$PIO_FB" ]; then
+    pass "firmware-build.yml and build-release.yml pin the same PlatformIO ($PIO_REL)"
+else
+    fail "PlatformIO pins differ: build-release.yml '$PIO_REL', firmware-build.yml '$PIO_FB'"
+fi
+
 # Guards added after an adversarial review of the release state machine. Each
 # one closes a way to publish something wrong; grep-level coverage here is a
 # tripwire against a future edit quietly dropping one.
@@ -378,6 +397,77 @@ if grep -qE '^concurrency:' -A2 "$WF" && grep -qE '^\s+group: release$' "$WF"; t
     pass "build-release.yml serializes releases repository-wide, not per-ref"
 else
     fail "build-release.yml concurrency group is not repository-wide"
+fi
+
+# App-only release contract. Both merge paths must write the flash mode that
+# PlatformIO itself writes into the image headers: it maps a qio/qout board
+# setting to dio in every header (qio only selects the bootloader variant).
+assert_grep '^            .pio/build/local/firmware.bin$' "$WF" \
+    "build-release.yml attaches the app-only firmware.bin"
+assert_grep '^            .pio/build/local/release-info.json$' "$WF" \
+    "build-release.yml attaches release-info.json"
+FLASH_MODE="$(sed -n 's/^[[:space:]]*board_build\.flash_mode[[:space:]]*=[[:space:]]*\([^[:space:];]*\).*/\1/p' platformio.ini | head -n1)"
+case "$FLASH_MODE" in qio|qout) HEADER_MODE=dio ;; *) HEADER_MODE="$FLASH_MODE" ;; esac
+if [ -n "$HEADER_MODE" ] && grep -q -- "--flash_mode $HEADER_MODE" "$WF" && \
+   grep -q -- "--flash_mode $HEADER_MODE" scripts/merge_firmware.py; then
+    pass "both merge paths write the header mode PlatformIO builds ($FLASH_MODE -> $HEADER_MODE)"
+else
+    fail "merge flash modes do not match the header mode PlatformIO builds"
+fi
+printf 'small' > "$TMP/app-small.bin"
+if python scripts/release_image.py "$TMP/app-small.bin" > "$TMP/size-small.log" 2>&1; then
+    pass "app size gate accepts a small image"
+else
+    fail "app size gate rejected a small image"
+fi
+head -c 3276800 /dev/zero > "$TMP/app-limit.bin"
+if python scripts/release_image.py "$TMP/app-limit.bin" > "$TMP/size-limit.log" 2>&1 && \
+   grep -q 'Image size: 3276800 bytes' "$TMP/size-limit.log"; then
+    pass "app size gate accepts a 3,276,800-byte image (the threshold)"
+else
+    fail "app size gate rejected a 3,276,800-byte image (the threshold)"
+fi
+head -c 3276801 /dev/zero > "$TMP/app-large.bin"
+if python scripts/release_image.py "$TMP/app-large.bin" > "$TMP/size-large.log" 2>&1; then
+    fail "app size gate accepted a 3,276,801-byte image"
+elif grep -q 'Image size: 3276801 bytes' "$TMP/size-large.log"; then
+    pass "app size gate rejects a 3,276,801-byte image"
+else
+    fail "app size gate did not check the 3,276,801-byte image"
+fi
+
+# Deployed readers stop at the fw line; anything printed after it would be
+# taken as the reply to their next command.
+LAST_SYNCINFO="$(awk '/^void SerialCli::cmdSyncinfo\(/{f=1} f&&/\[cmd\] syncinfo\./{l=$0} f&&/^}/{print l; exit}' lib/SerialCli/SerialCli.cpp)"
+if echo "$LAST_SYNCINFO" | grep -q 'syncinfo\.fw='; then
+    pass "syncinfo prints its fw line last"
+else
+    fail "syncinfo prints a line after fw: $LAST_SYNCINFO"
+fi
+
+# Senders gate batch documents on this capability line; it must exist and
+# (per the rule above) sit before the fw line.
+if awk '/^void SerialCli::cmdSyncinfo\(/{f=1} f&&/^}/{exit} f' lib/SerialCli/SerialCli.cpp | grep -q 'syncinfo\.lapply=%s' \
+   && grep -q 'kLapplyCapability = "batch1"' lib/SyncProtocol/SyncProtocol.h; then
+    pass "syncinfo advertises lapply=batch1"
+else
+    fail "syncinfo does not advertise the lapply batch capability"
+fi
+
+# Same rule for info: wake.cause is its terminator line.
+LAST_INFO="$(awk '/^void SerialCli::cmdInfo\(/{f=1} f&&/\[cmd\] info\./{l=$0} f&&/^}/{print l; exit}' lib/SerialCli/SerialCli.cpp)"
+if echo "$LAST_INFO" | grep -q 'info\.wake\.cause='; then
+    pass "info prints its wake.cause line last"
+else
+    fail "info prints a line after wake.cause: $LAST_INFO"
+fi
+
+# Same rule for the status read-back (test builds): status.count ends it.
+LAST_STATUS="$(awk '/^void printStatus\(/{f=1} f&&/\[cmd\] status\./{l=$0} f&&/^}/{print l; exit}' lib/SerialCli/SerialCli.cpp)"
+if echo "$LAST_STATUS" | grep -q 'status\.count='; then
+    pass "status prints its count line last"
+else
+    fail "status prints a line after count: $LAST_STATUS"
 fi
 
 # ----------------------------------------------------------------------------

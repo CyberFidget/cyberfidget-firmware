@@ -107,6 +107,17 @@ bool atEnd(const char* p) {
 
 } // namespace
 
+void formatDeviceId(uint64_t efuseMac, char* out) {
+    constexpr char kHex[] = "0123456789abcdef";
+    // ESP.getEfuseMac() packs the esptool-order base MAC bytes low to high.
+    for (size_t i = 0; i < 6; ++i) {
+        uint8_t byte = static_cast<uint8_t>(efuseMac >> (i * 8));
+        out[i * 2] = kHex[byte >> 4];
+        out[i * 2 + 1] = kHex[byte & 0x0F];
+    }
+    out[12] = '\0';
+}
+
 uint32_t crc32Begin() { return 0xFFFFFFFFu; }
 
 uint32_t crc32Update(uint32_t crc, const void* data, size_t len) {
@@ -137,6 +148,9 @@ bool pathConfined(const char* path) {
     }
     if (!rooted) return false;
 
+    // The applied-batch record is written only by the apply path.
+    if (startsWith(path, kAppliedRecordPath)) return false;
+
     // Byte-level hygiene + traversal check. Reject any control byte or space,
     // and any "." / ".." segment (a "." segment is harmless but never
     // legitimate here, so refuse it too and keep the rule simple).
@@ -156,6 +170,28 @@ bool pathConfined(const char* path) {
         if (segLen == 2 && path[start] == '.' && path[start + 1] == '.') return false; // ".."
         if (segLen == 0 && start < len) return false;              // "//"
         i = end;
+    }
+    return true;
+}
+
+bool isDeliveredBlobName(const char* name) {
+    if (!name) return false;
+    static const char kExt[] = ".wasm";
+    const size_t extLen = sizeof(kExt) - 1;
+    const size_t len = std::strlen(name);
+    // At least a 1-byte id + "-" + 8 hex + ".wasm".
+    if (len < 1 + 1 + 8 + extLen) return false;
+    if (name[0] == '.') return false;
+    if (std::strcmp(name + len - extLen, kExt) != 0) return false;
+    const size_t hashAt = len - extLen - 8;
+    if (name[hashAt - 1] != '-') return false;
+    for (size_t i = hashAt; i < hashAt + 8; i++) {
+        const char h = name[i];
+        if (!((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f'))) return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        const unsigned char c = (unsigned char)name[i];
+        if (c <= 0x20 || c == 0x7F || c == '/') return false;
     }
     return true;
 }
@@ -266,6 +302,66 @@ size_t formatListSummary(char* out, size_t cap, const char* dir,
         return 0;
     }
     return (size_t)n;
+}
+
+namespace {
+
+// True if the first token of `line` is `verb` (case-insensitive), ended by
+// the line's end or a space.
+bool firstTokenIs(const char* line, const char* verb) {
+    if (!line) return false;
+    size_t i = 0;
+    for (; verb[i]; ++i) {
+        char c = line[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != verb[i]) return false;
+    }
+    return line[i] == '\0' || line[i] == ' ';
+}
+
+bool firstTokenIn(const char* line, const char* const* verbs, size_t count) {
+    for (size_t i = 0; i < count; ++i) {
+        if (firstTokenIs(line, verbs[i])) return true;
+    }
+    return false;
+}
+
+const char* const kStoreWriteVerbs[] = {
+    "fwrite", "fwdata", "fwcommit", "fwabort", "fdelete", "lapply",
+};
+const char* const kSessionReadVerbs[] = {
+    "info", "syncinfo", "lget", "flist", "fstat", "fread",
+};
+
+} // namespace
+
+bool isStoreWriteVerb(const char* line) {
+    return firstTokenIn(line, kStoreWriteVerbs,
+                        sizeof(kStoreWriteVerbs) / sizeof(kStoreWriteVerbs[0]));
+}
+
+bool isSessionVerb(const char* line) {
+    return isStoreWriteVerb(line) ||
+           firstTokenIn(line, kSessionReadVerbs,
+                        sizeof(kSessionReadVerbs) / sizeof(kSessionReadVerbs[0]));
+}
+
+bool sessionHeld(bool seen, uint32_t lastAtMs, uint32_t nowMs) {
+    return seen && (uint32_t)(nowMs - lastAtMs) < kUsbSessionHoldMs;
+}
+
+BusyStep busyStep(bool busy, uint32_t waitingSinceMs, uint32_t nowMs) {
+    if (!busy) return BusyStep::Run;
+    return (uint32_t)(nowMs - waitingSinceMs) < kBusyWaitMs ? BusyStep::Wait
+                                                            : BusyStep::Refuse;
+}
+
+bool isIdleActivityVerb(const char* line) {
+    return isStoreWriteVerb(line) || firstTokenIs(line, "fread");
+}
+
+bool transferExpired(bool active, uint32_t lastAtMs, uint32_t nowMs) {
+    return active && (uint32_t)(nowMs - lastAtMs) >= kTransferIdleMs;
 }
 
 } // namespace SyncProtocol

@@ -1,0 +1,10 @@
+{
+    "name": "OtaUpdate",
+    "version": "1.0.0",
+    "description": "Pure update rules: manifest parse and gates, streamed-hash install order, pending-image self-test decisions",
+    "dependencies": [
+        { "name": "BoardInfo" },
+        { "name": "OtaManifest" },
+        { "name": "UpdatePolicy" }
+    ]
+}

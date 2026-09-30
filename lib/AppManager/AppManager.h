@@ -21,6 +21,13 @@ public:
     // Switch apps
     void switchToApp(AppIndex newApp);
 
+    // End and begin the active app again (dev mode relaunch).
+    void relaunchActive();
+
+    // Opens the staged delivered app in a fresh start (the "Opening <app>..."
+    // restart). Returns only when nothing is staged.
+    void restartIntoPendingApp();
+
     // Currently running app (read-only; used by the test-mode Serial CLI)
     AppIndex activeApp() const { return appActive; }
 
@@ -47,6 +54,12 @@ public:
      */
     bool applyLoadoutOps(const char* opsJson, int* entriesOut = nullptr,
                          int* appliedOut = nullptr);
+
+#ifdef CF_TEST_CLI
+    // Bench only: skip the restart that normally separates WiFi use from
+    // the Music Player's Bluetooth (RAM only, lost at restart).
+    void setTestAllowBtAfterWifi(bool allow);
+#endif
 
 private:
     // Private constructor

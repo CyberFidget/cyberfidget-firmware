@@ -11,6 +11,9 @@
 
 #include <FS.h>
 #include <LittleFS.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
+#include <esp_ota_ops.h>
 #include "esp_log.h"
 
 static const char* TAG_LOADOUT = "LoadoutStore";
@@ -21,6 +24,17 @@ static const char* kTempPath     = "/loadout.json.tmp";
 namespace LoadoutStore {
 
 static bool mounted = false;
+
+// Created during static initialization, before any task can race for it.
+static SemaphoreHandle_t manifestLock = xSemaphoreCreateRecursiveMutex();
+
+void lock() {
+    if (manifestLock) xSemaphoreTakeRecursive(manifestLock, portMAX_DELAY);
+}
+
+void unlock() {
+    if (manifestLock) xSemaphoreGiveRecursive(manifestLock);
+}
 
 // Boot-time sweep of orphaned "<file>.part" temp files left behind when an
 // fwrite transfer was interrupted (power cut / cable pull between fwdata and
@@ -70,14 +84,38 @@ static void sweepPartFiles() {
 bool begin() {
     if (mounted) return true;
     // true = format on failed mount: first boot the `spiffs` partition
-    // holds no LittleFS image, so let it format itself once.
-    mounted = LittleFS.begin(true);
+    // holds no LittleFS image, so let it format itself once. Never while a
+    // just-installed update is unconfirmed: its failure must hand the
+    // previous image the filesystem exactly as it was.
+    bool formatOnFail = true;
+    const esp_partition_t* running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state;
+    if (running && esp_ota_get_state_partition(running, &state) == ESP_OK &&
+        state == ESP_OTA_IMG_PENDING_VERIFY) {
+        formatOnFail = false;
+    }
+    mounted = LittleFS.begin(formatOnFail);
     if (!mounted) {
         ESP_LOGE(TAG_LOADOUT, "LittleFS mount failed; loadout manifest unavailable");
         return mounted;
     }
     sweepPartFiles();  // one-shot orphan cleanup on first successful mount
     return mounted;
+}
+
+bool formatForFactoryReset() {
+    Guard guard;
+    if (mounted) {
+        LittleFS.end();
+        mounted = false;
+    } else {
+        // format() needs the partition label that only begin() records; a
+        // start-up that finishes an interrupted reset has not mounted yet.
+        // The mount result does not matter (the storage may be half erased).
+        LittleFS.begin(false);
+        LittleFS.end();
+    }
+    return LittleFS.format();
 }
 
 bool load(std::string& jsonOut) {
@@ -97,6 +135,7 @@ bool load(std::string& jsonOut) {
 }
 
 bool save(const std::string& json) {
+    Guard guard;  // one writer of the shared temp path at a time
     if (!begin()) return false;
 
     // 1) Write the full document to a temp file.

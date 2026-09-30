@@ -12,6 +12,7 @@
 #include "AppDefs.h"
 #include "ButtonManager.h"
 #include "MenuManager.h"
+#include "ScrollLabel.h"
 #include "BTScanner.h"
 #include "ID3Scanner.h"
 
@@ -19,7 +20,7 @@
 #include "AudioTools/CoreAudio/AudioLogger.h"
 #include "AudioTools/Disk/AudioSource.h"
 #include "AudioTools/CoreAudio/AudioPlayer.h"
-#include "AudioTools/AudioLibs/A2DPStream.h"
+#include "AudioTools/Communication/A2DPStream.h"
 #include "AudioTools/CoreAudio/AudioStreams.h"
 #include "AudioTools/Disk/AudioSourceIdxSD.h"
 #include "AudioTools/AudioCodecs/CodecMP3Helix.h"
@@ -184,9 +185,8 @@ private:
     uint32_t resumeBytePosition = 0;
     bool hasResumeState = false;
 
-    // Marquee
-    int marqueeOffset = 0;
-    unsigned long lastMarqueeUpdate = 0;
+    // Now-playing title marquee (shared ScrollLabel)
+    ScrollLabel titleMarquee;
 
     // LED effects
     LEDEffectMode ledEffectMode = LED_OFF;

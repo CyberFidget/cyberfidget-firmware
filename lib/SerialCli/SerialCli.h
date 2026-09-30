@@ -5,6 +5,7 @@
 #define SERIAL_CLI_H
 
 #include <stddef.h>
+#include <stdint.h>
 
 // Line-buffered Serial command processor for USB UART. The always-on verbs
 // are identification (`version`, `info`, `help`), bench observation/control
@@ -45,6 +46,20 @@ public:
     static SerialCli& instance();
 
     void poll();
+    // A network pull must not overlap a partially written serial blob.
+    bool ferryActive() const;
+    // True while a USB sync session is under way: a serial transfer is open,
+    // or a sync verb arrived within SyncProtocol::kUsbSessionHoldMs. A cloud
+    // check-in does not start while this holds.
+    bool holdsCheckins() const;
+    // True (once) if a verb that moves data (SyncProtocol::isIdleActivityVerb)
+    // arrived since the last call; AppManager treats it as use for the idle
+    // sleep, like a button press.
+    bool consumeUsbActivity();
+    // Close an unfinished serial file transfer before LittleFS is formatted.
+    void closeStorageForFactoryReset();
+    // True while a test-build radio probe owns WiFi.
+    bool radioBusy() const;
 
 #ifdef CF_TEST_CLI
     // Consumed by AppManager::loop so the display teardown never runs inside
@@ -67,7 +82,13 @@ private:
     SerialCli(const SerialCli&) = delete;
     SerialCli& operator=(const SerialCli&) = delete;
 
-    void dispatch(const char* line);
+    // `retry`: the parked verb run again from pollDeferred(). A store-writing
+    // verb that finds the store busy is parked until SyncProtocol::kBusyWaitMs
+    // after its first arrival, and refused only once that has passed.
+    void dispatch(const char* line, bool retry = false);
+    // Runs a deferred store-writing verb once the store is free, or refuses
+    // it when the wait runs out. True while it is still waiting.
+    bool pollDeferred();
     void cmdVersion();
     void cmdInfo();
     void cmdHelp();
@@ -77,12 +98,15 @@ private:
     void cmdDiary(const char* arg);
 
     // Sync-transport verbs (always compiled). Session state for an
-    // in-progress `fwrite` lives in file-scope statics in the .cpp so this
-    // header stays free of Arduino filesystem types.
+    // in-progress `fwrite` lives in a SyncProtocol::FerrySession owned by the
+    // .cpp (with its LittleFS/UART adapters) so this header stays free of
+    // Arduino filesystem types.
     void cmdFwrite(const char* args);
     void cmdFwdata(const char* args);
     void cmdFwcommit();
     void cmdFwabort();
+    // Drops an open write session idle for SyncProtocol::kTransferIdleMs.
+    void expireIdleTransfer();
     void cmdFdelete(const char* args);
     void cmdFlist(const char* args);
     void cmdFstat(const char* args);
@@ -105,12 +129,21 @@ private:
     bool launchResolved(const char* arg, const char* replyVerb, int* appIndex);
     void cmdApp();
     void cmdNet();
+    void cmdHeapstat();
+    void cmdBtstat();
+    void cmdTlsalloc(const char* arg);
+    void cmdTlsprobe(const char* url);
+    void pollTlsprobeResult();
     void cmdWifi(const char* arg);
     void cmdMic();
     void cmdSleep();
     void cmdRail(const char* args);
     void cmdGauge(const char* args);
     void cmdUvlo(const char* args);
+    // Opens a sample ModalPrompt for bench screenshots; result arrives later.
+    void cmdPrompt(const char* args);
+    // Menu status bar bench states (post / popup / clear / checkin / read).
+    void cmdStatus(const char* args);
     // Serial button injection (T-191). tap auto-releases after a delay.
     void cmdBtn(const char* args);
     void pollPendingTapReleases();
@@ -124,6 +157,15 @@ private:
     char   buffer[kBufferSize] = {0};
     size_t bufferLen           = 0;
     bool   overflow            = false;
+    // A store-writing verb that arrived while a cloud check-in owned the
+    // store waits here (its payload stays in the UART buffer) instead of
+    // being refused at once.
+    char     deferred[kBufferSize] = {0};
+    bool     deferredPending       = false;
+    uint32_t deferredAtMs          = 0;
+    // When the open write session last saw fwrite/fwdata.
+    uint32_t ferryAtMs             = 0;
+    bool     usbActivity           = false;
 };
 
 #endif  // SERIAL_CLI_H

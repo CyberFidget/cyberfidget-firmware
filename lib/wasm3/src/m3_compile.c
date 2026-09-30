@@ -2676,6 +2676,14 @@ _           (PushAllocatedSlot (o, type));
 
 M3Result  CompileBlock  (IM3Compilation o, IM3FuncType i_blockType, m3opcode_t i_blockOpcode)
 {
+#if defined(d_m3NativeStackGuard)
+    // CYBERFIDGET PATCH: functions compile lazily, at the depth of their first
+    // call, and the compiler recurses natively once per block-nesting level
+    // (a 64-case switch is 64 levels). Stop at the host's native-stack floor
+    // like op_Entry does, instead of running past the task's stack.
+    if (m3_NativeStackExhausted ())
+        return m3Err_trapStackOverflow;
+#endif
                                                                                         d_m3Assert (not IsRegisterAllocated (o, 0));
                                                                                         d_m3Assert (not IsRegisterAllocated (o, 1));
     M3CompilationScope outerScope = o->block;

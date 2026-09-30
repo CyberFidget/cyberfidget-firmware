@@ -192,6 +192,75 @@ void test_migration_dedup_keeps_slug_at_earlier_position(void) {
     TEST_ASSERT_EQUAL_STRING("snake", l.entries[1].id.c_str());
 }
 
+// Two delivered apps may share a name; the menu keeps a selection on the
+// right one across a rebuild by the manifest id each merged row carries.
+void test_blob_rows_carry_their_manifest_id(void) {
+    Loadout l;
+    l.entries.push_back(makeEntry("timer-a", "Tools"));
+    l.entries.push_back(makeEntry("timer-b", "Tools"));
+    for (auto& e : l.entries) {
+        e.format = "wasm";
+        e.name = "Timer";
+        e.blobPath = "/apps/" + e.id + "-0123abcd.wasm";
+    }
+    l.entries.push_back(makeEntry("APP_SNAKE", "Games"));
+    auto merged = mergeWithRegistry(l, kRegistry, kRegistryCount);
+    TEST_ASSERT_EQUAL_INT(-1, merged[0].appIndex);
+    TEST_ASSERT_EQUAL_STRING("timer-a", merged[0].id.c_str());
+    TEST_ASSERT_EQUAL_STRING("timer-b", merged[1].id.c_str());
+    TEST_ASSERT_EQUAL_STRING(merged[0].label.c_str(), merged[1].label.c_str());
+    TEST_ASSERT_EQUAL_STRING("", merged[2].id.c_str());   // builtin rows use the index
+}
+
+// The REAL compiled-in registry, straight from AppManifest.h: only the
+// label and category columns are expanded (the lifecycle columns are macro
+// arguments that are dropped, so nothing app-side has to link here).
+enum RealAppIndex {
+#define APP_ENTRY(ID, LABEL, CATPATH, BEGINF, ENDF, RUNF) ID,
+#include "AppManifest.h"
+#undef APP_ENTRY
+    REAL_APP_COUNT
+};
+static const RegistryApp kRealRegistry[] = {
+#define APP_ENTRY(ID, LABEL, CATPATH, BEGINF, ENDF, RUNF) { "", LABEL, CATPATH, #ID },
+#include "AppManifest.h"
+#undef APP_ENTRY
+};
+
+// With no manifest (after Reset to factory) the menu is built from the
+// compiled registry. It must never show an internal slot as a blank row -
+// the delivered-app host sat between Media and Status and opened a dead
+// "no app staged" screen.
+void test_compiled_menu_rows_skip_internal_slots(void) {
+    auto rows = compiledMenuRows(kRealRegistry, REAL_APP_COUNT);
+    TEST_ASSERT_TRUE(rows.size() > 10);
+    for (int i : rows) {
+        TEST_ASSERT_NOT_EQUAL(APP_WASM_HOST, i);
+        TEST_ASSERT_NOT_EQUAL(APP_MENU, i);
+        TEST_ASSERT_TRUE(!kRealRegistry[i].name.empty());
+    }
+    // Real, labelled root entries are still there.
+    bool status = false, setupWifi = false;
+    for (int i : rows) {
+        if (i == APP_STATUS) status = true;
+        if (i == APP_SETUP_WIFI) setupWifi = true;
+    }
+    TEST_ASSERT_TRUE(status);
+    TEST_ASSERT_TRUE(setupWifi);
+    // Every row that is not an internal slot is kept, in compile order.
+    int named = 0;
+    for (int i = 0; i < REAL_APP_COUNT; i++) if (!kRealRegistry[i].name.empty()) named++;
+    TEST_ASSERT_EQUAL_INT(named, (int)rows.size());
+    for (size_t k = 1; k < rows.size(); k++) TEST_ASSERT_TRUE(rows[k - 1] < rows[k]);
+}
+
+void test_compiled_menu_rows_empty_registry(void) {
+    TEST_ASSERT_EQUAL_INT(0, (int)compiledMenuRows(nullptr, 0).size());
+    auto rows = compiledMenuRows(kRegistry, kRegistryCount);
+    TEST_ASSERT_EQUAL_INT(kRegistryCount - 1, (int)rows.size());
+    for (int i : rows) TEST_ASSERT_NOT_EQUAL(1, i);
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -209,5 +278,8 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_empty_registry_yields_empty_merge);
     RUN_TEST(test_slug_and_legacy_migration);
     RUN_TEST(test_migration_dedup_keeps_slug_at_earlier_position);
+    RUN_TEST(test_blob_rows_carry_their_manifest_id);
+    RUN_TEST(test_compiled_menu_rows_skip_internal_slots);
+    RUN_TEST(test_compiled_menu_rows_empty_registry);
     return UNITY_END();
 }

@@ -16,6 +16,34 @@
 
 using namespace SyncProtocol;
 
+// ---------- Device identity ----------
+
+void test_device_id_uses_efuse_byte_order_and_keeps_leading_zero(void) {
+    char id[13];
+    formatDeviceId(0xefcdab341200ULL, id);
+    TEST_ASSERT_EQUAL_STRING("001234abcdef", id);
+    TEST_ASSERT_EQUAL_UINT32(12u, (uint32_t)std::strlen(id));
+}
+
+void test_device_id_uses_lowercase_hex(void) {
+    char id[13];
+    formatDeviceId(0xab8967452301ULL, id);
+    TEST_ASSERT_EQUAL_STRING("0123456789ab", id);
+}
+
+void test_legacy_info_mac_fixture(void) {
+    const uint64_t mac = 0xefcdab341200ULL;
+    char legacy[18];
+    std::snprintf(legacy, sizeof(legacy), "%02X:%02X:%02X:%02X:%02X:%02X",
+                  static_cast<uint8_t>((mac >> 40) & 0xFF),
+                  static_cast<uint8_t>((mac >> 32) & 0xFF),
+                  static_cast<uint8_t>((mac >> 24) & 0xFF),
+                  static_cast<uint8_t>((mac >> 16) & 0xFF),
+                  static_cast<uint8_t>((mac >>  8) & 0xFF),
+                  static_cast<uint8_t>((mac >>  0) & 0xFF));
+    TEST_ASSERT_EQUAL_STRING("EF:CD:AB:34:12:00", legacy);
+}
+
 // ---------- CRC-32 ----------
 
 void test_crc32_known_check_value(void) {
@@ -292,11 +320,135 @@ void test_flist_nontruncated_summary(void) {
         "[cmd] flist.done=/assets entries=1 truncated=0 max=64\n", summary);
 }
 
+void test_confinement_rejects_applied_record(void) {
+    TEST_ASSERT_FALSE(pathConfined("/apps/.applied.json"));
+    TEST_ASSERT_FALSE(pathConfined("/apps/.applied.json.part"));
+    TEST_ASSERT_FALSE(pathConfined(kAppliedRecordPath));
+    TEST_ASSERT_FALSE(pathConfined(kAppliedRecordTemp));
+    TEST_ASSERT_TRUE(pathConfined("/apps/applied.json"));      // not the record
+    TEST_ASSERT_TRUE(pathConfined("/assets/.applied.json"));   // other root
+}
+
+void test_delivered_blob_name_shape(void) {
+    TEST_ASSERT_TRUE(isDeliveredBlobName("booper-0123abcd.wasm"));
+    TEST_ASSERT_TRUE(isDeliveredBlobName("my-app-deadbeef.wasm"));
+    TEST_ASSERT_TRUE(isDeliveredBlobName("x-00000000.wasm"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper.wasm"));          // browser-send name
+    TEST_ASSERT_FALSE(isDeliveredBlobName("-0123abcd.wasm"));       // empty id
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper-0123ABCD.wasm")); // upper-case hash
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper-0123abc.wasm"));  // 7 digits
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper_0123abcd.wasm")); // no dash
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper-0123abcd.bin"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName("booper-0123abcd.wasm.part"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName(".x-0123abcd.wasm"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName("sub/x-0123abcd.wasm"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName("a b-0123abcd.wasm"));
+    TEST_ASSERT_FALSE(isDeliveredBlobName(""));
+    TEST_ASSERT_FALSE(isDeliveredBlobName(nullptr));
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
+// ---------- USB sync session vs. cloud check-ins ----------
+
+void test_session_and_store_write_verbs(void) {
+    // The verbs a browser send issues, in any case, with or without args.
+    const char* const writes[] = {
+        "fwrite /apps/a.wasm 5 3610a686", "fwdata 0 5 3610a686", "fwcommit",
+        "fwabort", "fdelete /apps/a.wasm", "lapply 42 deadbeef", "LAPPLY 1 0", "lapply",
+    };
+    for (const char* line : writes) {
+        TEST_ASSERT_TRUE_MESSAGE(isStoreWriteVerb(line), line);
+        TEST_ASSERT_TRUE_MESSAGE(isSessionVerb(line), line);
+    }
+    const char* const reads[] = {
+        "info", "INFO", "syncinfo", "lget", "flist /apps", "fstat /apps/a.wasm",
+        "fread /apps/a.wasm 0 16",
+    };
+    for (const char* line : reads) {
+        TEST_ASSERT_FALSE_MESSAGE(isStoreWriteVerb(line), line);
+        TEST_ASSERT_TRUE_MESSAGE(isSessionVerb(line), line);
+    }
+    // Not session verbs: identification polls, bench verbs, look-alikes.
+    const char* const others[] = {
+        "version", "help", "battery", "screencap", "menutree", "infox", "lgets",
+        "fwritex /apps/a 1 0", "lapplyx", "", "awake set dev",
+    };
+    for (const char* line : others) {
+        TEST_ASSERT_FALSE_MESSAGE(isSessionVerb(line), line);
+        TEST_ASSERT_FALSE_MESSAGE(isStoreWriteVerb(line), line);
+    }
+    TEST_ASSERT_FALSE(isSessionVerb(nullptr));
+}
+
+void test_session_hold_window(void) {
+    TEST_ASSERT_FALSE(sessionHeld(false, 0, 0));
+    TEST_ASSERT_FALSE(sessionHeld(false, 1000, 1500));
+    TEST_ASSERT_TRUE(sessionHeld(true, 1000, 1000));
+    TEST_ASSERT_TRUE(sessionHeld(true, 1000, 1000 + kUsbSessionHoldMs - 1));
+    TEST_ASSERT_FALSE(sessionHeld(true, 1000, 1000 + kUsbSessionHoldMs));
+    TEST_ASSERT_FALSE(sessionHeld(true, 1000, 1000 + 60000));
+    // Across the millis() wrap.
+    TEST_ASSERT_TRUE(sessionHeld(true, 0xFFFFF000u, 0x00000100u));
+    TEST_ASSERT_FALSE(sessionHeld(true, 0xFFFFF000u, 0xFFFFF000u + kUsbSessionHoldMs));
+    TEST_ASSERT_EQUAL_UINT32(10000u, kUsbSessionHoldMs);
+}
+
+void test_busy_wait_steps(void) {
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Run, (int)busyStep(false, 1000, 1000));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Run, (int)busyStep(false, 1000, 1000 + 60000));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Wait, (int)busyStep(true, 1000, 1000));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Wait, (int)busyStep(true, 1000, 1000 + kBusyWaitMs - 1));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Refuse, (int)busyStep(true, 1000, 1000 + kBusyWaitMs));
+    TEST_ASSERT_EQUAL_INT((int)BusyStep::Wait, (int)busyStep(true, 0xFFFFFF00u, 0x00000100u));
+    // The wait ends before the sender's shortest reply wait (10 s).
+    TEST_ASSERT_TRUE(kBusyWaitMs < 10000u);
+}
+
+void test_idle_activity_verbs(void) {
+    // Verbs that move data count as use for the idle-to-sleep timer.
+    const char* const counted[] = {
+        "fwrite /apps/a.wasm 5 3610a686", "fwdata 0 5 3610a686", "FWDATA 0 5 0",
+        "fwcommit", "fwabort", "fdelete /apps/a.wasm", "lapply 42 deadbeef",
+        "fread /apps/a.wasm 0 16",
+    };
+    for (const char* line : counted) {
+        TEST_ASSERT_TRUE_MESSAGE(isIdleActivityVerb(line), line);
+    }
+    // Status reads a connected host may repeat, identification polls, bench
+    // verbs and look-alikes do not keep the device awake.
+    const char* const notCounted[] = {
+        "version", "info", "syncinfo", "lget", "flist /apps", "fstat /apps/a.wasm",
+        "help", "battery", "screencap", "screenstream 500", "freadx /apps/a 0 1",
+        "", "awake set dev",
+    };
+    for (const char* line : notCounted) {
+        TEST_ASSERT_FALSE_MESSAGE(isIdleActivityVerb(line), line);
+    }
+    TEST_ASSERT_FALSE(isIdleActivityVerb(nullptr));
+}
+
+void test_transfer_idle_timeout(void) {
+    TEST_ASSERT_EQUAL_UINT32(60000u, kTransferIdleMs);
+    // No open transfer never expires.
+    TEST_ASSERT_FALSE(transferExpired(false, 1000, 1000 + kTransferIdleMs * 10));
+    TEST_ASSERT_FALSE(transferExpired(true, 1000, 1000));
+    TEST_ASSERT_FALSE(transferExpired(true, 1000, 1000 + kTransferIdleMs - 1));
+    TEST_ASSERT_TRUE(transferExpired(true, 1000, 1000 + kTransferIdleMs));
+    // Across the millis() wrap.
+    TEST_ASSERT_FALSE(transferExpired(true, 0xFFFFF000u, 0x00000100u));
+    TEST_ASSERT_TRUE(transferExpired(true, 0xFFFFF000u, 0xFFFFF000u + kTransferIdleMs));
+    // A live sender answers each chunk within its reply wait (10 s, and 30 s
+    // for a commit), well inside the timeout.
+    TEST_ASSERT_TRUE(kTransferIdleMs >= 2u * 30000u);
+}
+
 int main(int /*argc*/, char** /*argv*/) {
     UNITY_BEGIN();
+    RUN_TEST(test_device_id_uses_efuse_byte_order_and_keeps_leading_zero);
+    RUN_TEST(test_device_id_uses_lowercase_hex);
+    RUN_TEST(test_legacy_info_mac_fixture);
     RUN_TEST(test_crc32_known_check_value);
     RUN_TEST(test_crc32_empty_is_zero);
     RUN_TEST(test_crc32_streaming_matches_oneshot);
@@ -320,5 +472,12 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_fread_header_and_chunk_ceiling);
     RUN_TEST(test_flist_entry_cap_and_truncation_summary);
     RUN_TEST(test_flist_nontruncated_summary);
+    RUN_TEST(test_confinement_rejects_applied_record);
+    RUN_TEST(test_delivered_blob_name_shape);
+    RUN_TEST(test_session_and_store_write_verbs);
+    RUN_TEST(test_session_hold_window);
+    RUN_TEST(test_busy_wait_steps);
+    RUN_TEST(test_idle_activity_verbs);
+    RUN_TEST(test_transfer_idle_timeout);
     return UNITY_END();
 }

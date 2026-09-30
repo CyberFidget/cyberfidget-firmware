@@ -18,6 +18,8 @@
 #ifndef LOADOUT_MANIFEST_H
 #define LOADOUT_MANIFEST_H
 
+#include <stddef.h>
+#include <stdint.h>
 #include <string>
 #include <vector>
 
@@ -83,6 +85,7 @@ struct MergedApp {
     std::string label;     ///< blob: menu label (builtin uses registry name)
     std::string blobPath;  ///< blob: confined /apps/... path to the .wasm
     int         abi = 0;   ///< blob: required HAL ABI; 0 = unversioned
+    std::string id;        ///< blob: manifest entry id; empty for builtin rows
 };
 
 /// Parse a manifest ABI string. Empty or invalid values are unversioned (0).
@@ -130,6 +133,15 @@ std::string serializeManifest(const Loadout& loadout);
 Loadout buildFromRegistry(const RegistryApp* apps, int count);
 
 /**
+ * The registry rows the menu shows when there is no readable manifest
+ * (after Reset to factory formats app storage, or on a first boot), in
+ * compile order. Same rule as the merge: a row with an empty name is an
+ * internal slot - the menu itself, the delivered-app host every ferried
+ * app launches through - and never a menu entry.
+ */
+std::vector<int> compiledMenuRows(const RegistryApp* apps, int count);
+
+/**
  * Merge a manifest with the compiled-in registry to produce the menu:
  *  - manifest entries first, in manifest order; a manifest category
  *    overrides the registry one ("" falls back to the registry category)
@@ -156,6 +168,9 @@ bool applyAdd(Loadout& loadout, const LoadoutEntry& entry);
 /// Remove the entry with `id`. Fails if not present.
 bool applyRemove(Loadout& loadout, const char* id);
 
+/// Drop every non-builtin entry and return the blob paths it referenced.
+std::vector<std::string> removeNonBuiltin(Loadout& loadout);
+
 /// Set the hidden flag on the entry with `id`. Fails if not present.
 bool applyHide(Loadout& loadout, const char* id, bool hidden);
 
@@ -170,21 +185,94 @@ bool applyHide(Loadout& loadout, const char* id, bool hidden);
 bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order);
 
 /**
+ * Swap the delivered blob of an EXISTING entry: `entry.id` names the entry;
+ * its blobPath, version, abi, name (the label) and signature are replaced
+ * with the values in `entry`. Position, category, hidden flag and format
+ * are kept. Fails (loadout untouched) on an empty/unknown id, an empty
+ * blobPath (a replace always names the new blob), or an existing entry
+ * that is not a delivered blob app (format other than "wasm" / "blob").
+ */
+bool applyReplace(Loadout& loadout, const LoadoutEntry& entry);
+
+/**
+ * Collect the non-empty `blobPath` of every op entry (add / replace) in an
+ * ops document, so the transport can confine them before applying. Returns
+ * false on a malformed document (which applyOps rejects anyway).
+ */
+bool collectOpBlobPaths(const char* opsJson, std::vector<std::string>& out);
+
+/// Longest `batch` id an ops document may carry.
+constexpr size_t kMaxBatchIdLen = 40;
+
+/**
+ * The optional top-level delivery fields of an ops document. Absent fields
+ * leave has* false. `base` is the CRC-32 of the manifest bytes the document
+ * was built against (the value `lget` reports; 0 = no manifest stored).
+ */
+struct OpsMeta {
+    bool        hasBatch = false;
+    std::string batch;
+    bool        hasBase = false;
+    uint32_t    base = 0;
+};
+
+/**
+ * Read just the top-level `batch` / `base` fields of an ops document
+ * (the ops themselves are not applied or validated here). Returns false
+ * when the document is malformed or either field is invalid: `batch` must
+ * be a string of 1..kMaxBatchIdLen printable ASCII bytes, `base` a string
+ * of 1..8 hex digits. applyOps() applies the same rules.
+ */
+bool parseOpsMeta(const char* opsJson, OpsMeta& out);
+
+/**
+ * The durable record of the last batch applied (`/apps/.applied.json`).
+ * `ops` and `entries` are the counts the original success reply carried,
+ * so a repeated batch can be answered with that exact reply.
+ */
+struct AppliedRecord {
+    std::string batch;
+    std::string result;         ///< "applied" (only successes are recorded)
+    uint32_t    crcAfter = 0;   ///< CRC-32 of the manifest after the apply
+    uint32_t    at = 0;         ///< wall-clock seconds, 0 = clock unknown
+    int         ops = 0;
+    int         entries = 0;
+    /// CRC-32 of the ops document bytes (the `lapply` header CRC). A batch
+    /// id is only a repeat when this matches too; 0 when absent.
+    uint32_t    docCrc = 0;
+};
+
+/// Serialize a record: {"batch","result","crc_after","at","ops","entries",
+/// "doc_crc"}.
+std::string serializeAppliedRecord(const AppliedRecord& rec);
+
+/// Parse a record. False on malformed JSON or a missing batch/result.
+bool parseAppliedRecord(const char* json, AppliedRecord& out);
+
+/**
  * Apply a staged-ops document to `loadout`, atomically. `opsJson` is a
  * JSON document in the transport's ops vocabulary (the write direction of
  * the serial sync protocol):
  *
- *   { "ops": [
+ *   { "batch"?: "<id>", "base"?: "<crc32 hex>",
+ *     "ops": [
  *       { "op": "add",     "entry": { "id": ..., "category": ..., ... } },
  *       { "op": "remove",  "id": ... },
  *       { "op": "hide",    "id": ..., "hidden": true },
- *       { "op": "arrange", "order": [ { "id": ..., "category"?: ... }, ... ] }
+ *       { "op": "arrange", "order": [ { "id": ..., "category"?: ... }, ... ] },
+ *       { "op": "replace", "entry": { "id": ..., "blobPath": ..., ... } }
  *   ] }
  *
- * The vocabulary is exactly adds / removes / hides + ONE declarative
- * arrange — the same staged-change set the on-device reorder and the
- * website staging model speak — so this reuses applyAdd/applyRemove/
- * applyHide/applyArrange rather than forking their logic.
+ * The vocabulary is adds / removes / hides + ONE declarative arrange — the
+ * same staged-change set the on-device reorder and the website staging
+ * model speak — plus `replace` for swapping a delivered app's blob. This
+ * reuses applyAdd/applyRemove/applyHide/applyArrange/applyReplace rather
+ * than forking their logic.
+ *
+ * `batch` and `base` are optional and validated here (see parseOpsMeta) but
+ * not acted on: the stale-revision check and the applied-batch record need
+ * the stored manifest bytes and the filesystem, so the transport session
+ * owns them. A document without them applies exactly as before.
  *
  * Atomic: the ops are applied to a working copy; if the document is
  * malformed OR any op fails (duplicate/absent id, etc.) the function

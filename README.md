@@ -107,6 +107,8 @@ Apps interact with the hardware through the **HAL API** — a set of abstraction
 
 Apps follow the `begin()` / `update()` / `end()` lifecycle and register via the `APP_ENTRY` macro in `AppManifest.h`. See any app in `lib/` for examples.
 
+**Two C++ features are off in device builds** to keep the firmware image small: exceptions (`try`/`catch`/`throw` do not compile) and the `<iostream>` streams (`std::cout`, `std::cin`). Log with `ESP_LOGx(...)` or `Serial.printf(...)` instead. Avoid `<sstream>` too: it compiles, but pulls roughly 200 KB of stream and locale code back into the image. The emulator does not enforce these limits, so an app that runs there can still fail the device build.
+
 **Apps you create through the HAL API are yours** — the linking exception in the license means they are not considered derivative works of the firmware, regardless of how they are compiled or linked.
 
 ## Manual test checklist
@@ -121,6 +123,19 @@ Automated tests can't drive real hardware. Whenever a change touches LEDs, the O
 3. **Display.** No leftover pixels/tearing from the previous app on entry; screen clears appropriately on exit.
 4. **Audio.** `stopTone()` (or equivalent) fires on `end()` — no audio bleeding into the menu or the next app.
 5. **Sleep/power-cycle.** If the app's idle state drives LEDs, confirm they also go dark on deep-sleep entry, not just on app exit.
+
+## Developer gotchas
+
+Things that have cost real bench time. None of them is a bug to fix; they are how the hardware and tools behave.
+
+- **Flash dev and bench units with `pio run -e <env> -t upload`.** Every build also writes `merged_firmware.bin` (bootloader, partition table and app in one file, starting at `0x1000`). The gaps in that file are padding, so writing it covers the settings area (NVS at `0x9000`) and erases saved WiFi, the account link and every other stored setting. Use the merged image only for a deliberate factory-fresh flash.
+- **A Fidget that seems frozen may be asleep.** After 60 s without a button press (`TASK_LASTINTERACT`) it goes into deep sleep: the screen is off and the USB serial port stops answering. Press a button to wake it. Settings > Awake & dev mode > Stay awake keeps it up while you work.
+- **Opening the USB serial port resets the board.** Wait for it to start, then send `version` until it answers before sending anything else. A command sent into the boot is lost.
+- **Any WiFi use splits internal memory for the rest of that power cycle.** After a check-in, the portal or dev mode listening, internal RAM no longer has large free blocks, even with WiFi off. Delivered (WASM) apps cope because the interpreter's stack lives in PSRAM (only a ~4 KB internal task is needed); if even that does not fit, the app restarts straight into itself ("Opening <app>..."). Bench any change that touches memory or app launch by opening a delivered app after a check-in, not only from a cold start.
+- **Nothing on the delivered-app task may touch the flash driver.** Its stack is in PSRAM, and the SDK aborts any SPI flash call (reads included) made from a PSRAM stack. New host functions for apps that need files or settings must hand that work to the loop task.
+- **Native `pio test` envs on Windows need the MSYS2 ucrt64 compiler first on `PATH`.** From Git Bash, the `/mingw64` DLLs on its default `PATH` collide with the ucrt64 toolchain and the compiler dies with no useful message. Run `PATH="/c/msys64/ucrt64/bin:$PATH" pio test -e <env>`.
+- **`pio run -v` fails at the image step on Windows.** Use plain `pio run`.
+- **Rebuild the emulator after changing a header it includes.** The WASM build compiles against this repo's headers in `lib/` (the HAL, `lib/Globals` and the built-in apps, see `wasm/CMakeLists.txt`); a changed struct, constant or signature there leaves an old emulator build out of step with the firmware until you run `wasm/build_wasm.sh` (or `build_wasm.bat`) again.
 
 ## Project Structure
 
@@ -149,6 +164,7 @@ does and how to invoke it.
 | Tool | What it does |
 |---|---|
 | [`tools/portal-preview/`](tools/portal-preview/README.md) | Serves the device's web-portal pages in a desktop browser with fixture API data, so portal UI changes can be reviewed and screenshotted without a device. Rendering harness only - not a device simulator. |
+| [`tools/trusted-roots/`](tools/trusted-roots/README.md) | Generates the device's short trusted root certificate table from `lib/TrustedRoots/roots/`, and checks that each protected host's live chain still ends in that list (also run, non-blocking, by the release workflow). |
 
 ## License
 

@@ -1,0 +1,1 @@
+`release_public_key.py --check-table` checks that the firmware production public key table is nonempty and its ids are unique. `--key-id ID --output PATH` extracts that id's public PEM for the release signing job.

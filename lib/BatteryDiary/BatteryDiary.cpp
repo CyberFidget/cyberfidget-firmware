@@ -8,7 +8,10 @@
 #include <Arduino.h>
 #include <FS.h>
 #include <LittleFS.h>
+#include <Preferences.h>
 #include <esp_attr.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 
 namespace BatteryDiary {
 namespace {
@@ -60,6 +63,35 @@ static uint32_t s_nextSampleTick = kFirstAwakeTicks;
 static uint8_t s_onTimeSubticks = 0;
 static bool s_firstAwakeSample = true;
 static ChargeCycleDetector s_cycleDetector;
+
+// The cloud worker reads the upload snapshot while the loop task appends and
+// rotates: one recursive lock around every public entry point that touches
+// the ring, the stats or s_ready (recursive: entry points call each other).
+// Held only for file work, never across a network call.
+SemaphoreHandle_t diaryLock() {
+    static SemaphoreHandle_t lock = nullptr;
+    static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+    if (lock) return lock;
+    SemaphoreHandle_t created = xSemaphoreCreateRecursiveMutex();
+    portENTER_CRITICAL(&mux);
+    if (!lock) {
+        lock = created;
+        created = nullptr;
+    }
+    portEXIT_CRITICAL(&mux);
+    if (created) vSemaphoreDelete(created);
+    return lock;
+}
+
+class Guard {
+public:
+    Guard() : lock_(diaryLock()) { if (lock_) xSemaphoreTakeRecursive(lock_, portMAX_DELAY); }
+    ~Guard() { if (lock_) xSemaphoreGiveRecursive(lock_); }
+    Guard(const Guard&) = delete;
+    Guard& operator=(const Guard&) = delete;
+private:
+    SemaphoreHandle_t lock_;
+};
 
 void defaultStats(Stats* stats) {
     if (stats == nullptr) return;
@@ -286,14 +318,31 @@ bool mountForTimerFlush() {
 }  // namespace
 
 bool begin(const char* wake_cause_name) {
+    Guard guard;
     if (!ensureDirectory()) return false;
     if (!loadStats(&s_stats)) defaultStats(&s_stats);
+    uint32_t nextSeq = s_stats.records_written + 1U;
+    Preferences sequencePrefs;
+    if (sequencePrefs.begin("upd", true)) {
+        const uint32_t floor = sequencePrefs.getUInt("usage_floor", 1);
+        if (floor > nextSeq) nextSeq = floor;
+        sequencePrefs.end();
+    }
+    File ring = LittleFS.open(kRingPath, FILE_READ);
+    if (ring && ring.size() >= kRecordSize && ring.seek(ring.size() - kRecordSize, SeekSet)) {
+        uint8_t encoded[kRecordSize];
+        if (ring.read(encoded, sizeof(encoded)) == sizeof(encoded)) {
+            Record last;
+            if (decode(encoded, &last) && last.seq < UINT32_MAX && last.seq + 1U > nextSeq)
+                nextSeq = last.seq + 1U;
+        }
+    }
+    ring.close();
     if (!rtcValid()) {
-        resetRtc(s_stats.records_written + 1U, s_stats.checkin_count,
+        resetRtc(nextSeq, s_stats.checkin_count,
                  (uint8_t)(s_stats.boot_count & 0xFFU));
     } else {
-        if (s_rtc.next_seq <= s_stats.records_written)
-            s_rtc.next_seq = s_stats.records_written + 1U;
+        if (s_rtc.next_seq < nextSeq) s_rtc.next_seq = nextSeq;
         if (s_rtc.checkin_count > s_stats.checkin_count)
             s_stats.checkin_count = s_rtc.checkin_count;
     }
@@ -306,6 +355,7 @@ bool begin(const char* wake_cause_name) {
 }
 
 void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr) {
+    Guard guard;
     if (!s_ready) return;
     ++s_awakeTicks;
     if (++s_onTimeSubticks >= 5U) {
@@ -329,6 +379,7 @@ void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr) {
 }
 
 void onTimerCheckin(int32_t vcell_mv) {
+    Guard guard;
     if (!rtcValid()) resetRtc(1, 0, 0);
     ++s_rtc.checkin_count;
     int16_t mv = (vcell_mv >= INT16_MIN && vcell_mv <= INT16_MAX)
@@ -337,10 +388,12 @@ void onTimerCheckin(int32_t vcell_mv) {
 }
 
 bool timerFlushDue() {
+    Guard guard;
     return rtcValid() && s_rtc.count >= kRtcFlushThreshold;
 }
 
 bool flushTimerCheckins() {
+    Guard guard;
     if (!mountForTimerFlush()) return false;
     if (!loadStats(&s_stats)) defaultStats(&s_stats);
     bool ok = flushRtcInternal();
@@ -350,6 +403,7 @@ bool flushTimerCheckins() {
 }
 
 void onTimerShutdown(int32_t vcell_mv) {
+    Guard guard;
     if (!rtcValid()) resetRtc(1, 0, 0);
     int16_t mv = (vcell_mv >= INT16_MIN && vcell_mv <= INT16_MAX)
                      ? (int16_t)vcell_mv : -1;
@@ -358,6 +412,7 @@ void onTimerShutdown(int32_t vcell_mv) {
 }
 
 void onSleepEnter(float vcell, float soc_pct, float crate_pct_hr) {
+    Guard guard;
     if (!s_ready) return;
     appendRtc(makeNextRecord(SLEEP_ENTER, millis(), millivolts(vcell),
                              hundredths(soc_pct), hundredths(crate_pct_hr)));
@@ -365,6 +420,7 @@ void onSleepEnter(float vcell, float soc_pct, float crate_pct_hr) {
 }
 
 void onRuntimeShutdown(float vcell, float soc_pct, float crate_pct_hr) {
+    Guard guard;
     if (!s_ready) return;
     appendRtc(makeNextRecord(SHUTDOWN_RUNTIME, millis(), millivolts(vcell),
                              hundredths(soc_pct), hundredths(crate_pct_hr)));
@@ -373,12 +429,14 @@ void onRuntimeShutdown(float vcell, float soc_pct, float crate_pct_hr) {
 
 void onFlushMarker(uint32_t app_index, float vcell, float soc_pct,
                    float crate_pct_hr) {
+    Guard guard;
     if (!s_ready) return;
     appendDirect(FLUSH_MARKER, app_index, millivolts(vcell),
                  hundredths(soc_pct), hundredths(crate_pct_hr));
 }
 
 bool getStats(Stats* stats) {
+    Guard guard;
     if (!s_ready || stats == nullptr) return false;
     *stats = s_stats;
     if (rtcValid() && s_rtc.checkin_count > stats->checkin_count)
@@ -387,6 +445,7 @@ bool getStats(Stats* stats) {
 }
 
 size_t readLastRecords(Record* records, size_t capacity, uint32_t* total_records) {
+    Guard guard;
     if (total_records != nullptr) *total_records = 0;
     if (!s_ready || records == nullptr || capacity == 0) return 0;
     File file = LittleFS.open(kRingPath, FILE_READ);
@@ -409,8 +468,42 @@ size_t readLastRecords(Record* records, size_t capacity, uint32_t* total_records
     return count;
 }
 
+size_t readUploadSnapshot(Record* records, size_t capacity, uint32_t* total_records,
+                          uint8_t stats_bytes[38]) {
+    Guard guard;
+    if (total_records) *total_records = 0;
+    if (!records || !capacity || !stats_bytes) return 0;
+    // Normal boots already own a mounted LittleFS through LoadoutStore.
+    // The timer flush helper ends that shared mount, so flush in place here.
+    const bool wasReady = s_ready;
+    if (!wasReady && !mountForTimerFlush()) return 0;
+    if (!wasReady && !loadStats(&s_stats)) defaultStats(&s_stats);
+    s_ready = true;
+    if (!flushRtcInternal()) {
+        s_ready = wasReady;
+        return 0;
+    }
+    File stats = LittleFS.open(kStatsPath, FILE_READ);
+    Stats checked;
+    const bool statsOk = stats && stats.size() == 38 &&
+                         stats.read(stats_bytes, 38) == 38 && decodeStats(stats_bytes, &checked);
+    stats.close();
+    const size_t count = statsOk ? readLastRecords(records, capacity, total_records) : 0;
+    s_ready = wasReady;
+    return count;
+}
+
 bool clear() {
+    Guard guard;
     if (!s_ready || !ensureDirectory()) return false;
+    // Sequence is the server's de-duplication key. Keep its next value even
+    // when the ring and the other counters are deliberately reset.
+    const uint32_t nextSeq = rtcValid() ? s_rtc.next_seq : s_stats.records_written + 1U;
+    Preferences sequencePrefs;
+    if (!sequencePrefs.begin("upd", false)) return false;
+    const bool saved = sequencePrefs.putUInt("usage_floor", nextSeq) != 0;
+    sequencePrefs.end();
+    if (!saved) return false;
     File ring = LittleFS.open(kRingPath, FILE_WRITE);
     if (!ring) return false;
     ring.close();
@@ -419,7 +512,7 @@ bool clear() {
     defaultStats(&s_stats);
     s_stats.boot_count = lifetime_boots;
     s_stats.cum_on_time_s = lifetime_on_s;
-    resetRtc(1, 0, (uint8_t)(lifetime_boots & 0xFFU));
+    resetRtc(nextSeq, 0, (uint8_t)(lifetime_boots & 0xFFU));
     s_awakeTicks = 0;
     s_nextSampleTick = kFirstAwakeTicks;
     s_onTimeSubticks = 0;

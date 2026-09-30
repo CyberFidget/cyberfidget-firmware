@@ -97,6 +97,17 @@ class Dev:
                 break
         return out
 
+def read_syncinfo(d, timeout=4.0):
+    """Read syncinfo through its fw line, which is always last: the line
+    count grows as firmware adds keys, and a fixed-count read leaves the
+    rest to be taken as the reply to the next command."""
+    lines = []
+    end = time.time() + timeout
+    while time.time() < end and not any(".fw=" in l for l in lines):
+        lines += d.read_lines(n=1, timeout=max(0.1, end - time.time()))
+    return lines
+
+
 def crc(b):
     return format(zlib.crc32(b) & 0xFFFFFFFF, "08x")
 
@@ -173,7 +184,12 @@ def main():
 
         # --- 1. syncinfo
         d.send_line("syncinfo")
-        lines = d.read_lines(n=3, timeout=4)
+        # Read through the fw line, which is always last; the line count
+        # grows as firmware adds keys (id arrived after 1.3.3).
+        lines = []
+        end = time.time() + 4
+        while time.time() < end and not any(".fw=" in l for l in lines):
+            lines += d.read_lines(n=1, timeout=max(0.1, end - time.time()))
         ok = any("fs_total" in l for l in lines) and any("manifest" in l for l in lines) and any(".fw=" in l for l in lines)
         report("syncinfo three report lines", ok, " | ".join(lines))
         fs_free0 = 0
@@ -236,7 +252,7 @@ def main():
         okline, tr = write_file(d, "/apps/bench_crlf.bin", b"CRLF" * 600, term=b"\r\n")
         report("CRLF-terminated flow no desync", bool(okline), okline or str(tr))
         d.send_line("syncinfo", b"\r\n")
-        lines = d.read_lines(n=3, timeout=4)
+        lines = read_syncinfo(d)
         report("session alive after CRLF flow", any("fs_total" in l for l in lines))
 
         # --- 7. lget baseline
@@ -273,7 +289,7 @@ def main():
         r = d.read_lines(n=1, timeout=8)
         report("deeply nested lapply rejected cleanly", bool(r) and r[0].startswith("[err]"), r[0] if r else "")
         d.send_line("syncinfo")
-        lines = d.read_lines(n=3)
+        lines = read_syncinfo(d)
         report("device alive after deep-nest reject", any("fs_total" in l for l in lines))
 
         # reboot, verify persistence. A fixed post-reset delay races the boot:
@@ -327,7 +343,7 @@ def main():
             r = d.read_lines(n=1)
             report(f"cleanup: fdelete {p}", bool(r) and (".ok" in r[0] or ".absent" in r[0]), r[0] if r else "")
         d.send_line("syncinfo")
-        lines = d.read_lines(n=3)
+        lines = read_syncinfo(d)
         fs_free1 = 0
         for l in lines:
             for tok in l.split():

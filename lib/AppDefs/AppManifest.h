@@ -60,3 +60,18 @@ APP_ENTRY(APP_TIMERS,                "Timers",              "Tools",          []
 // no menu leaf of its own (like APP_MENU); blob leaves point their AppIndex
 // here after staging the file path via WasmFsApp::setPending.
 APP_ENTRY(APP_WASM_HOST,             "",                    "",               [](){ WasmFsApp::wasmFsAppBegin();             }, [](){ WasmFsApp::wasmFsAppEnd();             }, [](){ WasmFsApp::wasmFsAppRun();             })
+// Status screen behind the main-menu status bar: last check-in, battery
+// detail, pending notifications. Appended last so existing indices stay put.
+APP_ENTRY(APP_STATUS,                "Status",              "",               StatusView::appBegin,                             StatusView::appEnd,                             StatusView::appUpdate                      )
+APP_ENTRY(APP_LINK,                  "Link",                "Settings",       DeviceLinkApp::begin,                            DeviceLinkApp::end,                            DeviceLinkApp::update                      )
+// Update prompt surfaces: the root "Check for updates" item and Settings > Updates.
+APP_ENTRY(APP_CHECK_UPDATES,         "Check for updates",   "",               UpdatePrompt::checkBegin,                        UpdatePrompt::checkEnd,                        UpdatePrompt::checkUpdate                  )
+APP_ENTRY(APP_UPDATES,               "Updates",             "Settings",       UpdatePrompt::settingsBegin,                     UpdatePrompt::settingsEnd,                     UpdatePrompt::settingsUpdate               )
+// Off / Stay awake / Dev mode (lib/UpdatePrompt/AwakeMode).
+APP_ENTRY(APP_AWAKE,                 "Awake & dev mode",    "Settings",       AwakeMode::screenBegin,                          AwakeMode::screenEnd,                          AwakeMode::screenUpdate                    )
+// Settings > Setup WiFi: the portal, opening on its WiFi page (switchToApp
+// turns it into APP_WEB_PORTAL, so the radio rules for the portal apply).
+APP_ENTRY(APP_SETUP_WIFI,            "Setup WiFi",          "Settings",       [](){ WebPortalApp::requestWifiLanding(); webPortalApp.begin(); }, [](){ webPortalApp.end(); }, [](){ webPortalApp.update(); })
+// Settings > Saved WiFi: names in the order tried, Use this first / Forget.
+APP_ENTRY(APP_SAVED_WIFI,            "Saved WiFi",          "Settings",       SavedWifiScreen::begin,                          SavedWifiScreen::end,                          SavedWifiScreen::update                    )
+APP_ENTRY(APP_FACTORY_RESET,         "Reset to factory",   "Settings",       FactoryReset::begin,                             FactoryReset::end,                             FactoryReset::update                       )

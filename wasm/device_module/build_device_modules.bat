@@ -47,6 +47,13 @@ echo === bench.wasm (freestanding clang, no libc) ===
  -Wl,--no-entry -Wl,--strip-all -o bench\bench.wasm bench\bench.c
 if errorlevel 1 exit /b 1
 
+echo === deep_probe.wasm (bench fixture: runs out of stack on purpose) ===
+"%CF_EMSDK%\upstream\bin\clang.exe" --target=wasm32 -O2 -nostdlib ^
+ -Wl,--no-entry -Wl,--strip-all -Wl,--export=app_begin -Wl,--export=app_update ^
+ -Wl,--export=app_end -Wl,--export=app_handle_button ^
+ -o ..\..\test\bench\fixtures\deep_probe.wasm bench\deep_probe.c
+if errorlevel 1 exit /b 1
+
 echo === reaction.wasm ===
 call em++ %APPFLAGS% -I ..\..\lib\ReactionTimeGame -DCF_WASM_APP_REACTION ^
  shims\cf_app_glue.cpp ..\..\lib\ReactionTimeGame\ReactionTimeGame.cpp -o reaction.wasm

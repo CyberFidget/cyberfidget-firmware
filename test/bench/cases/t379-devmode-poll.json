@@ -1,0 +1,924 @@
+{
+  "name": "Awake & dev mode: listening delivers within two check-ins, every way out, the latch, Bluetooth apps",
+  "reviewer_setup": "A local_test build. The unit needs saved WiFi (wifi <ssid>|<pass>). Start a LAN test-mode copy of the site (isolated data directory, never a live account) and link this unit's device id to a test account there. Environment: CF_BENCH_BASE=http://<LAN-IP>:<port>, CF_BENCH_TOKEN=<the unit's 43-character link credential>, CF_DEV_STAGE_A / CF_DEV_STAGE_B = host commands that send one wasm app with manifest id $CF_DEV_APP_ID through the site as the studio does (A with fixtures/breakout.wasm, B with fixtures/stopwatch.wasm, so B is a new version of the same id - the site needs op 'replace' for an app already on the Fidget), CF_DEV_APP_ID=<that id>, CF_DEV_STUDIO_ON = a host command that marks the Studio as sending to this Fidget (POST /api/device-studio-activity.php {device_id, active:true} as the account); the site paces dev mode at 2 s only while the Studio is active (60 s), 30 s otherwise. Run: python test/bench/cf_replay.py test/bench/cases/t379-devmode-poll.json --port <PORT> --out <dir> [--part delivery|exits|latch|bluetooth]. Every part starts and ends with the mode Off. A delivered app's interpreter stack is in PSRAM, so it opens after the network was used with no restart and listening continues beside it while the heap allows; a send of the running app relaunches it in place (no Back press).",
+  "parts": [
+    {
+      "name": "delivery",
+      "steps": [
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "timeout_s": 4
+        },
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "wait",
+          "ms": 6000,
+          "why": "let the start-up check-in (if linked) finish before the credential changes"
+        },
+        {
+          "do": "command",
+          "command": "cloud base $CF_BENCH_BASE",
+          "expand_env": true,
+          "contains": [
+            "[cmd] cloud.base=ok"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "cloud token $CF_BENCH_TOKEN",
+          "expand_env": true,
+          "contains": [
+            "[cmd] cloud.token=ok"
+          ]
+        },
+        {
+          "do": "wait",
+          "ms": 11000,
+          "why": "the site takes a mode change at most once per 10 s; the start-up check-in just reported normal"
+        },
+        {
+          "do": "host",
+          "command": "$CF_DEV_STUDIO_ON",
+          "expand_env": true,
+          "timeout_s": 30
+        },
+        {
+          "do": "command",
+          "command": "awake set dev until",
+          "until": "[dev] poll=1 ",
+          "timeout_s": 30,
+          "order": [
+            "[awake] set mode=dev stop=until effect=restart",
+            "[awake] boot mode=dev stop=until listen=1 bt_released=1",
+            "[awake] listen=start",
+            "[dev] poll=1 http="
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "watch",
+          "until": "[dev] poll=3 ",
+          "timeout_s": 15,
+          "matches": "wait_ms=(19|2[0-9])[0-9]{2} "
+        },
+        {
+          "do": "command",
+          "command": "awake",
+          "contains": [
+            "awake.mode=dev stop=until listen=1 worker=1",
+            "connected=1",
+            "bt_restart=1"
+          ]
+        },
+        {
+          "do": "host",
+          "command": "$CF_DEV_STAGE_A",
+          "expand_env": true,
+          "timeout_s": 30
+        },
+        {
+          "do": "watch",
+          "until": "[dev] delivered batch=",
+          "timeout_s": 9,
+          "count": "[dev] poll=",
+          "max_count": 2
+        },
+        {
+          "do": "wait",
+          "ms": 1500
+        },
+        {
+          "do": "assert_lget",
+          "id": "$CF_DEV_APP_ID"
+        },
+        {
+          "do": "command",
+          "command": "launch $CF_DEV_APP_ID",
+          "expand_env": true,
+          "timeout_s": 3,
+          "contains": [
+            "[awake] beside-app=listen",
+            "[cmd] launch.ok=blob"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "wait",
+          "ms": 2500
+        },
+        {
+          "do": "assert_wasmstat",
+          "frames_gt": 0,
+          "error": "none",
+          "timeout_s": 3.0
+        },
+        {
+          "do": "command",
+          "command": "awake",
+          "contains": [
+            "listen=1 worker=1"
+          ]
+        },
+        {
+          "do": "host",
+          "command": "$CF_DEV_STUDIO_ON",
+          "expand_env": true,
+          "timeout_s": 30
+        },
+        {
+          "do": "host",
+          "command": "$CF_DEV_STAGE_B",
+          "expand_env": true,
+          "timeout_s": 30
+        },
+        {
+          "do": "watch",
+          "until": "from=app",
+          "timeout_s": 12,
+          "order": [
+            "[dev] delivered batch=",
+            "[dev] relaunch id="
+          ]
+        },
+        {
+          "do": "watch",
+          "until": "[boot] fw=",
+          "timeout_s": 3,
+          "expect_absent": true
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "wait",
+          "ms": 2500
+        },
+        {
+          "do": "assert_wasmstat",
+          "frames_gt": 0,
+          "error": "none",
+          "timeout_s": 3.0
+        },
+        {
+          "do": "screencap",
+          "save": "reopened",
+          "review": "human"
+        },
+        {
+          "do": "launch",
+          "id": "menu"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "until": "[awake] boot mode=off",
+          "timeout_s": 15
+        }
+      ]
+    },
+    {
+      "name": "exits",
+      "steps": [
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "timeout_s": 4
+        },
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set dev idle",
+          "until": "[dev] poll=1 ",
+          "timeout_s": 30,
+          "contains": [
+            "[awake] boot mode=dev stop=idle listen=1"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake idle 15",
+          "contains": [
+            "[cmd] awake.idle_ms=15000"
+          ]
+        },
+        {
+          "do": "watch",
+          "until": "[awake] boot mode=off",
+          "timeout_s": 40,
+          "order": [
+            "[awake] end=idle mode=dev",
+            "[checkin] reason=dev",
+            "wifi=off",
+            "[boot] fw=",
+            "[awake] boot mode=off stop=idle listen=0 bt_released=0",
+            "ended=idle"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "screencap",
+          "save": "after-idle-end",
+          "review": "human"
+        },
+        {
+          "do": "command",
+          "command": "awake set dev until",
+          "until": "[dev] poll=1 ",
+          "timeout_s": 30
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake battery low",
+          "contains": [
+            "[cmd] awake.battery=low"
+          ]
+        },
+        {
+          "do": "watch",
+          "until": "[awake] boot mode=off",
+          "timeout_s": 90,
+          "order": [
+            "[awake] end=battery mode=dev",
+            "wifi=off",
+            "[boot] fw=",
+            "ended=battery"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set stay until",
+          "contains": [
+            "[awake] set mode=stay stop=until effect=save"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake safety 10",
+          "contains": [
+            "[cmd] awake.safety_ms=10000"
+          ]
+        },
+        {
+          "do": "watch",
+          "until": "[awake] end=safety-net mode=stay",
+          "timeout_s": 20
+        },
+        {
+          "do": "command",
+          "command": "awake",
+          "contains": [
+            "awake.mode=off"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake safety 0",
+          "contains": [
+            "awake.safety_ms=172800000"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake set dev until",
+          "until": "[dev] poll=1 ",
+          "timeout_s": 30
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "until": "[awake] boot mode=off",
+          "timeout_s": 15,
+          "order": [
+            "[awake] set mode=off stop=idle effect=restart",
+            "wifi=off",
+            "[boot] fw=",
+            "[awake] boot mode=off stop=idle listen=0 bt_released=0"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "latch",
+      "steps": [
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "timeout_s": 4
+        },
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake legacy 2",
+          "contains": [
+            "[cmd] awake.legacy=2"
+          ]
+        },
+        {
+          "do": "reset",
+          "until": "[awake] boot",
+          "timeout_s": 25,
+          "order": [
+            "[awake] migrated legacy=2 mode=dev stop=until write=ok",
+            "[awake] boot mode=dev stop=until listen=1 bt_released=1"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "upd",
+          "matches": "upd\\.key=dev type=u8 value=2[\\s\\S]*upd\\.key=awake type=u8 value=2|upd\\.key=awake type=u8 value=2[\\s\\S]*upd\\.key=dev type=u8 value=2"
+        },
+        {
+          "do": "reset",
+          "until": "[awake] boot",
+          "timeout_s": 25,
+          "contains": [
+            "[awake] boot mode=dev stop=until listen=1"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set stay idle",
+          "until": "[awake] boot mode=stay",
+          "timeout_s": 15
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "reset",
+          "until": "[awake] boot",
+          "timeout_s": 25,
+          "contains": [
+            "[awake] boot mode=stay stop=idle listen=0 bt_released=0"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "wait",
+          "ms": 70000
+        },
+        {
+          "do": "command",
+          "command": "app",
+          "contains": [
+            "[cmd] app.index="
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "contains": [
+            "effect=save"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "bluetooth",
+      "steps": [
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "timeout_s": 4
+        },
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set dev until",
+          "until": "[dev] poll=1 ",
+          "timeout_s": 30
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "launch",
+          "id": "menu"
+        },
+        {
+          "do": "command",
+          "command": "launch Music Player",
+          "contains": [
+            "[awake] bluetooth=ask app=music"
+          ]
+        },
+        {
+          "do": "wait",
+          "ms": 600
+        },
+        {
+          "do": "screencap",
+          "save": "bluetooth-prompt",
+          "review": "human"
+        },
+        {
+          "do": "btn",
+          "index": 1,
+          "action": "tap"
+        },
+        {
+          "do": "command",
+          "command": "btn 5 tap",
+          "timeout_s": 1.5,
+          "contains": [
+            "[awake] bluetooth=cancel"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "app",
+          "contains": [
+            "app.name=menu"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake",
+          "contains": [
+            "worker=1"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "launch Music Player",
+          "contains": [
+            "[awake] bluetooth=ask app=music"
+          ]
+        },
+        {
+          "do": "wait",
+          "ms": 600
+        },
+        {
+          "do": "command",
+          "command": "btn 5 tap",
+          "until": "[awake] boot",
+          "timeout_s": 20,
+          "order": [
+            "[awake] bluetooth=restart",
+            "wifi=off",
+            "[boot] fw=",
+            "[awake] boot mode=dev stop=until listen=0 bt_released=0"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "app",
+          "contains": [
+            "app.name=Music Player"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake",
+          "contains": [
+            "awake.mode=dev stop=until listen=0 worker=0",
+            "bt_restart=0"
+          ]
+        },
+        {
+          "do": "reset",
+          "until": "[dev] poll=1 ",
+          "timeout_s": 30,
+          "contains": [
+            "[awake] boot mode=dev stop=until listen=1 bt_released=1"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "until": "[awake] boot mode=off",
+          "timeout_s": 15
+        }
+      ]
+    },
+    {
+      "name": "reopen",
+      "steps": [
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "timeout_s": 4
+        },
+        {
+          "do": "command",
+          "command": "cloud bootcheck on",
+          "contains": [
+            "[cmd] cloud.bootcheck=on"
+          ]
+        },
+        {
+          "do": "reset",
+          "until": "[checkin] boot-result=",
+          "timeout_s": 30,
+          "matches": "\\[checkin\\] reason=boot join_ms=[1-9]"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "launch",
+          "id": "menu"
+        },
+        {
+          "do": "command",
+          "command": "launch $CF_DEV_APP_ID",
+          "expand_env": true,
+          "timeout_s": 3,
+          "contains": [
+            "[cmd] launch.ok=blob"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "wait",
+          "ms": 2500
+        },
+        {
+          "do": "assert_wasmstat",
+          "frames_gt": 0,
+          "error": "none",
+          "timeout_s": 3.0
+        },
+        {
+          "do": "command",
+          "command": "app",
+          "contains": [
+            "app.index=46"
+          ]
+        },
+        {
+          "do": "launch",
+          "id": "menu"
+        },
+        {
+          "do": "command",
+          "command": "cloud bootcheck off",
+          "contains": [
+            "[cmd] cloud.bootcheck=off"
+          ]
+        },
+        {
+          "do": "reset",
+          "until": "[checkin] reason=boot skip=",
+          "timeout_s": 30,
+          "contains": [
+            "skip=boot-check-off"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "launch $CF_DEV_APP_ID",
+          "expand_env": true,
+          "timeout_s": 1.5,
+          "contains": [
+            "[cmd] launch.ok=blob"
+          ]
+        },
+        {
+          "do": "wait",
+          "ms": 2500
+        },
+        {
+          "do": "assert_wasmstat",
+          "frames_gt": 0,
+          "error": "none",
+          "timeout_s": 3.0
+        },
+        {
+          "do": "launch",
+          "id": "menu"
+        },
+        {
+          "do": "command",
+          "command": "cloud bootcheck on",
+          "contains": [
+            "[cmd] cloud.bootcheck=on"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "crashloop",
+      "steps": [
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "timeout_s": 4
+        },
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "wait",
+          "ms": 6000,
+          "why": "let the start-up check-in finish (cloud base is refused while a session runs)"
+        },
+        {
+          "do": "command",
+          "command": "cloud base $CF_BENCH_BASE",
+          "expand_env": true,
+          "contains": [
+            "[cmd] cloud.base=ok"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "cloud token $CF_BENCH_TOKEN",
+          "expand_env": true,
+          "contains": [
+            "[cmd] cloud.token=ok"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake crash 3",
+          "contains": [
+            "[cmd] awake.crash=3"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake set dev until",
+          "until": "[awake] boot mode=off",
+          "timeout_s": 90,
+          "order": [
+            "[awake] boot mode=dev",
+            "[awake] listen=start",
+            "[awake] test-crash left=2",
+            "abort()",
+            "[awake] abnormal-reset count=1",
+            "[awake] test-crash left=1",
+            "[awake] abnormal-reset count=2",
+            "[awake] test-crash left=0",
+            "[awake] abnormal-reset count=3",
+            "[awake] end=restart-loop mode=dev write=ok",
+            "[awake] boot mode=off stop=idle listen=0 bt_released=0"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake",
+          "contains": [
+            "awake.mode=off",
+            "worker=0"
+          ]
+        },
+        {
+          "do": "reset",
+          "until": "[awake] boot",
+          "timeout_s": 25,
+          "contains": [
+            "[awake] boot mode=off"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake crash 0",
+          "contains": [
+            "[cmd] awake.crash=0"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "stuck",
+      "steps": [
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "timeout_s": 4
+        },
+        {
+          "do": "reset"
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "wait",
+          "ms": 6000
+        },
+        {
+          "do": "command",
+          "command": "cloud base $CF_BENCH_BASE",
+          "expand_env": true,
+          "contains": [
+            "[cmd] cloud.base=ok"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "cloud token $CF_BENCH_TOKEN",
+          "expand_env": true,
+          "contains": [
+            "[cmd] cloud.token=ok"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake set dev until",
+          "until": "[dev] poll=1 ",
+          "timeout_s": 30
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "launch",
+          "id": "menu"
+        },
+        {
+          "do": "command",
+          "command": "awake stall 20000",
+          "contains": [
+            "[cmd] awake.stall=20000"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake poll",
+          "timeout_s": 1.5,
+          "contains": [
+            "[cmd] awake.poll=now"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "launch Voice Notes",
+          "until": "[awake] pause=stuck",
+          "timeout_s": 15
+        },
+        {
+          "do": "command",
+          "command": "app",
+          "contains": [
+            "app.name=menu"
+          ]
+        },
+        {
+          "do": "watch",
+          "until": "[dev] poll=",
+          "timeout_s": 25
+        },
+        {
+          "do": "command",
+          "command": "awake stall 20000",
+          "contains": [
+            "[cmd] awake.stall=20000"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "awake poll",
+          "timeout_s": 1.5,
+          "contains": [
+            "[cmd] awake.poll=now"
+          ]
+        },
+        {
+          "do": "command",
+          "command": "launch $CF_DEV_APP_ID",
+          "expand_env": true,
+          "timeout_s": 3,
+          "contains": [
+            "[awake] beside-app=listen",
+            "[cmd] launch.ok=blob"
+          ]
+        },
+        {
+          "do": "wait_cli"
+        },
+        {
+          "do": "wait",
+          "ms": 2500
+        },
+        {
+          "do": "assert_wasmstat",
+          "frames_gt": 0,
+          "error": "none",
+          "timeout_s": 3.0
+        },
+        {
+          "do": "launch",
+          "id": "menu"
+        },
+        {
+          "do": "command",
+          "command": "awake set off",
+          "until": "[awake] boot mode=off",
+          "timeout_s": 20
+        }
+      ]
+    }
+  ]
+}

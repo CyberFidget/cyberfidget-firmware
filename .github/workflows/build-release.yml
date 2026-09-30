@@ -78,10 +78,15 @@ env:
   # junk entries. Bump this on purpose, with a build to prove it, never by
   # drive-by. Keep it in step with what developers run locally.
   PLATFORMIO_VERSION: '6.2.0'
+  # Board revisions supported by this release image.
+  HW_MIN_REV: '1.2'
+  HW_MAX_REV: '1.2'
 
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.plan.outputs.tag }}
 
     steps:
       - name: Checkout
@@ -89,6 +94,9 @@ jobs:
         with:
           fetch-depth: 0   # full history + tags: generate_version.py and the
                            # iteration auto-pick both need them
+
+      - name: Check production signing key table
+        run: python -B scripts/release_public_key.py --check-table
 
       # ---------------------------------------------------------------------
       # Work out what we are releasing, before doing anything irreversible.
@@ -345,6 +353,12 @@ jobs:
       # ---------------------------------------------------------------------
       # Build
       # ---------------------------------------------------------------------
+      # Blocking: the committed trusted root table must match the .der files
+      # in lib/TrustedRoots/roots/, or the device would ship a list nobody
+      # reviewed. -B keeps Python from writing bytecode into the checkout.
+      - name: Check the trusted root table is current
+        run: python -B tools/trusted-roots/generate.py --check
+
       - name: Install PlatformIO
         run: pip install "platformio==${PLATFORMIO_VERSION}" esptool
 
@@ -357,10 +371,24 @@ jobs:
       # is silently discarded and the binary comes out branded "1.3.3 / ci-dev"
       # while the run is cutting v1.3.3-rc2. CYBERFIDGET_RELEASE_TAG is ours and
       # nothing stomps it. Both paths then produce identical version strings.
+      #
+      # Build-time guard: CF_BUILD_PERF_STRICT makes scripts/memoize_lib_build.py
+      # fail the build if its library-setup patch did not apply or a build phase
+      # blew its budget (both budgets are far above normal, so a slow runner does
+      # not trip them). The grep catches the script not running at all. The step
+      # timeout bounds a hung build; a normal build takes ~4 min here.
       - name: Build firmware
+        timeout-minutes: 30
         env:
           CYBERFIDGET_RELEASE_TAG: ${{ steps.plan.outputs.tag }}
-        run: pio run -e local
+          CF_BUILD_PERF_STRICT: '1'
+        run: |
+          set -o pipefail
+          pio run -e local 2>&1 | tee build.log
+          grep -q '^\[memoize_lib_build\] library setup memoized' build.log \
+            || { echo "::error::memoize_lib_build did not run; see platformio.ini extra_scripts"; exit 1; }
+          grep -q '^\[memoize_lib_build\] dependency scan' build.log \
+            || { echo "::error::build-time tripwire did not report; budgets unchecked"; exit 1; }
 
       # Cheap insurance against shipping a binary that reports the wrong thing.
       # The device's boot banner and `version` CLI report FW_VERSION_FULL_STRING
@@ -406,8 +434,31 @@ jobs:
           echo "FW_VERSION=$FULL" >> "$GITHUB_ENV"
           echo "Embedded version \`$FULL\` (type \`$TYPE\`)" >> "$GITHUB_STEP_SUMMARY"
 
+      - name: Check app image and write release info
+        env:
+          TAG: ${{ steps.plan.outputs.tag }}
+        run: |
+          python scripts/release_image.py .pio/build/local/firmware.bin \
+            --info .pio/build/local/release-info.json \
+            --version "${TAG#v}" --hw-min-rev "$HW_MIN_REV" --hw-max-rev "$HW_MAX_REV"
+
+      # The device trusts only the short root list in lib/TrustedRoots. Warn,
+      # never fail, when a protected host's live chain no longer ends in it:
+      # a host changing certificate authority must not block a firmware
+      # release, but it has to be seen before devices lose that host.
+      # -B keeps Python from writing bytecode into the checkout.
+      - name: Check protected hosts against the trusted root list
+        continue-on-error: true
+        run: python -B tools/trusted-roots/check_chains.py
+
       - name: Merge firmware binary
         run: |
+          # dio on purpose: PlatformIO writes dio into every image header
+          # it builds when platformio.ini asks for qio (the platform's
+          # _get_board_flash_mode maps qio/qout -> dio); the qio setting
+          # only selects the QIO-capable second-stage bootloader, which
+          # switches the flash to QIO itself. Matching dio here keeps the
+          # merged image identical to what a developer upload writes.
           python -m esptool --chip esp32 merge_bin \
             -o .pio/build/local/merged_firmware.bin \
             --flash_mode dio --flash_freq 80m --flash_size 8MB \
@@ -507,15 +558,29 @@ jobs:
           # commit list since the previous release underneath it.
           body_path: ${{ env.SUMMARY_PATH }}
           generate_release_notes: true
-          draft: false
+          # The protected sign job publishes only after the signature assets
+          # are uploaded and verified against the firmware's public key.
+          draft: true
           prerelease: ${{ steps.plan.outputs.prerelease }}
           # Companion assets are absent when the best-effort steps above fail;
           # unmatched patterns must not fail the release.
           fail_on_unmatched_files: false
           files: |
             ${{ env.MERGED_PATH }}
+            .pio/build/local/firmware.bin
+            .pio/build/local/release-info.json
             companion-pack.zip
             companion-index.html
+
+      # Pass exactly the checked app image to the protected signing job.
+      - name: Hold app image for signing
+        if: steps.plan.outputs.dry_run != 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: app-image-to-sign
+          path: .pio/build/local/firmware.bin
+          if-no-files-found: error
+          retention-days: 1
 
       # ---------------------------------------------------------------------
       # Post-release bump. Stable only: an RC series iterates toward a single
@@ -558,3 +623,69 @@ jobs:
           else
             echo "Released $TAG" >> "$GITHUB_STEP_SUMMARY"
           fi
+
+  sign:
+    needs: release
+    if: >-
+      (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/'))
+      || (github.event_name == 'workflow_dispatch' && github.ref_name == github.event.repository.default_branch && inputs.dry_run != true)
+    runs-on: ubuntu-latest
+    environment: release-signing
+    steps:
+      - name: Checkout firmware key table
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release.outputs.tag }}
+      - name: Download exact app image
+        uses: actions/download-artifact@v4
+        with:
+          name: app-image-to-sign
+      - name: Sign and upload app signature
+        env:
+          SIGNING_KEY: ${{ secrets.FIRMWARE_SIGNING_KEY }}
+          KEY_ID: ${{ vars.FIRMWARE_SIGNING_KEY_ID }}
+          GH_TOKEN: ${{ github.token }}
+          # Through env, never ${{ }} in the script: a tag name may hold shell
+          # syntax, and this job has the signing key on disk.
+          TAG: ${{ needs.release.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::FIRMWARE_SIGNING_KEY is missing; release remains a draft"
+            exit 1
+          fi
+          if [ -z "$KEY_ID" ]; then
+            echo "::error::FIRMWARE_SIGNING_KEY_ID is missing; release remains a draft"
+            exit 1
+          fi
+          if ! [[ "$KEY_ID" =~ ^[a-z0-9-]{1,31}$ ]]; then
+            echo "::error::FIRMWARE_SIGNING_KEY_ID must be a configured key id"
+            exit 1
+          fi
+          umask 077
+          TEMP_DIR="$(mktemp -d)"
+          trap 'rm -rf "$TEMP_DIR"' EXIT
+          python -B scripts/release_public_key.py --key-id "$KEY_ID" --output "$TEMP_DIR/firmware-public.pem"
+          printf '%s\n' "$SIGNING_KEY" > "$TEMP_DIR/private.pem"
+          unset SIGNING_KEY
+          openssl dgst -sha256 -sign "$TEMP_DIR/private.pem" -out "$TEMP_DIR/signature.der" firmware.bin
+          openssl pkey -in "$TEMP_DIR/private.pem" -pubout -out "$TEMP_DIR/public.pem"
+          rm -f "$TEMP_DIR/private.pem"
+          # Devices accept only P-256; refuse to publish a signature they
+          # would reject, and prove it verifies over the exact image.
+          PUB_TEXT="$(openssl pkey -pubin -in "$TEMP_DIR/public.pem" -noout -text)"
+          case "$PUB_TEXT" in
+            *prime256v1*) ;;
+            *) echo "::error::FIRMWARE_SIGNING_KEY must be an EC P-256 key"; exit 1 ;;
+          esac
+          openssl pkey -pubin -in "$TEMP_DIR/public.pem" -outform DER -out "$TEMP_DIR/derived.der"
+          openssl pkey -pubin -in "$TEMP_DIR/firmware-public.pem" -outform DER -out "$TEMP_DIR/firmware.der"
+          if ! cmp -s "$TEMP_DIR/derived.der" "$TEMP_DIR/firmware.der"; then
+            echo "::error::FIRMWARE_SIGNING_KEY does not match the firmware public key for $KEY_ID"
+            exit 1
+          fi
+          openssl dgst -sha256 -verify "$TEMP_DIR/firmware-public.pem" -signature "$TEMP_DIR/signature.der" firmware.bin
+          base64 -w0 "$TEMP_DIR/signature.der" > firmware.bin.sig
+          printf '%s' "$KEY_ID" > firmware.bin.sig.keyid
+          gh release upload "$TAG" firmware.bin.sig firmware.bin.sig.keyid --repo "$GITHUB_REPOSITORY" --clobber
+          gh release edit "$TAG" --draft=false --repo "$GITHUB_REPOSITORY"

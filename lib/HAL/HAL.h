@@ -9,6 +9,7 @@
 
 #include <SSD1306Wire.h>
 #include "DisplayProxy.h"
+#include "BoardInfo.h"
 
 // Forward-declare any hardware-related classes you want to expose from the HAL:
 class AudioManager;
@@ -92,9 +93,26 @@ namespace HAL
 
     SPARKFUN_LIS2DH12& accelerometer();
 
+    // Board identity (hardware revision + provisioning flags) read from eFuse
+    // at the start of initHardware(). Unprogrammed boards report rev 1.2
+    // with source Default. Use this to branch on board revision.
+    const BoardInfo::Info& boardInfo();
+
     // If you want to set wake pins, deep sleep, etc. directly from AppManager
     void configureWakeupPins();
     void enterDeepSleep(bool hardShutdown = false);
+    // Called at the start of every enterDeepSleep() that keeps the timer
+    // wake (the check-in scheduler arms its next due time there).
+    void setBeforeSleep(void (*hook)());
+    // Background check-in on the hourly battery timer wake. The due time is
+    // a time() value kept in RTC memory (0 = none); a timer wake at or past
+    // it skips the normal hardware start (no display, LEDs or audio) and
+    // timerCheckinWake() then reports the battery read at wake.
+    void setTimerCheckinDue(uint32_t dueSec);
+    bool timerCheckinWake(int32_t& vcellMv, int32_t& socPct);
+    // `flushDiary` false skips the battery diary flush (a worker that did
+    // not stop may still be writing to the filesystem).
+    [[noreturn]] void resleepAfterTimerCheckin(bool flushDiary = true);
     bool consumeRuntimeBatteryShutdownRequest();
     const char* bootWakeupCauseName();
 
