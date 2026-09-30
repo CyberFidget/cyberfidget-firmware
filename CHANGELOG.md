@@ -20,6 +20,16 @@ with the version and date automatically.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+## [1.4.0] - 2026-09-30
+
+### Added
+
 - Battery protection: the device now powers down safely before the battery
   drops to a level that would damage it.
 - An always-on battery diary that records run time and charge behavior, plus
@@ -71,4 +81,5 @@ with the version and date automatically.
 
 - Dead header generation left over in the app module build.
 
-[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.3.2...HEAD
+[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.3.3-rc2...v1.4.0
