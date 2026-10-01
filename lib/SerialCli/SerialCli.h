@@ -32,6 +32,12 @@
 //   lapply <len> <crc32>           apply staged manifest ops (JSON follows)
 //   syncinfo                       report storage, manifest, firmware version
 //
+// WiFi setup family (always compiled; announced by `syncinfo.setup=1`):
+//   wifi scan                      list nearby networks (reported when done)
+//   wifi add <len> <crc32>         save a network (raw `ssid\0pass` follows)
+//   wifi try                       join the first saved network (reported when done)
+//   wifi saved                     list the saved networks, names only
+//
 // All output uses a stable line-prefix so a test harness can parse without
 // regex acrobatics:
 //   [boot] - one-shot boot banner (printed by HAL, not here)
@@ -58,7 +64,8 @@ public:
     bool consumeUsbActivity();
     // Close an unfinished serial file transfer before LittleFS is formatted.
     void closeStorageForFactoryReset();
-    // True while a test-build radio probe owns WiFi.
+    // True while a `wifi scan` / `wifi try` (or a test-build radio probe)
+    // owns WiFi. A check-in or link does not start while this holds.
     bool radioBusy() const;
 
 #ifdef CF_TEST_CLI
@@ -114,6 +121,13 @@ private:
     void cmdLget();
     void cmdLapply(const char* args);
     void cmdSyncinfo();
+    // WiFi setup verbs (always compiled). Scan and try run on their own task
+    // and report from pollUsbWifi().
+    void cmdWifiScan();
+    void cmdWifiTry();
+    void cmdWifiSaved();
+    void cmdWifiAdd(const char* args);
+    void pollUsbWifi();
     // Serial framebuffer capture + streaming (always compiled -
     // these are observation/remote-display verbs, valuable in any build).
     void cmdScreencap();
@@ -166,6 +180,9 @@ private:
     // When the open write session last saw fwrite/fwdata.
     uint32_t ferryAtMs             = 0;
     bool     usbActivity           = false;
+    // Set by `wifi add`: the next line is not echoed if unknown, and is
+    // wiped from the buffer (it could be the end of an over-long payload).
+    bool     hideNextEcho          = false;
 };
 
 #endif  // SERIAL_CLI_H

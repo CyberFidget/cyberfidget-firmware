@@ -130,6 +130,23 @@ struct Pick {
 };
 bool consider(const List& list, const char* name, int rssi, Pick& best);
 
+// ---- why a join failed -------------------------------------------------------------
+
+enum class JoinFailure : uint8_t { None, NoneSaved, Stopped, Auth, Absent, Timeout };
+
+/// The station's disconnect reasons (wifi_err_reason_t numbering): the
+/// password or key exchange failed (MIC failure, 4-way / handshake timeout,
+/// 802.1X failure, auth fail).
+bool isAuthReason(uint8_t reason);
+/// No access point of that name (or none it may join) was found.
+bool isAbsentReason(uint8_t reason);
+
+/// From how the join ended and the disconnect reasons seen while it ran: a
+/// refused password wins over "not found" (an attempt can see both), and a
+/// join that just ran out of time with neither is a timeout.
+JoinFailure joinFailure(bool ok, bool noneSaved, bool stopped, bool absent,
+                        bool sawAuth, bool sawAbsent);
+
 // ---- stored form of the hint -------------------------------------------------------
 
 void addressToHex(const uint8_t address[6], char out[13]);

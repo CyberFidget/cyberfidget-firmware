@@ -46,6 +46,10 @@ struct JoinOptions {
     void* ctx = nullptr;
     /// Also polled every 100 ms (the update session feeds its watchdog).
     void (*tick)(void*) = nullptr;
+    /// Only the first saved network, by a plain join (no remembered place,
+    /// no scan for the others): `wifi try` reports on exactly that one.
+    /// Ends early when it is not found or its password is refused twice.
+    bool firstOnly = false;
 #ifdef CF_TEST_CLI
     /// Bench: the first attempt looks for this name instead (not in range).
     const char* benchFirstName = nullptr;
@@ -66,6 +70,9 @@ struct JoinResult {
     uint32_t scanMs = 0;
     uint32_t fallbackMs = 0;
     uint32_t totalMs = 0;
+    /// Why it failed (None on success), from the station's disconnect reasons.
+    WifiList::JoinFailure failure = WifiList::JoinFailure::None;
+    uint8_t lastReason = 0;    ///< the last disconnect reason seen (0: none)
 };
 
 /// The station must be on (WIFI_STA or WIFI_AP_STA) and not connected.

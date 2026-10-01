@@ -27,6 +27,11 @@
 #include "UpdateSession.h"   // upd allow-unsigned / slot (every build), install / fault (test)
 #include "DeviceIdentity.h"
 #include "FactoryReset.h"
+#include "SavedWifi.h"        // wifi add / try / saved (every build)
+#include "UsbWifi.h"          // pure framing, scan list, replies for the wifi setup verbs
+#include <WiFi.h>
+#include <esp_bt.h>           // Bluetooth started: WiFi waits for a restart
+#include <esp_wifi.h>
 
 #include "HAL.h"              // displayProxy() for screencap
 #include "DisplayProxy.h"     // frameBuffer()
@@ -288,6 +293,116 @@ void sendReply(const SyncProtocol::FerryReply& reply) {
     Serial.write((const uint8_t*)reply.text, reply.len);
 }
 
+// =========================================================================
+// USB WiFi setup (every build): `wifi scan` and `wifi try` run on their own
+// task, own the radio until it is off again, and report from poll(). The
+// framing, the scan list and every reply line are UsbWifi (host-tested).
+// =========================================================================
+enum class UsbWifiJob : uint8_t { Idle, Scan, Try };
+// Set by the loop task before the worker starts; back to Idle only once
+// poll() has printed the result (radioBusy() holds until then).
+std::atomic<UsbWifiJob> g_wifiJob{UsbWifiJob::Idle};
+std::atomic<bool> g_wifiJobDone{false};
+// Worker writes, loop reads after g_wifiJobDone.
+UsbWifi::ScanList g_scanList;
+bool g_scanOk = false;
+SavedWifi::JoinResult g_tryResult;
+char g_tryName[WifiList::kNameMax + 1] = {0};
+
+constexpr uint32_t kUsbWifiStackBytes = 6144;
+constexpr uint32_t kUsbScanChannelMs = 120;   // active scan: ~1.5 s for the band
+constexpr uint32_t kUsbScanLimitMs = 8000;
+constexpr uint32_t kUsbTryJoinMs = 15000;
+// A `wifi add` whose length could not be read: what follows is dropped
+// until the line is quiet, so no payload byte is ever read as a command.
+constexpr uint32_t kQuietGapMs = 50;
+constexpr uint32_t kQuietMaxMs = 1000;
+
+void usbWifiTask(void*) {
+    const bool scan = g_wifiJob.load() == UsbWifiJob::Scan;
+    WiFi.persistent(false);   // nothing is written to the radio's own storage
+    const bool on = WiFi.mode(WIFI_STA);
+    if (scan) {
+        UsbWifi::scanBegin(g_scanList);
+        g_scanOk = false;
+        if (on) {
+            WiFi.scanDelete();
+            int16_t found = WiFi.scanNetworks(true, false, false, kUsbScanChannelMs);
+            const uint32_t at = millis();
+            while (found == WIFI_SCAN_RUNNING && millis() - at < kUsbScanLimitMs) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                found = WiFi.scanComplete();
+            }
+            if (found == WIFI_SCAN_RUNNING) esp_wifi_scan_stop();
+            // Every record is looked at; only the strongest names are kept.
+            for (int i = 0; i < found; i++) {
+                const wifi_ap_record_t* rec =
+                    static_cast<const wifi_ap_record_t*>(WiFi.getScanInfoByIndex(i));
+                if (!rec) continue;
+                UsbWifi::scanConsider(g_scanList, rec->ssid, sizeof(rec->ssid), rec->rssi,
+                                      (int)rec->authmode);
+            }
+            g_scanOk = found >= 0;
+            WiFi.scanDelete();
+        }
+        UsbWifi::scanSort(g_scanList);
+    } else {
+        g_tryResult = SavedWifi::JoinResult();
+        if (on) {
+            SavedWifi::JoinOptions opt;
+            opt.firstOnly = true;
+            opt.firstMs = kUsbTryJoinMs;
+            SavedWifi::join(opt, g_tryResult);
+        } else {
+            g_tryResult.failure = WifiList::JoinFailure::Timeout;
+        }
+    }
+    WiFi.disconnect(true);
+    if (!WiFi.mode(WIFI_OFF) || WiFi.getMode() != WIFI_OFF)
+        // Left on: the radio stays "busy" (WiFi.getMode), and an app that
+        // needs Bluetooth restarts first (AppManager).
+        Serial.println("[wifi] usb radio_off=failed");
+    g_wifiJobDone = true;
+    vTaskDelete(nullptr);
+}
+
+// Who owns the radio now (loop task).
+const char* usbWifiBusyReason() {
+    UsbWifi::RadioOwners o;
+    o.usbJob = SerialCli::instance().radioBusy();
+    o.update = UpdateSession::imagePending();
+    o.ferry = g_ferry.active();
+    const AppIndex active = AppManager::instance().activeApp();
+    o.portal = active == APP_WEB_PORTAL;
+    o.music = active == APP_MUSIC_PLAYER;
+    if (CloudSync::busy()) {
+        const CloudSync::LinkState s = CloudSync::linkSnapshot().state;
+        const bool linking = s == CloudSync::LinkState::Starting || s == CloudSync::LinkState::Code ||
+                             s == CloudSync::LinkState::Confirm || s == CloudSync::LinkState::ClearApps ||
+                             s == CloudSync::LinkState::Confirming;
+        if (linking) o.link = true;
+        else o.checkin = true;
+    }
+    o.bluetooth = esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE;
+    o.radioOn = WiFi.getMode() != WIFI_OFF;
+    return UsbWifi::busyReason(o);
+}
+
+void writeLine(const char* text, size_t len) {
+    if (len) Serial.write(reinterpret_cast<const uint8_t*>(text), len);
+}
+
+// Drops input until it has been quiet for kQuietGapMs (kQuietMaxMs at most).
+void drainUntilQuiet() {
+    const uint32_t start = millis();
+    uint32_t last = start;
+    for (;;) {
+        const uint32_t now = millis();
+        if (Serial.read() >= 0) { last = now; continue; }
+        if (now - last >= kQuietGapMs || now - start >= kQuietMaxMs) return;
+    }
+}
+
 #ifdef CF_TEST_CLI
 constexpr uint32_t kTlsProbeBudgetMs = 20000;
 constexpr uint32_t kTlsJoinBudgetMs = 10000;
@@ -470,6 +585,7 @@ void SerialCli::closeStorageForFactoryReset() {
 }
 
 bool SerialCli::radioBusy() const {
+    if (g_wifiJob.load() != UsbWifiJob::Idle) return true;
 #ifdef CF_TEST_CLI
     return g_tlsSession.current() != TlsProbeSession::State::Idle;
 #else
@@ -482,8 +598,27 @@ SerialCli& SerialCli::instance() {
     return singleton;
 }
 
+void SerialCli::pollUsbWifi() {
+    if (!g_wifiJobDone.load()) return;
+    char out[UsbWifi::kLineMax];
+    if (g_wifiJob.load() == UsbWifiJob::Scan) {
+        if (!g_scanOk) Serial.println("[wifi] usb scan=failed");
+        for (int i = 0; i < g_scanList.count; i++)
+            writeLine(out, UsbWifi::formatScanLine(out, sizeof(out), g_scanList.entries[i]));
+        writeLine(out, UsbWifi::formatScanDone(out, sizeof(out), g_scanList.count));
+        UsbWifi::scanBegin(g_scanList);
+    } else {
+        if (g_tryResult.ok) writeLine(out, UsbWifi::formatTryOk(out, sizeof(out), g_tryName));
+        else writeLine(out, UsbWifi::formatTryFail(out, sizeof(out), g_tryResult.failure));
+        UsbWifi::wipe(g_tryName, sizeof(g_tryName));
+    }
+    g_wifiJobDone = false;
+    g_wifiJob = UsbWifiJob::Idle;
+}
+
 void SerialCli::poll() {
     pollScreenStream();
+    pollUsbWifi();
 #ifdef CF_TEST_CLI
     pollPendingTapReleases();
     pollTlsprobeResult();
@@ -530,6 +665,10 @@ void SerialCli::poll() {
                 Serial.println("[err] line too long");
                 overflow = false;
                 bufferLen = 0;
+                if (hideNextEcho) {
+                    UsbWifi::wipe(buffer, sizeof(buffer));
+                    hideNextEcho = false;
+                }
                 continue;
             }
             if (bufferLen == 0) continue;  // ignore empty lines / lone \r before \n
@@ -538,7 +677,12 @@ void SerialCli::poll() {
             // CRLF host's '\n' is never consumed as the first payload byte by a
             // fwdata/lapply read (nor left to desync the next command line).
             if (c == '\r') swallowPairedLf();
+            // The line after a `wifi add` could be the end of its payload
+            // (a sender that sent more than it announced): never echoed
+            // (dispatch), and wiped from the buffer once handled.
+            const bool afterAdd = hideNextEcho;
             dispatch(buffer);
+            if (afterAdd) UsbWifi::wipe(buffer, sizeof(buffer));
             bufferLen = 0;
             // A deferred verb stops reading here (see pollDeferred).
             if (deferredPending) return;
@@ -572,6 +716,9 @@ bool SerialCli::pollDeferred() {
 
 void SerialCli::dispatch(const char* line, bool retry) {
     const char* arg = nullptr;
+    // This line follows a `wifi add`: an unknown command is not echoed.
+    const bool hideEcho = hideNextEcho;
+    hideNextEcho = false;
     // Any sync verb marks a USB session in progress; it is stamped before the
     // store is looked at, so a check-in deciding right now either sees the
     // session (and skips) or is already running (and this verb waits).
@@ -669,6 +816,16 @@ void SerialCli::dispatch(const char* line, bool retry) {
         }
         // Test builds carry more `upd` verbs below.
     }
+
+    // WiFi setup over USB (every build; announced by `syncinfo.setup=1`).
+    // Network names travel as hex; a password is never echoed or logged.
+    // Test builds keep their older `wifi <ssid>|<pass>` / `wifi list` forms
+    // below; these four take precedence.
+    if (ieq(line, "wifi scan"))  { cmdWifiScan();  return; }
+    if (ieq(line, "wifi try"))   { cmdWifiTry();   return; }
+    if (ieq(line, "wifi saved")) { cmdWifiSaved(); return; }
+    if (ieq(line, "wifi add"))   { cmdWifiAdd(""); return; }
+    if (verbWithArg(line, "wifi add", &arg)) { cmdWifiAdd(arg); return; }
 #ifdef CF_TEST_CLI
     if (ieq(line, "link start")) {
         if (!CloudSync::startLink()) Serial.println("[cmd] link.state=error reason=busy");
@@ -862,6 +1019,10 @@ void SerialCli::dispatch(const char* line, bool retry) {
         return;
     }
 #endif
+    if (hideEcho) {
+        Serial.println("[err] unknown command: (hidden)");
+        return;
+    }
     Serial.printf("[err] unknown command: %s\n", line);
 }
 
@@ -1372,6 +1533,7 @@ void SerialCli::cmdHelp() {
     Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"
                    "fstat,fread,lget,lapply,syncinfo");
     Serial.println("[cmd] help.update=upd slot,upd allow-unsigned <on|off>");
+    Serial.println("[cmd] help.wifi=wifi scan,wifi add <len> <crc32>,wifi try,wifi saved");
 #ifdef CF_TEST_CLI
     Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,heapstat,"
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"
@@ -1752,7 +1914,109 @@ void SerialCli::cmdSyncinfo() {
     // their next command.
     Serial.printf("[cmd] syncinfo.id=%s\n", id);
     Serial.printf("[cmd] syncinfo.lapply=%s\n", SyncProtocol::kLapplyCapability);
+    // The USB setup verbs (wifi scan|add|try|saved) are here.
+    Serial.println("[cmd] syncinfo.setup=1");
     Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
+}
+
+// =========================================================================
+// WiFi setup over USB (every build). Replies are UsbWifi's lines verbatim.
+// =========================================================================
+
+void SerialCli::cmdWifiScan() {
+    usbActivity = true;
+    char out[UsbWifi::kLineMax];
+    if (const char* why = usbWifiBusyReason()) {
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), why));
+        return;
+    }
+    g_wifiJobDone = false;
+    g_wifiJob = UsbWifiJob::Scan;
+    if (xTaskCreate(usbWifiTask, "usbwifi", kUsbWifiStackBytes, nullptr, 1, nullptr) != pdPASS) {
+        g_wifiJob = UsbWifiJob::Idle;
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), "wifi"));
+        return;
+    }
+    Serial.println("[cmd] wifi.scan=started");
+}
+
+void SerialCli::cmdWifiTry() {
+    usbActivity = true;
+    char out[UsbWifi::kLineMax];
+    if (const char* why = usbWifiBusyReason()) {
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), why));
+        return;
+    }
+    // Only the first saved network is tried (the one `wifi add` just saved).
+    char first[1][WifiList::kNameMax + 1];
+    if (SavedWifi::names(first, 1) != 1) {
+        writeLine(out, UsbWifi::formatTryStarted(out, sizeof(out)));
+        writeLine(out, UsbWifi::formatTryFail(out, sizeof(out), WifiList::JoinFailure::NoneSaved));
+        return;
+    }
+    memcpy(g_tryName, first[0], sizeof(g_tryName));
+    g_wifiJobDone = false;
+    g_wifiJob = UsbWifiJob::Try;
+    if (xTaskCreate(usbWifiTask, "usbwifi", kUsbWifiStackBytes, nullptr, 1, nullptr) != pdPASS) {
+        g_wifiJob = UsbWifiJob::Idle;
+        UsbWifi::wipe(g_tryName, sizeof(g_tryName));
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), "wifi"));
+        return;
+    }
+    writeLine(out, UsbWifi::formatTryStarted(out, sizeof(out)));
+}
+
+void SerialCli::cmdWifiSaved() {
+    char names[WifiList::kMax][WifiList::kNameMax + 1];
+    const int n = SavedWifi::names(names, WifiList::kMax);
+    char out[UsbWifi::kLineMax];
+    writeLine(out, UsbWifi::formatSavedCount(out, sizeof(out), n));
+    for (int i = 0; i < n; i++) writeLine(out, UsbWifi::formatSavedLine(out, sizeof(out), names[i]));
+    writeLine(out, UsbWifi::formatSavedDone(out, sizeof(out), n));
+}
+
+// `wifi add <len> <crc32>`, then exactly <len> raw bytes: `ssid\0pass`.
+// Saved as the first network to try, with the portal's own rules (at most
+// three; a fourth is refused). The frame, name and password buffers are
+// wiped on every path; the reply names the network in hex only.
+void SerialCli::cmdWifiAdd(const char* args) {
+    usbActivity = true;
+    // Whatever happens, the next line is not echoed if unknown (poll).
+    hideNextEcho = true;
+    char out[UsbWifi::kLineMax];
+    uint32_t len = 0, crc = 0;
+    if (!SyncProtocol::parseApplyHeader(args, len, crc)) {
+        // No length to stay in frame with: drop the payload that follows.
+        drainUntilQuiet();
+        writeLine(out, UsbWifi::formatAddReply(out, sizeof(out), UsbWifi::Frame::Invalid,
+                                               WifiList::AddResult::Invalid, nullptr));
+        return;
+    }
+    if (!UsbWifi::frameLengthOk(len)) {
+        UartByteSource in;
+        in.drain(len);
+        writeLine(out, UsbWifi::formatAddReply(out, sizeof(out), UsbWifi::Frame::Invalid,
+                                               WifiList::AddResult::Invalid, nullptr));
+        return;
+    }
+    uint8_t frame[UsbWifi::kFrameMax];
+    char name[WifiList::kNameMax + 1];
+    char pass[WifiList::kPassMax + 1];
+    const bool got = ::readExact(frame, len, kPayloadGapMs);
+    UsbWifi::Frame parsed = UsbWifi::Frame::Invalid;
+    if (got) {
+        parsed = UsbWifi::parseAddFrame(frame, len, crc, name, pass);
+    } else {
+        UsbWifi::wipe(name, sizeof(name));
+        UsbWifi::wipe(pass, sizeof(pass));
+    }
+    UsbWifi::wipe(frame, sizeof(frame));
+    WifiList::AddResult saved = WifiList::AddResult::Invalid;
+    if (parsed == UsbWifi::Frame::Ok) saved = SavedWifi::add(name, pass);
+    UsbWifi::wipe(pass, sizeof(pass));
+    const size_t n = UsbWifi::formatAddReply(out, sizeof(out), parsed, saved, name);
+    UsbWifi::wipe(name, sizeof(name));
+    writeLine(out, n);
 }
 
 #ifdef CF_TEST_CLI

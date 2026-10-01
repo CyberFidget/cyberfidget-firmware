@@ -13,6 +13,8 @@
 #include <freertos/semphr.h>
 #include <string.h>
 
+#include <atomic>
+
 namespace SavedWifi {
 namespace {
 
@@ -112,9 +114,43 @@ bool forgetPlace(const char* name) {
     return ok;
 }
 
-enum class Wait : uint8_t { Joined, TimedOut, Absent, Stopped };
+// Why the station dropped an attempt (every build): `wifi try` tells a
+// refused password from a network that is not there. Written by the WiFi
+// event task while a join runs; no names, no keys.
+std::atomic<bool> capturing{false};
+std::atomic<uint8_t> lastReason{0};
+std::atomic<uint8_t> authSeen{0};
+std::atomic<bool> absentSeen{false};
 
-Wait waitJoin(const JoinOptions& opt, uint32_t limitMs, bool endOnAbsent) {
+void reasonEvent(arduino_event_t* e) {
+    if (!capturing || !e || e->event_id != ARDUINO_EVENT_WIFI_STA_DISCONNECTED) return;
+    const uint8_t reason = e->event_info.wifi_sta_disconnected.reason;
+    lastReason = reason;
+    if (WifiList::isAuthReason(reason) && authSeen < 255) authSeen++;
+    if (WifiList::isAbsentReason(reason)) absentSeen = true;
+}
+
+void captureReasons(bool on) {
+    static bool registered = false;
+    if (on && !registered) {
+        WiFi.onEvent(reasonEvent);
+        registered = true;
+    }
+    if (on) {
+        lastReason = 0;
+        authSeen = 0;
+        absentSeen = false;
+    }
+    capturing = on;
+}
+
+enum class Wait : uint8_t { Joined, TimedOut, Absent, Stopped, Refused };
+
+// The station retries once by itself after any failure, so one refusal can
+// be a fluke; a second one is the password.
+constexpr uint8_t kRefusalsToEnd = 2;
+
+Wait waitJoin(const JoinOptions& opt, uint32_t limitMs, bool endOnAbsent, bool endOnRefusal = false) {
     const uint32_t at = millis();
     for (;;) {
         const wl_status_t st = WiFi.status();
@@ -122,6 +158,7 @@ Wait waitJoin(const JoinOptions& opt, uint32_t limitMs, bool endOnAbsent) {
         if (opt.stop && opt.stop(opt.ctx)) return Wait::Stopped;
         if (millis() - at >= limitMs) return Wait::TimedOut;
         if (endOnAbsent && st == WL_NO_SSID_AVAIL) return Wait::Absent;
+        if (endOnRefusal && authSeen >= kRefusalsToEnd) return Wait::Refused;
         if (opt.tick) opt.tick(opt.ctx);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -164,6 +201,7 @@ const char* waitName(Wait w) {
         case Wait::TimedOut: return "timeout";
         case Wait::Absent:   return "absent";
         case Wait::Stopped:  return "stopped";
+        case Wait::Refused:  return "refused";
     }
     return "?";
 }
@@ -243,13 +281,16 @@ bool join(const JoinOptions& opt, JoinResult& out) {
     load(list);
     if (list.count == 0) {
         out.noneSaved = true;
+        out.failure = WifiList::JoinFailure::NoneSaved;
         Serial.println("[wifi] join result=none-saved");
         return false;
     }
 
     traceJoin(true);
+    captureReasons(true);
     const char* firstName = list.nets[0].name;
-    out.hinted = list.hint.valid;
+    // `firstOnly`: a plain join, which looks on every channel by itself.
+    out.hinted = list.hint.valid && !opt.firstOnly;
 #ifdef CF_TEST_CLI
     if (opt.benchFirstName && opt.benchFirstName[0]) {
         firstName = opt.benchFirstName;
@@ -259,14 +300,17 @@ bool join(const JoinOptions& opt, JoinResult& out) {
     if (out.hinted) WiFi.begin(firstName, list.nets[0].pass, list.hint.channel, list.hint.address);
     else WiFi.begin(firstName, list.nets[0].pass);
     Wait first = waitJoin(opt, opt.firstMs,
-                          WifiList::firstEndsOnAbsent(list.count, out.hinted, opt.scheduled));
+                          opt.firstOnly ||
+                              WifiList::firstEndsOnAbsent(list.count, out.hinted, opt.scheduled),
+                          opt.firstOnly);
     out.firstMs = millis() - start;
     Wait last = first;
     char joinedName[WifiList::kNameMax + 1] = {0};
     if (first == Wait::Joined) {
         out.joined = 0;
         memcpy(joinedName, firstName, strlen(firstName) + 1);
-    } else if (first != Wait::Stopped && WifiList::fallbackScan(list.count, out.hinted)) {
+    } else if (first != Wait::Stopped && !opt.firstOnly &&
+               WifiList::fallbackScan(list.count, out.hinted)) {
         // Stop the attempt and its own retries before scanning: the station
         // keeps reconnecting after "not found" by itself, and the radio
         // refuses a scan while it does (bench: every start failed).
@@ -372,6 +416,10 @@ bool join(const JoinOptions& opt, JoinResult& out) {
     out.ok = last == Wait::Joined;
     out.stopped = last == Wait::Stopped;
     out.absent = last == Wait::Absent;
+    captureReasons(false);
+    out.lastReason = lastReason;
+    out.failure = WifiList::joinFailure(out.ok, false, out.stopped, out.absent,
+                                        authSeen > 0, absentSeen);
     // (A bench name is not in the list, so it is never remembered.)
     if (out.ok) remember(joinedName);
     // A remembered place that led nowhere is dropped: the next session's
@@ -380,12 +428,12 @@ bool join(const JoinOptions& opt, JoinResult& out) {
     traceJoin(false);
     out.totalMs = millis() - start;
     Serial.printf("[wifi] join saved=%d first=%s first_result=%s first_ms=%u scan=%d scan_starts=%u "
-                  "scan_ms=%u fallback_ms=%u result=%s slot=%d total_ms=%u\n",
+                  "scan_ms=%u fallback_ms=%u result=%s slot=%d total_ms=%u reason=%u\n",
                   count, out.hinted ? "remembered" : "plain", waitName(first),
                   (unsigned)out.firstMs, out.scanned ? (out.scanFailed ? 2 : 1) : 0,
                   (unsigned)out.scanStarts,
                   (unsigned)out.scanMs, (unsigned)out.fallbackMs, waitName(last), (int)out.joined,
-                  (unsigned)out.totalMs);
+                  (unsigned)out.totalMs, (unsigned)out.lastReason);
     return out.ok;
 }
 
