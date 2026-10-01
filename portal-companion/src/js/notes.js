@@ -246,7 +246,11 @@ function refreshSelection() {
   $('notesCount').textContent = n + ' selected';
   $('notesDownload').disabled = n === 0;
   $('notesDelete').disabled = n === 0;
-  $('notesSelAll').classList.toggle('on', n > 0 && n === notes.length);
+  const all = n > 0 && n === notes.length;
+  const some = n > 0 && !all;
+  $('notesSelAll').classList.toggle('on', all);
+  $('notesSelAll').classList.toggle('mixed', some);
+  $('notesSelAll').setAttribute('aria-checked', all ? 'true' : some ? 'mixed' : 'false');
 }
 
 function toggleAll() {
