@@ -226,8 +226,10 @@ export const modelFileCache = {
 // large fraction far more often than a sliver, and compressed transfers of
 // large binary model files don't shrink below 95% of their compressed size
 // when decoded. Smaller files and smaller shortfalls pass through unchanged
-// (the library's own behaviour). Anything this misses is still caught by the
-// empty-caption warning, which tells the owner to download the pack again.
+// (the library's own behaviour), so a small shortfall can still be padded and
+// cached. If such damage makes captions come back empty, the empty-caption
+// warning tells the owner to download the pack again; damage that fails while
+// loading, or that doesn't produce empty captions, is not caught here.
 const LARGE_FILE_BYTES = 1 << 20;
 const MIN_ARRIVED_FRACTION = 0.95;
 
