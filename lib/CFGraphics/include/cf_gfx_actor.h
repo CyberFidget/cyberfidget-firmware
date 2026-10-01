@@ -5,8 +5,8 @@
 //
 // AnimationPlayer (time -> current frame state machine), Actor (Q8
 // fixed-point position + player + sheet binding) and the optional
-// Character skin abstraction. Part of the cf::gfx runtime (T-111,
-// design N-033, invariants REQ-042).
+// Character skin abstraction. Part of the cf::gfx runtime,
+// following the shared sprite and animation rules.
 
 #ifndef CF_GFX_ACTOR_H
 #define CF_GFX_ACTOR_H
@@ -136,7 +136,7 @@ struct Character {
     const SpriteSheet* sheet;
     const char*        skeleton;  // optional contract id, e.g. "dino_runner_v1";
                                   // nullptr = no contract (validated by the
-                                  // T-112 converter, not at runtime)
+                                  // asset converter, not at runtime)
 };
 
 static_assert(std::is_trivial<Character>::value && std::is_standard_layout<Character>::value,

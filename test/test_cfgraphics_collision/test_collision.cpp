@@ -7,7 +7,7 @@
 // contract EXPLICITLY: XBM order — row-major, ((w + 7) / 8) bytes per row,
 // LSB-first within each byte — the same order DisplayProxy::drawXbm
 // renders and the .cfsprite v1 profile packs (cyberfidget_website/
-// assets/js/models/cfsprite.mjs). T-112's converter output must satisfy
+// assets/js/models/cfsprite.mjs). Generated asset data must satisfy
 // these tests byte-for-byte; if they ever disagree, the converter (not
 // this contract) is wrong.
 
@@ -146,7 +146,7 @@ static void playSolidPivoted(Actor& a, int16_t x, int16_t y) {
 }
 
 void test_actor_collision_matches_manual_pivot_adjustment(void) {
-    // N-033 test list: the Actor overload must equal the Sprite overload
+    // The Actor overload must equal the Sprite overload
     // called with manually pivot-adjusted (pos - pivot) top-left coords.
     struct Case { int16_t ax, ay, bx, by; };
     static const Case kCases[] = {

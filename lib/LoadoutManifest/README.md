@@ -6,7 +6,7 @@ which apps appear, under which single-level category, at which position,
 and whether they are hidden. At boot, `buildNestedMenu()` (lib/AppDefs)
 merges the manifest with the compiled-in registry to build the menu;
 without a manifest the menu falls back to compiled-in order exactly as
-before T-115.
+before the manifest can supply menu ordering.
 
 Normal boot mounts LittleFS with format-on-failed-mount (one attempt, no
 retry loop); a pending firmware image instead mounts without formatting until
@@ -58,7 +58,7 @@ Per entry:
 | `hidden` | bool | no (false) | Keep the entry (and its position) but omit it from the menu. |
 
 Reserved fields — accepted, round-tripped, and **unused** by firmware
-today. They exist so the app-delivery work (T-110/T-134) can populate
+today. They allow future app delivery to populate
 them without a schema bump. Omitted from serialization while empty:
 
 | Field | Type | Reserved for |
@@ -86,7 +86,7 @@ compiled-in order — a bad manifest can never brick the menu).
   menu entries.
 * An empty manifest merges to exactly the compile order.
 
-## Sync vocabulary (REQ-053 clause 4)
+## Sync operations
 
 The manifest-apply core speaks **adds / removes / hides + ONE declarative
 `arrange` op** (`applyAdd` / `applyRemove` / `applyHide` /

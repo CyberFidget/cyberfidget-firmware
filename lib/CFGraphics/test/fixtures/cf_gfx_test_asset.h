@@ -3,13 +3,13 @@
 
 // lib/CFGraphics/test/fixtures/cf_gfx_test_asset.h
 //
-// Hand-authored test asset in the exact style the T-112 converter will
+// Hand-authored test asset in the exact style the asset converter will
 // emit into lib/<App>/generated/*.h — header-only `inline constexpr`
-// PROGMEM data (N-033 § Generated output). Written by hand BEFORE the
+// PROGMEM data. Written by hand before the
 // converter exists to validate that the pattern compiles and links.
 // Consumed only by test/test_cfgraphics_*; no shipping app uses it.
 //
-// NOTE for T-112's codegen: emit ONE canonical `animations[]` array and
+// NOTE for asset generation: emit ONE canonical `animations[]` array and
 // alias per-animation pointers into it (as below). Do NOT emit duplicate
 // standalone Animation objects — Actor::play / AnimationPlayer::setIfChanged
 // compare Animation ADDRESSES, so duplicates would defeat the
@@ -34,7 +34,7 @@ inline constexpr uint8_t cel_duck_bits[] PROGMEM = {
 
 // Pivot bottom-center (4, 8): "feet on the ground" anchoring, so the
 // short duck cel (pivot 4, 4) lines up with the tall cels at the same
-// Actor position — the scenario pivots exist for (N-033 Q&A).
+// Actor position — distinct pivots keep differently sized cels grounded.
 inline constexpr Sprite cel_a PROGMEM = {cel_a_bits, 8, 8, 4, 8, BO_LSB_FIRST};
 inline constexpr Sprite cel_b PROGMEM = {cel_b_bits, 8, 8, 4, 8, BO_LSB_FIRST};
 inline constexpr Sprite cel_c PROGMEM = {cel_c_bits, 8, 8, 4, 8, BO_LSB_FIRST};

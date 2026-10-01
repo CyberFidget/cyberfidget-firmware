@@ -12,7 +12,7 @@
  *
  * Schema and merge/apply semantics are documented in README.md next to
  * this file. Sync vocabulary (adds / removes / hides + ONE declarative
- * arrange op) follows REQ-053 clause 4.
+ * arrange op) preserves the displayed device menu order.
  */
 
 #ifndef LOADOUT_MANIFEST_H
@@ -41,8 +41,8 @@ struct LoadoutEntry {
     bool        hidden   = false; ///< true = keep entry but omit from menu
 
     // Reserved fields — parsed and round-tripped but unused by firmware
-    // today. They exist so future app-delivery work (T-110/T-134) can
-    // populate them without a schema bump. Empty string = unset.
+    // today. They allow future app delivery to
+    // populate them without a schema change. Empty string = unset.
     std::string format;    ///< reserved: entry format (e.g. "builtin", "blob")
     std::string blobPath;  ///< reserved: filesystem path to an app blob
     std::string version;   ///< reserved: app version string
@@ -81,7 +81,7 @@ struct MergedApp {
     bool        hidden;    ///< true = do not show in the menu
     // A ferried wasm app has no compile-time registry row. `appIndex == -1`
     // marks a blob row; `label`/`blobPath` carry what the menu needs to
-    // register and launch it (T-183). Empty for builtin rows.
+    // register and launch it. Empty for built-in rows.
     std::string label;     ///< blob: menu label (builtin uses registry name)
     std::string blobPath;  ///< blob: confined /apps/... path to the .wasm
     int         abi = 0;   ///< blob: required HAL ABI; 0 = unversioned
@@ -157,7 +157,7 @@ std::vector<int> compiledMenuRows(const RegistryApp* apps, int count);
 std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
                                          const RegistryApp* apps, int count);
 
-// ---- Sync vocabulary (REQ-053 clause 4): adds / removes / hides + ONE
+// ---- Sync operations add, remove, or hide entries, plus ONE
 // ---- declarative arrange op. Section contiguity (sections = contiguous
 // ---- category runs in flat position order) is preserved by construction.
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
-# T-192: compile ONE user app to a DEVICE-PROFILE wasm (wasm3 / cf.* imports,
+# Compile ONE user app to device-profile wasm (wasm3 / cf.* imports,
 # app_* exports, <=1MB memory) - the recipe the website compile workflow
 # ports. Same user source that builds for the browser emulator; only the HAL
 # backend (device shims) and link flags differ.

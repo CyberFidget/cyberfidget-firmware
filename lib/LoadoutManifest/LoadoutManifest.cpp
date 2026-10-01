@@ -486,7 +486,7 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
         // its file. The producer of truth is the website sync, which stamps
         // format "wasm" (the honest module format); "blob" is also accepted.
         // The load-bearing signal is a NON-builtin format with a blobPath -
-        // that is what makes an entry a ferried, file-launched app (T-183).
+        // that identifies an app sent from the website and launched from a file.
         // Guard: no path = unlaunchable, dropped like a stale id.
         if (entry.format != "builtin" && !entry.format.empty()) {
             if (entry.blobPath.empty()) continue;

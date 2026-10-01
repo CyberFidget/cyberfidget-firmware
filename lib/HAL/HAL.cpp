@@ -274,7 +274,7 @@ namespace HAL
         }
 
         // Release GPIO holds latched across the previous deep sleep before
-        // any pinMode/digitalWrite tries to drive a held pin. See L-008.
+        // any pinMode/digitalWrite tries to drive a held pin.
         gpio_hold_dis((gpio_num_t)POWER_PIN_OLED);
         gpio_deep_sleep_hold_dis();
 
@@ -412,14 +412,14 @@ namespace HAL
         s_realDisplay.displayOff();                  // SSD1306 → display-off standby (~10 µA)
 
         // Release the I2C master cleanly. Note this alone does NOT fix the
-        // OLED ESD-diode leak documented in L-007; the rail hold below does.
+        // OLED ESD-diode leakage; the rail hold below prevents it.
         Wire.end();
         pinMode(SDA, INPUT);
         pinMode(SCL, INPUT);
 
         // Hold the OLED rail powered through deep sleep so the SSD1306's
         // VDD stays equal to the always-on 3.3V pull-up rail and its ESD
-        // diodes don't forward-bias from the I2C lines. See L-007.
+        // diodes do not conduct from the I2C lines.
         digitalWrite(POWER_PIN_OLED, HIGH);
         gpio_hold_en((gpio_num_t)POWER_PIN_OLED);
 

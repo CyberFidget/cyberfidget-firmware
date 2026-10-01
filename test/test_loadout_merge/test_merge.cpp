@@ -5,7 +5,7 @@
 //
 // Manifest <-> compiled-in registry merge tests
 // (LoadoutManifest::mergeWithRegistry / buildFromRegistry). These pin the
-// T-115 acceptance criteria: manifest order honored, unlisted apps
+// Manifest behavior: preserve manifest order, append unlisted apps
 // appended in compile order, stale ids pruned-not-fatal, hidden flagged,
 // empty manifest == compile order.
 

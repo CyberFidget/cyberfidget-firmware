@@ -1,6 +1,6 @@
 #ifndef STOPWATCH_DEMO_H
 #define STOPWATCH_DEMO_H
-// A representative website-generated app for the T-192 device-compile proof:
+// Representative website-generated app for the device-compile demonstration:
 // a stopwatch using only device-safe HAL (display + buttons). Plain class
 // with begin/update/end + a button callback - the generated-app shape.
 class StopwatchDemo {

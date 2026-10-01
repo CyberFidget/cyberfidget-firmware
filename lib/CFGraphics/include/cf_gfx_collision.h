@@ -4,14 +4,14 @@
 // lib/CFGraphics/include/cf_gfx_collision.h
 //
 // Pixel-perfect collision for 1-bit sprites. AABB-then-bitmap structure
-// ported from lib/DinoGame's pixelCollides (T-111, design N-033).
+// ported from lib/DinoGame's pixelCollides.
 //
 // NOTE on bit order: sampling here follows Sprite::bitOrder, and the
 // framework's canonical order is BO_LSB_FIRST — bit (x & 7) of byte
 // data[y * ((w + 7) / 8) + (x >> 3)], the same XBM order drawXbm renders.
 // That means collision agrees with what's on screen. (DinoGame's legacy
-// in-app helper sampled MSB-first while drawing LSB-first — see T-112
-// migration notes before expecting bit-identical parity with it.)
+// in-app helper sampled MSB-first while drawing LSB-first — the
+// asset converter must preserve this distinction for bit-identical parity.)
 
 #ifndef CF_GFX_COLLISION_H
 #define CF_GFX_COLLISION_H

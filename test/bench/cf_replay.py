@@ -2,13 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
 # Copyright (c) 2026 Dismo Industries LLC
 #
-# T-194: declarative serial test-case replay harness for the Cyber Fidget.
+# Declarative serial test-case replay harness for the Cyber Fidget.
 #
-# A test case is DATA, not a script: a JSON list of steps over the T-191
+# A test case is DATA, not a script: a JSON list of steps over the serial
 # serial tunnel (menutree / btn / launch / ferry / lapply / screencap /
 # wasmstat / lget / syncinfo). One format, two players - this headless
 # runner (CI + agent bench verification) and, later, the browser chassis
-# player (T-191 leg 4). Store cases in test/bench/cases/ and grow the repo
+# player. Store cases in test/bench/cases/ and grow the repo
 # instead of writing throwaway scripts.
 #
 # Usage:  python cf_replay.py cases/<case>.json [--port COM30] [--out dir]
@@ -30,7 +30,7 @@ FB_BYTES = 1024  # 128x64 / 8
 
 
 class Tunnel:
-    """The serial session + the T-191 verb primitives. All bench rules live
+    """The serial session + the serial command primitives. All bench rules live
     here (see cyberfidget-hil README): open asserts DTR/RTS, so a reset
     dance + alive-poll is mandatory before the CLI is trustworthy."""
 

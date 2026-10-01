@@ -3,9 +3,9 @@
 
 // lib/CFGraphics/include/cf_gfx_icons.h
 //
-// Semantic aliases for menu/app icons (T-111, design N-033). Icons are
+// Semantic aliases for menu/app icons. Icons are
 // just Sprites/Animations — no new core types. Menu and AppDef icon
-// integration lands in a later phase (N-033 Phase 5); the aliases exist
+// integration can be added later; the aliases exist
 // now so that code reads as what it means.
 
 #ifndef CF_GFX_ICONS_H

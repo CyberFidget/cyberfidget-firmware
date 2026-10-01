@@ -3,7 +3,7 @@
 
 // test/test_loadout_apply/test_apply.cpp
 //
-// Sync-vocabulary tests (REQ-053 clause 4): adds / removes / hides plus
+// Sync-operation tests: adds / removes / hides plus
 // ONE declarative arrange op. Section contiguity (sections = contiguous
 // category runs in flat position order) must hold by construction after
 // every op — that invariant is asserted throughout.
@@ -218,7 +218,7 @@ void test_arrange_preserves_hidden_flags(void) {
     TEST_ASSERT_TRUE(l.entries[0].hidden); // arrange must not un-hide
 }
 
-// ---------- op sequences (REQ-053 clause 4 mirror) ----------
+// ---------- operation sequences ----------
 
 void test_op_sequence_keeps_contiguity(void) {
     Loadout l = makeBaseline();

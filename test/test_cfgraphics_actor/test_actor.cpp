@@ -167,7 +167,7 @@ void test_draw_applies_pivot(void) {
 }
 
 void test_draw_short_cel_same_ground_anchor(void) {
-    // The pivot's whole point (N-033 Q&A): a shorter "duck" cel drawn at
+    // The pivot lets a shorter "duck" cel drawn at
     // the same Actor position keeps its feet on the same ground line.
     DisplayProxy d;
     Actor a;

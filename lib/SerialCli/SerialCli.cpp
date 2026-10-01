@@ -19,7 +19,7 @@
 #include "AppDefs.h"          // load + builtin identity migration
 #include "LoadoutManifest.h"  // parse for the lget entry count
 #include "LoadoutStore.h"     // LittleFS mount + manifest read
-#include "MenuManager.h"      // menutree dump (T-183/T-191)
+#include "MenuManager.h"      // menu-tree dump
 #include "SyncProtocol.h"     // pure crc / confinement / arg parsing
 #include "FerrySession.h"     // pure write session (fwrite..fwabort, lapply)
 #include "LittleFsFerryStorage.h"
@@ -28,7 +28,7 @@
 #include "DeviceIdentity.h"
 #include "FactoryReset.h"
 
-#include "HAL.h"              // displayProxy() for screencap (T-191)
+#include "HAL.h"              // displayProxy() for screencap
 #include "DisplayProxy.h"     // frameBuffer()
 #include <mbedtls/base64.h>   // framebuffer -> base64 for screencap
 
@@ -36,8 +36,8 @@
 #include <stdlib.h>          // strtol for `btn` argument parsing
 #include "ButtonManager.h"   // injectEvent / ButtonEvent for `btn` (spike port)
 #include "HAL.h"             // HAL::buttonManager()
-#include "WasmFsApp.h"       // wasmstat (T-183)
-#include "WasmHostImports.h"  // kDeviceHalAbi (REQ-063)
+#include "WasmFsApp.h"       // wasm runtime status
+#include "WasmHostImports.h"  // device HAL ABI version
 #include "UvloLogic.h"
 #include "ModalPrompt.h"     // prompt (sample modal for bench screenshots)
 #include "StatusView.h"      // status (menu status bar bench states)
@@ -81,7 +81,7 @@ bool ieq(const char* a, const char* b) {
 }
 
 // Case-insensitive prefix match; returns the remainder of `line` after the
-// prefix, or nullptr if it does not match. Used by the T-191 stream verb.
+// prefix, or nullptr if it does not match. Used by the stream command.
 const char* ieqPrefix(const char* line, const char* prefix) {
     while (*prefix) {
         char ca = *line++;
@@ -866,7 +866,7 @@ void SerialCli::dispatch(const char* line, bool retry) {
 }
 
 #ifdef CF_TEST_CLI
-// Serial button injection (T-191 leg 3; spike ButtonManager::injectEvent).
+// Serial button injection via ButtonManager::injectEvent.
 // Drives a real app's ButtonManager events without touching GPIO, so a
 // bench or a remote human can navigate the menu and play an app over
 // serial. `tap` auto-releases after a short delay, polled in poll().
@@ -1671,7 +1671,7 @@ void SerialCli::cmdLapply(const char* args) {
     sendReply(g_ferry.applyManifest(args, in));
 }
 
-// T-191: base64-encode and emit the 128x64 1bpp framebuffer as one
+// Base64-encode and emit the 128x64 1bpp framebuffer as one
 // `[cmd] screencap=<b64>` line. ~1024 bytes -> ~1368 chars; ~15ms at
 // 921600 baud. The copy happens here on the loop task, so the serial
 // side never touches the live buffer across contexts.
@@ -1697,7 +1697,7 @@ void SerialCli::emitScreencap() {
 
 void SerialCli::cmdScreencap() { emitScreencap(); }
 
-// T-191: screenstream on [fps] | off. Emits a screencap frame at the
+// screenstream on [fps] | off. Emits a screencap frame at the
 // requested rate from poll(), bounded so it never starves the app loop
 // (frames are dropped, ticks are not). Default 8 fps, cap 20.
 void SerialCli::cmdScreenstream(const char* arg) {
@@ -1786,7 +1786,7 @@ bool SerialCli::launchResolved(const char* arg, const char* replyVerb,
             if (ieq(arg, appDefs[i].name)) { target = i; break; }
         }
     }
-    // T-183: a ferried wasm app has no builtin AppIndex. Resolve a manifest
+    // A website-sent wasm app has no builtin AppIndex. Resolve a manifest
     // blob id (or name) to its path, stage it, and launch the WASM_HOST slot
     // - the same path the menu leaf takes, so the bench drives it headlessly.
     if (target < 0) {

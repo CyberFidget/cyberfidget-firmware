@@ -10,7 +10,7 @@
 // functions in BreakoutMath.
 //
 // See plan file `i-want-to-update-toasty-crown.md` §6c for the layered
-// approach (HALMock at native here; full WASM SIL coverage in T-002).
+// approach (HALMock at native here; full WebAssembly system integration coverage).
 
 #include <unity.h>
 #include "BreakoutMath.h"

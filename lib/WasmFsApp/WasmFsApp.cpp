@@ -287,7 +287,7 @@ void wasmFsAppBegin() {
     }
 
     // Refuse a blob whose declared cf.* surface exceeds the ABI this firmware
-    // provides, before opening or parsing any guest bytes (REQ-063).
+    // provides, before opening or parsing any guest bytes.
     if (abi > kDeviceHalAbi) {
         snprintf(s_loadErr, sizeof(s_loadErr), "abi_unsupported");
         s_failedAbi = abi;

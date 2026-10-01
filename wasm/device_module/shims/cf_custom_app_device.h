@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
 // Copyright (c) 2026 Dismo Industries LLC
 //
-// T-192: device-profile twin of the emulator's cf_custom_app.h. Force-
+// Device-profile twin of the emulator's cf_custom_app.h. Force-
 // included into a website-generated app's .cpp so the SAME source compiles
 // for the device (wasm3 / cf.* imports) as it does for the browser
 // emulator (EM_JS), even when the generated code forgot an #include. The
@@ -13,7 +13,7 @@
 // Standard C/C++ headers generated apps routinely use (snprintf, memset,
 // strlen, sqrtf, fixed-width ints). The emulator gets these transitively
 // through its fuller shim set; the device set is lean, so provide them here
-// for force-include parity (T-192 trap 3).
+// for force-include parity with the fuller emulator shim.
 #include <cstdio>
 #include <cstring>
 #include <cstdint>

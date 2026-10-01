@@ -194,12 +194,12 @@ void DisplayProxy::drawOverlayElements() {
     // Add additional overlay drawing logic as desired.
 }
 
-// --- T-191 serial tunnel: framebuffer read access ---
+// --- Serial interface: framebuffer read access ---
 const uint8_t* DisplayProxy::frameBuffer() const {
     // The exact 1bpp bitmap last pushed to the panel via display(), read-only.
     // The real ThingPulse OLED base class exposes it as a public `buffer`
     // member; the WASM shim (wasm/shims/SSD1306Wire.h) has a private _buffer
-    // reached via getBuffer(). They must stay in step (REQ-066).
+    // reached via getBuffer(). Keep these layouts in step.
 #ifdef __EMSCRIPTEN__
     return m_display.getBuffer();
 #else
