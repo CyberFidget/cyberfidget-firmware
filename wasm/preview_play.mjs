@@ -3,7 +3,14 @@
 //   node preview_play.mjs http://127.0.0.1:8011/preview.html
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
-const require = createRequire('d:/_Steele/Code_Sandbox/cyberfidget/cyberfidget_website/package.json');
+import path from 'path';
+// playwright lives in the website repo, assumed to sit next to this firmware
+// checkout; from anywhere else (e.g. a worktree) set CF_WEBSITE_REPO to the
+// website checkout, e.g. $env:CF_WEBSITE_REPO = 'D:\path\to\cyberfidget_website'
+const websiteRepo = process.env.CF_WEBSITE_REPO
+  ? path.resolve(process.cwd(), process.env.CF_WEBSITE_REPO)
+  : fileURLToPath(new URL('../../cyberfidget_website/', import.meta.url));
+const require = createRequire(path.join(websiteRepo, 'package.json'));
 const { chromium } = require('playwright');
 
 const url = process.argv[2] || 'http://127.0.0.1:8011/preview.html';
