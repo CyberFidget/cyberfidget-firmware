@@ -375,9 +375,9 @@ async function inferTick() {
         if (emptyVoiceCommits === 3) {
           notice('sessionNotice', 'Captions are coming back empty even though there is sound. The speech pack may be damaged - delete it and download it again in Settings.', 'err');
         }
-      } else {
-        emptyVoiceCommits = 0;
       }
+      // An empty commit over a silent window (a pause between sentences)
+      // neither counts nor breaks the streak.
       dropPending(Math.max(0, samplesAtStart - discardedSinceInferStart));
       lastInferSamples = Math.max(0, lastInferSamples - samplesAtStart);
     } else if (text) {

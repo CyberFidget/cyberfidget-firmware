@@ -15,7 +15,11 @@
 //   out: {type:'progress', pct, label} | {type:'loaded', device}
 //        {type:'result', id, text} | {type:'error', id?, error}
 
-import { modelFileMatch, modelFileCachePut, settingSet } from './db.js';
+import { modelFileCache, lengthCheckedFetch, settingSet } from './db.js';
+
+// transformers.js downloads with the global fetch; make a download that ends
+// early throw instead of being cached zero-padded.
+self.fetch = lengthCheckedFetch(self.fetch.bind(self));
 
 let pipelinePromise = null;
 let activeModel = null;
@@ -27,16 +31,7 @@ async function buildPipeline(modelId, english, useGpu) {
   env.allowLocalModels = false;
   env.useBrowserCache = false;
   env.useCustomCache = true;
-  env.customCache = {
-    match: async (request) => {
-      const url = typeof request === 'string' ? request : request.url;
-      return modelFileMatch(url);
-    },
-    put: async (request, response) => {
-      const url = typeof request === 'string' ? request : request.url;
-      await modelFileCachePut(url, response);
-    },
-  };
+  env.customCache = modelFileCache;
   if (env.backends && env.backends.onnx && env.backends.onnx.wasm) {
     env.backends.onnx.wasm.wasmPaths = '/web/vendor/ort/';
     env.backends.onnx.wasm.numThreads = 1;  // no cross-origin isolation on http
