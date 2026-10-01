@@ -4,7 +4,9 @@
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
-// playwright lives in the sibling website repo; CF_WEBSITE_REPO overrides its location.
+// playwright lives in the website repo, assumed to sit next to this firmware
+// checkout; from anywhere else (e.g. a worktree) set CF_WEBSITE_REPO to the
+// website checkout, e.g. $env:CF_WEBSITE_REPO = 'D:\path\to\cyberfidget_website'
 const websiteRepo = process.env.CF_WEBSITE_REPO
   ? path.resolve(process.cwd(), process.env.CF_WEBSITE_REPO)
   : fileURLToPath(new URL('../../cyberfidget_website/', import.meta.url));

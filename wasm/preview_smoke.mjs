@@ -6,7 +6,9 @@ import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
 import path from 'path';
 // Resolve playwright from cyberfidget_website/node_modules regardless of cwd.
-// CF_WEBSITE_REPO overrides the sibling-repo location.
+// Assumes the website repo sits next to this firmware checkout; from anywhere
+// else (e.g. a worktree) set CF_WEBSITE_REPO to the website checkout, e.g.
+//   $env:CF_WEBSITE_REPO = 'D:\path\to\cyberfidget_website'   (PowerShell)
 const websiteRepo = process.env.CF_WEBSITE_REPO
   ? path.resolve(process.cwd(), process.env.CF_WEBSITE_REPO)
   : fileURLToPath(new URL('../../cyberfidget_website/', import.meta.url));
