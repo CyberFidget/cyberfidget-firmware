@@ -12,6 +12,7 @@ import { $, toast, notice, noticeWithLink, askOverlay, todayISO } from './ui.js'
 import * as device from './device.js';
 import * as providers from './providers.js';
 import { transcriptsForDate } from './db.js';
+import { navigate } from './app.js';
 
 let assembled = '';     // the exact text offered to the provider
 let assembledDate = '';
@@ -76,9 +77,9 @@ async function summarize() {
   if (!providers.getKey(prov)) {
     // No key: stop at setup, with the provider's own key page one tap away.
     notice('dailyNotice', noticeWithLink(
-      'No ' + provLabel + ' key saved yet. Add one in Setup - you can create a key at',
+      'No ' + provLabel + ' key saved yet. Add one in Settings - you can create a key at',
       'the ' + provLabel + ' console.', providers.consoleLink(prov)), 'err');
-    document.querySelector('.nav button[data-view="Setup"]').click();
+    navigate('settings/transcription');
     return;
   }
 
