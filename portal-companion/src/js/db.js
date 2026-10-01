@@ -214,9 +214,27 @@ export const modelFileCache = {
 // short download already has the full length. The only reliable place to
 // catch it is while the body is read: count the bytes that really arrive and
 // error the body if it ends short, so the download throws and nothing is
-// cached. A compressed transfer decodes to MORE bytes than content-length,
-// which passes. Only other-origin requests (the pack downloads) are wrapped;
-// the device's own files pass through untouched.
+// cached. Only other-origin requests (the pack downloads) are wrapped; the
+// device's own files pass through untouched.
+//
+// content-length is the size on the wire. For a compressed transfer the body
+// we read is the DECODED file, usually larger, but a tiny or incompressible
+// file can decode a little SMALLER than the header (the compression format's
+// own framing). The encoding header is not visible to us on other-origin
+// downloads, so the size is the only signal. A compression format can only
+// add a bounded number of bytes (COMPRESSION_SLACK), so a shortfall beyond
+// that is a cut-off download. Small files are read whole and handed on with
+// their real length, so a valid compressed one loads instead of being padded.
+// Large files (the model weights) stream through and any shortfall fails.
+const SMALL_FILE_BYTES = 1 << 20;
+const COMPRESSION_SLACK = (n) => 32 + 5 * Math.ceil(n / 16384);
+const CUT_OFF = 'the connection dropped before the file finished';
+const CAME_BACK_SMALLER = 'the file came back smaller than announced';
+
+function failedBody(message) {
+  return new ReadableStream({ start(c) { c.error(new Error(message)); } });
+}
+
 export function lengthCheckedFetch(fetchImpl) {
   return async (input, init) => {
     const res = await fetchImpl(input, init);
@@ -227,6 +245,20 @@ export function lengthCheckedFetch(fetchImpl) {
     } catch { /* keep wrapping */ }
     const expected = Number(res.headers.get('content-length'));
     if (!otherOrigin || res.status !== 200 || !res.body || !(expected > 0)) return res;
+    const init2 = { status: res.status, statusText: res.statusText, headers: new Headers(res.headers) };
+    if (expected <= SMALL_FILE_BYTES) {
+      let buf;
+      try {
+        buf = await res.arrayBuffer();
+      } catch (e) {
+        return new Response(failedBody(CUT_OFF), init2);
+      }
+      if (buf.byteLength < expected - COMPRESSION_SLACK(expected)) {
+        return new Response(failedBody(CUT_OFF), init2);
+      }
+      init2.headers.set('content-length', String(buf.byteLength));
+      return new Response(buf, init2);
+    }
     let received = 0;
     const counted = res.body.pipeThrough(new TransformStream({
       transform(chunk, controller) {
@@ -235,11 +267,12 @@ export function lengthCheckedFetch(fetchImpl) {
       },
       flush(controller) {
         if (received < expected) {
-          controller.error(new Error('the connection dropped before the file finished'));
+          controller.error(new Error(
+            received < expected - COMPRESSION_SLACK(expected) ? CUT_OFF : CAME_BACK_SMALLER));
         }
       },
     }));
-    return new Response(counted, { status: res.status, statusText: res.statusText, headers: res.headers });
+    return new Response(counted, init2);
   };
 }
 
