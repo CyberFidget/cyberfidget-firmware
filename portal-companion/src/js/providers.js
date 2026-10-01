@@ -175,7 +175,7 @@ export async function generate(system, prompt, maxTokens = 1500) {
   const p = getProvider();
   const key = getKey(p);
   if (!key) {
-    throw new ProviderError(`No ${PROVIDERS[p].label} key saved yet - add one in Setup.`, { authProblem: true });
+    throw new ProviderError(`No ${PROVIDERS[p].label} key saved yet - add one in Settings > Transcription.`, { authProblem: true });
   }
   const model = getModel(p);
   if (p === 'anthropic') return callAnthropic(key, model, system, prompt, maxTokens);
