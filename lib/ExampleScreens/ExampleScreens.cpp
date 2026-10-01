@@ -461,10 +461,13 @@ BatteryBarApp::BatteryBarApp(ButtonManager& btnMgr)
 
 void BatteryBarApp::begin() {
     buttonManager.registerCallback(button_BottomLeftIndex, onButtonBackPressed);
+    setColorsOff();
 }
 
 void BatteryBarApp::end() {
     buttonManager.unregisterCallback(button_BottomLeftIndex);
+    setColorsOff();
+    updateStrip();
 }
 
 void BatteryBarApp::update() {
