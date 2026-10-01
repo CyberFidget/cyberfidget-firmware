@@ -54,6 +54,7 @@ let lastInferSamples = 0;
 let discardedSinceInferStart = 0;
 let liveLineStart = '';        // committed text shown in the feed
 let lastVoiceMs = 0;
+let emptyVoiceCommits = 0;
 let backlogTimer = 0;
 let maxBacklogSeconds = 0;
 let windowsTranscribed = 0;
@@ -239,6 +240,7 @@ function refreshBehindIndicator() {
 
 function resetCaptionMetrics() {
   lastVoiceMs = 0;
+  emptyVoiceCommits = 0;
   maxBacklogSeconds = 0;
   windowsTranscribed = 0;
   inferenceTimesMs = [];
@@ -339,6 +341,9 @@ async function inferTick() {
   const tailSilent = pendingAtStart >= MIN_COMMIT_S && tailIsSilent();
   const commitAfter = forceCommit || tailSilent;
   const window = takeWindow();
+  // Use the same peak threshold as incoming frames, restricted to this
+  // inference window so silent windows and later audio cannot count as voice.
+  const windowHadVoice = window.some((sample) => Math.abs(sample) > SILENCE_RMS);
   try {
     const inferenceStart = performance.now();
     let text;
@@ -352,6 +357,7 @@ async function inferTick() {
     if (commitAfter) {
       discardEpisodeOpen = false;
       if (text) {
+        emptyVoiceCommits = 0;
         sendCaption(text, true);
         liveLineStart += (liveLineStart ? ' ' : '') + text;
         feedAppend(text, '');
@@ -364,6 +370,13 @@ async function inferTick() {
         }
         addLatencyBadge(badgeText);
         transcriptPut(todayISO(), liveSource, liveLineStart).catch(() => {});
+      } else if (windowHadVoice) {
+        emptyVoiceCommits++;
+        if (emptyVoiceCommits === 3) {
+          notice('sessionNotice', 'Captions are coming back empty even though there is sound. The speech pack may be damaged - delete it and download it again in Settings.', 'err');
+        }
+      } else {
+        emptyVoiceCommits = 0;
       }
       dropPending(Math.max(0, samplesAtStart - discardedSinceInferStart));
       lastInferSamples = Math.max(0, lastInferSamples - samplesAtStart);
@@ -485,6 +498,7 @@ export async function startSession() {
   liveLineStart = '';
   capChunks = [];
   capSamples = 0;
+  emptyVoiceCommits = 0;
   sessionStartMs = Date.now();
   wavePeaks.fill(0);
 

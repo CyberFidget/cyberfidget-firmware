@@ -5,35 +5,54 @@
 //   settings    - small key/value (engine pick, etc.)
 //   transcripts - {id: "<YYYY-MM-DD>|<source>", date, source, text, when}
 //                 source is "live <hh:mm>" or a note filename
-//   modelfiles  - {url, blob, when} - the transcription pack cache. This is
+//   modelfiles  - {url, blob, size, when} - the transcription pack cache. This is
 //                 IndexedDB (not the browser's nicer offline caches) because
 //                 the companion is served over plain http from the device,
 //                 where those caches aren't available. IndexedDB is.
 
 const DB_NAME = 'cf-companion';
-const DB_VER = 1;
 
 let dbPromise = null;
 
 function open() {
   if (dbPromise) return dbPromise;
   dbPromise = new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VER);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains('settings')) {
-        db.createObjectStore('settings');
-      }
-      if (!db.objectStoreNames.contains('transcripts')) {
-        const st = db.createObjectStore('transcripts', { keyPath: 'id' });
-        st.createIndex('byDate', 'date');
-      }
-      if (!db.objectStoreNames.contains('modelfiles')) {
-        db.createObjectStore('modelfiles', { keyPath: 'url' });
-      }
+    // Open at whatever version exists (a self-healed database may be past 1).
+    const openRequest = (version) => {
+      const req = version === undefined ? indexedDB.open(DB_NAME) : indexedDB.open(DB_NAME, version);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains('settings')) {
+          db.createObjectStore('settings');
+        }
+        if (!db.objectStoreNames.contains('transcripts')) {
+          const st = db.createObjectStore('transcripts', { keyPath: 'id' });
+          st.createIndex('byDate', 'date');
+        }
+        if (!db.objectStoreNames.contains('modelfiles')) {
+          db.createObjectStore('modelfiles', { keyPath: 'url' });
+        }
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        // A database created elsewhere without our stores: bump the version
+        // so onupgradeneeded above creates them.
+        if (['settings', 'transcripts', 'modelfiles'].some((store) => !db.objectStoreNames.contains(store))) {
+          const nextVersion = db.version + 1;
+          db.close();
+          openRequest(nextVersion);
+          return;
+        }
+        db.onversionchange = () => db.close();
+        resolve(db);
+      };
+      req.onerror = () => reject(req.error);
+      // Only the repair reopen changes the version. Another open connection
+      // that won't close (e.g. an older companion tab) would stall it
+      // forever, so fail loudly instead of hanging.
+      req.onblocked = () => reject(new Error('cf-companion storage repair is blocked by another open companion tab; close other tabs and reload'));
     };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
+    openRequest();
   });
   return dbPromise;
 }
@@ -113,15 +132,46 @@ export async function transcriptGet(date, source) {
 export async function modelFileGet(url) {
   const db = await open();
   return new Promise((resolve) => {
-    const req = db.transaction('modelfiles').objectStore('modelfiles').get(url);
-    req.onsuccess = () => resolve(req.result ? req.result.blob : null);
-    req.onerror = () => resolve(null);
+    const t = db.transaction('modelfiles', 'readwrite');
+    const store = t.objectStore('modelfiles');
+    const req = store.get(url);
+    let blob = null;
+    req.onsuccess = () => {
+      const rec = req.result;
+      if (!rec) return;
+      if (rec.size !== undefined && rec.blob.size !== rec.size) {
+        store.delete(url);
+      } else {
+        blob = rec.blob;
+      }
+    };
+    t.oncomplete = () => resolve(blob);
+    t.onerror = () => resolve(null);
+    t.onabort = () => resolve(null);
   });
 }
 
-export async function modelFilePut(url, blob) {
+// contentLength is the response header (or null). It is the size on the wire:
+// for a compressed transfer the decoded blob is LARGER than it, so only a
+// blob SHORTER than the header (a cut-off download) is refused. The stored
+// size is the length actually stored, so a later read can spot a blob that
+// comes back a different length.
+export async function modelFilePut(url, blob, contentLength = null) {
+  if (contentLength !== null && blob.size < contentLength) return;
   const db = await open();
-  return tx(db, 'modelfiles', 'readwrite', (st) => st.put({ url, blob, when: Date.now() }));
+  return tx(db, 'modelfiles', 'readwrite', (st) => st.put({ url, blob, size: blob.size, when: Date.now() }));
+}
+
+export async function modelFileMatch(url) {
+  const blob = await modelFileGet(url);
+  return blob ? new Response(blob, { headers: { 'content-length': String(blob.size) } }) : undefined;
+}
+
+export async function modelFileCachePut(url, response) {
+  const length = response.headers.get('content-length');
+  const blob = await response.blob();
+  const expected = length === null ? NaN : Number(length);
+  await modelFilePut(url, blob, Number.isFinite(expected) ? expected : null);
 }
 
 export async function modelFilesClear() {

@@ -15,7 +15,7 @@
 //   out: {type:'progress', pct, label} | {type:'loaded', device}
 //        {type:'result', id, text} | {type:'error', id?, error}
 
-import { modelFileGet, modelFilePut, settingSet } from './db.js';
+import { modelFileMatch, modelFileCachePut, settingSet } from './db.js';
 
 let pipelinePromise = null;
 let activeModel = null;
@@ -30,13 +30,11 @@ async function buildPipeline(modelId, english, useGpu) {
   env.customCache = {
     match: async (request) => {
       const url = typeof request === 'string' ? request : request.url;
-      const blob = await modelFileGet(url);
-      return blob ? new Response(blob) : undefined;
+      return modelFileMatch(url);
     },
     put: async (request, response) => {
       const url = typeof request === 'string' ? request : request.url;
-      const blob = await response.blob();
-      await modelFilePut(url, blob);
+      await modelFileCachePut(url, response);
     },
   };
   if (env.backends && env.backends.onnx && env.backends.onnx.wasm) {
