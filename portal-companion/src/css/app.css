@@ -194,6 +194,8 @@ body::after {
   display: inline-block;
 }
 .ck.on { background: var(--cf-cyan); box-shadow: inset 0 0 0 3px var(--cf-bg-card); }
+/* Partial selection: a cyan bar across the sunk box. */
+.ck.mixed { background: linear-gradient(var(--cf-cyan), var(--cf-cyan)) center / 8px 2px no-repeat var(--cf-bg-sunk); }
 
 /* An entry card: a stamp, one line of why, and the door - all on one row.
    [hidden] needs its own rule here because the card sets `display`, and a bare
