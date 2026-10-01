@@ -303,8 +303,9 @@ enum class UsbWifiJob : uint8_t { Idle, Scan, Try };
 // poll() has printed the result (radioBusy() holds until then).
 std::atomic<UsbWifiJob> g_wifiJob{UsbWifiJob::Idle};
 std::atomic<bool> g_wifiJobDone{false};
-// Worker writes, loop reads after g_wifiJobDone.
-UsbWifi::ScanList g_scanList;
+// Worker writes, loop reads after g_wifiJobDone. The scan list lives only
+// while a scan runs (PSRAM when there is some), not boot-resident.
+UsbWifi::ScanList* g_scanList = nullptr;
 bool g_scanOk = false;
 SavedWifi::JoinResult g_tryResult;
 char g_tryName[WifiList::kNameMax + 1] = {0};
@@ -323,7 +324,7 @@ void usbWifiTask(void*) {
     WiFi.persistent(false);   // nothing is written to the radio's own storage
     const bool on = WiFi.mode(WIFI_STA);
     if (scan) {
-        UsbWifi::scanBegin(g_scanList);
+        UsbWifi::scanBegin(*g_scanList);
         g_scanOk = false;
         if (on) {
             WiFi.scanDelete();
@@ -339,13 +340,13 @@ void usbWifiTask(void*) {
                 const wifi_ap_record_t* rec =
                     static_cast<const wifi_ap_record_t*>(WiFi.getScanInfoByIndex(i));
                 if (!rec) continue;
-                UsbWifi::scanConsider(g_scanList, rec->ssid, sizeof(rec->ssid), rec->rssi,
+                UsbWifi::scanConsider(*g_scanList, rec->ssid, sizeof(rec->ssid), rec->rssi,
                                       (int)rec->authmode);
             }
             g_scanOk = found >= 0;
             WiFi.scanDelete();
         }
-        UsbWifi::scanSort(g_scanList);
+        UsbWifi::scanSort(*g_scanList);
     } else {
         g_tryResult = SavedWifi::JoinResult();
         if (on) {
@@ -603,10 +604,11 @@ void SerialCli::pollUsbWifi() {
     char out[UsbWifi::kLineMax];
     if (g_wifiJob.load() == UsbWifiJob::Scan) {
         if (!g_scanOk) Serial.println("[wifi] usb scan=failed");
-        for (int i = 0; i < g_scanList.count; i++)
-            writeLine(out, UsbWifi::formatScanLine(out, sizeof(out), g_scanList.entries[i]));
-        writeLine(out, UsbWifi::formatScanDone(out, sizeof(out), g_scanList.count));
-        UsbWifi::scanBegin(g_scanList);
+        for (int i = 0; i < g_scanList->count; i++)
+            writeLine(out, UsbWifi::formatScanLine(out, sizeof(out), g_scanList->entries[i]));
+        writeLine(out, UsbWifi::formatScanDone(out, sizeof(out), g_scanList->count));
+        free(g_scanList);
+        g_scanList = nullptr;
     } else {
         if (g_tryResult.ok) writeLine(out, UsbWifi::formatTryOk(out, sizeof(out), g_tryName));
         else writeLine(out, UsbWifi::formatTryFail(out, sizeof(out), g_tryResult.failure));
@@ -1930,10 +1932,19 @@ void SerialCli::cmdWifiScan() {
         writeLine(out, UsbWifi::formatBusy(out, sizeof(out), why));
         return;
     }
+    g_scanList = static_cast<UsbWifi::ScanList*>(
+        heap_caps_calloc(1, sizeof(UsbWifi::ScanList), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!g_scanList) g_scanList = static_cast<UsbWifi::ScanList*>(calloc(1, sizeof(UsbWifi::ScanList)));
+    if (!g_scanList) {
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), "wifi"));
+        return;
+    }
     g_wifiJobDone = false;
     g_wifiJob = UsbWifiJob::Scan;
     if (xTaskCreate(usbWifiTask, "usbwifi", kUsbWifiStackBytes, nullptr, 1, nullptr) != pdPASS) {
         g_wifiJob = UsbWifiJob::Idle;
+        free(g_scanList);
+        g_scanList = nullptr;
         writeLine(out, UsbWifi::formatBusy(out, sizeof(out), "wifi"));
         return;
     }
