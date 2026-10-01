@@ -4,8 +4,13 @@
 //   node preview_smoke.mjs http://127.0.0.1:8011/preview.html
 import { createRequire } from 'module';
 import { fileURLToPath } from 'url';
+import path from 'path';
 // Resolve playwright from cyberfidget_website/node_modules regardless of cwd.
-const require = createRequire('d:/_Steele/Code_Sandbox/cyberfidget/cyberfidget_website/package.json');
+// CF_WEBSITE_REPO overrides the sibling-repo location.
+const websiteRepo = process.env.CF_WEBSITE_REPO
+  ? path.resolve(process.cwd(), process.env.CF_WEBSITE_REPO)
+  : fileURLToPath(new URL('../../cyberfidget_website/', import.meta.url));
+const require = createRequire(path.join(websiteRepo, 'package.json'));
 const { chromium } = require('playwright');
 
 const url = process.argv[2] || 'http://127.0.0.1:8011/preview.html';
