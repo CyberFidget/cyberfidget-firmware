@@ -104,7 +104,10 @@ async function main() {
 
   if (args.checkOnly) {
     const existing = await readFile(outputPath, 'utf8').catch(() => null);
-    if (existing !== header) {
+    // Compare content, not the checkout's line endings: the repo stores these
+    // headers as LF, but a working tree may hold CRLF copies.
+    const lf = (text) => text.replace(/\r\n/g, '\n');
+    if (existing === null || lf(existing) !== lf(header)) {
       throw new Error(
         `Generated header drift: ${path.relative(repoRoot, outputPath)}\n`
         + 'Regenerate target: pio run -t cfsprite-regen',
