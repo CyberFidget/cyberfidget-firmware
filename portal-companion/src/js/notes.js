@@ -134,8 +134,17 @@ function row(n) {
 
   const ck = el('span', 'ck' + (selected.has(name) ? ' on' : ''));
   ck.setAttribute('role', 'checkbox');
+  ck.setAttribute('aria-label', 'Select ' + name);
+  ck.setAttribute('aria-checked', selected.has(name) ? 'true' : 'false');
   ck.tabIndex = 0;
   ck.onclick = (ev) => { ev.stopPropagation(); toggleSelect(name); };
+  ck.onkeydown = (ev) => {
+    if (ev.key === ' ' || ev.key === 'Enter') {
+      ev.preventDefault();
+      toggleSelect(name);
+      $('notesList').children[notes.indexOf(n)].querySelector('[role="checkbox"]').focus({ preventScroll: true });
+    }
+  };
   li.appendChild(ck);
 
   const fx = el('div', 'fx');
@@ -425,6 +434,12 @@ async function transcribe(n, btn) {
 
 export function wire() {
   $('notesSelAll').onclick = toggleAll;
+  $('notesSelAll').onkeydown = (ev) => {
+    if (ev.key === ' ' || ev.key === 'Enter') {
+      ev.preventDefault();
+      toggleAll();
+    }
+  };
   $('notesDownload').onclick = downloadSelected;
   $('notesDelete').onclick = deleteSelected;
 }
