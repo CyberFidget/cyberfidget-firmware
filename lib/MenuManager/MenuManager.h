@@ -40,7 +40,7 @@ struct MenuItem {
     AppIndex     appIndex;        // used if isCategory=false && blobPath empty
     std::vector<MenuItem> children;
     // A ferried wasm app has no compile-time AppIndex; a non-empty blobPath
-    // marks a blob leaf, launched via the WASM_HOST slot (T-183). blobLabel
+    // marks a blob leaf, launched via the WASM_HOST slot. blobLabel
     // is the app's own name (appIndex points at the shared WASM_HOST row).
     std::string  blobPath;
     std::string  blobLabel;
@@ -81,7 +81,7 @@ public:
                      AppIndex index);
 
     /**
-     * @brief Register a ferried wasm app leaf (T-183). Launched through the
+     * @brief Register a website-sent wasm app leaf. Launched through the
      * shared WASM_HOST slot, staging blobPath first.
      * @param path      category path, e.g. "Games"
      * @param label     the app's display name
@@ -133,13 +133,13 @@ public:
 
     /**
      * @brief Dump the built menu tree to Serial as machine-parseable
-     * `[cmd] menutree.*` lines (T-183/T-191): one line per category and
+     * `[cmd] menutree.*` lines: one line per category and
      * leaf, with rendered label text, blob flag, and blob path. Read-only.
      */
     void dumpTree() const;
 
     /**
-     * @brief Mark the menu stale after a loadout manifest change (T-183).
+     * @brief Mark the menu stale after a loadout manifest change.
      * The next begin() rebuilds the tree once; a menu already showing
      * rebuilds in place as soon as it is idle at the root. Safe to call
      * from the sync path; the rebuild itself happens on the loop.
@@ -183,7 +183,7 @@ private:
 
     // Are we in the menu (true) or inside an app (false)?
     bool menuActive = true;
-    // T-183: set when the loadout manifest changes (sync/lapply) so the next
+    // Set when the loadout manifest changes (sync/lapply) so the next
     // menu entry rebuilds the tree once, surfacing ferried apps without a
     // reboot. Consumed in begin().
     bool manifestDirty = false;

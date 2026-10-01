@@ -3,10 +3,10 @@
 
 // lib/CFGraphics/include/cf_gfx.h
 //
-// Umbrella header for the cf::gfx sprite & animation runtime (T-111,
-// design N-033, invariants REQ-042). Apps include this one header plus
+// Umbrella header for the cf::gfx sprite & animation runtime,
+// with shared sprite and animation rules. Apps include this one header plus
 // their own generated asset headers (lib/<App>/generated/*.h, emitted by
-// the T-112 converter):
+// the asset converter):
 //
 //   #include "cf_gfx.h"
 //   #include "generated/dino.h"
@@ -19,7 +19,7 @@
 //   player.update(millis());
 //   player.draw(display);
 //
-// Runtime only — no assets live in this library (REQ-042.2).
+// Runtime only — each app owns its assets.
 
 #ifndef CF_GFX_H
 #define CF_GFX_H

@@ -119,7 +119,7 @@ void test_once_hold_keeps_last_frame(void) {
 
 void test_pingpong_sequence(void) {
     // 5 frames, uniform 60 ms: 0,1,2,3,4,3,2,1,0,1,... — each end is shown
-    // for exactly one duration per pass (N-033: "0..N-1..1 then repeat").
+    // for exactly one duration per pass, then the sequence repeats in reverse.
     static const uint8_t kExpected[] = {1, 2, 3, 4, 3, 2, 1, 0, 1, 2, 3, 4, 3, 2};
     AnimationPlayer p;
     p.play(anim_pace, 0);

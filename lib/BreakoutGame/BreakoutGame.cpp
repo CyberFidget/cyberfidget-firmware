@@ -670,7 +670,7 @@ void BreakoutGame::onPaddleRight(const ButtonEvent& event) {
 //
 // This is a debug-flavored binding on a production button. Either keep it
 // (level-skip is a reasonable feature for a fidget toy) or gate it behind
-// a build flag before release. Tracked in T-012's notes.
+// a build flag before release.
 void BreakoutGame::onBottomRight(const ButtonEvent& event) {
     if (event.eventType != ButtonEvent_Pressed) return;
     switch (instance->gameState) {
@@ -702,7 +702,7 @@ void BreakoutGame::onBottomRight(const ButtonEvent& event) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Internal test API — see header comment + N-011 for the graduation plan.
+// Internal test API; move it behind the command registry when that interface is ready.
 // ─────────────────────────────────────────────────────────────────────────
 
 void BreakoutGame::test_setLevel(int n) {

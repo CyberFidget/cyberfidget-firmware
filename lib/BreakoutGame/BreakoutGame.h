@@ -28,8 +28,8 @@ public:
     // ─────────────────────────────────────────────────────────────────────
     // Internal test API — NOT for user code. Public so the native test
     // target in lib/BreakoutGame/test/ can call directly. Will move behind
-    // HAL::commandRegistry when N-011 is implemented; see N-011 for the
-    // graduation path.
+    // HAL::commandRegistry when that interface is available; see the
+    // planned path to graduate this test API.
     // ─────────────────────────────────────────────────────────────────────
     struct StateSnapshot {
         uint8_t state;     // GameState as uint8_t (avoid exposing the enum)

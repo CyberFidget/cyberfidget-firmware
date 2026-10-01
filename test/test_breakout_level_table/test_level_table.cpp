@@ -14,7 +14,7 @@ void test_valid_rows_accepted(void) {
     TEST_ASSERT_TRUE(BreakoutMath::isLayoutRowValid("BB.UU.BB", 8));
     TEST_ASSERT_TRUE(BreakoutMath::isLayoutRowValid("CUCUCUCU", 8));
     TEST_ASSERT_TRUE(BreakoutMath::isLayoutRowValid("........", 8));
-    // Spike cell chars added in T-012 round 3.
+    // Spike cell characters are valid level-layout entries.
     TEST_ASSERT_TRUE(BreakoutMath::isLayoutRowValid("BSBSBSBS", 8));    // one-shot spike
     TEST_ASSERT_TRUE(BreakoutMath::isLayoutRowValid("PUPUPUPU", 8));    // persistent spike + unbreakable
     TEST_ASSERT_TRUE(BreakoutMath::isLayoutRowValid("BSPCUSPB", 8));    // all cell-type chars mixed

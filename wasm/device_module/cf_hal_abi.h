@@ -9,7 +9,7 @@
 // import is a MAJOR bump = an announced deprecation. The device runtime
 // (WasmHostImports.cpp) provides exactly this ABI; a ferried blob's
 // manifest `abi` field must be <= this or the device refuses it. See
-// REQ-063 / N-067.
+// ABI compatibility rules are enforced by the device runtime.
 #define CF_HAL_ABI 1
 
 #endif  // CF_HAL_ABI_H

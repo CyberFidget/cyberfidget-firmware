@@ -114,7 +114,7 @@ private:
     void cmdLget();
     void cmdLapply(const char* args);
     void cmdSyncinfo();
-    // T-191 serial tunnel: framebuffer capture + streaming (always compiled -
+    // Serial framebuffer capture + streaming (always compiled -
     // these are observation/remote-display verbs, valuable in any build).
     void cmdScreencap();
     void cmdScreenstream(const char* arg);
@@ -144,7 +144,7 @@ private:
     void cmdPrompt(const char* args);
     // Menu status bar bench states (post / popup / clear / checkin / read).
     void cmdStatus(const char* args);
-    // Serial button injection (T-191). tap auto-releases after a delay.
+    // Serial button injection. tap auto-releases after a delay.
     void cmdBtn(const char* args);
     void pollPendingTapReleases();
     static constexpr int kMaxInjectButtons = 6;

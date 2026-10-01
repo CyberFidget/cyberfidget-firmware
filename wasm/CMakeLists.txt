@@ -99,12 +99,12 @@ set(FW_SOURCES
     ${LIB_DIR}/ButtonManager/ButtonManager.cpp
     ${LIB_DIR}/RGBController/RGBController.cpp
     # Pure loadout-manifest core (no Arduino deps) — compiled here to keep
-    # the emulator's menu model in sync with firmware (T-115/T-134). The
+    # the emulator menu model in sync with firmware. The
     # LittleFS-backed LoadoutStore is device-only and deliberately absent.
     ${LIB_DIR}/LoadoutManifest/LoadoutManifest.cpp
-    # cf::gfx sprite/animation runtime (T-111) — pure C++, compiled here so
+    # cf::gfx sprite/animation runtime — pure C++, compiled here so
     # the emulator build verifies the runtime before any app adopts it
-    # (first consumer: DinoGame migration, T-112). Unreferenced code is
+    # (first consumer: DinoGame migration). Unreferenced code is
     # dropped by the wasm linker, so this costs nothing in the output.
     ${LIB_DIR}/CFGraphics/src/cf_gfx_sprite.cpp
     ${LIB_DIR}/CFGraphics/src/cf_gfx_actor.cpp

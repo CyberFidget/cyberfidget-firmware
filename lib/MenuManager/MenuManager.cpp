@@ -6,7 +6,7 @@
 #include "AppManager.h"   // So we can set appActive, appPreviously, etc.
 #include "globals.h"      // If you have global for 'millis_NOW', etc.
 #include "AppDefs.h"      // For AppIndex enum
-#include "WasmFsApp.h"    // T-183: stage a ferried wasm app before launch
+#include "WasmFsApp.h"    // stage a website-sent wasm app before launch
 #include "StatusView.h"   // status bar across the top, Status item badge
 #include "CategoryPath.h" // splitCategoryPath (no <sstream>)
 #include "LoadoutStore.h"  // manifest lock for the in-place rebuild
@@ -248,7 +248,7 @@ MenuManager::MenuManager()
 void MenuManager::begin()
 {
     // If we've already built the menu, do NOT rebuild - UNLESS the manifest
-    // changed under us (a loadout sync / lapply). T-183: a ferried wasm app
+    // changed under us (a loadout sync / lapply). A website-sent wasm app
     // must appear on the menu the next time the user opens it, not only after
     // a reboot. The dirty flag is set by applyLoadoutOps; consuming it here
     // (menu-entry, never mid-app) keeps the rebuild off the hot path and away
@@ -677,7 +677,7 @@ void MenuManager::selectCurrentItem()
         menuActive = false;
         unregisterMenuCallbacks();
         // A ferried wasm leaf stages its file, then launches the shared
-        // WASM_HOST slot; builtins launch by their own AppIndex (T-183).
+        // WASM_HOST slot; built-ins launch by their own AppIndex.
         if (!mi.blobPath.empty()) {
             WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str(), mi.blobAbi,
                                   mi.blobId.c_str());
@@ -947,7 +947,7 @@ void MenuManager::onButtonBackPressed(const ButtonEvent& event)
 }
 void MenuManager::onButtonSelectPressed(const ButtonEvent& event)
 {
-    // Long-press picks up the current leaf for reordering (T-115).
+    // Long-press picks up the current leaf for reordering.
     if (event.eventType == ButtonEvent_Held){
         instance().enterMoveMode();
         return;
@@ -985,7 +985,7 @@ extern void menuRun() {
     ESP_LOGI(TAG_MAIN, "menuRun start");
     MenuManager::instance().update();
 }//
-// T-183/T-191: read-only serial dump of the built menu tree. One [cmd]
+// Read-only serial dump of the built menu tree. One [cmd]
 // line per node with rendered label text, so a bench (or a remote human)
 // can confirm what is actually on the device menu - including ferried
 // wasm apps, which is the exact gap this work closes.

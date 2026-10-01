@@ -175,7 +175,7 @@ const APPS = {
             if (!c.led_set_nonzero) throw new Error("burst LEDs never lit");
         },
     },
-    // T-114 asteroid shooter: opens on a mode chooser (Play Now/Screensaver/
+    // Asteroid shooter: opens on a mode chooser (Play Now/Screensaver/
     // Auto); Fire (5) confirms, Left/Right steer, Fire auto-repeats lasers.
     "spaceship.wasm": {
         frames: 200, stepMs: 20,

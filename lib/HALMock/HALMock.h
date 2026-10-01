@@ -12,7 +12,7 @@
 // that BreakoutGame's input-mapping pure functions consume. Full
 // BreakoutGame-instance tests (which would need stubs for DisplayProxy,
 // AudioManager, ButtonManager, RGBController, MenuManager, etc.) are punted
-// to T-002's WASM SIL harness — they're the right tool for that fidelity.
+// to a WebAssembly system-integration harness, which provides that fidelity.
 // See plan file `i-want-to-update-toasty-crown.md` §6c for the layering.
 //
 // To use from a test:

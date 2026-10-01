@@ -5,12 +5,12 @@
 //
 // cf::gfx core asset types: Sprite, Animation, SpriteSheet — plus the
 // stateless draw wrappers and findAnimation(). Phase 1 of the sprite &
-// animation framework (T-111; design N-033; invariants REQ-042).
+// animation framework, following the shared sprite and animation rules.
 //
-// The types are POD and PROGMEM-friendly so the T-112 converter can emit
+// The types are POD and PROGMEM-friendly so the asset converter can emit
 // them as header-only `inline constexpr` data next to each app
 // (lib/<App>/generated/*.h). This library holds runtime types ONLY — no
-// assets live here (REQ-042.2: apps own their assets).
+// assets live here; each app owns its assets.
 //
 // Bit format contract (pinned by test/test_cfgraphics_collision):
 //   Sprite::data is 1-bit XBM: row-major, ((w + 7) / 8) bytes per row,
@@ -49,8 +49,8 @@
 // mirrors the one member cf::gfx calls — drawXbm, same signature — so the
 // real drawSprite / drawSpritePivoted / Actor::draw code paths compile and
 // run on host, and tests can assert on the coordinates handed to the HAL
-// output contract (REQ-OUT-001). Full DisplayProxy stubbing stays punted
-// to T-002's WASM SIL harness (see lib/HALMock/HALMock.h scope note).
+// output contract. Full DisplayProxy stubbing stays deferred
+// to the WebAssembly system-integration harness (see lib/HALMock/HALMock.h).
 class DisplayProxy {
 public:
     struct XbmCall {
@@ -151,7 +151,7 @@ public:
 };
 #else
 #include <Arduino.h>       // PROGMEM / pgm_read_byte (no-op reads on ESP32)
-#include "DisplayProxy.h"  // HAL output contract (REQ-OUT-001)
+#include "DisplayProxy.h"  // HAL output contract
 #endif  // HOST_TEST
 
 namespace cf { namespace gfx {
@@ -203,7 +203,7 @@ struct SpriteSheet {
                                       // tooling (Archives, gallery) filters on it
 };
 
-// POD guarantee — keeps the types PROGMEM-safe and lets the T-112 converter
+// POD guarantee — keeps the types PROGMEM-safe and lets the asset converter
 // emit them as constexpr aggregates.
 static_assert(std::is_trivial<Sprite>::value && std::is_standard_layout<Sprite>::value,
               "Sprite must stay POD (PROGMEM-friendly)");
