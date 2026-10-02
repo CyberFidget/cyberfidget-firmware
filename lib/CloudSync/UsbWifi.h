@@ -152,7 +152,9 @@ constexpr char kResyncLine[] = "version";
 /// least kQuietGapMs of silence (blank lines just before it do not count as
 /// a start), so a payload tail that happens to hold that word does not end
 /// it. That line is handed on as a normal Line and reading resumes. There is
-/// no time limit: only the client ends a quarantine.
+/// no time limit: only the client ends a quarantine. A refused payload may
+/// leave an unterminated line, so a client resyncs with "\nversion\n".
+/// Nothing read in quarantine is stored (a match position only).
 class LineInput {
 public:
     static constexpr size_t kCap = 160;   // SerialCli::kBufferSize
@@ -170,8 +172,13 @@ private:
     bool overflow_ = false;
     bool quarantine_ = false;
     uint32_t lastByteMs_ = 0;
+    // Quarantine keeps no byte it reads (a refused payload holds a
+    // password): only how far the current line matches kResyncLine.
     bool quietBefore_ = false;   // silence before the current line (or its blank lead-in)
     bool lineQuiet_ = false;     // the current line began after silence
+    bool inLine_ = false;        // a byte of the current line has been read
+    bool mismatch_ = false;      // the current line is not kResyncLine
+    uint8_t matched_ = 0;        // its leading bytes that match kResyncLine
 };
 
 // ---- wifi add over the port ----------------------------------------------------------

@@ -272,21 +272,16 @@ void LineInput::quarantine(uint32_t nowMs) {
     lastByteMs_ = nowMs;
     quietBefore_ = false;
     lineQuiet_ = false;
+    inLine_ = false;
+    mismatch_ = false;
+    matched_ = 0;
     wipe(buf_, sizeof(buf_));
     len_ = 0;
     overflow_ = false;
 }
 
 namespace {
-bool isResync(const char* text, size_t len) {
-    if (len != sizeof(kResyncLine) - 1) return false;
-    for (size_t i = 0; i < len; i++) {
-        char c = text[i];
-        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-        if (c != kResyncLine[i]) return false;
-    }
-    return true;
-}
+constexpr uint8_t kResyncLen = sizeof(kResyncLine) - 1;
 } // namespace
 
 LineInput::Next LineInput::next(Port& port) {
@@ -302,33 +297,35 @@ LineInput::Next LineInput::next(Port& port) {
             lastByteMs_ = now;
             const char c = static_cast<char>(b);
             if (c == '\n' || c == '\r') {
-                if (len_ == 0 && !overflow_) {
+                if (!inLine_) {
                     quietBefore_ = quietBefore_ || afterQuiet;   // a blank lead-in
                     continue;
                 }
-                const bool resync = !overflow_ && lineQuiet_ && isResync(buf_, len_);
-                wipe(buf_, sizeof(buf_));
-                len_ = 0;
-                overflow_ = false;
+                const bool resync = lineQuiet_ && !mismatch_ && matched_ == kResyncLen;
+                inLine_ = false;
+                mismatch_ = false;
+                matched_ = 0;
+                lineQuiet_ = false;
                 // A terminator that itself came after silence (ending a
                 // dropped partial line) counts as a lead-in.
                 quietBefore_ = afterQuiet;
-                lineQuiet_ = false;
                 if (!resync) continue;   // dropped, whatever it was
                 quarantine_ = false;
                 memcpy(buf_, kResyncLine, sizeof(kResyncLine));
+                len_ = 0;
                 if (c == '\r') takePairedLf(port);
                 return Next::Line;
             }
-            if (len_ == 0 && !overflow_) {
+            if (!inLine_) {
+                inLine_ = true;
                 lineQuiet_ = quietBefore_ || afterQuiet;
                 quietBefore_ = false;
             }
-            if (len_ + 1 >= kCap) {
-                overflow_ = true;
-                continue;
-            }
-            buf_[len_++] = c;
+            if (mismatch_) continue;
+            char folded = c;
+            if (folded >= 'A' && folded <= 'Z') folded = (char)(folded - 'A' + 'a');
+            if (matched_ < kResyncLen && folded == kResyncLine[matched_]) matched_++;
+            else mismatch_ = true;
         }
     }
     for (;;) {

@@ -852,6 +852,43 @@ void test_stream_payload_read_is_bounded_under_continuous_input() {
     TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
 }
 
+void test_stream_quarantine_keeps_no_payload_bytes() {
+    // A refused add (busy during a try): the whole `ssid\0password` follows,
+    // with no line end. Once the reader has taken it, its line buffer holds
+    // none of it.
+    Loop loop;
+    loop.refuse = "wifi";
+    const std::string secret = "TopSecretPassw0rd";
+    const std::vector<uint8_t> f = frameOf("Home", secret);
+    loop.port.send(0, header(f.size(), crcOf(f)));
+    loop.port.send(0, f);
+    loop.run(200);
+    TEST_ASSERT_TRUE(loop.input.quarantined());
+    TEST_ASSERT_EQUAL(0, (int)loop.commands.size());
+    const std::string held(loop.input.line(), LineInput::kCap);
+    assertNoSecret(held, secret);
+    assertNoSecret(held, "Home");
+    assertNoSecret(loop.port.out, secret);
+}
+
+void test_stream_resync_needs_a_leading_newline_after_an_unterminated_tail() {
+    // The refused payload ends without a line end, so a bare "version" is
+    // joined onto it and dropped; "\nversion\n" resyncs.
+    Loop loop;
+    loop.refuse = "wifi";
+    const std::vector<uint8_t> f = frameOf("Home", "secret99");
+    loop.port.send(0, header(f.size(), crcOf(f)));
+    loop.port.send(0, f);
+    loop.port.send(500, std::string("version\n"));
+    loop.port.send(1000, std::string("\nversion\n"));
+    loop.port.send(1200, std::string("info\n"));
+    loop.run(1500);
+    TEST_ASSERT_EQUAL(2, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("version", loop.commands[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("info", loop.commands[1].c_str());
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.busy reason=wifi\n", loop.port.out.c_str());
+}
+
 void test_stream_lines_crlf_empty_and_too_long() {
     Loop loop;
     loop.port.send(0, std::string("info\r\n\r\n\nversion\n"));
@@ -1038,6 +1075,8 @@ int main(int, char**) {
     RUN_TEST(test_stream_add_refused_while_trying_drops_its_payload);
     RUN_TEST(test_stream_continuous_input_never_holds_the_loop);
     RUN_TEST(test_stream_payload_read_is_bounded_under_continuous_input);
+    RUN_TEST(test_stream_quarantine_keeps_no_payload_bytes);
+    RUN_TEST(test_stream_resync_needs_a_leading_newline_after_an_unterminated_tail);
     RUN_TEST(test_stream_lines_crlf_empty_and_too_long);
     RUN_TEST(test_driver_uses_the_tested_add_path);
     RUN_TEST(test_busy_reasons);

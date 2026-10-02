@@ -313,6 +313,7 @@ void usbWifiTask(void*) {
     const bool scan = g_wifiJob.load() == UsbWifiJob::Scan;
     WiFi.persistent(false);   // nothing is written to the radio's own storage
     const bool on = WiFi.mode(WIFI_STA);
+    bool scanStuck = false;
     if (scan) {
         UsbWifi::scanBegin(*g_scanList);
         g_scanOk = false;
@@ -321,7 +322,7 @@ void usbWifiTask(void*) {
             int16_t found = WiFi.scanNetworks(true, false, false, kUsbScanChannelMs);
             const uint32_t at = millis();
             // An app that needs the radio asks the job to stop
-            // (CloudSync::cancelPending): the scan ends with what it has.
+            // (CloudSync::cancelPending): the scan is stopped early.
             while (found == WIFI_SCAN_RUNNING && millis() - at < kUsbScanLimitMs &&
                    !CloudSync::radioReleaseRequested()) {
                 vTaskDelay(pdMS_TO_TICKS(50));
@@ -341,6 +342,7 @@ void usbWifiTask(void*) {
                 // Never finished: the results are left to the library (its
                 // next scan deletes them), not freed under its handler.
                 Serial.println("[wifi] usb scan=stop-timeout");
+                scanStuck = true;
             } else {
                 // Every record is looked at; only the strongest names are kept.
                 for (int i = 0; i < found; i++) {
@@ -372,6 +374,11 @@ void usbWifiTask(void*) {
         // Left on: the radio stays "busy" (WiFi.getMode), and an app that
         // needs Bluetooth restarts first (AppManager).
         Serial.println("[wifi] usb radio_off=failed");
+    // A scan whose done handler never ran leaves the library's "scanning"
+    // flag set (only that handler clears it), which would refuse every
+    // later scan - the portal's, a check-in's fallback - until a restart.
+    // With WiFi off no handler can still come: clear it.
+    if (scanStuck && WiFi.getMode() == WIFI_OFF) Network.clearStatusBits(WIFI_SCANNING_BIT);
     // Released only now: cancelPending() then sees the radio off (or still
     // on, and the app that asked restarts instead).
     CloudSync::releaseRadio();

@@ -191,13 +191,18 @@ Any refusal of a `wifi add` other than `wifi.full=1` - `wifi.invalid`,
 `wifi.crc`, or `wifi.busy` (an add while a `wifi try` runs) - puts the
 serial input in quarantine, because payload bytes may still be on their
 way, now or much later. In quarantine every line is dropped: never run,
-never echoed, with no time limit. **The client resynchronises by pausing at
-least 50 ms and sending a line that is exactly `version`** (any case; a
-blank line before it is fine); that line ends the quarantine and is
-answered as usual. A `version` line that arrives straight on the heels of
-other bytes does not count, so a payload tail holding that word cannot end
-it; a client that gets no answer pauses and sends `version` again (as its
-alive-poll already does). A quarantine reads at most 1024 bytes per loop
+never echoed, with no time limit, and nothing read is kept in memory (the
+device only tracks whether the current line could still be `version`).
+**The client resynchronises by pausing at least 100 ms and then sending
+`\nversion\n`** - the leading newline matters: a refused payload can leave
+an unterminated line, and a bare `version` would be joined onto it and
+dropped. The `version` line (any case) ends the quarantine and is answered
+as usual. The device requires 50 ms of silence before that line (blank
+lines just before it are fine); it measures silence between its own reads
+of the input, which can lag arrival, hence the 100 ms client pause. A
+`version` line that arrives straight on the heels of other bytes does not
+count, so a payload tail holding that word cannot end it; a client that
+gets no answer pauses and sends `\nversion\n` again. A quarantine reads at most 1024 bytes per loop
 pass and every payload read checks its time limits on every byte, so a
 continuous stream never holds the loop. The line reader and this handler
 are `UsbWifi::LineInput` / `UsbWifi::handleAdd`, driven with byte streams
@@ -219,9 +224,14 @@ the radio (`CloudSync::claimRadio`) before its task starts, which counts as
 radio use this power cycle (Bluetooth then needs a restart, as after a
 check-in). While either runs, check-ins and links wait
 (`SerialCli::radioBusy()`); opening the portal or music player asks the job
-to stop (`CloudSync::cancelPending`: the scan ends with what it has, a try
-reports `fail reason=busy`) and starts once WiFi is off, or restarts into
-the app if it did not stop in time. `wifi.try=ok` names the network the
+to stop (`CloudSync::cancelPending`: the scan is stopped early and may
+report fewer networks, possibly none; a try reports `fail reason=busy`) and
+starts once WiFi is off, or restarts into the app if it did not stop in
+time. A stopped scan waits up to 2 s for the WiFi library's scan-done
+handler before its results are read or freed; if that never comes
+(`[wifi] usb scan=stop-timeout`), the results are left to the library and,
+once WiFi is off, the library's "scanning" flag is cleared so later scans
+(the portal's, a check-in's) still start. `wifi.try=ok` names the network the
 join actually used.
 
 ### Installing updates
@@ -288,6 +298,10 @@ wasmstat -> [cmd] wasmstat....
 `apps` lists compiled applications. `launch` switches immediately to a compiled
 app or stages a manifest-backed WASM app. `net` reports fields applicable to the
 current Wi-Fi mode. `mic` runs a short capture diagnostic and releases it.
+The every-build `wifi add ...` line is matched first, so in a test build a
+network whose name starts with `add ` cannot be saved with the
+`wifi <ssid>|<pass>` form (use the framed `wifi add`).
+
 `wifi <ssid>|<pass>` saves a network as the first one to try (the saved list
 of up to 3 in `lib/CloudSync/SavedWifi.h`, the same one the portal and every
 session use); `list`, `first` and `forget` read and reorder it (names only,
