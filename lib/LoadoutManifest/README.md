@@ -159,3 +159,19 @@ On a device that has never persisted a manifest, the first commit
 snapshots the compiled-in registry (`buildFromRegistry`) with categories
 flattened to their first path segment (`"Tools/LEDs"` → `"Tools"`), then
 applies the arrange on top.
+
+## Built-in menu report (`buildBuiltinReport`)
+
+`buildBuiltinReport(apps, categoryPaths, count)` describes the firmware's
+built-in menu for the `lbuiltin` serial read (see `lib/SyncProtocol/README.md`).
+It is a report, not a seed: nothing stores it. Rows are the same ones
+`compiledMenuRows` returns (every compiled app with a non-empty name, in
+registry order); each has `id` = `slugifyBuiltinName(name)`, the `name`,
+`format: "builtin"`, and `category` = the compiled category path **unflattened**
+(`"Tools/LEDs"` stays `"Tools/LEDs"`), as the device shows its menu when no
+manifest is stored. `categoryPaths` is parallel to `apps`; a top-level app
+gets `""`, which `serializeManifest` writes as `"category": ""`.
+
+The seed (`buildFromRegistry`, fed by `buildLoadoutRegistryView()`) is
+unchanged and still flattens to the first segment, so a report can carry
+nested paths that schema 1 does not store.

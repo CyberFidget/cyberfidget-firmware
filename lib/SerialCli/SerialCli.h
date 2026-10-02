@@ -29,6 +29,7 @@
 //   fstat <path>                   report confined-file size + whole crc
 //   fread <path> <off> <len>       return one checksummed file chunk
 //   lget                           report the loadout manifest (framed)
+//   lbuiltin                       report the firmware's built-in menu (framed)
 //   lapply <len> <crc32>           apply staged manifest ops (JSON follows)
 //   syncinfo                       report storage, manifest, firmware version
 //
@@ -119,6 +120,7 @@ private:
     void cmdFstat(const char* args);
     void cmdFread(const char* args);
     void cmdLget();
+    void cmdLbuiltin();
     void cmdLapply(const char* args);
     void cmdSyncinfo();
     // WiFi setup verbs (always compiled). Scan and try run on their own task

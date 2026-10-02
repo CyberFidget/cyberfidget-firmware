@@ -473,6 +473,22 @@ std::vector<int> compiledMenuRows(const RegistryApp* apps, int count) {
     return rows;
 }
 
+Loadout buildBuiltinReport(const RegistryApp* apps,
+                           const char* const* categoryPaths, int count) {
+    Loadout report;
+    for (int i : compiledMenuRows(apps, count)) {
+        LoadoutEntry e;
+        e.id       = slugifyBuiltinName(apps[i].name.c_str());
+        e.name     = apps[i].name;
+        const char* path = categoryPaths ? categoryPaths[i] : nullptr;
+        e.category = path ? path : "";
+        e.format   = "builtin";
+        report.entries.push_back(e);
+    }
+    renumber(report);
+    return report;
+}
+
 std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
                                          const RegistryApp* apps, int count) {
     std::vector<MergedApp> out;

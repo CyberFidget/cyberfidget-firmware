@@ -12,7 +12,9 @@
 #include <unity.h>
 #include <cstdio>
 #include <cstring>
+#include <string>
 #include "SyncProtocol.h"
+#include "LoadoutManifest.h"
 
 using namespace SyncProtocol;
 
@@ -292,6 +294,60 @@ void test_fread_header_and_chunk_ceiling(void) {
         tooSmall, sizeof(tooSmall), "/apps/x.bin", 0, 1, 0));
 }
 
+// Released readers stop on `lget.present=0` and read no payload: that line
+// is pinned byte for byte.
+void test_lget_absent_reply_unchanged(void) {
+    TEST_ASSERT_EQUAL_STRING(
+        "[cmd] lget.present=0 entries=0 schema=0 len=0 crc=00000000",
+        kLgetAbsentReply);
+}
+
+// `lbuiltin` is framed like a present `lget`: header fields, then exactly
+// `len` payload bytes whose crc32 is `crc`.
+void test_lbuiltin_header_matches_payload(void) {
+    static const LoadoutManifest::RegistryApp kApps[] = {
+        { "", "Flashlight", "Tools", "" },
+        { "", "",           "",      "" },
+        { "", "Clock",      "",      "" },
+    };
+    const char* const kPaths[] = { "Tools/LEDs", "", "" };
+    const LoadoutManifest::Loadout report =
+        LoadoutManifest::buildBuiltinReport(kApps, kPaths, 3);
+    const std::string json = LoadoutManifest::serializeManifest(report);
+    const uint32_t crc = crc32(json.data(), json.size());
+
+    char header[kReadReplyBytes];
+    const size_t n = formatBuiltinHeader(header, sizeof(header),
+                                         (int)report.entries.size(),
+                                         report.schemaVersion,
+                                         (uint32_t)json.size(), crc);
+    TEST_ASSERT_TRUE(n > 0);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)std::strlen(header), (uint32_t)n);
+
+    int entries = -1, schema = -1;
+    unsigned len = 0, hdrCrc = 0;
+    TEST_ASSERT_EQUAL_INT(4, std::sscanf(
+        header, "[cmd] lbuiltin.present=1 entries=%d schema=%d len=%u crc=%8x\n",
+        &entries, &schema, &len, &hdrCrc));
+    TEST_ASSERT_EQUAL_INT(2, entries);
+    TEST_ASSERT_EQUAL_INT(1, schema);
+    TEST_ASSERT_EQUAL_UINT32((uint32_t)json.size(), (uint32_t)len);
+    TEST_ASSERT_EQUAL_HEX32(crc32(json.data(), len), (uint32_t)hdrCrc);
+    TEST_ASSERT_EQUAL_CHAR('\n', header[n - 1]);
+
+    // Exact shape, with the same field order and widths as `lget`.
+    char expect[kReadReplyBytes];
+    std::snprintf(expect, sizeof(expect),
+                  "[cmd] lbuiltin.present=1 entries=2 schema=1 len=%u crc=%08x\n",
+                  (unsigned)json.size(), (unsigned)crc);
+    TEST_ASSERT_EQUAL_STRING(expect, header);
+    TEST_ASSERT_NOT_NULL(std::strstr(json.c_str(), "\"category\": \"Tools/LEDs\""));
+
+    char tooSmall[8];
+    TEST_ASSERT_EQUAL_UINT32(0u, (uint32_t)formatBuiltinHeader(
+        tooSmall, sizeof(tooSmall), 0, 1, 0, 0));
+}
+
 void test_flist_entry_cap_and_truncation_summary(void) {
     ListProgress progress;
     for (uint32_t i = 0; i < kMaxListEntries; i++) {
@@ -363,7 +419,7 @@ void test_session_and_store_write_verbs(void) {
         TEST_ASSERT_TRUE_MESSAGE(isSessionVerb(line), line);
     }
     const char* const reads[] = {
-        "info", "INFO", "syncinfo", "lget", "flist /apps", "fstat /apps/a.wasm",
+        "info", "INFO", "syncinfo", "lget", "lbuiltin", "flist /apps", "fstat /apps/a.wasm",
         "fread /apps/a.wasm 0 16",
     };
     for (const char* line : reads) {
@@ -419,7 +475,7 @@ void test_idle_activity_verbs(void) {
     // Status reads a connected host may repeat, identification polls, bench
     // verbs and look-alikes do not keep the device awake.
     const char* const notCounted[] = {
-        "version", "info", "syncinfo", "lget", "flist /apps", "fstat /apps/a.wasm",
+        "version", "info", "syncinfo", "lget", "lbuiltin", "flist /apps", "fstat /apps/a.wasm",
         "help", "battery", "screencap", "screenstream 500", "freadx /apps/a 0 1",
         "", "awake set dev",
     };
@@ -470,6 +526,8 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_read_verbs_share_confinement_rejection_set);
     RUN_TEST(test_read_verbs_accept_confined_targets);
     RUN_TEST(test_fread_header_and_chunk_ceiling);
+    RUN_TEST(test_lget_absent_reply_unchanged);
+    RUN_TEST(test_lbuiltin_header_matches_payload);
     RUN_TEST(test_flist_entry_cap_and_truncation_summary);
     RUN_TEST(test_flist_nontruncated_summary);
     RUN_TEST(test_confinement_rejects_applied_record);

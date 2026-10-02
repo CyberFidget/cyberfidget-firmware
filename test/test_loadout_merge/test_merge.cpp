@@ -10,6 +10,7 @@
 // empty manifest == compile order.
 
 #include <unity.h>
+#include <cstring>
 #include "LoadoutManifest.h"
 
 using namespace LoadoutManifest;
@@ -261,6 +262,59 @@ void test_compiled_menu_rows_empty_registry(void) {
     for (int i : rows) TEST_ASSERT_NOT_EQUAL(1, i);
 }
 
+// The built-in menu report keeps the compiled category paths nested, takes
+// its ids from the names (not the registry's id column), and skips internal
+// slots, in registry order.
+void test_builtin_report_keeps_nested_paths(void) {
+    static const RegistryApp kApps[] = {
+        { "x-boot",  "Boot Animation", "Screensavers", "APP_BOOT"  },
+        { "x-menu",  "",               "",             "APP_MENU"  },
+        { "x-flash", "Flashlight",     "Tools",        "APP_FLASH" },
+        { "x-dice",  "Dice Roller",    "",             "APP_DICE"  },
+        { "x-snake", "Snake",          "Games",        "APP_SNAKE" },
+    };
+    const char* const kPaths[] = {
+        "Screensavers", "", "Tools/LEDs", "", "Games/Arcade/Retro",
+    };
+    Loadout r = buildBuiltinReport(kApps, kPaths, 5);
+    TEST_ASSERT_EQUAL_INT(kSchemaVersion, r.schemaVersion);
+    TEST_ASSERT_EQUAL_INT(4, (int)r.entries.size());
+    const char* ids[]   = { "boot-animation", "flashlight", "dice-roller", "snake" };
+    const char* names[] = { "Boot Animation", "Flashlight", "Dice Roller", "Snake" };
+    const char* cats[]  = { "Screensavers", "Tools/LEDs", "", "Games/Arcade/Retro" };
+    for (int i = 0; i < 4; i++) {
+        TEST_ASSERT_EQUAL_STRING(ids[i],   r.entries[i].id.c_str());
+        TEST_ASSERT_EQUAL_STRING(names[i], r.entries[i].name.c_str());
+        TEST_ASSERT_EQUAL_STRING(cats[i],  r.entries[i].category.c_str());
+        TEST_ASSERT_EQUAL_STRING("builtin", r.entries[i].format.c_str());
+        TEST_ASSERT_EQUAL_INT(i, r.entries[i].position);
+        TEST_ASSERT_FALSE(r.entries[i].hidden);
+    }
+
+    // The seed path is untouched: it still uses the registry's flat
+    // categories and ids.
+    Loadout seed = buildFromRegistry(kApps, 5);
+    TEST_ASSERT_EQUAL_STRING("x-flash", seed.entries[1].id.c_str());
+    TEST_ASSERT_EQUAL_STRING("Tools", seed.entries[1].category.c_str());
+
+    // A top-level app serializes as an empty category string, and the
+    // document parses back as a manifest with the nested paths intact.
+    const std::string json = serializeManifest(r);
+    TEST_ASSERT_NOT_NULL(std::strstr(json.c_str(), "\"category\": \"Tools/LEDs\""));
+    TEST_ASSERT_NOT_NULL(std::strstr(json.c_str(), "\"category\": \"\""));
+    Loadout back;
+    TEST_ASSERT_TRUE(parseManifest(json.c_str(), back));
+    TEST_ASSERT_EQUAL_INT(4, (int)back.entries.size());
+    TEST_ASSERT_EQUAL_STRING("Games/Arcade/Retro", back.entries[3].category.c_str());
+}
+
+void test_builtin_report_empty_and_null_paths(void) {
+    TEST_ASSERT_EQUAL_INT(0, (int)buildBuiltinReport(nullptr, nullptr, 0).entries.size());
+    Loadout r = buildBuiltinReport(kRegistry, nullptr, kRegistryCount);
+    TEST_ASSERT_EQUAL_INT(kRegistryCount - 1, (int)r.entries.size());
+    for (const auto& e : r.entries) TEST_ASSERT_EQUAL_STRING("", e.category.c_str());
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -281,5 +335,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_blob_rows_carry_their_manifest_id);
     RUN_TEST(test_compiled_menu_rows_skip_internal_slots);
     RUN_TEST(test_compiled_menu_rows_empty_registry);
+    RUN_TEST(test_builtin_report_keeps_nested_paths);
+    RUN_TEST(test_builtin_report_empty_and_null_paths);
     return UNITY_END();
 }

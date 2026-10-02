@@ -25,7 +25,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 | `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary` | `apps`, `app`, `launch`, `soak` |
 | `menutree`, `screencap`, `screenstream` | `net`, `heapstat`, `tlsprobe`, `tlsalloc`, `mic`, `wifi`, `wasmstat` |
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
-| `lget`, `lapply`, `syncinfo` | `prompt`, `status`, `upd` |
+| `lget`, `lbuiltin`, `lapply`, `syncinfo` | `prompt`, `status`, `upd` |
 | `wifi scan`, `wifi add`, `wifi try`, `wifi saved` | `wifi <ssid>\|<pass>`, `wifi list\|first\|forget\|hint-bad\|hint-clear`, `cloud ...`, `link ...` |
 
 The `local_test` PlatformIO environment defines `CF_TEST_CLI`. A normal
@@ -136,21 +136,46 @@ flist <dir>                   -> [cmd] flist.entry=<name> size=<n> ...
 fstat <path>                  -> [cmd] fstat.ok=<path> size=<n> crc=<hex>
 fread <path> <off> <len>      -> [cmd] fread.ok=<path> off=<o> len=<n> chunk=<n> crc=<hex>
 lget                          -> [cmd] lget.present=<0|1> entries=<n> schema=<n> len=<n> crc=<hex>
+lbuiltin                      -> [cmd] lbuiltin.present=1 entries=<n> schema=1 len=<n> crc=<hex>
 lapply <len> <crc32>          -> [cmd] lapply.ok=applied <n> entries <n>
 syncinfo                      -> [cmd] syncinfo.fs_total=<n> fs_used=<n> fs_free=<n>
                                  [cmd] syncinfo.manifest=<0|1> entries=<n> schema=<n>
                                  [cmd] syncinfo.id=0123456789ab
                                  [cmd] syncinfo.lapply=<capability>
                                  [cmd] syncinfo.setup=1
+                                 [cmd] syncinfo.builtin=1
                                  [cmd] syncinfo.fw=<firmware-version>
 ```
 
 `syncinfo.fw` is always the last line; new keys go before it.
 `syncinfo.setup=1` announces the WiFi setup verbs below (older firmware does
 not send it, and answers them with `[err] unknown command`).
+`syncinfo.builtin=1` announces `lbuiltin`, which reports the firmware's
+built-in menu (every compiled menu app, nested category paths kept) in the
+same shape as the manifest `lget` returns. It answers the same whether or not
+a manifest is stored and writes nothing. A host uses it when `lget` reports
+`present=0`; `lget` itself never changes. Example:
 
-Raw bytes follow `fwdata` and `lapply` requests and successful `fread`/`lget`
-headers as specified by their lengths. Paths are confined to `/apps/` and
+```text
+--> lbuiltin
+<-- [cmd] lbuiltin.present=1 entries=2 schema=1 len=362 crc=57784a7a
+<-- {
+      "schemaVersion": 1,
+      "entries": [
+        { "id": "flashlight", "name": "Flashlight", "category": "Tools/LEDs",
+          "position": 0, "hidden": false, "format": "builtin" },
+        { "id": "clock", "name": "Clock", "category": "",
+          "position": 1, "hidden": false, "format": "builtin" }
+      ]
+    }
+```
+
+(Payload reflowed here for reading; the device sends the canonical manifest
+layout, and `len`/`crc` cover those exact bytes. A top-level app has
+`"category": ""`.)
+
+Raw bytes follow `fwdata` and `lapply` requests and successful
+`fread`/`lget`/`lbuiltin` headers as specified by their lengths. Paths are confined to `/apps/` and
 `/assets/`. Whole-file and chunk CRC checks, retry behavior, loadout operations,
 and all error replies are documented in `lib/SyncProtocol/README.md`.
 
