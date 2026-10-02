@@ -605,6 +605,12 @@ const std::string kVerbPassword = "mark x\nreboot\ninfo\nfdelete /apps/a\n";
 
 } // namespace
 
+// After a quarantine: "info" is dropped, a quiet "version" ends it and runs.
+void assertResyncedOnlyByVersion(const Loop& loop) {
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("version", loop.commands[0].c_str());
+}
+
 void test_stream_good_add_then_next_command() {
     Loop loop;
     const std::vector<uint8_t> f = frameOf("Home Net", "hunter2hunter2");
@@ -622,6 +628,38 @@ void test_stream_good_add_then_next_command() {
     assertNothingLeaked(loop, "hunter2hunter2");
 }
 
+void test_stream_command_right_after_the_reply_runs() {
+    // The protocol: wait for the add's reply, then send at once.
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home", "secret99");
+    loop.port.send(0, header(f.size(), crcOf(f)));
+    loop.port.send(0, f);
+    while (loop.port.out.empty() && loop.port.now < 1000) {
+        loop.pollOnce();
+        loop.port.now += 1;
+    }
+    TEST_ASSERT_EQUAL_STRING("[cmd] wifi.saved=ssid_hex=486f6d65 position=1\n", loop.port.out.c_str());
+    loop.port.send(loop.port.now, std::string("wifi try\n"));
+    loop.run(loop.port.now + 100);
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("wifi try", loop.commands[0].c_str());
+}
+
+void test_stream_command_before_the_reply_is_refused_and_quarantined() {
+    // Sent without waiting: it could be the payload's tail, so the add is
+    // refused and the command dropped until the client resyncs.
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home", "secret99");
+    loop.port.send(0, header(f.size(), crcOf(f)));
+    loop.port.send(0, f);
+    loop.port.send(10, std::string("wifi try\n"));
+    loop.port.send(500, std::string("version\n"));
+    loop.run(800);
+    TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
+    assertResyncedOnlyByVersion(loop);
+}
+
 void test_stream_under_announced_frame_runs_nothing() {
     // The header announces less than is sent: the rest of the password (made
     // of verb lines) must not run or be echoed - not the first line, nor any.
@@ -629,13 +667,32 @@ void test_stream_under_announced_frame_runs_nothing() {
     const std::vector<uint8_t> f = frameOf("Home", kVerbPassword);
     loop.port.send(0, header(6, crcOf(f)));
     loop.port.send(0, f);
-    loop.port.send(1000, std::string("info\n"));   // a real command, later
-    loop.run(1500);
+    loop.port.send(1000, std::string("info\n"));
+    loop.port.send(1500, std::string("version\n"));
+    loop.run(2000);
     TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
     TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
-    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
-    TEST_ASSERT_EQUAL_STRING("info", loop.commands[0].c_str());
+    assertResyncedOnlyByVersion(loop);
     assertNothingLeaked(loop, kVerbPassword);
+    assertNothingLeaked(loop, "fdelete");
+}
+
+void test_stream_under_announced_tail_200ms_later_runs_nothing() {
+    // (b) The announced bytes arrive, the extra tail 200 ms later - past
+    // the silence check, so it is the quarantine that must catch it.
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home", kVerbPassword);
+    const std::vector<uint8_t> announced(f.begin(), f.begin() + 6);
+    const std::vector<uint8_t> tail(f.begin() + 6, f.end());
+    loop.port.send(0, header(announced.size(), crcOf(f)));   // checksum of the whole thing
+    loop.port.send(0, announced);
+    loop.port.send(200, tail);
+    loop.port.send(1000, std::string("version\n"));
+    loop.run(1500);
+    TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.crc\n", loop.port.out.c_str());
+    assertResyncedOnlyByVersion(loop);
+    assertNothingLeaked(loop, "reboot");
     assertNothingLeaked(loop, "fdelete");
 }
 
@@ -649,15 +706,45 @@ void test_stream_stalled_frame_finishing_late_runs_nothing() {
     loop.port.send(0, first);
     loop.port.send(1800, rest);
     loop.port.send(4000, std::string("info\n"));
-    loop.run(9000);
+    loop.port.send(5000, std::string("version\n"));
+    loop.run(6000);
     TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
     TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
-    // The late rest was owed to the frame and dropped; the next command after
-    // it stays quiet... only "info" may run, and only once the owed bytes came.
-    for (const std::string& c : loop.commands) TEST_ASSERT_EQUAL_STRING("info", c.c_str());
-    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    assertResyncedOnlyByVersion(loop);
     assertNothingLeaked(loop, "reboot");
     assertNothingLeaked(loop, "fdelete");
+}
+
+void test_stream_owed_bytes_after_six_seconds_run_nothing() {
+    // (a) The rest of a stalled payload turns up 6 s later: still dropped.
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home", kVerbPassword);
+    const std::vector<uint8_t> first(f.begin(), f.begin() + 8);
+    const std::vector<uint8_t> rest(f.begin() + 8, f.end());
+    loop.port.send(0, header(f.size(), crcOf(f)));
+    loop.port.send(0, first);
+    loop.port.send(7000, rest);
+    loop.port.send(9000, std::string("version\n"));
+    loop.run(10000);
+    TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
+    assertResyncedOnlyByVersion(loop);
+    assertNothingLeaked(loop, "reboot");
+}
+
+void test_stream_resync_word_inside_a_tail_does_not_end_quarantine() {
+    // A tail that holds "version" on its own line, with commands after it:
+    // it did not start after silence, so nothing in it runs.
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home", "pw\nversion\nreboot\nmark x\n");
+    loop.port.send(0, header(6, crcOf(f)));
+    loop.port.send(0, f);
+    loop.port.send(1000, std::string("\r\nversion\r\n"));   // blank lead-in after silence
+    loop.port.send(1100, std::string("info\n"));
+    loop.run(1500);
+    TEST_ASSERT_EQUAL(2, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("version", loop.commands[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("info", loop.commands[1].c_str());
 }
 
 void test_stream_bad_crc_with_bytes_still_coming_runs_nothing() {
@@ -674,15 +761,20 @@ void test_stream_bad_crc_with_bytes_still_coming_runs_nothing() {
 }
 
 void test_stream_bad_crc_alone_reports_crc() {
+    // A checksum mismatch means the two ends disagree on the bytes: the
+    // client resyncs before anything else runs.
     Loop loop;
     const std::vector<uint8_t> f = frameOf("Home", "secret99");
     loop.port.send(0, header(f.size(), crcOf(f) ^ 1u));
     loop.port.send(0, f);
     loop.port.send(300, std::string("syncinfo\n"));
-    loop.run(600);
+    loop.port.send(600, std::string("version\n"));
+    loop.port.send(700, std::string("syncinfo\n"));
+    loop.run(900);
     TEST_ASSERT_EQUAL_STRING("[err] wifi.crc\n", loop.port.out.c_str());
-    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
-    TEST_ASSERT_EQUAL_STRING("syncinfo", loop.commands[0].c_str());
+    TEST_ASSERT_EQUAL(2, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("version", loop.commands[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("syncinfo", loop.commands[1].c_str());
 }
 
 void test_stream_over_length_and_unreadable_headers_run_nothing() {
@@ -693,9 +785,10 @@ void test_stream_over_length_and_unreadable_headers_run_nothing() {
         loop.port.send(0, header(f.size(), crcOf(f)));
         loop.port.send(0, f);
         loop.port.send(1000, std::string("info\n"));
-        loop.run(1500);
+        loop.port.send(1500, std::string("version\n"));
+        loop.run(2000);
         TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
-        TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+        assertResyncedOnlyByVersion(loop);
         assertNothingLeaked(loop, "reboot");
     }
     {
@@ -704,10 +797,10 @@ void test_stream_over_length_and_unreadable_headers_run_nothing() {
         loop.port.send(0, std::string("wifi add twelve x\n"));
         loop.port.send(0, f);
         loop.port.send(1000, std::string("info\n"));
-        loop.run(1500);
+        loop.port.send(1500, std::string("VERSION\n"));
+        loop.run(2000);
         TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
-        TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
-        TEST_ASSERT_EQUAL_STRING("info", loop.commands[0].c_str());
+        assertResyncedOnlyByVersion(loop);
         assertNothingLeaked(loop, "reboot");
     }
 }
@@ -719,21 +812,22 @@ void test_stream_add_refused_while_trying_drops_its_payload() {
     loop.port.send(0, header(f.size(), crcOf(f)));
     loop.port.send(0, f);
     loop.port.send(1000, std::string("info\n"));
-    loop.run(1500);
+    loop.port.send(1500, std::string("version\n"));
+    loop.run(2000);
     TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
     TEST_ASSERT_EQUAL_STRING("[err] wifi.busy reason=wifi\n", loop.port.out.c_str());
-    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    assertResyncedOnlyByVersion(loop);
     assertNothingLeaked(loop, "reboot");
 }
 
 void test_stream_continuous_input_never_holds_the_loop() {
     // An unreadable header, then a byte every millisecond for 20 s: each
-    // pass returns (bounded work), nothing runs while it flows, and reading
-    // resumes once it stops.
+    // pass returns (bounded work), nothing runs while it flows, and the
+    // client's resync afterwards is answered.
     Loop loop;
     loop.port.send(0, std::string("wifi add ?\n"));
     loop.port.send(1, std::string(20000, 'r'), 1);
-    loop.port.send(30000, std::string("info\n"));
+    loop.port.send(30000, std::string("\nversion\n"));
     uint32_t longest = 0;
     while (loop.port.now < 31000) {
         const uint32_t before = loop.port.now;
@@ -742,8 +836,7 @@ void test_stream_continuous_input_never_holds_the_loop() {
         loop.port.now += 10;
     }
     TEST_ASSERT_TRUE_MESSAGE(longest < 2 * kQuarantineBytesPerCall + 100, "a pass ran too long");
-    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
-    TEST_ASSERT_EQUAL_STRING("info", loop.commands[0].c_str());
+    assertResyncedOnlyByVersion(loop);
 }
 
 void test_stream_payload_read_is_bounded_under_continuous_input() {
@@ -754,7 +847,7 @@ void test_stream_payload_read_is_bounded_under_continuous_input() {
     loop.port.send(1, std::string(10000, 'p'), 1);
     const uint32_t before = loop.port.now;
     loop.pollOnce();
-    TEST_ASSERT_TRUE(loop.port.now - before <= kAddTotalMs + kQuietGapMs + 100);
+    TEST_ASSERT_TRUE(loop.port.now - before <= kAddTotalMs + kQuietGapMs + 2 * kQuarantineBytesPerCall + 100);
     TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
     TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
 }
@@ -932,8 +1025,13 @@ int main(int, char**) {
     RUN_TEST(test_parse_failure_leaves_no_password_in_outputs);
     RUN_TEST(test_wipe_zeroes);
     RUN_TEST(test_stream_good_add_then_next_command);
+    RUN_TEST(test_stream_command_right_after_the_reply_runs);
+    RUN_TEST(test_stream_command_before_the_reply_is_refused_and_quarantined);
     RUN_TEST(test_stream_under_announced_frame_runs_nothing);
+    RUN_TEST(test_stream_under_announced_tail_200ms_later_runs_nothing);
     RUN_TEST(test_stream_stalled_frame_finishing_late_runs_nothing);
+    RUN_TEST(test_stream_owed_bytes_after_six_seconds_run_nothing);
+    RUN_TEST(test_stream_resync_word_inside_a_tail_does_not_end_quarantine);
     RUN_TEST(test_stream_bad_crc_with_bytes_still_coming_runs_nothing);
     RUN_TEST(test_stream_bad_crc_alone_reports_crc);
     RUN_TEST(test_stream_over_length_and_unreadable_headers_run_nothing);

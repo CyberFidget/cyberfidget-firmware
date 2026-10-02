@@ -306,6 +306,7 @@ SavedWifi::JoinResult g_tryResult;
 constexpr uint32_t kUsbWifiStackBytes = 6144;
 constexpr uint32_t kUsbScanChannelMs = 120;   // active scan: ~1.5 s for the band
 constexpr uint32_t kUsbScanLimitMs = 8000;
+constexpr uint32_t kUsbScanStopWaitMs = 2000;   // a stopped scan's done handler
 constexpr uint32_t kUsbTryJoinMs = 15000;
 
 void usbWifiTask(void*) {
@@ -326,17 +327,32 @@ void usbWifiTask(void*) {
                 vTaskDelay(pdMS_TO_TICKS(50));
                 found = WiFi.scanComplete();
             }
-            if (found == WIFI_SCAN_RUNNING) esp_wifi_scan_stop();
-            // Every record is looked at; only the strongest names are kept.
-            for (int i = 0; i < found; i++) {
-                const wifi_ap_record_t* rec =
-                    static_cast<const wifi_ap_record_t*>(WiFi.getScanInfoByIndex(i));
-                if (!rec) continue;
-                UsbWifi::scanConsider(*g_scanList, rec->ssid, sizeof(rec->ssid), rec->rssi,
-                                      (int)rec->authmode);
+            if (found == WIFI_SCAN_RUNNING) {
+                // A stopped scan still ends in the WiFi library's scan-done
+                // handler, which allocates and fills the results: wait for
+                // it before reading or deleting them.
+                esp_wifi_scan_stop();
+                const uint32_t stopAt = millis();
+                while ((found = WiFi.scanComplete()) == WIFI_SCAN_RUNNING &&
+                       millis() - stopAt < kUsbScanStopWaitMs)
+                    vTaskDelay(pdMS_TO_TICKS(20));
             }
-            g_scanOk = found >= 0;
-            WiFi.scanDelete();
+            if (found == WIFI_SCAN_RUNNING) {
+                // Never finished: the results are left to the library (its
+                // next scan deletes them), not freed under its handler.
+                Serial.println("[wifi] usb scan=stop-timeout");
+            } else {
+                // Every record is looked at; only the strongest names are kept.
+                for (int i = 0; i < found; i++) {
+                    const wifi_ap_record_t* rec =
+                        static_cast<const wifi_ap_record_t*>(WiFi.getScanInfoByIndex(i));
+                    if (!rec) continue;
+                    UsbWifi::scanConsider(*g_scanList, rec->ssid, sizeof(rec->ssid), rec->rssi,
+                                          (int)rec->authmode);
+                }
+                g_scanOk = found >= 0;
+                WiFi.scanDelete();
+            }
         }
         UsbWifi::scanSort(*g_scanList);
     } else {

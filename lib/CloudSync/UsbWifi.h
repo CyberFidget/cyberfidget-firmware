@@ -131,23 +131,28 @@ public:
     virtual void write(const char* text, size_t len) = 0;
 };
 
-/// How long the input must be silent before a quarantine ends.
+/// Silence after a `wifi add` payload, and before the line that ends a
+/// quarantine.
 constexpr uint32_t kQuietGapMs = 50;
-/// Bytes a quarantine discards per call at most, so the loop keeps running
+/// Bytes a quarantine reads per call at most, so the loop keeps running
 /// under a continuous stream.
 constexpr size_t kQuarantineBytesPerCall = 1024;
-/// How long a quarantine waits for the payload bytes a header announced and
-/// that have not arrived yet (a stalled sender finishing late).
-constexpr uint32_t kOwedWindowMs = 5000;
+/// The only line that ends a quarantine (any case; it is then answered as
+/// usual). Every client already sends it to see whether the Fidget answers.
+constexpr char kResyncLine[] = "version";
 
 /// Line assembly for the serial command loop (SerialCli::poll): one line at
 /// a time, LF or CRLF (a CR's paired LF is taken before the line is handed
 /// on, so a payload read never starts with it), empty lines ignored, an
-/// over-long line reported once and dropped. In quarantine every byte is
-/// discarded until the input has been quiet for kQuietGapMs and the
-/// payload bytes still owed (announced, not yet seen) have come or
-/// kOwedWindowMs has passed; then the partial line is wiped and reading
-/// resumes. No byte read in quarantine ever reaches a command.
+/// over-long line reported once and dropped.
+///
+/// Quarantine (after an ambiguous `wifi add`: its payload may still be
+/// arriving, now or much later): every line is dropped - never dispatched,
+/// never echoed - until a line that is exactly kResyncLine, begun after at
+/// least kQuietGapMs of silence (blank lines just before it do not count as
+/// a start), so a payload tail that happens to hold that word does not end
+/// it. That line is handed on as a normal Line and reading resumes. There is
+/// no time limit: only the client ends a quarantine.
 class LineInput {
 public:
     static constexpr size_t kCap = 160;   // SerialCli::kBufferSize
@@ -157,7 +162,7 @@ public:
     /// (None).
     Next next(Port& port);
     const char* line() const { return buf_; }
-    void quarantine(uint32_t nowMs, uint32_t owedBytes = 0);
+    void quarantine(uint32_t nowMs);
     bool quarantined() const { return quarantine_; }
 private:
     char buf_[kCap] = {0};
@@ -165,8 +170,8 @@ private:
     bool overflow_ = false;
     bool quarantine_ = false;
     uint32_t lastByteMs_ = 0;
-    uint32_t startMs_ = 0;
-    uint32_t owed_ = 0;
+    bool quietBefore_ = false;   // silence before the current line (or its blank lead-in)
+    bool lineQuiet_ = false;     // the current line began after silence
 };
 
 // ---- wifi add over the port ----------------------------------------------------------
@@ -181,12 +186,14 @@ using SaveFn = WifiList::AddResult (*)(const char* name, const char* pass);
 /// `wifi add <args>`, after its line: reads exactly <len> payload bytes,
 /// then requires the input to stay quiet for kQuietGapMs (a sender that
 /// sends more than it announced is refused, nothing saved). Every refusal
-/// that may leave payload bytes behind (no readable length, a length over
-/// kFrameMax, a stalled or over-long payload, `refuse` set) puts `input`
-/// in quarantine. `refuse` (a reason word) refuses before reading, e.g.
-/// while a `wifi try` runs. Deadlines are checked on every byte. The reply
-/// line goes to the port. Frame, name and password buffers are wiped on
-/// every path; `save` is called only for a whole, quiet, valid frame.
+/// but Full (no readable length, a length over kFrameMax, a stalled or
+/// over-long payload, a bad checksum or shape, `refuse` set) puts `input`
+/// in quarantine until the client sends kResyncLine. A client must wait
+/// for the add's reply before sending anything else. `refuse` (a reason
+/// word) refuses before reading, e.g. while a `wifi try` runs. Deadlines
+/// are checked on every byte. The reply line goes to the port. Frame, name
+/// and password buffers are wiped on every path; `save` is called only for
+/// a whole, quiet, valid frame.
 void handleAdd(const char* args, Port& port, LineInput& input, SaveFn save, const char* refuse);
 
 } // namespace UsbWifi

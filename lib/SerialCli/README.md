@@ -182,19 +182,26 @@ the CRC-32 of the whole payload in the header (lowercase or uppercase hex, as
 (`lib/CloudSync/SavedWifi.h`): at most three; a saved name takes the new
 password and moves first; a fourth is refused with `wifi.full=1` and nothing
 is dropped. The frame, name and password buffers are zeroed on every path. A
-payload must be followed by 50 ms of silence before the next command: a
-sender that sends more than it announced is refused (`wifi.invalid`,
-nothing saved). After any refusal that can leave payload bytes behind (no
-readable length, a length over 97, a stalled or over-long payload, or an
-add while a `wifi try` runs) the serial input is quarantined: every byte is
-discarded, never read as a command or echoed, until the input has been
-quiet for 50 ms and the bytes the header still owed have come (or 5 s have
-passed). A quarantine discards at most 1024 bytes per loop pass, and every
-payload read checks its time limits on every byte, so a continuous stream
-never holds the loop. The line reader and this handler are
-`UsbWifi::LineInput` / `UsbWifi::handleAdd`, driven with byte streams in
-`test/test_sync_usbwifi`. `wifi add` is refused (`wifi.busy reason=wifi`)
-while a `wifi try` runs.
+payload must be followed by 50 ms of silence, so **a client sends nothing
+after the payload until the add's reply arrives**; it may then send its
+next command at once. A sender that sends more than it announced is
+refused (`wifi.invalid`, nothing saved).
+
+Any refusal of a `wifi add` other than `wifi.full=1` - `wifi.invalid`,
+`wifi.crc`, or `wifi.busy` (an add while a `wifi try` runs) - puts the
+serial input in quarantine, because payload bytes may still be on their
+way, now or much later. In quarantine every line is dropped: never run,
+never echoed, with no time limit. **The client resynchronises by pausing at
+least 50 ms and sending a line that is exactly `version`** (any case; a
+blank line before it is fine); that line ends the quarantine and is
+answered as usual. A `version` line that arrives straight on the heels of
+other bytes does not count, so a payload tail holding that word cannot end
+it; a client that gets no answer pauses and sends `version` again (as its
+alive-poll already does). A quarantine reads at most 1024 bytes per loop
+pass and every payload read checks its time limits on every byte, so a
+continuous stream never holds the loop. The line reader and this handler
+are `UsbWifi::LineInput` / `UsbWifi::handleAdd`, driven with byte streams
+in `test/test_sync_usbwifi`.
 
 `wifi scan` and `wifi try` answer at once and report when done; keep other
 verbs until the `.done` / `wifi.try=ok|fail` line arrives. `wifi scan` lists

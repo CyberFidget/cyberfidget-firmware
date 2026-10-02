@@ -267,33 +267,69 @@ void takePairedLf(Port& port) {
 }
 } // namespace
 
-void LineInput::quarantine(uint32_t nowMs, uint32_t owedBytes) {
+void LineInput::quarantine(uint32_t nowMs) {
     quarantine_ = true;
     lastByteMs_ = nowMs;
-    startMs_ = nowMs;
-    owed_ = owedBytes;
+    quietBefore_ = false;
+    lineQuiet_ = false;
+    wipe(buf_, sizeof(buf_));
+    len_ = 0;
+    overflow_ = false;
 }
+
+namespace {
+bool isResync(const char* text, size_t len) {
+    if (len != sizeof(kResyncLine) - 1) return false;
+    for (size_t i = 0; i < len; i++) {
+        char c = text[i];
+        if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+        if (c != kResyncLine[i]) return false;
+    }
+    return true;
+}
+} // namespace
 
 LineInput::Next LineInput::next(Port& port) {
     if (quarantine_) {
-        size_t dropped = 0;
+        size_t seen = 0;
         for (;;) {
+            if (seen >= kQuarantineBytesPerCall) return Next::None;   // still flowing: next pass
             const uint32_t now = port.nowMs();
-            if (dropped >= kQuarantineBytesPerCall) return Next::None;   // still flowing: next pass
-            if (port.read() >= 0) {
-                lastByteMs_ = now;
-                if (owed_) owed_--;
-                dropped++;
+            const int b = port.read();
+            if (b < 0) return Next::None;
+            seen++;
+            const bool afterQuiet = now - lastByteMs_ >= kQuietGapMs;
+            lastByteMs_ = now;
+            const char c = static_cast<char>(b);
+            if (c == '\n' || c == '\r') {
+                if (len_ == 0 && !overflow_) {
+                    quietBefore_ = quietBefore_ || afterQuiet;   // a blank lead-in
+                    continue;
+                }
+                const bool resync = !overflow_ && lineQuiet_ && isResync(buf_, len_);
+                wipe(buf_, sizeof(buf_));
+                len_ = 0;
+                overflow_ = false;
+                // A terminator that itself came after silence (ending a
+                // dropped partial line) counts as a lead-in.
+                quietBefore_ = afterQuiet;
+                lineQuiet_ = false;
+                if (!resync) continue;   // dropped, whatever it was
+                quarantine_ = false;
+                memcpy(buf_, kResyncLine, sizeof(kResyncLine));
+                if (c == '\r') takePairedLf(port);
+                return Next::Line;
+            }
+            if (len_ == 0 && !overflow_) {
+                lineQuiet_ = quietBefore_ || afterQuiet;
+                quietBefore_ = false;
+            }
+            if (len_ + 1 >= kCap) {
+                overflow_ = true;
                 continue;
             }
-            if (now - lastByteMs_ < kQuietGapMs) return Next::None;
-            if (owed_ && now - startMs_ < kOwedWindowMs) return Next::None;
-            break;
+            buf_[len_++] = c;
         }
-        quarantine_ = false;
-        wipe(buf_, sizeof(buf_));
-        len_ = 0;
-        overflow_ = false;
     }
     for (;;) {
         const int b = port.read();
@@ -356,16 +392,15 @@ void handleAdd(const char* args, Port& port, LineInput& input, SaveFn save, cons
     uint32_t len = 0, crc = 0;
     const bool header = args && SyncProtocol::parseApplyHeader(args, len, crc);
     if (refuse) {
-        // Its payload is still coming: dropped, as owed bytes.
-        input.quarantine(port.nowMs(), header ? len : 0);
+        // Its payload is still coming: dropped until the client resyncs.
+        input.quarantine(port.nowMs());
         const size_t n = formatBusy(out, sizeof(out), refuse);
         if (n) port.write(out, n);
         return;
     }
     if (!header || !frameLengthOk(len)) {
-        // No usable length: whatever follows is dropped until the input is
-        // quiet (and an over-long payload's announced bytes have passed).
-        input.quarantine(port.nowMs(), header ? len : 0);
+        // No usable length: whatever follows is dropped until the client resyncs.
+        input.quarantine(port.nowMs());
         const size_t n = formatAddReply(out, sizeof(out), Frame::Invalid, WifiList::AddResult::Invalid, nullptr);
         if (n) port.write(out, n);
         return;
@@ -380,8 +415,10 @@ void handleAdd(const char* args, Port& port, LineInput& input, SaveFn save, cons
     const bool whole = read && staysQuiet(port);
     Frame parsed = Frame::Invalid;
     if (whole) parsed = parseAddFrame(frame, len, crc, name, pass);
-    // Stalled (the rest may still come) or more than announced: drop the rest.
-    else input.quarantine(port.nowMs(), read ? 0 : (uint32_t)(len - got));
+    // Stalled, more than announced, or bytes that are not the frame the
+    // header described (bad checksum or shape - the sender's framing and
+    // ours disagree, so more of it may still come): drop the rest.
+    if (parsed != Frame::Ok) input.quarantine(port.nowMs());
     wipe(frame, sizeof(frame));
     WifiList::AddResult saved = WifiList::AddResult::Invalid;
     if (parsed == Frame::Ok && save) saved = save(name, pass);
