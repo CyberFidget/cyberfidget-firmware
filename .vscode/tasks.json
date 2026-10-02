@@ -1,0 +1,101 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Fidget: install normal build",
+      "type": "shell",
+      "command": "pio run -e local -t upload",
+      "detail": "Builds and installs normal firmware without test-only serial commands.",
+      "options": {
+        "env": {
+          "PATH": "${env:HOME}/.platformio/penv/bin:${env:PATH}"
+        }
+      },
+      "windows": {
+        "options": {
+          "env": {
+            "PATH": "${env:USERPROFILE}\\.platformio\\penv\\Scripts;${env:PATH}"
+          }
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Fidget: install bench build (test commands)",
+      "type": "shell",
+      "command": "pio run -e local_test -t upload",
+      "detail": "Builds and installs bench firmware with test-only serial commands. Must never ship.",
+      "options": {
+        "env": {
+          "PATH": "${env:HOME}/.platformio/penv/bin:${env:PATH}"
+        }
+      },
+      "windows": {
+        "options": {
+          "env": {
+            "PATH": "${env:USERPROFILE}\\.platformio\\penv\\Scripts;${env:PATH}"
+          }
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Fidget: install bench build, fast wake",
+      "type": "shell",
+      "command": "pio run -e local_test_fastwake -t upload",
+      "detail": "Builds and installs bench firmware with test-only serial commands and a 60-second battery timer wake. Must never ship.",
+      "options": {
+        "env": {
+          "PATH": "${env:HOME}/.platformio/penv/bin:${env:PATH}"
+        }
+      },
+      "windows": {
+        "options": {
+          "env": {
+            "PATH": "${env:USERPROFILE}\\.platformio\\penv\\Scripts;${env:PATH}"
+          }
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Fidget: build only (normal)",
+      "type": "shell",
+      "command": "pio run -e local",
+      "detail": "Builds normal firmware without installing it on a device.",
+      "options": {
+        "env": {
+          "PATH": "${env:HOME}/.platformio/penv/bin:${env:PATH}"
+        }
+      },
+      "windows": {
+        "options": {
+          "env": {
+            "PATH": "${env:USERPROFILE}\\.platformio\\penv\\Scripts;${env:PATH}"
+          }
+        }
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "Companion: Build SD pack",
+      "type": "shell",
+      "command": "npm run build",
+      "options": {
+        "cwd": "${workspaceFolder}/portal-companion"
+      },
+      "detail": "Builds portal-companion/dist/web/ -> copy onto the memory card as /web/",
+      "problemMatcher": []
+    },
+    {
+      "label": "Companion: Install dependencies (once)",
+      "type": "shell",
+      "command": "npm ci",
+      "options": {
+        "cwd": "${workspaceFolder}/portal-companion"
+      },
+      "detail": "Fetches the vendored speech libraries (needed before the first build)",
+      "problemMatcher": []
+    }
+  ]
+}

@@ -71,11 +71,9 @@ npm run build   # -> dist/web/
 # 2. Through PlatformIO (installs deps on first run)
 pio run -t sdpack
 
-# 3. VS Code: Terminal -> Run Task -> "Companion: Build SD pack"
-#    .vscode/ is gitignored here, so add this task yourself if you want it:
-#    { "label": "Companion: Build SD pack", "type": "shell",
-#      "command": "npm run build",
-#      "options": { "cwd": "${workspaceFolder}/portal-companion" } }
+# 3. VS Code: shared tasks under Terminal -> Run Task
+#    First: "Companion: Install dependencies (once)"
+#    Then:  "Companion: Build SD pack"
 ```
 
 `pio run -t sdpack` is a custom target (`scripts/build_companion.py`); it is
@@ -157,6 +155,23 @@ tools/            Standalone developer tools (see below)
 ```
 
 ## Developer tools
+
+VS Code's **Terminal > Run Task** lists the shared tasks in [`.vscode/tasks.json`](.vscode/tasks.json):
+
+| Task | What it does |
+|---|---|
+| Fidget: install normal build | Builds and uploads `local`, the normal firmware without test-only serial commands. |
+| Fidget: install bench build (test commands) | Builds and uploads `local_test`, including test-only serial commands. Bench only - must never ship. |
+| Fidget: install bench build, fast wake | Builds and uploads `local_test_fastwake`, including test-only serial commands and a 60-second battery timer wake. Bench only - must never ship. |
+| Fidget: build only (normal) | Builds `local` without uploading. |
+| Companion: Install dependencies (once) | Fetches the vendored speech libraries before the first companion build. |
+| Companion: Build SD pack | Builds `portal-companion/dist/web/` to copy onto the memory card as `/web/`. |
+
+Upload picks the port automatically. Unplug other boards when installing, or use
+`pio run -e <env> -t upload --upload-port COMx` when several boards are attached.
+The firmware tasks add PlatformIO's own scripts folder to PATH, so `pio` does not
+need to be on the terminal's PATH already. Only `tasks.json` is shared; other
+`.vscode/` settings stay local.
 
 Each tool lives in its own folder under `tools/` with a README covering what it
 does and how to invoke it.
