@@ -154,6 +154,19 @@ bool readLengthAllowed(uint32_t len);
 size_t formatReadHeader(char* out, size_t cap, const char* path,
                         uint32_t offset, uint32_t len, uint32_t crc);
 
+/// The whole `lget` reply when no readable manifest is stored (no line
+/// terminator; the caller prints it as one line). Released readers stop on
+/// `present=0` and read no payload, so this line must never change.
+constexpr const char* kLgetAbsentReply =
+    "[cmd] lget.present=0 entries=0 schema=0 len=0 crc=00000000";
+
+/// Format the `lbuiltin` header, including its line terminator: the same
+/// framing as a present `lget` (`present=1 entries= schema= len= crc=`),
+/// followed on the wire by exactly `len` payload bytes. Returns bytes
+/// written, or zero if the output buffer is too small.
+size_t formatBuiltinHeader(char* out, size_t cap, int entries, int schema,
+                           uint32_t len, uint32_t crc);
+
 /// Pure flist cap state used by SerialCli and native tests. Calling
 /// admitListEntry() for the first entry beyond the cap marks truncation.
 struct ListProgress {
@@ -184,7 +197,7 @@ constexpr uint32_t kUsbSessionHoldMs = 10000;
 constexpr uint32_t kBusyWaitMs = 5000;
 
 /// True if `line` is a sync-session verb: the ones a browser send, update
-/// check or recovery issues (`info`, `syncinfo`, `lget`, `lapply`, the
+/// check or recovery issues (`info`, `syncinfo`, `lget`, `lbuiltin`, `lapply`, the
 /// `fwrite` family, `fdelete`, `flist`, `fstat`, `fread`). `version` is not
 /// one: bench tools poll it constantly and it says nothing about a send.
 bool isSessionVerb(const char* line);
@@ -207,8 +220,8 @@ BusyStep busyStep(bool busy, uint32_t waitingSinceMs, uint32_t nowMs);
 
 /// True if `line` counts as use for the device's idle-to-sleep timer, like a
 /// button press: the verbs that move data (the store-writing verbs and
-/// `fread`). The metadata reads (`info`, `syncinfo`, `lget`, `flist`,
-/// `fstat`) and `version` do not: a connected host may repeat those to show
+/// `fread`). The metadata reads (`info`, `syncinfo`, `lget`, `lbuiltin`,
+/// `flist`, `fstat`) and `version` do not: a connected host may repeat those to show
 /// status, and that alone must not keep the screen on forever.
 bool isIdleActivityVerb(const char* line);
 

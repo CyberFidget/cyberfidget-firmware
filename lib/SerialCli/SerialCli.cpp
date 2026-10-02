@@ -765,6 +765,7 @@ void SerialCli::dispatch(const char* line, bool retry) {
     if (ieq(line, "fwcommit")) { cmdFwcommit(); return; }
     if (ieq(line, "fwabort"))  { cmdFwabort();  return; }
     if (ieq(line, "lget"))     { cmdLget();     return; }
+    if (ieq(line, "lbuiltin")) { cmdLbuiltin(); return; }
     if (ieq(line, "syncinfo")) { cmdSyncinfo(); return; }
     if (ieq(line, "menutree")) { MenuManager::instance().dumpTree(); return; }
     if (ieq(line, "screencap")) { cmdScreencap(); return; }
@@ -1506,7 +1507,7 @@ void SerialCli::cmdHelp() {
     Serial.println("[cmd] help=version,info,help,mark <id>,reboot,battery,menutree,"
                    "screencap,screenstream <off|on [fps]>,diary [clear]");
     Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"
-                   "fstat,fread,lget,lapply,syncinfo");
+                   "fstat,fread,lget,lbuiltin,lapply,syncinfo");
     Serial.println("[cmd] help.update=upd slot,upd allow-unsigned <on|off>");
     Serial.println("[cmd] help.wifi=wifi scan,wifi add <len> <crc32>,wifi try,wifi saved");
 #ifdef CF_TEST_CLI
@@ -1789,7 +1790,7 @@ void SerialCli::cmdLget() {
     LoadoutManifest::Loadout lo;
     bool present = loadLoadoutManifest(lo, &json);
     if (!present) {
-        Serial.println("[cmd] lget.present=0 entries=0 schema=0 len=0 crc=00000000");
+        Serial.println(SyncProtocol::kLgetAbsentReply);
         return;
     }
     // Parse only to report entry count + schema alongside the raw bytes; the
@@ -1800,6 +1801,29 @@ void SerialCli::cmdLget() {
     uint32_t crc = SyncProtocol::crc32(json.data(), json.size());
     Serial.printf("[cmd] lget.present=1 entries=%d schema=%d len=%u crc=%08x\n",
                   entries, schema, (unsigned)json.size(), (unsigned)crc);
+    Serial.write((const uint8_t*)json.data(), json.size());
+}
+
+// The firmware's built-in menu (compiled rows, nested category paths), framed
+// like a present `lget`. Answers the same whether or not a manifest is
+// stored: it reads no file and writes nothing.
+void SerialCli::cmdLbuiltin() {
+    auto registry = buildLoadoutRegistryView();
+    std::vector<const char*> paths(registry.size(), nullptr);
+    for (size_t i = 0; i < registry.size(); i++) paths[i] = appDefs[i].categoryPath;
+    const LoadoutManifest::Loadout report = LoadoutManifest::buildBuiltinReport(
+        registry.data(), paths.data(), (int)registry.size());
+    const std::string json = LoadoutManifest::serializeManifest(report);
+    const uint32_t crc = SyncProtocol::crc32(json.data(), json.size());
+    char header[SyncProtocol::kReadReplyBytes];
+    const size_t headerLen = SyncProtocol::formatBuiltinHeader(
+        header, sizeof(header), (int)report.entries.size(), report.schemaVersion,
+        (uint32_t)json.size(), crc);
+    if (headerLen == 0) {
+        Serial.println("[err] lbuiltin.reply");
+        return;
+    }
+    Serial.write((const uint8_t*)header, headerLen);
     Serial.write((const uint8_t*)json.data(), json.size());
 }
 
@@ -1891,6 +1915,8 @@ void SerialCli::cmdSyncinfo() {
     Serial.printf("[cmd] syncinfo.lapply=%s\n", SyncProtocol::kLapplyCapability);
     // The USB setup verbs (wifi scan|add|try|saved) are here.
     Serial.println("[cmd] syncinfo.setup=1");
+    // `lbuiltin` (the firmware's built-in menu) is here.
+    Serial.println("[cmd] syncinfo.builtin=1");
     Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
 }
 

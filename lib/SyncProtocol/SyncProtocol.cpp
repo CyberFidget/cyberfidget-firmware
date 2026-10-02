@@ -281,6 +281,19 @@ size_t formatReadHeader(char* out, size_t cap, const char* path,
     return (size_t)n;
 }
 
+size_t formatBuiltinHeader(char* out, size_t cap, int entries, int schema,
+                           uint32_t len, uint32_t crc) {
+    if (!out || cap == 0) return 0;
+    const int n = std::snprintf(
+        out, cap, "[cmd] lbuiltin.present=1 entries=%d schema=%d len=%u crc=%08x\n",
+        entries, schema, (unsigned)len, (unsigned)crc);
+    if (n < 0 || (size_t)n >= cap) {
+        out[0] = '\0';
+        return 0;
+    }
+    return (size_t)n;
+}
+
 bool admitListEntry(ListProgress& progress) {
     if (progress.entries >= kMaxListEntries) {
         progress.truncated = true;
@@ -330,7 +343,7 @@ const char* const kStoreWriteVerbs[] = {
     "fwrite", "fwdata", "fwcommit", "fwabort", "fdelete", "lapply",
 };
 const char* const kSessionReadVerbs[] = {
-    "info", "syncinfo", "lget", "flist", "fstat", "fread",
+    "info", "syncinfo", "lget", "lbuiltin", "flist", "fstat", "fread",
 };
 
 } // namespace

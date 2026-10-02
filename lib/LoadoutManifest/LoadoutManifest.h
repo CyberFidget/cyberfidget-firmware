@@ -142,6 +142,19 @@ Loadout buildFromRegistry(const RegistryApp* apps, int count);
 std::vector<int> compiledMenuRows(const RegistryApp* apps, int count);
 
 /**
+ * The firmware's built-in menu as a report (the `lbuiltin` reply), NOT a
+ * manifest to store: the compiledMenuRows() rows in registry order, each
+ * with id = slugifyBuiltinName(name), its name, format "builtin", and the
+ * compiled category path UNFLATTENED ("Tools/LEDs"; "" for a top-level
+ * app). `categoryPaths` is parallel to `apps` (a null pointer or a null
+ * path reads as ""). Unlike buildFromRegistry(), which seeds a stored
+ * manifest with flattened categories, this keeps nested paths, so it
+ * describes the menu a device shows when no manifest is stored.
+ */
+Loadout buildBuiltinReport(const RegistryApp* apps,
+                           const char* const* categoryPaths, int count);
+
+/**
  * Merge a manifest with the compiled-in registry to produce the menu:
  *  - manifest entries first, in manifest order; a manifest category
  *    overrides the registry one ("" falls back to the registry category)

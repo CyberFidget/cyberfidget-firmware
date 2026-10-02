@@ -35,7 +35,7 @@ Manifest-ops apply is in `LoadoutManifest::applyOps` (same suite +
   command line; **exactly `len` raw bytes follow immediately after the
   line's terminator** (the `\n`, or the full `\r\n`) and are consumed by the
   device, not parsed as commands.
-  Device-to-browser payloads (`lget` and `fread`) work the same way: read the
+  Device-to-browser payloads (`lget`, `lbuiltin` and `fread`) work the same way: read the
   header line, then read exactly `len` bytes.
 * **Checksum is CRC-32** (IEEE 802.3, reflected, poly `0xEDB88320`, the
   stock zlib/JS crc32). Hex, lowercase, zero-padded to 8 digits.
@@ -99,7 +99,7 @@ fwabort                           -> [cmd] fwabort.ok
 * **Idle sleep**: the verbs that move data (the store-writing verbs and
   `fread`) count as use for the device's 60 s idle-to-sleep timer, like a
   button press. `version` and the status reads (`info`, `syncinfo`, `lget`,
-  `flist`, `fstat`) do not, so a host that only polls status cannot keep the
+  `lbuiltin`, `flist`, `fstat`) do not, so a host that only polls status cannot keep the
   screen on forever.
 
 ### Delete
@@ -131,9 +131,22 @@ The CRC in each `fread.ok` header covers only that returned chunk.
 ```
 lget                              -> [cmd] lget.present=<0|1> entries=<n> schema=<n> len=<n> crc=<hex>
                                      <len raw bytes of manifest JSON follow (omitted when present=0)>
+lbuiltin                          -> [cmd] lbuiltin.present=1 entries=<n> schema=1 len=<n> crc=<hex>
+                                     <len raw bytes of the built-in menu JSON follow>
 lapply <len> <crc32>              -> [cmd] lapply.ok=applied <n> entries <n>   (or [err] lapply.reject / .crc / .usage / .stale / .batchreuse / .record)
   <len raw bytes of ops JSON follow the line>
 ```
+
+`lget` reports the stored manifest; with none stored it answers
+`present=0` and no payload, and that line never changes (released readers
+stop there). `lbuiltin` (advertised by `syncinfo.builtin=1`) reports the
+firmware's built-in menu instead: every compiled menu app with a name, in
+compiled order, each `{"id": <slug of the name>, "name", "category": <the
+compiled path, nested and unflattened, e.g. "Tools/LEDs"; "" for a
+top-level app>, "position", "hidden": false, "format": "builtin"}`, in the
+same document shape as `/loadout.json`. It is the same whether or not a
+manifest is stored, reads no file and writes nothing. A host that gets
+`lget.present=0` asks `lbuiltin` to list what the device shows.
 
 Hosts must stay stop-and-wait: send one command (and its payload), then wait
 for its reply before the next. A write that waits for a cloud check-in
@@ -267,8 +280,13 @@ syncinfo   -> [cmd] syncinfo.fs_total=<n> fs_used=<n> fs_free=<n>
               [cmd] syncinfo.manifest=<0|1> entries=<n> schema=<n>
               [cmd] syncinfo.id=0123456789ab
               [cmd] syncinfo.lapply=batch1
+              [cmd] syncinfo.setup=1
+              [cmd] syncinfo.builtin=1
               [cmd] syncinfo.fw=<version-string>
 ```
+
+`syncinfo.builtin=1` advertises `lbuiltin` (see "Loadout manifest"). Absent
+on older firmware, which answers `lbuiltin` with `[err] unknown command`.
 
 `syncinfo.lapply` advertises the `lapply` batch contract (`batch`, `base`,
 `replace`, applied record, orphan sweep - see "Batch documents"). Absent on
@@ -316,6 +334,8 @@ the reply to the reader's next command.
 <-- [cmd] syncinfo.manifest=1 entries=13 schema=1\n
 <-- [cmd] syncinfo.id=0123456789ab\n
 <-- [cmd] syncinfo.lapply=batch1\n
+<-- [cmd] syncinfo.setup=1\n
+<-- [cmd] syncinfo.builtin=1\n
 <-- [cmd] syncinfo.fw=1.4.2+ab12cd3\n
 ```
 
