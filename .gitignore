@@ -8,7 +8,8 @@ bin/
 /wasm/generated/
 
 # IDE / AI tool configs
-.vscode/
+.vscode/*
+!.vscode/tasks.json
 .claude/
 .cursor/
 
