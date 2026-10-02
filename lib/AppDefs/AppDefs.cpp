@@ -84,7 +84,7 @@ std::vector<LoadoutManifest::RegistryApp> buildLoadoutRegistryView() {
         LoadoutManifest::RegistryApp app;
         app.name     = appDefs[i].name ? appDefs[i].name : "";
         app.id       = LoadoutManifest::slugifyBuiltinName(app.name.c_str());
-        app.category = LoadoutManifest::flattenCategory(appDefs[i].categoryPath);
+        app.category = appDefs[i].categoryPath ? appDefs[i].categoryPath : "";
         app.legacyId = appIds[i];
         view.push_back(app);
     }
@@ -107,8 +107,8 @@ bool loadLoadoutManifest(LoadoutManifest::Loadout& loadout, std::string* jsonOut
 }
 
 void buildNestedMenu() {
-   // Manifest-driven path: /loadout.json defines menu order, one-level
-   // flat categories, and hidden flags. mergeWithRegistry prunes stale
+   // Manifest-driven path: /loadout.json defines menu order, category
+   // paths ("Tools/LEDs"), and hidden flags. mergeWithRegistry prunes stale
    // ids and appends compiled-in apps the manifest doesn't know about,
    // so the menu and the firmware never fall out of sync.
    std::string json;

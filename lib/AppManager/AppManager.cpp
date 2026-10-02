@@ -468,12 +468,14 @@ void AppManager::persistMenuArrangement(const std::vector<LoadoutManifest::Arran
     // arrange has something to anchor against.
     LoadoutManifest::Loadout loadout;
     std::string json;
+    auto registry = buildLoadoutRegistryView();
     if (!loadLoadoutManifest(loadout, &json)) {
-        auto registry = buildLoadoutRegistryView();
         loadout = LoadoutManifest::buildFromRegistry(registry.data(), (int)registry.size());
     }
 
-    LoadoutManifest::applyArrange(loadout, order);
+    // The registry lets the arrange place each submenu where the device
+    // actually shows it (stale and hidden rows don't count).
+    LoadoutManifest::applyArrange(loadout, order, registry.data(), (int)registry.size());
 
     if (LoadoutStore::save(LoadoutManifest::serializeManifest(loadout))) {
         ESP_LOGI(TAG_MAIN, "Loadout manifest persisted (%d entries)",
@@ -498,13 +500,14 @@ bool AppManager::applyLoadoutOps(const char* opsJson, int* entriesOut, int* appl
     // path uses).
     LoadoutManifest::Loadout loadout;
     std::string json;
+    auto registry = buildLoadoutRegistryView();
     if (!loadLoadoutManifest(loadout, &json)) {
-        auto registry = buildLoadoutRegistryView();
         loadout = LoadoutManifest::buildFromRegistry(registry.data(), (int)registry.size());
     }
 
     int applied = 0;
-    if (!LoadoutManifest::applyOps(loadout, opsJson, &applied)) {
+    if (!LoadoutManifest::applyOps(loadout, opsJson, &applied,
+                                   registry.data(), (int)registry.size())) {
         ESP_LOGW(TAG_MAIN, "Loadout ops rejected; manifest unchanged");
         return false; // malformed or a rejected op — nothing was applied
     }

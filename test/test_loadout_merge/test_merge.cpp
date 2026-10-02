@@ -21,7 +21,7 @@ static const RegistryApp kRegistry[] = {
     { "APP_BOOT",   "Boot Animation", "Screensavers" },
     { "APP_MENU",   "",               ""             },
     { "APP_BOOPER", "Booper",         "Games"        },
-    { "APP_FLASH",  "Flashlight",     "Tools"        }, // was "Tools/LEDs", pre-flattened
+    { "APP_FLASH",  "Flashlight",     "Tools/LEDs"   }, // nested compiled path
     { "APP_CLOCK",  "Clock",          "Tools"        },
     { "APP_SNAKE",  "Snake",          "Games"        },
 };
@@ -68,8 +68,10 @@ void test_unlisted_apps_appended_in_compile_order(void) {
     TEST_ASSERT_EQUAL_INT(2, merged[2].appIndex);
     TEST_ASSERT_EQUAL_INT(3, merged[3].appIndex);
     TEST_ASSERT_EQUAL_INT(5, merged[4].appIndex);
-    // Appended apps carry their (flattened) registry category.
+    // Appended apps carry the first segment of their registry category:
+    // Flashlight (compiled "Tools/LEDs") lands directly under Tools.
     TEST_ASSERT_EQUAL_STRING("Screensavers", merged[1].category.c_str());
+    TEST_ASSERT_EQUAL_STRING("Tools",        merged[3].category.c_str());
     TEST_ASSERT_FALSE(merged[1].hidden);
 }
 
@@ -157,6 +159,149 @@ void test_build_from_registry_snapshot(void) {
     TEST_ASSERT_EQUAL_INT(4, l.entries[4].position);
     TEST_ASSERT_FALSE(l.entries[0].hidden);
     TEST_ASSERT_EQUAL_STRING("Screensavers", l.entries[0].category.c_str());
+}
+
+// The first-write snapshot keeps a nested compiled path as-is.
+void test_build_from_registry_keeps_nested_category(void) {
+    Loadout l = buildFromRegistry(kRegistry, kRegistryCount);
+    TEST_ASSERT_EQUAL_STRING("APP_FLASH",  l.entries[2].id.c_str());
+    TEST_ASSERT_EQUAL_STRING("Tools/LEDs", l.entries[2].category.c_str());
+    TEST_ASSERT_EQUAL_STRING("Tools",      l.entries[3].category.c_str());
+}
+
+// A nested category survives serialize -> parse -> merge, so the menu is
+// built under Tools > LEDs after a reboot.
+void test_nested_category_survives_roundtrip(void) {
+    Loadout seed = buildFromRegistry(kRegistry, kRegistryCount);
+    const std::string json = serializeManifest(seed);
+    TEST_ASSERT_NOT_NULL(std::strstr(json.c_str(), "\"category\": \"Tools/LEDs\""));
+    Loadout back;
+    TEST_ASSERT_TRUE(parseManifest(json.c_str(), back));
+    TEST_ASSERT_EQUAL_STRING("Tools/LEDs", back.entries[2].category.c_str());
+    auto merged = mergeWithRegistry(back, kRegistry, kRegistryCount);
+    TEST_ASSERT_EQUAL_INT(5, (int)merged.size());
+    TEST_ASSERT_EQUAL_INT(3, merged[2].appIndex); // APP_FLASH
+    TEST_ASSERT_EQUAL_STRING("Tools/LEDs", merged[2].category.c_str());
+}
+
+// kRegistry as earlier firmware saw it: categories cut to the first segment.
+static const RegistryApp kFlatRegistry[] = {
+    { "APP_BOOT",   "Boot Animation", "Screensavers" },
+    { "APP_MENU",   "",               ""             },
+    { "APP_BOOPER", "Booper",         "Games"        },
+    { "APP_FLASH",  "Flashlight",     "Tools"        },
+    { "APP_CLOCK",  "Clock",          "Tools"        },
+    { "APP_SNAKE",  "Snake",          "Games"        },
+};
+
+static void assertSameMerge(const std::vector<MergedApp>& before,
+                            const std::vector<MergedApp>& after) {
+    TEST_ASSERT_EQUAL_INT((int)before.size(), (int)after.size());
+    for (size_t i = 0; i < before.size(); i++) {
+        TEST_ASSERT_EQUAL_INT(before[i].appIndex, after[i].appIndex);
+        TEST_ASSERT_EQUAL_STRING(before[i].category.c_str(), after[i].category.c_str());
+        TEST_ASSERT_EQUAL(before[i].hidden, after[i].hidden);
+    }
+}
+
+// A menu saved by earlier firmware stores the flattened "Tools" for an app
+// compiled under "Tools/LEDs". It must merge exactly as it did when the
+// registry itself was flattened: same rows, same order, same categories.
+void test_flattened_saved_menu_merges_as_before(void) {
+    // The file earlier firmware wrote on its first save, then reordered.
+    Loadout saved = buildFromRegistry(kFlatRegistry, kRegistryCount);
+    std::vector<ArrangeItem> order(1);
+    order[0].id = "APP_CLOCK";
+    TEST_ASSERT_TRUE(applyArrange(saved, order));
+    Loadout l;
+    TEST_ASSERT_TRUE(parseManifest(serializeManifest(saved).c_str(), l));
+
+    auto before = mergeWithRegistry(l, kFlatRegistry, kRegistryCount);
+    auto after  = mergeWithRegistry(l, kRegistry,     kRegistryCount);
+    TEST_ASSERT_EQUAL_INT(5, (int)after.size());
+    assertSameMerge(before, after);
+    // Flashlight stays directly under Tools: no new LEDs submenu appears.
+    for (const auto& m : after) {
+        if (m.appIndex == 3) TEST_ASSERT_EQUAL_STRING("Tools", m.category.c_str());
+    }
+}
+
+// An old flattened file that no longer lists Flashlight (a website remove)
+// still appends it directly under Tools, as before - no LEDs submenu.
+void test_flattened_file_missing_entry_keeps_flat_fallback(void) {
+    Loadout l = buildFromRegistry(kFlatRegistry, kRegistryCount);
+    TEST_ASSERT_TRUE(applyRemove(l, "APP_FLASH"));
+    auto before = mergeWithRegistry(l, kFlatRegistry, kRegistryCount);
+    auto after  = mergeWithRegistry(l, kRegistry,     kRegistryCount);
+    assertSameMerge(before, after);
+    TEST_ASSERT_EQUAL_INT(3, after.back().appIndex); // APP_FLASH appended
+    TEST_ASSERT_EQUAL_STRING("Tools", after.back().category.c_str());
+}
+
+// Same for an old flattened file whose Flashlight entry has category "".
+void test_flattened_file_empty_category_keeps_flat_fallback(void) {
+    Loadout l = buildFromRegistry(kFlatRegistry, kRegistryCount);
+    l.entries[2].category = ""; // APP_FLASH
+    auto before = mergeWithRegistry(l, kFlatRegistry, kRegistryCount);
+    auto after  = mergeWithRegistry(l, kRegistry,     kRegistryCount);
+    assertSameMerge(before, after);
+    TEST_ASSERT_EQUAL_INT(3, after[2].appIndex);
+    TEST_ASSERT_EQUAL_STRING("Tools", after[2].category.c_str());
+}
+
+// A registry with two apps in the LEDs submenu, like the real one.
+static const RegistryApp kTwoLedRegistry[] = {
+    { "APP_FLASH", "Flashlight",    "Tools/LEDs" },
+    { "APP_CLOCK", "Clock",         "Tools"      },
+    { "APP_ACCEL", "Accelerometer", "Tools/LEDs" },
+};
+
+// An old file emptied by removes (and an empty manifest) merges exactly as
+// before: compile order with first-segment categories, no LEDs submenu.
+void test_emptied_flattened_file_merges_as_before(void) {
+    Loadout l = buildFromRegistry(kFlatRegistry, kRegistryCount);
+    const char* ids[] = { "APP_BOOT", "APP_BOOPER", "APP_FLASH", "APP_CLOCK", "APP_SNAKE" };
+    for (const char* id : ids) TEST_ASSERT_TRUE(applyRemove(l, id));
+    TEST_ASSERT_EQUAL_INT(0, (int)l.entries.size());
+    auto before = mergeWithRegistry(l, kFlatRegistry, kRegistryCount);
+    auto after  = mergeWithRegistry(l, kRegistry,     kRegistryCount);
+    assertSameMerge(before, after);
+    TEST_ASSERT_EQUAL_INT(3, after[2].appIndex);
+    TEST_ASSERT_EQUAL_STRING("Tools", after[2].category.c_str());
+}
+
+// A file written by this firmware keeps the nested categories it stores;
+// its fallbacks are flat like everyone else's. Removing both LED apps
+// brings them back directly under Tools (the accepted trade-off).
+void test_nested_file_keeps_saved_paths_fallbacks_flat(void) {
+    Loadout l = buildFromRegistry(kTwoLedRegistry, 3);
+    TEST_ASSERT_TRUE(applyRemove(l, "APP_ACCEL"));
+    auto merged = mergeWithRegistry(l, kTwoLedRegistry, 3);
+    TEST_ASSERT_EQUAL_INT(3, (int)merged.size());
+    TEST_ASSERT_EQUAL_STRING("Tools/LEDs", merged[0].category.c_str()); // saved
+    TEST_ASSERT_EQUAL_INT(2, merged[2].appIndex);                       // appended
+    TEST_ASSERT_EQUAL_STRING("Tools", merged[2].category.c_str());
+
+    Loadout e = buildFromRegistry(kTwoLedRegistry, 3);
+    e.entries[2].category = "";
+    merged = mergeWithRegistry(e, kTwoLedRegistry, 3);
+    TEST_ASSERT_EQUAL_STRING("Tools/LEDs", merged[0].category.c_str());
+    TEST_ASSERT_EQUAL_STRING("Tools",      merged[2].category.c_str());
+
+    Loadout both = buildFromRegistry(kTwoLedRegistry, 3);
+    TEST_ASSERT_TRUE(applyRemove(both, "APP_FLASH"));
+    TEST_ASSERT_TRUE(applyRemove(both, "APP_ACCEL"));
+    merged = mergeWithRegistry(both, kTwoLedRegistry, 3);
+    TEST_ASSERT_EQUAL_INT(3, (int)merged.size());
+    for (const auto& m : merged) TEST_ASSERT_EQUAL_STRING("Tools", m.category.c_str());
+}
+
+// An empty manifest: every app is a fallback, all first-segment.
+void test_empty_manifest_fallbacks_are_flat(void) {
+    Loadout l;
+    auto merged = mergeWithRegistry(l, kRegistry, kRegistryCount);
+    TEST_ASSERT_EQUAL_INT(3, merged[2].appIndex);
+    TEST_ASSERT_EQUAL_STRING("Tools", merged[2].category.c_str());
 }
 
 void test_empty_registry_yields_empty_merge(void) {
@@ -291,8 +436,7 @@ void test_builtin_report_keeps_nested_paths(void) {
         TEST_ASSERT_FALSE(r.entries[i].hidden);
     }
 
-    // The seed path is untouched: it still uses the registry's flat
-    // categories and ids.
+    // The seed uses the registry's own category and id columns.
     Loadout seed = buildFromRegistry(kApps, 5);
     TEST_ASSERT_EQUAL_STRING("x-flash", seed.entries[1].id.c_str());
     TEST_ASSERT_EQUAL_STRING("Tools", seed.entries[1].category.c_str());
@@ -329,6 +473,14 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_duplicate_manifest_ids_first_wins);
     RUN_TEST(test_manifest_category_overrides_registry);
     RUN_TEST(test_build_from_registry_snapshot);
+    RUN_TEST(test_build_from_registry_keeps_nested_category);
+    RUN_TEST(test_nested_category_survives_roundtrip);
+    RUN_TEST(test_flattened_saved_menu_merges_as_before);
+    RUN_TEST(test_flattened_file_missing_entry_keeps_flat_fallback);
+    RUN_TEST(test_flattened_file_empty_category_keeps_flat_fallback);
+    RUN_TEST(test_emptied_flattened_file_merges_as_before);
+    RUN_TEST(test_nested_file_keeps_saved_paths_fallbacks_flat);
+    RUN_TEST(test_empty_manifest_fallbacks_are_flat);
     RUN_TEST(test_empty_registry_yields_empty_merge);
     RUN_TEST(test_slug_and_legacy_migration);
     RUN_TEST(test_migration_dedup_keeps_slug_at_earlier_position);
