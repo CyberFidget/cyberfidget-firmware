@@ -42,6 +42,9 @@ let rafId = 0;
 
 // Captions
 let captionsOn = false;
+// Bumped whenever a session starts or ends, so a captions start that was still
+// waiting (on the device, or on the engine) when Stop was pressed gives up.
+let captionGen = 0;
 // One IndexedDB record per caption session: the source key is fixed at
 // caption start (not per commit), so successive commits overwrite one
 // growing transcript instead of leaving overlapping copies that the Daily
@@ -494,6 +497,7 @@ export async function startSession() {
   if (!yes) return;
 
   wantSession = true;
+  captionGen++;
   retries = 0;
   liveLineStart = '';
   capChunks = [];
@@ -536,6 +540,7 @@ export async function startSession() {
 
 export function endSession(message, kind) {
   wantSession = false;
+  captionGen++;
   stopCaptionRun();
   if (sock) {
     try { sock.close(); } catch { /* already closed */ }
@@ -573,13 +578,19 @@ async function toggleCaptions() {
     $('chipCaptions').hidden = true;
     return;
   }
+  // Every wait below can outlast the session: if it ended (or a new one began)
+  // meanwhile, this start is stale and must not turn captions on.
+  const gen = captionGen;
+  const stale = () => gen !== captionGen || !wantSession;
   // Whether the pack is there is still being asked of the device. Wait for the
   // answer; if it says no, the gate replaces this button.
   if (!statusKnown()) toast('Still connecting to the device - one moment.');
   await whenStatusKnown();
-  if (!hasPack()) return;
+  if (stale() || !hasPack()) return;
   const modelId = await engine.pickedModel('live');
-  if (!(await engine.isDownloaded(modelId))) {
+  const downloaded = await engine.isDownloaded(modelId);
+  if (stale()) return;
+  if (!downloaded) {
     toast('Captions need the one-time transcription download.');
     navigate('settings/transcription');
     return;
@@ -596,7 +607,14 @@ async function toggleCaptions() {
       else if (p.pct != null) $('btnCaptions').textContent = 'Loading ' + p.pct + '%';
     });
   } catch (e) {
-    notice('sessionNotice', 'Could not start transcription: ' + (e && e.message ? e.message : e), 'err');
+    if (!stale()) {
+      notice('sessionNotice', 'Could not start transcription: ' + (e && e.message ? e.message : e), 'err');
+    }
+    $('btnCaptions').disabled = false;
+    $('btnCaptions').textContent = 'Start captions';
+    return;
+  }
+  if (stale()) {
     $('btnCaptions').disabled = false;
     $('btnCaptions').textContent = 'Start captions';
     return;
