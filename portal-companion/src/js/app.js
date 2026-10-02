@@ -45,6 +45,7 @@ const LEGACY = {
 };
 
 let route = 'listen';
+let painted = false;   // a view has been entered at least once
 
 function parseHash() {
   const raw = decodeURIComponent((location.hash || '').replace('#', '')).toLowerCase();
@@ -56,6 +57,7 @@ function parseHash() {
 
 function go(target, push) {
   route = target;
+  painted = true;
   const base = target.split('/')[0];
   const r = ROUTES[base];
   const sub = SUB[target];
@@ -359,14 +361,18 @@ async function boot() {
 
   await refreshConnection();
   // Whether the pack is present decides what several views render, so settle it
-  // before anything paints - otherwise affordances appear and then flash away,
+  // before the first paint - otherwise affordances appear and then flash away,
   // which reads as a fault rather than a state.
   await refreshStatus();
   live.applyPack();
   statusDone = true;
   markStatusDone();
 
-  go(parseHash(), false);
+  // If the person already moved around while the device was answering, they are
+  // using a view: re-entering it now would reset what they started (a gathered
+  // daily note, a half-typed key). Update the pack-dependent parts in place.
+  if (painted) notes.applyPack();
+  else go(parseHash(), false);
 
   device.setClock(localNaiveEpochMs());
 
