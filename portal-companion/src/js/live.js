@@ -45,6 +45,10 @@ let captionsOn = false;
 // Bumped whenever a session starts or ends, so a captions start that was still
 // waiting (on the device, or on the engine) when Stop was pressed gives up.
 let captionGen = 0;
+// Bumped whenever a caption run starts or stops (session end stops it too), so
+// a transcription still in flight from an earlier run is dropped, never shown,
+// sent or saved under the new one.
+let captionRun = 0;
 // One IndexedDB record per caption session: the source key is fixed at
 // caption start (not per commit), so successive commits overwrite one
 // growing transcript instead of leaving overlapping copies that the Daily
@@ -270,6 +274,7 @@ function emitCaptionSummary() {
 }
 
 function stopCaptionRun() {
+  captionRun++;
   if (!captionsOn) return;
   captionsOn = false;
   clearInterval(backlogTimer);
@@ -336,6 +341,7 @@ async function inferTick() {
   if (pendingSeconds() < 1.0) return;
 
   inferBusy = true;
+  const run = captionRun;
   const samplesAtStart = capSamples;
   discardedSinceInferStart = 0;
   lastInferSamples = capSamples;
@@ -353,10 +359,12 @@ async function inferTick() {
     try {
       text = await engine.transcribe(window, liveModelId);
     } finally {
-      windowsTranscribed++;
-      inferenceTimesMs.push(performance.now() - inferenceStart);
+      if (run === captionRun) {
+        windowsTranscribed++;
+        inferenceTimesMs.push(performance.now() - inferenceStart);
+      }
     }
-    if (!captionsOn) return;
+    if (run !== captionRun || !captionsOn) return;
     if (commitAfter) {
       discardEpisodeOpen = false;
       if (text) {
@@ -391,7 +399,9 @@ async function inferTick() {
       if (!partial || partial.textContent !== text.trim()) feedAppend('', text);
     }
   } catch (e) {
-    notice('sessionNotice', 'Caption trouble: ' + (e && e.message ? e.message : e), 'err');
+    if (run === captionRun) {
+      notice('sessionNotice', 'Caption trouble: ' + (e && e.message ? e.message : e), 'err');
+    }
   } finally {
     inferBusy = false;
     // Audio piles up while an inference runs (incoming frames see busy and
@@ -620,6 +630,7 @@ async function toggleCaptions() {
     return;
   }
   captionsOn = true;
+  captionRun++;
   $('captionCard').hidden = false;
   capChunks = [];
   capSamples = 0;
