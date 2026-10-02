@@ -119,6 +119,76 @@ size_t formatTryStarted(char* out, size_t cap);
 size_t formatTryOk(char* out, size_t cap, const char* name);
 size_t formatTryFail(char* out, size_t cap, WifiList::JoinFailure failure);
 
+// ---- the serial input: lines, and a quarantine after a bad `wifi add` ---------------
+
+/// The serial byte stream (the UART on the device, a script in tests).
+class Port {
+public:
+    virtual ~Port() = default;
+    virtual int read() = 0;   ///< next byte, -1 when none is waiting
+    virtual int peek() = 0;   ///< the same without taking it
+    virtual uint32_t nowMs() = 0;
+    virtual void write(const char* text, size_t len) = 0;
+};
+
+/// How long the input must be silent before a quarantine ends.
+constexpr uint32_t kQuietGapMs = 50;
+/// Bytes a quarantine discards per call at most, so the loop keeps running
+/// under a continuous stream.
+constexpr size_t kQuarantineBytesPerCall = 1024;
+/// How long a quarantine waits for the payload bytes a header announced and
+/// that have not arrived yet (a stalled sender finishing late).
+constexpr uint32_t kOwedWindowMs = 5000;
+
+/// Line assembly for the serial command loop (SerialCli::poll): one line at
+/// a time, LF or CRLF (a CR's paired LF is taken before the line is handed
+/// on, so a payload read never starts with it), empty lines ignored, an
+/// over-long line reported once and dropped. In quarantine every byte is
+/// discarded until the input has been quiet for kQuietGapMs and the
+/// payload bytes still owed (announced, not yet seen) have come or
+/// kOwedWindowMs has passed; then the partial line is wiped and reading
+/// resumes. No byte read in quarantine ever reaches a command.
+class LineInput {
+public:
+    static constexpr size_t kCap = 160;   // SerialCli::kBufferSize
+    enum class Next : uint8_t { None, Line, TooLong };
+    /// Reads until a whole line (Line: see line()), the end of an over-long
+    /// line (TooLong), or nothing more is waiting / a quarantine is still on
+    /// (None).
+    Next next(Port& port);
+    const char* line() const { return buf_; }
+    void quarantine(uint32_t nowMs, uint32_t owedBytes = 0);
+    bool quarantined() const { return quarantine_; }
+private:
+    char buf_[kCap] = {0};
+    size_t len_ = 0;
+    bool overflow_ = false;
+    bool quarantine_ = false;
+    uint32_t lastByteMs_ = 0;
+    uint32_t startMs_ = 0;
+    uint32_t owed_ = 0;
+};
+
+// ---- wifi add over the port ----------------------------------------------------------
+
+/// Inter-byte gap and whole-read limit for the `wifi add` payload (it is
+/// at most 97 bytes: under 2 ms of wire time).
+constexpr uint32_t kAddGapMs = 1000;
+constexpr uint32_t kAddTotalMs = 2000;
+
+using SaveFn = WifiList::AddResult (*)(const char* name, const char* pass);
+
+/// `wifi add <args>`, after its line: reads exactly <len> payload bytes,
+/// then requires the input to stay quiet for kQuietGapMs (a sender that
+/// sends more than it announced is refused, nothing saved). Every refusal
+/// that may leave payload bytes behind (no readable length, a length over
+/// kFrameMax, a stalled or over-long payload, `refuse` set) puts `input`
+/// in quarantine. `refuse` (a reason word) refuses before reading, e.g.
+/// while a `wifi try` runs. Deadlines are checked on every byte. The reply
+/// line goes to the port. Frame, name and password buffers are wiped on
+/// every path; `save` is called only for a whole, quiet, valid frame.
+void handleAdd(const char* args, Port& port, LineInput& input, SaveFn save, const char* refuse);
+
 } // namespace UsbWifi
 
 #endif // USB_WIFI_H

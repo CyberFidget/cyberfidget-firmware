@@ -247,4 +247,148 @@ size_t formatTryFail(char* out, size_t cap, WifiList::JoinFailure failure) {
     return line(out, cap, "[cmd] wifi.try=fail reason=%s\n", tryFailureName(failure));
 }
 
+// ---- the serial input ------------------------------------------------------------------
+
+namespace {
+// A CRLF host's '\n' is ~11 us behind its '\r' at 921600 baud; wait this long
+// for it before handing the line on (a lone-'\r' host falls through).
+constexpr uint32_t kCrlfPairWaitMs = 4;
+
+void takePairedLf(Port& port) {
+    const uint32_t start = port.nowMs();
+    for (;;) {
+        const int b = port.peek();
+        if (b >= 0) {
+            if (b == '\n') port.read();
+            return;
+        }
+        if (port.nowMs() - start > kCrlfPairWaitMs) return;
+    }
+}
+} // namespace
+
+void LineInput::quarantine(uint32_t nowMs, uint32_t owedBytes) {
+    quarantine_ = true;
+    lastByteMs_ = nowMs;
+    startMs_ = nowMs;
+    owed_ = owedBytes;
+}
+
+LineInput::Next LineInput::next(Port& port) {
+    if (quarantine_) {
+        size_t dropped = 0;
+        for (;;) {
+            const uint32_t now = port.nowMs();
+            if (dropped >= kQuarantineBytesPerCall) return Next::None;   // still flowing: next pass
+            if (port.read() >= 0) {
+                lastByteMs_ = now;
+                if (owed_) owed_--;
+                dropped++;
+                continue;
+            }
+            if (now - lastByteMs_ < kQuietGapMs) return Next::None;
+            if (owed_ && now - startMs_ < kOwedWindowMs) return Next::None;
+            break;
+        }
+        quarantine_ = false;
+        wipe(buf_, sizeof(buf_));
+        len_ = 0;
+        overflow_ = false;
+    }
+    for (;;) {
+        const int b = port.read();
+        if (b < 0) return Next::None;
+        const char c = static_cast<char>(b);
+        if (c == '\n' || c == '\r') {
+            if (overflow_) {
+                overflow_ = false;
+                len_ = 0;
+                return Next::TooLong;
+            }
+            if (len_ == 0) continue;   // empty line, or the LF of a CRLF
+            buf_[len_] = '\0';
+            len_ = 0;
+            // Taken before dispatch, so a framed payload never starts with it.
+            if (c == '\r') takePairedLf(port);
+            return Next::Line;
+        }
+        if (len_ + 1 >= kCap) {
+            overflow_ = true;   // dropped up to the end of the line
+            continue;
+        }
+        buf_[len_++] = c;
+    }
+}
+
+// ---- wifi add over the port -------------------------------------------------------------
+
+namespace {
+// Exactly n bytes, the gap and the whole-read limit checked on every pass
+// (a continuous stream cannot hold it past kAddTotalMs). `got` says how
+// many arrived.
+bool readFrame(Port& port, uint8_t* buf, size_t n, size_t& got) {
+    const uint32_t start = port.nowMs();
+    uint32_t last = start;
+    got = 0;
+    while (got < n) {
+        const uint32_t now = port.nowMs();
+        if (now - start > kAddTotalMs || now - last > kAddGapMs) return false;
+        const int b = port.read();
+        if (b < 0) continue;
+        buf[got++] = static_cast<uint8_t>(b);
+        last = now;
+    }
+    return true;
+}
+
+// Nothing more arrives for kQuietGapMs after the payload.
+bool staysQuiet(Port& port) {
+    const uint32_t start = port.nowMs();
+    while (port.nowMs() - start < kQuietGapMs) {
+        if (port.read() >= 0) return false;
+    }
+    return true;
+}
+} // namespace
+
+void handleAdd(const char* args, Port& port, LineInput& input, SaveFn save, const char* refuse) {
+    char out[kLineMax];
+    uint32_t len = 0, crc = 0;
+    const bool header = args && SyncProtocol::parseApplyHeader(args, len, crc);
+    if (refuse) {
+        // Its payload is still coming: dropped, as owed bytes.
+        input.quarantine(port.nowMs(), header ? len : 0);
+        const size_t n = formatBusy(out, sizeof(out), refuse);
+        if (n) port.write(out, n);
+        return;
+    }
+    if (!header || !frameLengthOk(len)) {
+        // No usable length: whatever follows is dropped until the input is
+        // quiet (and an over-long payload's announced bytes have passed).
+        input.quarantine(port.nowMs(), header ? len : 0);
+        const size_t n = formatAddReply(out, sizeof(out), Frame::Invalid, WifiList::AddResult::Invalid, nullptr);
+        if (n) port.write(out, n);
+        return;
+    }
+    uint8_t frame[kFrameMax];
+    char name[WifiList::kNameMax + 1];
+    char pass[WifiList::kPassMax + 1];
+    wipe(name, sizeof(name));
+    wipe(pass, sizeof(pass));
+    size_t got = 0;
+    const bool read = readFrame(port, frame, len, got);
+    const bool whole = read && staysQuiet(port);
+    Frame parsed = Frame::Invalid;
+    if (whole) parsed = parseAddFrame(frame, len, crc, name, pass);
+    // Stalled (the rest may still come) or more than announced: drop the rest.
+    else input.quarantine(port.nowMs(), read ? 0 : (uint32_t)(len - got));
+    wipe(frame, sizeof(frame));
+    WifiList::AddResult saved = WifiList::AddResult::Invalid;
+    if (parsed == Frame::Ok && save) saved = save(name, pass);
+    wipe(pass, sizeof(pass));
+    const size_t n = formatAddReply(out, sizeof(out), parsed, saved, name);
+    wipe(name, sizeof(name));
+    if (n) port.write(out, n);
+}
+
 } // namespace UsbWifi

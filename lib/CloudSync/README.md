@@ -156,7 +156,11 @@ through the same `SavedWifi::add`, so it has the same limit and order.
 `wifi try` joins with `JoinOptions::firstOnly`: the first network only, by
 a plain join, ending early when it is reported absent or its password is
 refused twice; `JoinResult::failure` says which (from the station's
-disconnect reasons, `WifiList::joinFailure`).
+disconnect reasons, `WifiList::joinFailure`) and `JoinResult::name` which
+network was joined. Those USB jobs hold the radio through
+`CloudSync::claimRadio()` / `releaseRadio()`: a claim counts as radio use
+this power cycle, and `cancelPending()` (an app that needs the radio) asks
+the job to stop and waits for its release.
 
 Every session that needs the station (check-ins of every reason, dev mode's
 rejoin, linking, the update session) joins through `SavedWifi::join`:

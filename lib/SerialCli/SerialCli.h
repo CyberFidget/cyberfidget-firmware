@@ -168,9 +168,7 @@ private:
     bool soaking = false;
 #endif
 
-    char   buffer[kBufferSize] = {0};
-    size_t bufferLen           = 0;
-    bool   overflow            = false;
+    // (Command lines are assembled by a UsbWifi::LineInput in the .cpp.)
     // A store-writing verb that arrived while a cloud check-in owned the
     // store waits here (its payload stays in the UART buffer) instead of
     // being refused at once.
@@ -180,9 +178,6 @@ private:
     // When the open write session last saw fwrite/fwdata.
     uint32_t ferryAtMs             = 0;
     bool     usbActivity           = false;
-    // Set by `wifi add`: the next line is not echoed if unknown, and is
-    // wiped from the buffer (it could be the end of an over-long payload).
-    bool     hideNextEcho          = false;
 };
 
 #endif  // SERIAL_CLI_H

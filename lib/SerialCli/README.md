@@ -182,12 +182,19 @@ the CRC-32 of the whole payload in the header (lowercase or uppercase hex, as
 (`lib/CloudSync/SavedWifi.h`): at most three; a saved name takes the new
 password and moves first; a fourth is refused with `wifi.full=1` and nothing
 is dropped. The frame, name and password buffers are zeroed on every path. A
-header with a length over 97 has its payload drained (as `lapply` does); one
-whose length cannot be read is answered `wifi.invalid` after the input has
-gone quiet, so no payload byte is read as a command. The line after a
-`wifi add` is never echoed by `[err] unknown command` (it reads
-`unknown command: (hidden)`), in case a sender sent more bytes than it
-announced.
+payload must be followed by 50 ms of silence before the next command: a
+sender that sends more than it announced is refused (`wifi.invalid`,
+nothing saved). After any refusal that can leave payload bytes behind (no
+readable length, a length over 97, a stalled or over-long payload, or an
+add while a `wifi try` runs) the serial input is quarantined: every byte is
+discarded, never read as a command or echoed, until the input has been
+quiet for 50 ms and the bytes the header still owed have come (or 5 s have
+passed). A quarantine discards at most 1024 bytes per loop pass, and every
+payload read checks its time limits on every byte, so a continuous stream
+never holds the loop. The line reader and this handler are
+`UsbWifi::LineInput` / `UsbWifi::handleAdd`, driven with byte streams in
+`test/test_sync_usbwifi`. `wifi add` is refused (`wifi.busy reason=wifi`)
+while a `wifi try` runs.
 
 `wifi scan` and `wifi try` answer at once and report when done; keep other
 verbs until the `.done` / `wifi.try=ok|fail` line arrives. `wifi scan` lists
@@ -200,9 +207,15 @@ join was stopped. Both refuse while the setup portal or music player is open,
 a link, check-in or USB file transfer is under way, a newly installed
 firmware is still being checked, or
 Bluetooth has started in this power cycle (WiFi then needs a restart);
-`wifi` is the reason when another scan or try is still running. While either
-runs, check-ins and links wait (`SerialCli::radioBusy()`), and opening the
-portal or music player restarts into it, as it does during a check-in.
+`wifi` is the reason when another scan or try is still running. Each claims
+the radio (`CloudSync::claimRadio`) before its task starts, which counts as
+radio use this power cycle (Bluetooth then needs a restart, as after a
+check-in). While either runs, check-ins and links wait
+(`SerialCli::radioBusy()`); opening the portal or music player asks the job
+to stop (`CloudSync::cancelPending`: the scan ends with what it has, a try
+reports `fail reason=busy`) and starts once WiFi is off, or restarts into
+the app if it did not stop in time. `wifi.try=ok` names the network the
+join actually used.
 
 ### Installing updates
 

@@ -509,26 +509,275 @@ void test_wipe_zeroes() {
     for (char c : buf) TEST_ASSERT_EQUAL_CHAR(0, c);
 }
 
-// The driver prints only these formatters' lines: no print in the add path
-// names the password or the raw frame, and the join never logs a key.
-void test_driver_add_path_prints_no_password() {
+// ---- the serial input end to end: bytes in, commands out ------------------------------
+//
+// The command loop of SerialCli::poll() (LineInput::next, then dispatch) with
+// the device's own `wifi add` handler (handleAdd) on a scripted byte stream.
+// Every other line is recorded as a command that would run: a password byte
+// must never become one, and nothing written back may carry it.
+
+namespace {
+
+class ScriptPort : public Port {
+public:
+    struct Timed { uint32_t at; uint8_t b; };
+    std::vector<Timed> bytes;
+    size_t pos = 0;
+    uint32_t now = 0;
+    std::string out;
+    // `text` arrives at `at`, one byte every `spacingMs` (0: all at once).
+    void send(uint32_t at, const std::string& text, uint32_t spacingMs = 0) {
+        for (size_t i = 0; i < text.size(); i++)
+            bytes.push_back({at + (uint32_t)i * spacingMs, (uint8_t)text[i]});
+    }
+    void send(uint32_t at, const std::vector<uint8_t>& data) {
+        for (uint8_t b : data) bytes.push_back({at, b});
+    }
+    int read() override {
+        if (pos < bytes.size() && bytes[pos].at <= now) return bytes[pos++].b;
+        return -1;
+    }
+    int peek() override {
+        if (pos < bytes.size() && bytes[pos].at <= now) return bytes[pos].b;
+        return -1;
+    }
+    // Every look at the clock takes a millisecond: a spinning read moves time on.
+    uint32_t nowMs() override { return now++; }
+    void write(const char* text, size_t len) override { out.append(text, len); }
+};
+
+struct Saves {
+    std::vector<std::string> names;
+    std::vector<std::string> passes;
+};
+Saves* g_saves = nullptr;
+WifiList::AddResult recordSave(const char* name, const char* pass) {
+    g_saves->names.push_back(name);
+    g_saves->passes.push_back(pass);
+    return WifiList::AddResult::Added;
+}
+
+struct Loop {
+    ScriptPort port;
+    LineInput input;
+    Saves saves;
+    std::vector<std::string> commands;   // lines that reached the verb table
+    const char* refuse = nullptr;
+
+    // One SerialCli::poll() pass.
+    void pollOnce() {
+        g_saves = &saves;
+        for (;;) {
+            const LineInput::Next next = input.next(port);
+            if (next == LineInput::Next::None) break;
+            if (next == LineInput::Next::TooLong) {
+                port.out += "[err] line too long\n";
+                continue;
+            }
+            const char* line = input.line();
+            if (strcmp(line, "wifi add") == 0) handleAdd("", port, input, recordSave, refuse);
+            else if (strncmp(line, "wifi add ", 9) == 0) handleAdd(line + 9, port, input, recordSave, refuse);
+            else commands.push_back(line);
+        }
+    }
+    // Polls every 10 ms (a loop pass) until `untilMs`.
+    void run(uint32_t untilMs) {
+        while (port.now < untilMs) {
+            pollOnce();
+            port.now += 10;
+        }
+    }
+};
+
+std::string header(size_t len, uint32_t crc) {
+    char line[64];
+    snprintf(line, sizeof(line), "wifi add %u %08x\r\n", (unsigned)len, (unsigned)crc);
+    return line;
+}
+
+// Nothing the loop produced carries the secret, and no recorded command does.
+void assertNothingLeaked(const Loop& loop, const std::string& secret) {
+    assertNoSecret(loop.port.out, secret);
+    for (const std::string& c : loop.commands) assertNoSecret(c, secret);
+}
+
+const std::string kVerbPassword = "mark x\nreboot\ninfo\nfdelete /apps/a\n";
+
+} // namespace
+
+void test_stream_good_add_then_next_command() {
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home Net", "hunter2hunter2");
+    loop.port.send(0, header(f.size(), crcOf(f)));
+    loop.port.send(0, f);
+    loop.port.send(300, std::string("wifi try\n"));
+    loop.run(600);
+    TEST_ASSERT_EQUAL(1, (int)loop.saves.names.size());
+    TEST_ASSERT_EQUAL_STRING("Home Net", loop.saves.names[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("hunter2hunter2", loop.saves.passes[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("[cmd] wifi.saved=ssid_hex=486f6d65204e6574 position=1\n",
+                             loop.port.out.c_str());
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("wifi try", loop.commands[0].c_str());
+    assertNothingLeaked(loop, "hunter2hunter2");
+}
+
+void test_stream_under_announced_frame_runs_nothing() {
+    // The header announces less than is sent: the rest of the password (made
+    // of verb lines) must not run or be echoed - not the first line, nor any.
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home", kVerbPassword);
+    loop.port.send(0, header(6, crcOf(f)));
+    loop.port.send(0, f);
+    loop.port.send(1000, std::string("info\n"));   // a real command, later
+    loop.run(1500);
+    TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("info", loop.commands[0].c_str());
+    assertNothingLeaked(loop, kVerbPassword);
+    assertNothingLeaked(loop, "fdelete");
+}
+
+void test_stream_stalled_frame_finishing_late_runs_nothing() {
+    // Half the payload, a stall past the gap limit, then the rest.
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home", kVerbPassword);
+    const std::vector<uint8_t> first(f.begin(), f.begin() + 8);
+    const std::vector<uint8_t> rest(f.begin() + 8, f.end());
+    loop.port.send(0, header(f.size(), crcOf(f)));
+    loop.port.send(0, first);
+    loop.port.send(1800, rest);
+    loop.port.send(4000, std::string("info\n"));
+    loop.run(9000);
+    TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
+    // The late rest was owed to the frame and dropped; the next command after
+    // it stays quiet... only "info" may run, and only once the owed bytes came.
+    for (const std::string& c : loop.commands) TEST_ASSERT_EQUAL_STRING("info", c.c_str());
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    assertNothingLeaked(loop, "reboot");
+    assertNothingLeaked(loop, "fdelete");
+}
+
+void test_stream_bad_crc_with_bytes_still_coming_runs_nothing() {
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home", "mark secret");
+    loop.port.send(0, header(f.size(), crcOf(f) ^ 1u));
+    loop.port.send(0, f);
+    loop.port.send(0, std::string("\nreboot\n"));   // more than announced
+    loop.run(500);
+    TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
+    TEST_ASSERT_EQUAL(0, (int)loop.commands.size());
+    assertNothingLeaked(loop, "secret");
+}
+
+void test_stream_bad_crc_alone_reports_crc() {
+    Loop loop;
+    const std::vector<uint8_t> f = frameOf("Home", "secret99");
+    loop.port.send(0, header(f.size(), crcOf(f) ^ 1u));
+    loop.port.send(0, f);
+    loop.port.send(300, std::string("syncinfo\n"));
+    loop.run(600);
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.crc\n", loop.port.out.c_str());
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("syncinfo", loop.commands[0].c_str());
+}
+
+void test_stream_over_length_and_unreadable_headers_run_nothing() {
+    {
+        Loop loop;
+        std::vector<uint8_t> f = frameOf("Home", kVerbPassword);
+        while (f.size() < 200) f.push_back('\n');
+        loop.port.send(0, header(f.size(), crcOf(f)));
+        loop.port.send(0, f);
+        loop.port.send(1000, std::string("info\n"));
+        loop.run(1500);
+        TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
+        TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+        assertNothingLeaked(loop, "reboot");
+    }
+    {
+        Loop loop;
+        const std::vector<uint8_t> f = frameOf("Home", kVerbPassword);
+        loop.port.send(0, std::string("wifi add twelve x\n"));
+        loop.port.send(0, f);
+        loop.port.send(1000, std::string("info\n"));
+        loop.run(1500);
+        TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
+        TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+        TEST_ASSERT_EQUAL_STRING("info", loop.commands[0].c_str());
+        assertNothingLeaked(loop, "reboot");
+    }
+}
+
+void test_stream_add_refused_while_trying_drops_its_payload() {
+    Loop loop;
+    loop.refuse = "wifi";
+    const std::vector<uint8_t> f = frameOf("Home", kVerbPassword);
+    loop.port.send(0, header(f.size(), crcOf(f)));
+    loop.port.send(0, f);
+    loop.port.send(1000, std::string("info\n"));
+    loop.run(1500);
+    TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.busy reason=wifi\n", loop.port.out.c_str());
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    assertNothingLeaked(loop, "reboot");
+}
+
+void test_stream_continuous_input_never_holds_the_loop() {
+    // An unreadable header, then a byte every millisecond for 20 s: each
+    // pass returns (bounded work), nothing runs while it flows, and reading
+    // resumes once it stops.
+    Loop loop;
+    loop.port.send(0, std::string("wifi add ?\n"));
+    loop.port.send(1, std::string(20000, 'r'), 1);
+    loop.port.send(30000, std::string("info\n"));
+    uint32_t longest = 0;
+    while (loop.port.now < 31000) {
+        const uint32_t before = loop.port.now;
+        loop.pollOnce();
+        if (loop.port.now - before > longest) longest = loop.port.now - before;
+        loop.port.now += 10;
+    }
+    TEST_ASSERT_TRUE_MESSAGE(longest < 2 * kQuarantineBytesPerCall + 100, "a pass ran too long");
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("info", loop.commands[0].c_str());
+}
+
+void test_stream_payload_read_is_bounded_under_continuous_input() {
+    // A readable header whose payload never stops: the read and the quiet
+    // check end in bounded time, nothing is saved.
+    Loop loop;
+    loop.port.send(0, header(20, 0x12345678));
+    loop.port.send(1, std::string(10000, 'p'), 1);
+    const uint32_t before = loop.port.now;
+    loop.pollOnce();
+    TEST_ASSERT_TRUE(loop.port.now - before <= kAddTotalMs + kQuietGapMs + 100);
+    TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
+    TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
+}
+
+void test_stream_lines_crlf_empty_and_too_long() {
+    Loop loop;
+    loop.port.send(0, std::string("info\r\n\r\n\nversion\n"));
+    loop.port.send(0, std::string(400, 'z') + "\n");
+    loop.port.send(0, std::string("help\r"));
+    loop.run(100);
+    TEST_ASSERT_EQUAL(3, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("info", loop.commands[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("version", loop.commands[1].c_str());
+    TEST_ASSERT_EQUAL_STRING("help", loop.commands[2].c_str());
+    TEST_ASSERT_EQUAL_STRING("[err] line too long\n", loop.port.out.c_str());
+}
+
+// The driver's `wifi add` is this handler, and the join never logs a key.
+void test_driver_uses_the_tested_add_path() {
     const std::string cli = readSource("lib/SerialCli/SerialCli.cpp");
     const std::string add = functionBody(cli, "void SerialCli::cmdWifiAdd(");
-    size_t at = 0;
-    while (at < add.size()) {
-        size_t end = add.find('\n', at);
-        if (end == std::string::npos) end = add.size();
-        const std::string line = add.substr(at, end - at);
-        if (line.find("Serial.") != std::string::npos || line.find("writeLine(") != std::string::npos) {
-            TEST_ASSERT_TRUE_MESSAGE(line.find("pass") == std::string::npos, line.c_str());
-            TEST_ASSERT_TRUE_MESSAGE(line.find("frame,") == std::string::npos, line.c_str());
-        }
-        at = end + 1;
-    }
-    // Every wipe is there: frame, password (twice: read failed / after save), name.
-    TEST_ASSERT_TRUE(add.find("UsbWifi::wipe(frame, sizeof(frame))") != std::string::npos);
-    TEST_ASSERT_TRUE(add.find("UsbWifi::wipe(pass, sizeof(pass))") != std::string::npos);
-    TEST_ASSERT_TRUE(add.find("UsbWifi::wipe(name, sizeof(name))") != std::string::npos);
+    TEST_ASSERT_TRUE(add.find("UsbWifi::handleAdd(args, g_port, g_input,") != std::string::npos);
+    TEST_ASSERT_TRUE(cli.find("g_input.next(g_port)") != std::string::npos);
     const std::string saved = readSource("lib/CloudSync/SavedWifi.cpp");
     for (const SourceLine& l : classify(saved)) {
         if (l.text.find("Serial.") == std::string::npos) continue;
@@ -682,7 +931,17 @@ int main(int, char**) {
     RUN_TEST(test_add_replies_never_carry_the_password);
     RUN_TEST(test_parse_failure_leaves_no_password_in_outputs);
     RUN_TEST(test_wipe_zeroes);
-    RUN_TEST(test_driver_add_path_prints_no_password);
+    RUN_TEST(test_stream_good_add_then_next_command);
+    RUN_TEST(test_stream_under_announced_frame_runs_nothing);
+    RUN_TEST(test_stream_stalled_frame_finishing_late_runs_nothing);
+    RUN_TEST(test_stream_bad_crc_with_bytes_still_coming_runs_nothing);
+    RUN_TEST(test_stream_bad_crc_alone_reports_crc);
+    RUN_TEST(test_stream_over_length_and_unreadable_headers_run_nothing);
+    RUN_TEST(test_stream_add_refused_while_trying_drops_its_payload);
+    RUN_TEST(test_stream_continuous_input_never_holds_the_loop);
+    RUN_TEST(test_stream_payload_read_is_bounded_under_continuous_input);
+    RUN_TEST(test_stream_lines_crlf_empty_and_too_long);
+    RUN_TEST(test_driver_uses_the_tested_add_path);
     RUN_TEST(test_busy_reasons);
     RUN_TEST(test_join_failure_from_disconnect_reasons);
     RUN_TEST(test_try_replies);

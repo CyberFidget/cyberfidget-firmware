@@ -72,6 +72,14 @@ bool storeBusy();
 // True once a session has switched WiFi on in this power cycle; Bluetooth
 // must then wait for a reboot.
 bool radioUsedThisPowerCycle();
+// A radio job outside a session (the USB `wifi scan` / `wifi try`). Claimed
+// on the loop task before its task starts: false when a session runs, the
+// radio is on, or another job holds it; true counts as radio use this power
+// cycle. cancelPending() asks a held job to stop (radioReleaseRequested())
+// and waits for releaseRadio(), which the job calls once WiFi is off.
+bool claimRadio();
+void releaseRadio();
+bool radioReleaseRequested();
 
 // ---- Dev mode listening (lib/UpdatePrompt/AwakeMode) ------------------------
 // runSession(Reason::Dev) starts a worker that stays joined to the saved

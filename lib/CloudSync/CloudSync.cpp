@@ -74,6 +74,9 @@ constexpr char kDefaultBase[] = "https://cyberfidget.com";
 std::atomic<bool> running{false};
 std::atomic<bool> finished{false};
 std::atomic<bool> radioUsed{false};
+// A radio job outside a session holds the radio (claimRadio) / is asked to stop.
+std::atomic<bool> externalRadio{false};
+std::atomic<bool> externalStop{false};
 bool available = false;
 std::atomic<bool> cancelRequested{false};
 Result result;
@@ -2127,6 +2130,13 @@ bool consumeResult(Result& out) {
     return true;
 }
 bool cancelPending() {
+    if (externalRadio) {
+        // A USB WiFi job: it stops within a poll of its join or scan.
+        externalStop = true;
+        const uint32_t started = millis();
+        while (externalRadio && millis() - started < kCancelWaitMs) delay(10);
+        if (externalRadio) return false;
+    }
     if (!running) return WiFi.getMode() == WIFI_OFF;
     cancelRequested = true;
     const uint32_t started = millis();
@@ -2144,6 +2154,18 @@ bool storeBusy() {
     return workerKind != WorkerKind::Cloud || sessionReason != Reason::Dev || devInCycle;
 }
 bool radioUsedThisPowerCycle() { return radioUsed; }
+bool claimRadio() {
+    if (running || externalRadio || WiFi.getMode() != WIFI_OFF) return false;
+    externalStop = false;
+    externalRadio = true;
+    radioUsed = true;   // Bluetooth after it restarts first, as after a check-in
+    return true;
+}
+void releaseRadio() {
+    externalRadio = false;
+    externalStop = false;
+}
+bool radioReleaseRequested() { return externalStop; }
 
 bool devListening() {
     return running && workerKind == WorkerKind::Cloud && sessionReason == Reason::Dev;

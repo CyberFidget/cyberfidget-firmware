@@ -73,6 +73,8 @@ struct JoinResult {
     /// Why it failed (None on success), from the station's disconnect reasons.
     WifiList::JoinFailure failure = WifiList::JoinFailure::None;
     uint8_t lastReason = 0;    ///< the last disconnect reason seen (0: none)
+    /// The network that was joined (empty unless ok). A name, never a key.
+    char name[WifiList::kNameMax + 1] = {0};
 };
 
 /// The station must be on (WIFI_STA or WIFI_AP_STA) and not connected.

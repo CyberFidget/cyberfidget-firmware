@@ -420,6 +420,7 @@ bool join(const JoinOptions& opt, JoinResult& out) {
     out.lastReason = lastReason;
     out.failure = WifiList::joinFailure(out.ok, false, out.stopped, out.absent,
                                         authSeen > 0, absentSeen);
+    if (out.ok) memcpy(out.name, joinedName, sizeof(out.name));
     // (A bench name is not in the list, so it is never remembered.)
     if (out.ok) remember(joinedName);
     // A remembered place that led nowhere is dropped: the next session's
