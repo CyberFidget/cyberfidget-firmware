@@ -274,8 +274,8 @@ private:
 
     /**
      * @brief Walk the whole menu tree and emit the full display order as
-     * id-anchored arrange items (leaves under a top-level category carry
-     * that category's label — one-level flat model; root leaves carry "").
+     * id-anchored arrange items (each leaf carries its full category path,
+     * labels joined with "/", e.g. "Tools/LEDs"; root leaves carry "").
      */
     void collectArrangeOrder(std::vector<LoadoutManifest::ArrangeItem>& out) const;
 

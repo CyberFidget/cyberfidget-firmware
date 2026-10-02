@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <cstring>
 #include <limits.h>
+#include <map>
 #include <stdlib.h>
 
 namespace LoadoutManifest {
@@ -213,24 +214,163 @@ void renumber(Loadout& loadout) {
     }
 }
 
-// Regroup entries so each category is one contiguous run, keeping the
-// relative order within a category and ordering sections by first
-// appearance. This is what makes "sections = contiguous category runs"
-// hold by construction after an arrange op.
-void normalizeSections(Loadout& loadout) {
-    std::vector<LoadoutEntry> result;
-    result.reserve(loadout.entries.size());
-    std::vector<bool> placed(loadout.entries.size(), false);
-    for (size_t i = 0; i < loadout.entries.size(); i++) {
-        if (placed[i]) continue;
-        const std::string cat = loadout.entries[i].category; // copy: entries get moved below
-        for (size_t j = i; j < loadout.entries.size(); j++) {
-            if (!placed[j] && loadout.entries[j].category == cat) {
-                placed[j] = true;
-                result.push_back(std::move(loadout.entries[j]));
-            }
+// Submenu levels the arrange normalization looks at. Deeper segments are
+// ignored for ordering only (entries that share their first
+// kMaxOrderDepth segments keep their relative order); the stored category
+// string is never changed. Bounds the work a hostile path can cause.
+constexpr size_t kMaxOrderDepth = 8;
+
+// Split a category path on '/', skipping empty segments - the same rule
+// the device menu uses to build submenus (MenuManager's CategoryPath.h) -
+// keeping at most kMaxOrderDepth segments.
+std::vector<std::string> splitPath(const std::string& path) {
+    std::vector<std::string> out;
+    size_t start = 0;
+    while (start < path.size() && out.size() < kMaxOrderDepth) {
+        size_t slash = path.find('/', start);
+        if (slash == std::string::npos) slash = path.size();
+        if (slash > start) out.push_back(path.substr(start, slash - start));
+        start = slash + 1;
+    }
+    return out;
+}
+
+// The merge's keep/drop rule, per manifest entry: the registry index a
+// built-in merges to (>= 0), kMergedBlob for a delivered app that is kept,
+// or kMergedDropped for a row the menu never shows (stale id, duplicate,
+// non-menu slot, delivered app without a file). mergeWithRegistry and the
+// arrange normalization both use it, so they agree on what is on screen.
+constexpr int kMergedBlob    = -1;
+constexpr int kMergedDropped = -2;
+std::vector<int> mergeRows(const Loadout& loadout, const RegistryApp* apps, int count) {
+    std::vector<int> rows(loadout.entries.size(), kMergedDropped);
+    std::vector<bool> used(count > 0 ? (size_t)count : 0, false);
+    for (size_t k = 0; k < loadout.entries.size(); k++) {
+        const LoadoutEntry& entry = loadout.entries[k];
+        // A ferried app has no compile-time registry row; it launches from
+        // its file. The producer of truth is the website sync, which stamps
+        // format "wasm" (the honest module format); "blob" is also accepted.
+        // The load-bearing signal is a NON-builtin format with a blobPath -
+        // that identifies an app sent from the website and launched from a file.
+        // Guard: no path = unlaunchable, dropped like a stale id.
+        if (entry.format != "builtin" && !entry.format.empty()) {
+            if (!entry.blobPath.empty()) rows[k] = kMergedBlob;
+            continue;
+        }
+        int idx = -1;
+        for (int i = 0; i < count; i++) {
+            if (apps[i].id == entry.id) { idx = i; break; }
+        }
+        if (idx < 0 || used[(size_t)idx]) continue;
+        if (apps[idx].name.empty()) continue; // not a menu item
+        used[(size_t)idx] = true;
+        rows[k] = idx;
+    }
+    return rows;
+}
+
+// The compiled apps the merge appends because the manifest does not list
+// them (no kept row in `rows`, from mergeRows), in compile order. Menu
+// slots without a name are never apps.
+std::vector<int> unlistedApps(const std::vector<int>& rows, const RegistryApp* apps, int count) {
+    std::vector<bool> used(count > 0 ? (size_t)count : 0, false);
+    for (int r : rows) if (r >= 0) used[(size_t)r] = true;
+    std::vector<int> out;
+    for (int i = 0; i < count; i++) {
+        if (used[(size_t)i] || apps[i].name.empty()) continue;
+        out.push_back(i);
+    }
+    return out;
+}
+
+// The first segment of a category path: the placement the merge gives a
+// fallback ("Tools" for "Tools/LEDs").
+std::string topSegment(const std::string& path) {
+    return path.substr(0, path.find('/'));
+}
+
+// The category the merge renders for a kept row (`row` from mergeRows): a
+// built-in with an empty category falls back to the first segment of its
+// compiled path; otherwise the stored category, as is.
+std::string renderedCategory(const LoadoutEntry& entry, int row, const RegistryApp* apps) {
+    if (row >= 0 && entry.category.empty()) return topSegment(apps[row].category);
+    return entry.category;
+}
+
+// Reorder entries into the order of the menu the device displays, so the
+// flat list is a depth-first walk of that menu. Every ordering decision
+// comes from the merge's view (mergeRows + renderedCategory):
+//  - a row is SHOWN when the merge keeps it and it is not hidden;
+//  - shown rows are placed by the category the merge renders for them;
+//  - at every level (root included) a folder sits where its first shown
+//    row is and an app keeps its own place, which is exactly how the
+//    device builder (registerApp / findOrCreateCategory) orders a level;
+//  - rows the device does not show (hidden, pruned) never anchor anything
+//    while their folder has a shown row: each keeps its input position
+//    among the rows of its own folder, so it rides along without moving
+//    anything visible. A folder with no shown row sits at its first row.
+// Without a registry, every non-hidden row counts as shown and is placed by
+// its stored category (the caller has no merge view to offer).
+// With single-level categories and every row shown this is "each category
+// is one contiguous run, relative order kept" (the earlier rule), except
+// that root entries ("") keep their own places among the folders instead of
+// being gathered into one run - the device shows them that way.
+// Only the first kMaxOrderDepth path levels are used; no recursion.
+void normalizeSections(Loadout& loadout, const RegistryApp* apps, int count) {
+    const size_t n = loadout.entries.size();
+    const bool haveRegistry = apps && count > 0;
+    std::vector<int> rows;
+    if (haveRegistry) rows = mergeRows(loadout, apps, count);
+
+    std::vector<std::vector<std::string>> segs(n);
+    std::vector<bool> shown(n);
+    for (size_t i = 0; i < n; i++) {
+        const LoadoutEntry& e = loadout.entries[i];
+        const bool kept = !haveRegistry || rows[i] != kMergedDropped;
+        shown[i] = kept && !e.hidden;
+        segs[i] = splitPath(haveRegistry && kept ? renderedCategory(e, rows[i], apps)
+                                                 : e.category);
+    }
+
+    // A row's own place is its input index: shown rows keep their order,
+    // and a row the device does not show stays after the shown row before
+    // it within its own folder.
+
+    // Folder anchors, keyed by the joined path ("Tools", "Tools/LEDs"): the
+    // first shown row inside; for a folder with no shown row, the first
+    // row inside.
+    std::map<std::string, size_t> shownAnchor, otherAnchor;
+    for (size_t i = 0; i < n; i++) {
+        std::string prefix;
+        for (size_t d = 0; d < segs[i].size(); d++) {
+            if (d) prefix += '/';
+            prefix += segs[i][d];
+            (shown[i] ? shownAnchor : otherAnchor).emplace(prefix, i);
         }
     }
+
+    // Sort key: the anchor of each enclosing folder, outermost first, then
+    // the row's own place value.
+    std::vector<std::vector<size_t>> key(n);
+    for (size_t i = 0; i < n; i++) {
+        std::string prefix;
+        for (size_t d = 0; d < segs[i].size(); d++) {
+            if (d) prefix += '/';
+            prefix += segs[i][d];
+            auto s = shownAnchor.find(prefix);
+            key[i].push_back(s != shownAnchor.end() ? s->second : otherAnchor[prefix]);
+        }
+        key[i].push_back(i);
+    }
+
+    std::vector<size_t> order(n);
+    for (size_t i = 0; i < n; i++) order[i] = i;
+    std::stable_sort(order.begin(), order.end(),
+                     [&](size_t a, size_t b) { return key[a] < key[b]; });
+
+    std::vector<LoadoutEntry> result;
+    result.reserve(n);
+    for (size_t i : order) result.push_back(std::move(loadout.entries[i]));
     loadout.entries = std::move(result);
     renumber(loadout);
 }
@@ -280,13 +420,6 @@ void appendStringField(std::string& out, const char* key, const std::string& val
 // ============================================================
 // Public API
 // ============================================================
-
-std::string flattenCategory(const char* path) {
-    if (!path) return std::string();
-    const char* slash = std::strchr(path, '/');
-    if (!slash) return std::string(path);
-    return std::string(path, (size_t)(slash - path));
-}
 
 std::string slugifyBuiltinName(const char* name) {
     std::string slug;
@@ -493,19 +626,24 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
                                          const RegistryApp* apps, int count) {
     std::vector<MergedApp> out;
     if (!apps || count <= 0) return out;
-    std::vector<bool> used((size_t)count, false);
+
+    // Fallbacks (an entry with an empty category, an app the manifest does
+    // not list) use the first segment of the compiled path, as released
+    // firmware always has: "Tools" for an app compiled under "Tools/LEDs".
+    // Nested paths come only from what the file stores (a fresh seed, an
+    // arrange). A new nested app therefore first shows in its top-level
+    // category until the user arranges it.
+    // (renderedCategory / topSegment are shared with the arrange
+    // normalization, so both agree on where a row is shown.)
 
     // 1) Manifest entries, in manifest order. Stale ids (no registry
-    //    match) and duplicates are pruned, not fatal.
-    for (const auto& entry : loadout.entries) {
-        // A ferried app has no compile-time registry row; it launches from
-        // its file. The producer of truth is the website sync, which stamps
-        // format "wasm" (the honest module format); "blob" is also accepted.
-        // The load-bearing signal is a NON-builtin format with a blobPath -
-        // that identifies an app sent from the website and launched from a file.
-        // Guard: no path = unlaunchable, dropped like a stale id.
-        if (entry.format != "builtin" && !entry.format.empty()) {
-            if (entry.blobPath.empty()) continue;
+    //    match), duplicates and unlaunchable delivered apps are pruned,
+    //    not fatal (mergeRows).
+    const std::vector<int> rows = mergeRows(loadout, apps, count);
+    for (size_t k = 0; k < loadout.entries.size(); k++) {
+        const LoadoutEntry& entry = loadout.entries[k];
+        if (rows[k] == kMergedDropped) continue;
+        if (rows[k] == kMergedBlob) {
             MergedApp m;
             m.appIndex = -1;
             m.category = entry.category;
@@ -517,16 +655,10 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
             out.push_back(m);
             continue;
         }
-        int idx = -1;
-        for (int i = 0; i < count; i++) {
-            if (apps[i].id == entry.id) { idx = i; break; }
-        }
-        if (idx < 0 || used[(size_t)idx]) continue;
-        if (apps[idx].name.empty()) continue; // not a menu item
-        used[(size_t)idx] = true;
+        const int idx = rows[k];
         MergedApp m;
         m.appIndex = idx;
-        m.category = entry.category.empty() ? apps[idx].category : entry.category;
+        m.category = renderedCategory(entry, idx, apps);
         m.hidden   = entry.hidden;
         out.push_back(m);
     }
@@ -536,11 +668,10 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
     //    tree groups by category name, so they still render inside
     //    their category; the flat order becomes contiguous again the
     //    next time the manifest is rewritten.)
-    for (int i = 0; i < count; i++) {
-        if (used[(size_t)i] || apps[i].name.empty()) continue;
+    for (int i : unlistedApps(rows, apps, count)) {
         MergedApp m;
         m.appIndex = i;
-        m.category = apps[i].category;
+        m.category = topSegment(apps[i].category);
         m.hidden   = false;
         out.push_back(m);
     }
@@ -701,7 +832,8 @@ bool parseMetaField(Cursor& c, const std::string& key, OpsMeta& meta) {
 }
 
 // Parse and apply one op object (cursor on its opening '{') to `work`.
-bool applyOneOp(Cursor& c, Loadout& work, int& applied) {
+bool applyOneOp(Cursor& c, Loadout& work, int& applied,
+                const RegistryApp* apps, int count) {
     skipWs(c);
     if (*c.p != '{') return false;
     c.p++;
@@ -762,7 +894,7 @@ bool applyOneOp(Cursor& c, Loadout& work, int& applied) {
         if (!applyHide(work, id.c_str(), hidden)) return false;
     } else if (opType == "arrange") {
         if (!hasOrder) return false;
-        if (!applyArrange(work, order)) return false;
+        if (!applyArrange(work, order, apps, count)) return false;
     } else if (opType == "replace") {
         if (!hasEntry) return false;
         if (!applyReplace(work, entry)) return false;
@@ -775,7 +907,49 @@ bool applyOneOp(Cursor& c, Loadout& work, int& applied) {
 
 } // namespace
 
-bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order) {
+bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order,
+                  const RegistryApp* apps, int count) {
+    // With a registry, first write down the compiled apps the file does not
+    // list, exactly as the merge appends them (compile order, first-segment
+    // category, shown). The device menu already shows them there, so this
+    // changes nothing visible, and the ordering below then sees the same
+    // menu the device builds.
+    if (apps && count > 0) {
+        for (int i : unlistedApps(mergeRows(loadout, apps, count), apps, count)) {
+            LoadoutEntry e;
+            e.id       = apps[i].id;
+            e.name     = apps[i].name;
+            e.category = topSegment(apps[i].category);
+            e.format   = "builtin";
+            loadout.entries.push_back(e);
+        }
+    }
+
+    // Drop later built-in rows that repeat an earlier built-in id. The
+    // merge only ever uses the first one (mergeRows), so this is invisible
+    // on the device, and it stops the normalization below from moving a
+    // duplicate ahead of the row the merge currently uses (which would
+    // change which one wins, e.g. bring a hidden copy to the front).
+    // Delivered apps are left alone: the merge keeps every one with a file.
+    {
+        std::vector<LoadoutEntry> unique;
+        unique.reserve(loadout.entries.size());
+        std::vector<std::string> seen;
+        for (auto& e : loadout.entries) {
+            const bool builtin = e.format == "builtin" || e.format.empty();
+            if (builtin) {
+                if (std::find(seen.begin(), seen.end(), e.id) != seen.end()) continue;
+                seen.push_back(e.id);
+            }
+            unique.push_back(std::move(e));
+        }
+        loadout.entries = std::move(unique);
+    }
+    // Put the list in displayed-menu order first, so the entries this
+    // arrange does not name keep their displayed relative order (a stored
+    // order that is not normalized could otherwise regroup them).
+    normalizeSections(loadout, apps, count);
+
     std::vector<LoadoutEntry> arranged;
     arranged.reserve(loadout.entries.size());
     std::vector<bool> taken(loadout.entries.size(), false);
@@ -796,11 +970,12 @@ bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order) {
         if (!taken[i]) arranged.push_back(loadout.entries[i]);
     }
     loadout.entries = std::move(arranged);
-    normalizeSections(loadout); // contiguity by construction
+    normalizeSections(loadout, apps, count); // displayed-menu order
     return true;
 }
 
-bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut) {
+bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut,
+              const RegistryApp* apps, int count) {
     if (appliedOut) *appliedOut = 0;
     if (!opsJson) return false;
 
@@ -828,7 +1003,7 @@ bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut) {
                 skipWs(c);
                 if (*c.p != ']') {
                     while (true) {
-                        if (!applyOneOp(c, work, applied)) return false;
+                        if (!applyOneOp(c, work, applied, apps, count)) return false;
                         skipWs(c);
                         if (*c.p == ',') { c.p++; continue; }
                         if (*c.p == ']') { c.p++; break; }

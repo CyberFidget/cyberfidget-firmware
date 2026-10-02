@@ -5,10 +5,11 @@
  * LoadoutManifest — pure (Arduino-free) core for the loadout manifest.
  *
  * The manifest (/loadout.json on LittleFS, see LoadoutStore) is the
- * data-driven app registry: it records menu order, a single-level flat
- * category per app, and a hidden flag. This header is deliberately free
- * of Arduino / ESP-IDF dependencies so the same code compiles for
- * native unit tests (pio test -e test_loadout) and the WASM emulator.
+ * data-driven app registry: it records menu order, a category per app
+ * (a slash-separated path such as "Tools/LEDs"), and a hidden flag. This
+ * header is deliberately free of Arduino / ESP-IDF dependencies so the
+ * same code compiles for native unit tests (pio test -e test_loadout)
+ * and the WASM emulator.
  *
  * Schema and merge/apply semantics are documented in README.md next to
  * this file. Sync vocabulary (adds / removes / hides + ONE declarative
@@ -36,7 +37,7 @@ constexpr int kSchemaVersion = 1;
 struct LoadoutEntry {
     std::string id;        ///< stable app id, e.g. "booper"
     std::string name;      ///< display label (informational; registry wins)
-    std::string category;  ///< flat, single-level category ("" = root)
+    std::string category;  ///< slash-separated category path ("" = root)
     int         position = 0;   ///< menu position (0-based, display order)
     bool        hidden   = false; ///< true = keep entry but omit from menu
 
@@ -60,13 +61,13 @@ struct Loadout {
  * Minimal registry view the merge consumes — built by the caller from the
  * compiled-in appDefs[]/appIds[] tables (see buildLoadoutRegistryView() in
  * AppDefs). Kept separate from AppDefinition so this lib stays dependency-
- * free. `category` must already be flattened to one level. Apps with an
+ * free. `category` is the compiled category path ("Tools/LEDs"). Apps with an
  * empty `name` (e.g. the menu itself) are not menu items and are skipped.
  */
 struct RegistryApp {
     std::string id;        ///< canonical builtin slug id ("booper")
     std::string name;      ///< menu label; "" = not a menu item
-    std::string category;  ///< flat single-level category
+    std::string category;  ///< compiled category path ("Tools/LEDs")
     std::string legacyId;  ///< exact APP_ENTRY enum name for migration
 };
 
@@ -77,7 +78,7 @@ bool normalizeBuiltinIds(Loadout& loadout, const RegistryApp* apps, int count);
 /// mergeWithRegistry(), plus the category/hidden state the menu should use.
 struct MergedApp {
     int         appIndex;  ///< builtin: index into the RegistryApp array; blob: -1
-    std::string category;  ///< flat category to register the app under
+    std::string category;  ///< category path to register the app under
     bool        hidden;    ///< true = do not show in the menu
     // A ferried wasm app has no compile-time registry row. `appIndex == -1`
     // marks a blob row; `label`/`blobPath` carry what the menu needs to
@@ -98,13 +99,6 @@ struct ArrangeItem {
     std::string category;
     bool        hasCategory = false;
 };
-
-/**
- * Flatten a compiled-in categoryPath to the single-level category model:
- * the FIRST path segment ("Games/Arcade" -> "Games", "Tools/LEDs" ->
- * "Tools", "" -> ""). Deeper nesting is deferred to a future schema bump.
- */
-std::string flattenCategory(const char* path);
 
 /**
  * Parse a manifest JSON document into `out`.
@@ -147,9 +141,8 @@ std::vector<int> compiledMenuRows(const RegistryApp* apps, int count);
  * with id = slugifyBuiltinName(name), its name, format "builtin", and the
  * compiled category path UNFLATTENED ("Tools/LEDs"; "" for a top-level
  * app). `categoryPaths` is parallel to `apps` (a null pointer or a null
- * path reads as ""). Unlike buildFromRegistry(), which seeds a stored
- * manifest with flattened categories, this keeps nested paths, so it
- * describes the menu a device shows when no manifest is stored.
+ * path reads as ""). Unlike buildFromRegistry(), this is never stored;
+ * it describes the menu a device shows when no manifest is stored.
  */
 Loadout buildBuiltinReport(const RegistryApp* apps,
                            const char* const* categoryPaths, int count);
@@ -158,6 +151,10 @@ Loadout buildBuiltinReport(const RegistryApp* apps,
  * Merge a manifest with the compiled-in registry to produce the menu:
  *  - manifest entries first, in manifest order; a manifest category
  *    overrides the registry one ("" falls back to the registry category)
+ *  - fallback categories (an empty one, an app the manifest does not
+ *    list) use only the FIRST segment of the registry path ("Tools" for
+ *    "Tools/LEDs"), as released firmware does; nested paths come only from
+ *    categories stored in the manifest
  *  - stale manifest ids (no matching registry app) are pruned, not fatal
  *  - duplicate manifest ids: first one wins
  *  - compiled-in apps absent from the manifest are appended in compile
@@ -171,8 +168,8 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
                                          const RegistryApp* apps, int count);
 
 // ---- Sync operations add, remove, or hide entries, plus ONE
-// ---- declarative arrange op. Section contiguity (sections = contiguous
-// ---- category runs in flat position order) is preserved by construction.
+// ---- declarative arrange op. An arrange leaves the file in displayed-menu order (a folder at its
+// ---- first shown entry, at every level; only 8 path levels considered).
 
 /// Add a new entry at the end of its category section (new categories
 /// become a new section at the end). Fails on duplicate id or empty id.
@@ -189,13 +186,26 @@ bool applyHide(Loadout& loadout, const char* id, bool hidden);
 
 /**
  * Apply the declarative arrange op: `order` is the full display order,
- * id-anchored; items may carry a new category. Unknown ids in `order`
- * are ignored; loadout entries missing from `order` keep their relative
- * order and are appended after. The result is normalized so each
- * category forms one contiguous run (first-appearance order), then
- * positions are renumbered.
+ * id-anchored; items may carry a new category. Later built-in entries
+ * repeating an earlier built-in id are dropped first (the merge uses only
+ * the first), so the arrange can never change which duplicate wins. The
+ * file is then put in displayed-menu order, the named entries are pulled
+ * to the front (unknown ids are ignored; the rest keep their relative
+ * order after them), and the result is put in displayed-menu order again
+ * and renumbered. Displayed-menu order is a depth-first walk of the menu
+ * the device builds: at each level a folder sits at its first shown entry
+ * and an app keeps its place (see README.md).
+ *
+ * `apps`/`count` (optional): the compiled registry, as given to
+ * mergeWithRegistry(). With it, "shown" and the category used follow the
+ * merge exactly (kept by the merge, not hidden; empty category = first
+ * segment of the compiled path), and the compiled apps the file does not
+ * list are first appended to it as the merge appends them (compile order,
+ * first-segment category, format "builtin", not hidden). Without it, every non-hidden entry counts
+ * as shown and is placed by its stored category. Device callers pass it.
  */
-bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order);
+bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order,
+                  const RegistryApp* apps = nullptr, int count = 0);
 
 /**
  * Swap the delivered blob of an EXISTING entry: `entry.id` names the entry;
@@ -292,8 +302,10 @@ bool parseAppliedRecord(const char* json, AppliedRecord& out);
  * returns false and `loadout` is left untouched — never half-applied.
  * On success `loadout` is replaced with the result and true is returned.
  * When non-null, `*appliedOut` receives the number of ops applied.
+ * `apps`/`count` (optional) are passed to applyArrange() for arrange ops.
  */
-bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut = nullptr);
+bool applyOps(Loadout& loadout, const char* opsJson, int* appliedOut = nullptr,
+              const RegistryApp* apps = nullptr, int count = 0);
 
 } // namespace LoadoutManifest
 

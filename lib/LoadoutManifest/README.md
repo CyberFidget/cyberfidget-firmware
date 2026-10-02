@@ -2,7 +2,7 @@
 
 The loadout manifest is a JSON file, `/loadout.json`, stored on the
 device's LittleFS partition. It records the menu in flat display order:
-which apps appear, under which single-level category, at which position,
+which apps appear, under which category (a slash-separated path), at which position,
 and whether they are hidden. At boot, `buildNestedMenu()` (lib/AppDefs)
 merges the manifest with the compiled-in registry to build the menu;
 without a manifest the menu falls back to compiled-in order exactly as
@@ -53,7 +53,7 @@ Per entry:
 |-------|------|----------|---------|
 | `id` | string | yes | Stable app identifier. Builtins use a slug of the registry display name: lowercase, each non-alphanumeric run becomes `-`, then leading/trailing dashes are trimmed (for example, `"Dino Run"` becomes `"dino-run"`). Existing persisted `APP_ENTRY` enum ids are migrated once on load. Non-builtin ids are supplied by their source. Entries without an id are dropped. |
 | `name` | string | no | Display label at the time the manifest was written. Informational — the compiled-in label wins at render time. |
-| `category` | string | no | Flat, **single-level** category (`"Games"`, `"Tools"`, `""` = root). The endorsed vocabulary is closed and curated: `Screensavers`, `Games`, `Tools`, `Examples`, `Media` — writers should emit only these (the parser tolerates other strings for forward compatibility, but they render as their own ad-hoc section and tooling may flag them). Overrides the compiled-in category; `""` falls back to it. Sections in the menu are contiguous runs of the same category in position order. Nested categories (`"Games/Arcade"`) are NOT part of schema 1 — deeper nesting is deferred to a future `schemaVersion` bump. |
+| `category` | string | no | Category as a **slash-separated path** (`"Games"`, `"Tools"`, `"Tools/LEDs"`, `""` = root). The endorsed top level is closed and curated: `Screensavers`, `Games`, `Tools`, `Examples`, `Media`, plus the curated sub-levels the compiled-in menu uses (`"Tools/LEDs"`) — writers should emit only these (the parser tolerates other strings for forward compatibility, but they render as their own ad-hoc section and tooling may flag them). Overrides the compiled-in category; `""` falls back to it. The device menu splits the path on `/` into nested submenus; at each level a folder sits where its first shown entry is (see the arrange rules below). A manifest that stores only the top segment (`"Tools"` for an app compiled under `"Tools/LEDs"`, as earlier firmware wrote it) is still valid and shows that app directly under `Tools`. The merge fallbacks (an empty category, a compiled app the file does not list) always use the top segment of the compiled path, as earlier firmware did; nested paths come only from categories stored in the file (a fresh seed, an arrange). So a nested app added by a later firmware first shows in its top-level category until the menu is arranged. |
 | `position` | int | no | Display position, 0-based. Entries are stable-sorted by position on load and renumbered on save. Missing positions fall back to array order. |
 | `hidden` | bool | no (false) | Keep the entry (and its position) but omit it from the menu. |
 
@@ -92,10 +92,41 @@ The manifest-apply core speaks **adds / removes / hides + ONE declarative
 `arrange` op** (`applyAdd` / `applyRemove` / `applyHide` /
 `applyArrange`). There are no per-item reorder ops. `arrange` carries the
 full display order, id-anchored, optionally re-categorizing items.
-Section contiguity is preserved by construction: `add` inserts at the end
-of its category section, and `arrange` normalizes to contiguous sections
-(first-appearance order, stable within a section). Unknown ids in an
-arrange are ignored; entries missing from it are appended, never lost.
+`add` inserts at the end of its category section. `arrange` leaves the
+file in the order of the menu the device displays (a depth-first walk of
+it), so what is saved is what is shown:
+
+1. With a registry, the compiled apps the file does not list are written
+   into it at the end, exactly as the merge appends them (compile order,
+   first-segment category, `format: "builtin"`, not hidden). The device
+   already shows them there; this lets the ordering see the same menu.
+   Later built-in entries that repeat an earlier built-in id are dropped
+   (the merge only uses the first).
+2. The file is put in displayed-menu order, so entries the arrange does
+   not name keep their displayed relative order.
+3. The named entries are pulled to the front in order (taking any new
+   category); the rest follow.
+4. The result is put in displayed-menu order again.
+
+"Displayed-menu order" uses the merge's own view: an entry is shown when
+the merge keeps it (not a stale or duplicate id, not a delivered app
+without its file) and it is not hidden, and it is placed by the category
+the merge renders (an empty category is the first segment of the compiled
+path). At every level, root included, a folder sits where its first shown
+entry is and an app keeps its own place - how the device builds its menu.
+Entries that are not shown never anchor a folder while it has a shown
+entry; they keep their position among the entries of their own folder. A
+folder with no shown entry sits at its first entry. Device callers pass
+the registry to `applyArrange` / `applyOps` for this; without one, every
+non-hidden entry counts as shown and is placed by its stored category.
+Only the first 8 path levels are used for ordering; entries that share
+them keep their relative order (the stored category is not changed).
+With single-level categories this matches the earlier rule (each exact
+category one contiguous run, first-appearance order), except that root
+entries (`""`) now keep their own places among the folders instead of
+being gathered into one run, and a hidden or pruned entry no longer
+decides where its section goes. Unknown ids in an arrange are ignored;
+entries missing from it are kept, never lost.
 
 ### Batch documents (`batch`, `base`, `replace`)
 
@@ -156,9 +187,10 @@ the old manifest or none, never a corrupt one). The arrangement is
 re-applied from `/loadout.json` on every boot.
 
 On a device that has never persisted a manifest, the first commit
-snapshots the compiled-in registry (`buildFromRegistry`) with categories
-flattened to their first path segment (`"Tools/LEDs"` → `"Tools"`), then
-applies the arrange on top.
+snapshots the compiled-in registry (`buildFromRegistry`) with each app's
+compiled category path (`"Tools/LEDs"` stays `"Tools/LEDs"`), then applies
+the arrange on top. The arrange carries each leaf's full category path
+(menu labels from the root joined with `/`).
 
 ## Built-in menu report (`buildBuiltinReport`)
 
@@ -172,6 +204,6 @@ registry order); each has `id` = `slugifyBuiltinName(name)`, the `name`,
 manifest is stored. `categoryPaths` is parallel to `apps`; a top-level app
 gets `""`, which `serializeManifest` writes as `"category": ""`.
 
-The seed (`buildFromRegistry`, fed by `buildLoadoutRegistryView()`) is
-unchanged and still flattens to the first segment, so a report can carry
-nested paths that schema 1 does not store.
+The seed (`buildFromRegistry`, fed by `buildLoadoutRegistryView()`) uses
+the same compiled paths, so a first write stores the categories this report
+describes.

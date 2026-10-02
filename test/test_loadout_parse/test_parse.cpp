@@ -206,12 +206,16 @@ void test_shallow_nested_unknown_field_parses(void) {
     TEST_ASSERT_EQUAL_STRING("APP_X", l.entries[0].id.c_str());
 }
 
-void test_flatten_category(void) {
-    TEST_ASSERT_EQUAL_STRING("Games", flattenCategory("Games/Arcade").c_str());
-    TEST_ASSERT_EQUAL_STRING("Tools", flattenCategory("Tools/LEDs").c_str());
-    TEST_ASSERT_EQUAL_STRING("Tools", flattenCategory("Tools").c_str());
-    TEST_ASSERT_EQUAL_STRING("",      flattenCategory("").c_str());
-    TEST_ASSERT_EQUAL_STRING("",      flattenCategory(nullptr).c_str());
+// A category is a slash-separated path; the parser keeps it verbatim.
+void test_parse_keeps_nested_category(void) {
+    const char* json = R"JSON({
+      "schemaVersion": 1,
+      "entries": [ { "id": "flashlight", "name": "Flashlight", "category": "Tools/LEDs" } ]
+    })JSON";
+    Loadout l;
+    TEST_ASSERT_TRUE(parseManifest(json, l));
+    TEST_ASSERT_EQUAL_INT(1, (int)l.entries.size());
+    TEST_ASSERT_EQUAL_STRING("Tools/LEDs", l.entries[0].category.c_str());
 }
 
 void setUp(void)    {}
@@ -233,6 +237,6 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_serialize_parse_roundtrip_preserves_order);
     RUN_TEST(test_deeply_nested_unknown_field_rejected);
     RUN_TEST(test_shallow_nested_unknown_field_parses);
-    RUN_TEST(test_flatten_category);
+    RUN_TEST(test_parse_keeps_nested_category);
     return UNITY_END();
 }

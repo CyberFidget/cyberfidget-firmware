@@ -617,22 +617,22 @@ void MenuManager::cancelMove()
     ESP_LOGI(TAG_MAIN, "Move mode: cancelled");
 }
 
-// Recursive helper: leaves under a top-level category carry that label
-// (first path segment == the one-level flat category model); root leaves
-// carry "".
+// Recursive helper: each leaf carries its full category path, the labels
+// from the root joined with "/" ("Tools/LEDs"); root leaves carry "".
 static void collectLeaves(const std::vector<MenuItem>& items,
-                          const std::string& topCategory,
+                          const std::string& categoryPath,
                           std::vector<LoadoutManifest::ArrangeItem>& out)
 {
     for (const auto& mi : items) {
         if (mi.isCategory) {
             collectLeaves(mi.children,
-                          topCategory.empty() ? mi.label : topCategory,
+                          categoryPath.empty() ? mi.label
+                                               : categoryPath + "/" + mi.label,
                           out);
         } else {
             LoadoutManifest::ArrangeItem item;
             item.id          = appIds[mi.appIndex];
-            item.category    = topCategory;
+            item.category    = categoryPath;
             item.hasCategory = true;
             out.push_back(item);
         }
