@@ -18,7 +18,7 @@ import { localNaiveEpochMs, todayISO } from './ui.js';
 import * as engine from './engine.js';
 import * as keepawake from './keepawake.js';
 import { transcriptPut } from './db.js';
-import { hasPack, renderGate, navigate } from './app.js';
+import { hasPack, renderGate, navigate, statusKnown, whenStatusKnown } from './app.js';
 
 const SAMPLE_RATE = 16000;
 
@@ -573,6 +573,11 @@ async function toggleCaptions() {
     $('chipCaptions').hidden = true;
     return;
   }
+  // Whether the pack is there is still being asked of the device. Wait for the
+  // answer; if it says no, the gate replaces this button.
+  if (!statusKnown()) toast('Still connecting to the device - one moment.');
+  await whenStatusKnown();
+  if (!hasPack()) return;
   const modelId = await engine.pickedModel('live');
   if (!(await engine.isDownloaded(modelId))) {
     toast('Captions need the one-time transcription download.');
@@ -641,7 +646,10 @@ export function wire() {
   $('btnHear').onclick = toggleHear;
   $('btnCaptions').onclick = toggleCaptions;
   setHearLabel();
+}
 
+// Runs once the device has said whether the pack is there (see app.js boot).
+export function applyPack() {
   // Captions need the transcription pack; live listening does not. When the pack
   // is missing the button is simply absent and one gate sits where the captions
   // card would be - the session controls are untouched, because the session
