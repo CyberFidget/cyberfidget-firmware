@@ -150,6 +150,18 @@ the whole body must be one JSON object with only the route's fields, and a
 connect must carry `pass` ("" for an open network, as the portal page
 sends it).
 
+The USB serial `wifi add` verb (`lib/SerialCli/README.md`, framing and
+replies in `UsbWifi.h`, host tests in `test/test_sync_usbwifi`) saves
+through the same `SavedWifi::add`, so it has the same limit and order.
+`wifi try` joins with `JoinOptions::firstOnly`: the first network only, by
+a plain join, ending early when it is reported absent or its password is
+refused twice; `JoinResult::failure` says which (from the station's
+disconnect reasons, `WifiList::joinFailure`) and `JoinResult::name` which
+network was joined. Those USB jobs hold the radio through
+`CloudSync::claimRadio()` / `releaseRadio()`: a claim counts as radio use
+this power cycle, and `cancelPending()` (an app that needs the radio) asks
+the job to stop and waits for its release.
+
 Every session that needs the station (check-ins of every reason, dev mode's
 rejoin, linking, the update session) joins through `SavedWifi::join`:
 
@@ -170,9 +182,11 @@ The boot window gives each attempt its 4 s budget; the fallback path may run
 past it and its result reaches the status bar like any late boot result.
 Every join prints one line (no names, no passwords):
 
-    [wifi] join saved=<n> first=<remembered|plain> first_result=<ok|absent|timeout|stopped> first_ms=.. scan=<0|1|2> scan_starts=.. scan_ms=.. fallback_ms=.. result=.. slot=<i|-1> total_ms=..
+    [wifi] join saved=<n> first=<remembered|plain> first_result=<ok|absent|timeout|stopped> first_ms=.. scan=<0|1|2> scan_starts=.. scan_ms=.. fallback_ms=.. result=.. slot=<i|-1> total_ms=.. reason=<n>
 
-(`scan=2`: the scan did not start and the plain join stood in.)
+(`scan=2`: the scan did not start and the plain join stood in. `reason`:
+the last disconnect reason the station gave during the join, 0 for none;
+`result=refused` only for a `firstOnly` join.)
 
 ## Waits and deadline
 

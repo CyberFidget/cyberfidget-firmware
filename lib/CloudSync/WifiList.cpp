@@ -346,6 +346,41 @@ int pickFromScan(const List& list, const Seen* seen, int seenCount, int& seenInd
     return best.index;
 }
 
+bool isAuthReason(uint8_t reason) {
+    switch (reason) {
+        case 14:    // MIC_FAILURE
+        case 15:    // 4WAY_HANDSHAKE_TIMEOUT (the usual answer to a wrong WPA2 password)
+        case 23:    // 802_1X_AUTH_FAILED
+        case 202:   // AUTH_FAIL
+        case 204:   // HANDSHAKE_TIMEOUT
+            return true;
+        default:
+            return false;
+    }
+}
+
+bool isAbsentReason(uint8_t reason) {
+    switch (reason) {
+        case 201:   // NO_AP_FOUND
+        case 210:   // NO_AP_FOUND_W_COMPATIBLE_SECURITY
+        case 211:   // NO_AP_FOUND_IN_AUTHMODE_THRESHOLD
+        case 212:   // NO_AP_FOUND_IN_RSSI_THRESHOLD
+            return true;
+        default:
+            return false;
+    }
+}
+
+JoinFailure joinFailure(bool ok, bool noneSaved, bool stopped, bool absent,
+                        bool sawAuth, bool sawAbsent) {
+    if (ok) return JoinFailure::None;
+    if (noneSaved) return JoinFailure::NoneSaved;
+    if (stopped) return JoinFailure::Stopped;
+    if (sawAuth) return JoinFailure::Auth;
+    if (absent || sawAbsent) return JoinFailure::Absent;
+    return JoinFailure::Timeout;
+}
+
 void addressToHex(const uint8_t address[6], char out[13]) {
     static const char digits[] = "0123456789abcdef";
     for (int i = 0; i < 6; i++) {

@@ -27,6 +27,11 @@
 #include "UpdateSession.h"   // upd allow-unsigned / slot (every build), install / fault (test)
 #include "DeviceIdentity.h"
 #include "FactoryReset.h"
+#include "SavedWifi.h"        // wifi add / try / saved (every build)
+#include "UsbWifi.h"          // pure framing, scan list, replies for the wifi setup verbs
+#include <WiFi.h>
+#include <esp_bt.h>           // Bluetooth started: WiFi waits for a restart
+#include <esp_wifi.h>
 
 #include "HAL.h"              // displayProxy() for screencap
 #include "DisplayProxy.h"     // frameBuffer()
@@ -225,28 +230,22 @@ void drainBytes(size_t n, uint32_t gapMs) {
     }
 }
 
-// A CRLF host terminates a command line with "\r\n". poll() dispatches on the
-// '\r'; the paired '\n' is ~11us behind it on the wire (921600 baud) and is
-// normally already sitting in the UART FIFO. Swallow exactly that one '\n'
-// before dispatch(), so it can never be read as byte 0 of a length-framed
-// payload (fwdata/lapply) - which would fail the chunk CRC AND leave a stray
-// byte that corrupts the next command line - nor be seen as a spurious empty
-// line. The short bounded wait covers the rare case where '\r' was the last
-// byte drained just before '\n' landed; a lone-'\r' host (no following '\n')
-// or an LF-only host falls through fast without consuming a real byte.
-constexpr uint32_t kCrlfPairWaitMs = 4;
-
-void swallowPairedLf() {
-    uint32_t start = millis();
-    for (;;) {
-        int b = Serial.peek();
-        if (b >= 0) {
-            if (b == '\n') Serial.read();  // consume the pair's '\n'
-            return;                         // stop at the first byte either way
-        }
-        if (millis() - start > kCrlfPairWaitMs) return;  // no pair arrived
+// Command lines are assembled by UsbWifi::LineInput (host-tested): it takes
+// a CRLF host's paired '\n' before dispatch(), so it can never be read as
+// byte 0 of a length-framed payload (fwdata/lapply/wifi add), and it holds
+// the quarantine after a bad `wifi add`.
+class UartPort : public UsbWifi::Port {
+public:
+    int read() override { return Serial.read(); }
+    int peek() override { return Serial.peek(); }
+    uint32_t nowMs() override { return millis(); }
+    void write(const char* text, size_t len) override {
+        Serial.write(reinterpret_cast<const uint8_t*>(text), len);
     }
-}
+};
+UartPort g_port;
+UsbWifi::LineInput g_input;
+static_assert(UsbWifi::LineInput::kCap == SerialCli::kBufferSize, "one line size");
 
 // Payload bytes straight off the UART, bounded by the serial driver's own
 // gap/total-duration limits (see "UART timeout ownership" above).
@@ -286,6 +285,131 @@ void releaseReadPayload() {
 
 void sendReply(const SyncProtocol::FerryReply& reply) {
     Serial.write((const uint8_t*)reply.text, reply.len);
+}
+
+// =========================================================================
+// USB WiFi setup (every build): `wifi scan` and `wifi try` run on their own
+// task, own the radio until it is off again, and report from poll(). The
+// framing, the scan list and every reply line are UsbWifi (host-tested).
+// =========================================================================
+enum class UsbWifiJob : uint8_t { Idle, Scan, Try };
+// Set by the loop task before the worker starts; back to Idle only once
+// poll() has printed the result (radioBusy() holds until then).
+std::atomic<UsbWifiJob> g_wifiJob{UsbWifiJob::Idle};
+std::atomic<bool> g_wifiJobDone{false};
+// Worker writes, loop reads after g_wifiJobDone. The scan list lives only
+// while a scan runs (PSRAM when there is some), not boot-resident.
+UsbWifi::ScanList* g_scanList = nullptr;
+bool g_scanOk = false;
+SavedWifi::JoinResult g_tryResult;
+
+constexpr uint32_t kUsbWifiStackBytes = 6144;
+constexpr uint32_t kUsbScanChannelMs = 120;   // active scan: ~1.5 s for the band
+constexpr uint32_t kUsbScanLimitMs = 8000;
+constexpr uint32_t kUsbScanStopWaitMs = 2000;   // a stopped scan's done handler
+constexpr uint32_t kUsbTryJoinMs = 15000;
+
+void usbWifiTask(void*) {
+    const bool scan = g_wifiJob.load() == UsbWifiJob::Scan;
+    WiFi.persistent(false);   // nothing is written to the radio's own storage
+    const bool on = WiFi.mode(WIFI_STA);
+    bool scanStuck = false;
+    if (scan) {
+        UsbWifi::scanBegin(*g_scanList);
+        g_scanOk = false;
+        if (on) {
+            WiFi.scanDelete();
+            int16_t found = WiFi.scanNetworks(true, false, false, kUsbScanChannelMs);
+            const uint32_t at = millis();
+            // An app that needs the radio asks the job to stop
+            // (CloudSync::cancelPending): the scan is stopped early.
+            while (found == WIFI_SCAN_RUNNING && millis() - at < kUsbScanLimitMs &&
+                   !CloudSync::radioReleaseRequested()) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                found = WiFi.scanComplete();
+            }
+            if (found == WIFI_SCAN_RUNNING) {
+                // A stopped scan still ends in the WiFi library's scan-done
+                // handler, which allocates and fills the results: wait for
+                // it before reading or deleting them.
+                esp_wifi_scan_stop();
+                const uint32_t stopAt = millis();
+                while ((found = WiFi.scanComplete()) == WIFI_SCAN_RUNNING &&
+                       millis() - stopAt < kUsbScanStopWaitMs)
+                    vTaskDelay(pdMS_TO_TICKS(20));
+            }
+            if (found == WIFI_SCAN_RUNNING) {
+                // Never finished: the results are left to the library (its
+                // next scan deletes them), not freed under its handler.
+                Serial.println("[wifi] usb scan=stop-timeout");
+                scanStuck = true;
+            } else {
+                // Every record is looked at; only the strongest names are kept.
+                for (int i = 0; i < found; i++) {
+                    const wifi_ap_record_t* rec =
+                        static_cast<const wifi_ap_record_t*>(WiFi.getScanInfoByIndex(i));
+                    if (!rec) continue;
+                    UsbWifi::scanConsider(*g_scanList, rec->ssid, sizeof(rec->ssid), rec->rssi,
+                                          (int)rec->authmode);
+                }
+                g_scanOk = found >= 0;
+                WiFi.scanDelete();
+            }
+        }
+        UsbWifi::scanSort(*g_scanList);
+    } else {
+        g_tryResult = SavedWifi::JoinResult();
+        if (on) {
+            SavedWifi::JoinOptions opt;
+            opt.firstOnly = true;
+            opt.firstMs = kUsbTryJoinMs;
+            opt.stop = [](void*) { return CloudSync::radioReleaseRequested(); };   // fail reason=busy
+            SavedWifi::join(opt, g_tryResult);
+        } else {
+            g_tryResult.failure = WifiList::JoinFailure::Timeout;
+        }
+    }
+    WiFi.disconnect(true);
+    if (!WiFi.mode(WIFI_OFF) || WiFi.getMode() != WIFI_OFF)
+        // Left on: the radio stays "busy" (WiFi.getMode), and an app that
+        // needs Bluetooth restarts first (AppManager).
+        Serial.println("[wifi] usb radio_off=failed");
+    // A scan whose done handler never ran leaves the library's "scanning"
+    // flag set (only that handler clears it), which would refuse every
+    // later scan - the portal's, a check-in's fallback - until a restart.
+    // With WiFi off no handler can still come: clear it.
+    if (scanStuck && WiFi.getMode() == WIFI_OFF) Network.clearStatusBits(WIFI_SCANNING_BIT);
+    // Released only now: cancelPending() then sees the radio off (or still
+    // on, and the app that asked restarts instead).
+    CloudSync::releaseRadio();
+    g_wifiJobDone = true;
+    vTaskDelete(nullptr);
+}
+
+// Who owns the radio now (loop task).
+const char* usbWifiBusyReason() {
+    UsbWifi::RadioOwners o;
+    o.usbJob = SerialCli::instance().radioBusy();
+    o.update = UpdateSession::imagePending();
+    o.ferry = g_ferry.active();
+    const AppIndex active = AppManager::instance().activeApp();
+    o.portal = active == APP_WEB_PORTAL;
+    o.music = active == APP_MUSIC_PLAYER;
+    if (CloudSync::busy()) {
+        const CloudSync::LinkState s = CloudSync::linkSnapshot().state;
+        const bool linking = s == CloudSync::LinkState::Starting || s == CloudSync::LinkState::Code ||
+                             s == CloudSync::LinkState::Confirm || s == CloudSync::LinkState::ClearApps ||
+                             s == CloudSync::LinkState::Confirming;
+        if (linking) o.link = true;
+        else o.checkin = true;
+    }
+    o.bluetooth = esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE;
+    o.radioOn = WiFi.getMode() != WIFI_OFF;
+    return UsbWifi::busyReason(o);
+}
+
+void writeLine(const char* text, size_t len) {
+    if (len) Serial.write(reinterpret_cast<const uint8_t*>(text), len);
 }
 
 #ifdef CF_TEST_CLI
@@ -470,6 +594,7 @@ void SerialCli::closeStorageForFactoryReset() {
 }
 
 bool SerialCli::radioBusy() const {
+    if (g_wifiJob.load() != UsbWifiJob::Idle) return true;
 #ifdef CF_TEST_CLI
     return g_tlsSession.current() != TlsProbeSession::State::Idle;
 #else
@@ -482,8 +607,28 @@ SerialCli& SerialCli::instance() {
     return singleton;
 }
 
+void SerialCli::pollUsbWifi() {
+    if (!g_wifiJobDone.load()) return;
+    char out[UsbWifi::kLineMax];
+    if (g_wifiJob.load() == UsbWifiJob::Scan) {
+        if (!g_scanOk) Serial.println("[wifi] usb scan=failed");
+        for (int i = 0; i < g_scanList->count; i++)
+            writeLine(out, UsbWifi::formatScanLine(out, sizeof(out), g_scanList->entries[i]));
+        writeLine(out, UsbWifi::formatScanDone(out, sizeof(out), g_scanList->count));
+        free(g_scanList);
+        g_scanList = nullptr;
+    } else {
+        // The name the join itself used (the list may have changed since).
+        if (g_tryResult.ok) writeLine(out, UsbWifi::formatTryOk(out, sizeof(out), g_tryResult.name));
+        else writeLine(out, UsbWifi::formatTryFail(out, sizeof(out), g_tryResult.failure));
+    }
+    g_wifiJobDone = false;
+    g_wifiJob = UsbWifiJob::Idle;
+}
+
 void SerialCli::poll() {
     pollScreenStream();
+    pollUsbWifi();
 #ifdef CF_TEST_CLI
     pollPendingTapReleases();
     pollTlsprobeResult();
@@ -521,35 +666,16 @@ void SerialCli::poll() {
     // While a store-writing verb waits for a check-in to finish, nothing more
     // is read: its payload and anything after it stay queued, in order.
     if (pollDeferred()) return;
-    while (Serial.available() > 0) {
-        int byte = Serial.read();
-        if (byte < 0) break;
-        char c = static_cast<char>(byte);
-        if (c == '\n' || c == '\r') {
-            if (overflow) {
-                Serial.println("[err] line too long");
-                overflow = false;
-                bufferLen = 0;
-                continue;
-            }
-            if (bufferLen == 0) continue;  // ignore empty lines / lone \r before \n
-            buffer[bufferLen] = '\0';
-            // On a '\r' terminator, swallow a paired '\n' BEFORE dispatch, so a
-            // CRLF host's '\n' is never consumed as the first payload byte by a
-            // fwdata/lapply read (nor left to desync the next command line).
-            if (c == '\r') swallowPairedLf();
-            dispatch(buffer);
-            bufferLen = 0;
-            // A deferred verb stops reading here (see pollDeferred).
-            if (deferredPending) return;
+    for (;;) {
+        const UsbWifi::LineInput::Next next = g_input.next(g_port);
+        if (next == UsbWifi::LineInput::Next::None) break;
+        if (next == UsbWifi::LineInput::Next::TooLong) {
+            Serial.println("[err] line too long");
             continue;
         }
-        if (bufferLen + 1 >= kBufferSize) {
-            // No room for char + null terminator. Mark overflow; drain until newline.
-            overflow = true;
-            continue;
-        }
-        buffer[bufferLen++] = c;
+        dispatch(g_input.line());
+        // A deferred verb stops reading here (see pollDeferred).
+        if (deferredPending) return;
     }
     // Checked after the queued input has run, so a chunk already waiting in
     // the buffer counts before the session is judged abandoned.
@@ -669,6 +795,16 @@ void SerialCli::dispatch(const char* line, bool retry) {
         }
         // Test builds carry more `upd` verbs below.
     }
+
+    // WiFi setup over USB (every build; announced by `syncinfo.setup=1`).
+    // Network names travel as hex; a password is never echoed or logged.
+    // Test builds keep their older `wifi <ssid>|<pass>` / `wifi list` forms
+    // below; these four take precedence.
+    if (ieq(line, "wifi scan"))  { cmdWifiScan();  return; }
+    if (ieq(line, "wifi try"))   { cmdWifiTry();   return; }
+    if (ieq(line, "wifi saved")) { cmdWifiSaved(); return; }
+    if (ieq(line, "wifi add"))   { cmdWifiAdd(""); return; }
+    if (verbWithArg(line, "wifi add", &arg)) { cmdWifiAdd(arg); return; }
 #ifdef CF_TEST_CLI
     if (ieq(line, "link start")) {
         if (!CloudSync::startLink()) Serial.println("[cmd] link.state=error reason=busy");
@@ -1372,6 +1508,7 @@ void SerialCli::cmdHelp() {
     Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"
                    "fstat,fread,lget,lapply,syncinfo");
     Serial.println("[cmd] help.update=upd slot,upd allow-unsigned <on|off>");
+    Serial.println("[cmd] help.wifi=wifi scan,wifi add <len> <crc32>,wifi try,wifi saved");
 #ifdef CF_TEST_CLI
     Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,heapstat,"
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"
@@ -1752,7 +1889,98 @@ void SerialCli::cmdSyncinfo() {
     // their next command.
     Serial.printf("[cmd] syncinfo.id=%s\n", id);
     Serial.printf("[cmd] syncinfo.lapply=%s\n", SyncProtocol::kLapplyCapability);
+    // The USB setup verbs (wifi scan|add|try|saved) are here.
+    Serial.println("[cmd] syncinfo.setup=1");
     Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
+}
+
+// =========================================================================
+// WiFi setup over USB (every build). Replies are UsbWifi's lines verbatim.
+// =========================================================================
+
+void SerialCli::cmdWifiScan() {
+    usbActivity = true;
+    char out[UsbWifi::kLineMax];
+    if (const char* why = usbWifiBusyReason()) {
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), why));
+        return;
+    }
+    g_scanList = static_cast<UsbWifi::ScanList*>(
+        heap_caps_calloc(1, sizeof(UsbWifi::ScanList), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!g_scanList) g_scanList = static_cast<UsbWifi::ScanList*>(calloc(1, sizeof(UsbWifi::ScanList)));
+    if (!g_scanList) {
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), "wifi"));
+        return;
+    }
+    // The radio is reserved before the task exists, so an app that needs it
+    // (CloudSync::cancelPending) always sees the job.
+    if (!CloudSync::claimRadio()) {
+        free(g_scanList);
+        g_scanList = nullptr;
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), "wifi"));
+        return;
+    }
+    g_wifiJobDone = false;
+    g_wifiJob = UsbWifiJob::Scan;
+    if (xTaskCreate(usbWifiTask, "usbwifi", kUsbWifiStackBytes, nullptr, 1, nullptr) != pdPASS) {
+        g_wifiJob = UsbWifiJob::Idle;
+        CloudSync::releaseRadio();
+        free(g_scanList);
+        g_scanList = nullptr;
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), "wifi"));
+        return;
+    }
+    Serial.println("[cmd] wifi.scan=started");
+}
+
+void SerialCli::cmdWifiTry() {
+    usbActivity = true;
+    char out[UsbWifi::kLineMax];
+    if (const char* why = usbWifiBusyReason()) {
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), why));
+        return;
+    }
+    // Only the first saved network is tried (the one `wifi add` just saved).
+    if (!SavedWifi::anySaved()) {
+        writeLine(out, UsbWifi::formatTryStarted(out, sizeof(out)));
+        writeLine(out, UsbWifi::formatTryFail(out, sizeof(out), WifiList::JoinFailure::NoneSaved));
+        return;
+    }
+    if (!CloudSync::claimRadio()) {
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), "wifi"));
+        return;
+    }
+    g_wifiJobDone = false;
+    g_wifiJob = UsbWifiJob::Try;
+    if (xTaskCreate(usbWifiTask, "usbwifi", kUsbWifiStackBytes, nullptr, 1, nullptr) != pdPASS) {
+        g_wifiJob = UsbWifiJob::Idle;
+        CloudSync::releaseRadio();
+        writeLine(out, UsbWifi::formatBusy(out, sizeof(out), "wifi"));
+        return;
+    }
+    writeLine(out, UsbWifi::formatTryStarted(out, sizeof(out)));
+}
+
+void SerialCli::cmdWifiSaved() {
+    char names[WifiList::kMax][WifiList::kNameMax + 1];
+    const int n = SavedWifi::names(names, WifiList::kMax);
+    char out[UsbWifi::kLineMax];
+    writeLine(out, UsbWifi::formatSavedCount(out, sizeof(out), n));
+    for (int i = 0; i < n; i++) writeLine(out, UsbWifi::formatSavedLine(out, sizeof(out), names[i]));
+    writeLine(out, UsbWifi::formatSavedDone(out, sizeof(out), n));
+}
+
+// `wifi add <len> <crc32>`, then exactly <len> raw bytes: `ssid\0pass`.
+// Saved as the first network to try, with the portal's own rules (at most
+// three; a fourth is refused). Framing, the quarantine after a bad frame,
+// the buffer wipes and the reply are UsbWifi::handleAdd (host-tested).
+// Refused while a `wifi try` runs (it reads the list this would change).
+void SerialCli::cmdWifiAdd(const char* args) {
+    usbActivity = true;
+    const bool trying = g_wifiJob.load() == UsbWifiJob::Try;
+    UsbWifi::handleAdd(args, g_port, g_input,
+                       [](const char* name, const char* pass) { return SavedWifi::add(name, pass); },
+                       trying ? "wifi" : nullptr);
 }
 
 #ifdef CF_TEST_CLI

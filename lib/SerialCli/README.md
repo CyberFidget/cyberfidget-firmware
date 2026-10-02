@@ -26,9 +26,13 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 | `menutree`, `screencap`, `screenstream` | `net`, `heapstat`, `tlsprobe`, `tlsalloc`, `mic`, `wifi`, `wasmstat` |
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
 | `lget`, `lapply`, `syncinfo` | `prompt`, `status`, `upd` |
+| `wifi scan`, `wifi add`, `wifi try`, `wifi saved` | `wifi <ssid>\|<pass>`, `wifi list\|first\|forget\|hint-bad\|hint-clear`, `cloud ...`, `link ...` |
 
 The `local_test` PlatformIO environment defines `CF_TEST_CLI`. A normal
 `local` build does not compile the gated dispatch arms or implementations.
+`test/test_sync_usbwifi` pins this split from the driver's source: the four
+WiFi setup verbs and `syncinfo.setup=1` outside `CF_TEST_CLI`, and every
+`link`, `cloud` and older `wifi` form inside it.
 
 ## Always-present verbs
 
@@ -136,13 +140,99 @@ lapply <len> <crc32>          -> [cmd] lapply.ok=applied <n> entries <n>
 syncinfo                      -> [cmd] syncinfo.fs_total=<n> fs_used=<n> fs_free=<n>
                                  [cmd] syncinfo.manifest=<0|1> entries=<n> schema=<n>
                                  [cmd] syncinfo.id=0123456789ab
+                                 [cmd] syncinfo.lapply=<capability>
+                                 [cmd] syncinfo.setup=1
                                  [cmd] syncinfo.fw=<firmware-version>
 ```
+
+`syncinfo.fw` is always the last line; new keys go before it.
+`syncinfo.setup=1` announces the WiFi setup verbs below (older firmware does
+not send it, and answers them with `[err] unknown command`).
 
 Raw bytes follow `fwdata` and `lapply` requests and successful `fread`/`lget`
 headers as specified by their lengths. Paths are confined to `/apps/` and
 `/assets/`. Whole-file and chunk CRC checks, retry behavior, loadout operations,
 and all error replies are documented in `lib/SyncProtocol/README.md`.
+
+### WiFi setup
+
+```text
+wifi scan              -> [cmd] wifi.scan=started
+                          later, per network: [cmd] wifi.net=rssi=<dBm> sec=<open|wpa|wpa2|wpa3|ent> ssid_hex=<hex>
+                          [cmd] wifi.scan.done=<n>
+wifi add <len> <crc32> -> [cmd] wifi.saved=ssid_hex=<hex> position=1
+  (then <len> raw bytes)  [err] wifi.full=1 | [err] wifi.invalid | [err] wifi.crc
+wifi try               -> [cmd] wifi.try=started
+                          later: [cmd] wifi.try=ok ssid_hex=<hex>
+                             or: [cmd] wifi.try=fail reason=<auth|absent|timeout|busy>
+wifi saved             -> [cmd] wifi.saved.n=<n>
+                          [cmd] wifi.saved.net=ssid_hex=<hex>   (one per network, in the order tried)
+                          [cmd] wifi.saved.done=<n>
+scan or try while the radio is taken
+                       -> [err] wifi.busy reason=<portal|music|link|checkin|ferry|update|bluetooth|wifi>
+```
+
+Network names always travel as lowercase hex of their bytes (they can hold
+spaces, `|` and UTF-8). No reply or log line ever carries a password.
+
+`wifi add`'s payload is `ssid\0pass`: exactly one NUL, a name of 1-32 bytes,
+a password of 0-64 bytes (empty for an open network), at most 97 bytes, with
+the CRC-32 of the whole payload in the header (lowercase or uppercase hex, as
+`lapply`). It is saved as the first network to try, with the portal's rules
+(`lib/CloudSync/SavedWifi.h`): at most three; a saved name takes the new
+password and moves first; a fourth is refused with `wifi.full=1` and nothing
+is dropped. The frame, name and password buffers are zeroed on every path. A
+payload must be followed by 50 ms of silence, so **a client sends nothing
+after the payload until the add's reply arrives**; it may then send its
+next command at once. A sender that sends more than it announced is
+refused (`wifi.invalid`, nothing saved).
+
+Any refusal of a `wifi add` other than `wifi.full=1` - `wifi.invalid`,
+`wifi.crc`, or `wifi.busy` (an add while a `wifi try` runs) - puts the
+serial input in quarantine, because payload bytes may still be on their
+way, now or much later. In quarantine every line is dropped: never run,
+never echoed, with no time limit, and nothing read is kept in memory (the
+device only tracks whether the current line could still be `version`).
+**The client resynchronises by pausing at least 100 ms and then sending
+`\nversion\n`** - the leading newline matters: a refused payload can leave
+an unterminated line, and a bare `version` would be joined onto it and
+dropped. The `version` line (any case) ends the quarantine and is answered
+as usual. The device requires 50 ms of silence before that line (blank
+lines just before it are fine); it measures silence between its own reads
+of the input, which can lag arrival, hence the 100 ms client pause. A
+`version` line that arrives straight on the heels of other bytes does not
+count, so a payload tail holding that word cannot end it; a client that
+gets no answer pauses and sends `\nversion\n` again. A quarantine reads at most 1024 bytes per loop
+pass and every payload read checks its time limits on every byte, so a
+continuous stream never holds the loop. The line reader and this handler
+are `UsbWifi::LineInput` / `UsbWifi::handleAdd`, driven with byte streams
+in `test/test_sync_usbwifi`.
+
+`wifi scan` and `wifi try` answer at once and report when done; keep other
+verbs until the `.done` / `wifi.try=ok|fail` line arrives. `wifi scan` lists
+at most 20 names, each once at its strongest, strongest first; hidden
+networks are left out. `wifi try` joins only the first saved network (no
+remembered place, no scan for the others), then switches WiFi off again:
+`auth` means the password was refused, `absent` that the network was not
+found (or nothing is saved), `timeout` neither within 15 s, `busy` that the
+join was stopped. Both refuse while the setup portal or music player is open,
+a link, check-in or USB file transfer is under way, a newly installed
+firmware is still being checked, or
+Bluetooth has started in this power cycle (WiFi then needs a restart);
+`wifi` is the reason when another scan or try is still running. Each claims
+the radio (`CloudSync::claimRadio`) before its task starts, which counts as
+radio use this power cycle (Bluetooth then needs a restart, as after a
+check-in). While either runs, check-ins and links wait
+(`SerialCli::radioBusy()`); opening the portal or music player asks the job
+to stop (`CloudSync::cancelPending`: the scan is stopped early and may
+report fewer networks, possibly none; a try reports `fail reason=busy`) and
+starts once WiFi is off, or restarts into the app if it did not stop in
+time. A stopped scan waits up to 2 s for the WiFi library's scan-done
+handler before its results are read or freed; if that never comes
+(`[wifi] usb scan=stop-timeout`), the results are left to the library and,
+once WiFi is off, the library's "scanning" flag is cleared so later scans
+(the portal's, a check-in's) still start. `wifi.try=ok` names the network the
+join actually used.
 
 ### Installing updates
 
@@ -208,6 +298,10 @@ wasmstat -> [cmd] wasmstat....
 `apps` lists compiled applications. `launch` switches immediately to a compiled
 app or stages a manifest-backed WASM app. `net` reports fields applicable to the
 current Wi-Fi mode. `mic` runs a short capture diagnostic and releases it.
+The every-build `wifi add ...` line is matched first, so in a test build a
+network whose name starts with `add ` cannot be saved with the
+`wifi <ssid>|<pass>` form (use the framed `wifi add`).
+
 `wifi <ssid>|<pass>` saves a network as the first one to try (the saved list
 of up to 3 in `lib/CloudSync/SavedWifi.h`, the same one the portal and every
 session use); `list`, `first` and `forget` read and reorder it (names only,
