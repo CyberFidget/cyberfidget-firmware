@@ -11,51 +11,103 @@
 // and caches model weights in IndexedDB (shared with the page) so offline use
 // survives a cleared browser cache. Messages:
 //   in : {type:'load', id, modelId, english, useGpu}
-//        {type:'transcribe', id, audio:Float32Array, english, longForm}
-//   out: {type:'progress', pct, label} | {type:'status', phase} | {type:'building'}
+//        {type:'transcribe', id, audio:Float32Array, modelId, english, longForm}
+//   out: {type:'hello', protocol}            once, when the worker starts
+//        {type:'building'}                   library up; a silent build may follow
+//        {type:'progress', pct, label, fileDone}
+//        {type:'status', phase}              'preparing' | 'warming' (for the UI)
 //        {type:'loaded', id, device} | {type:'result', id, text}
-//        {type:'error', id?, error, missing?, lost?}
-//   (`id` on load replies echoes the load request, so overlapping loads can't
-//   answer each other; `missing` names a device file that is absent or of the
-//   wrong type; `lost` means the device stopped answering.)
+//        {type:'error', id, error, kind?, file?}
+//   `id` on every reply echoes its request. `kind` says what failed:
+//   'card' (a device file is missing - `file` names it), 'connection' (the
+//   device couldn't be reached), 'download' (the model download from the
+//   internet failed), 'engine' (transcription itself failed in this browser).
+//
+// ONE job at a time: loads and transcriptions share a single queue, so there
+// is never more than one pipeline being built, and a request is never handed
+// a pipeline for a different model or one that is half-built.
 
 import { modelFileCache, lengthCheckedFetch, settingSet } from './db.js';
 import { RUNTIME_FILES, probeDeviceFiles } from './pack.js';
 
+const PROTOCOL = 2;
 const LIBRARY = '/web/vendor/transformers.min.js';
 
-// transformers.js downloads with the global fetch; make a download that ends
-// early throw instead of being cached zero-padded.
-const deviceFetch = self.fetch.bind(self);
-self.fetch = lengthCheckedFetch(deviceFetch);
+let current = null;               // { modelId, pipe, device } once built
+let building = null;              // the build in progress: { downloadFailed }
 
-// After a failure, ask the device about the files that step needed, so the
-// page can say "the card copy is incomplete" or "lost the connection" instead
-// of guessing. Neither tag means the device files are fine (e.g. the model
-// download from the internet failed).
-async function diagnose(err, urls) {
+function isInternet(input) {
+  const url = typeof input === 'string' ? input : (input && input.url) || String(input);
+  try {
+    return new URL(url, self.location.href).origin !== self.location.origin;
+  } catch {
+    return false;
+  }
+}
+
+function markDownloadFailed() { if (building) building.downloadFailed = true; }
+
+// transformers.js downloads with the global fetch. Make a download that ends
+// early throw instead of being cached zero-padded (lengthCheckedFetch), and
+// note when an INTERNET download fails, so a failed build can be blamed on
+// the download only when the download really did fail. (A 404 is not noted:
+// the library asks for optional files that legitimately don't exist.)
+const deviceFetch = self.fetch.bind(self);
+const checkedFetch = lengthCheckedFetch(deviceFetch);
+self.fetch = async (input, init) => {
+  if (!isInternet(input)) return checkedFetch(input, init);
+  let res;
+  try {
+    res = await checkedFetch(input, init);
+  } catch (err) {
+    markDownloadFailed();
+    throw err;
+  }
+  if (res.status >= 500) markDownloadFailed();
+  if (!res.body) return res;
+  const reader = res.body.getReader();
+  const body = new ReadableStream({
+    async pull(controller) {
+      try {
+        const { done, value } = await reader.read();
+        if (done) controller.close();
+        else controller.enqueue(value);
+      } catch (err) {
+        markDownloadFailed();
+        controller.error(err);
+      }
+    },
+    cancel(reason) { return reader.cancel(reason); },
+  });
+  return new Response(body, { status: res.status, statusText: res.statusText, headers: res.headers });
+};
+
+function tagged(err, kind, file) {
   const e = err instanceof Error ? err : new Error(String(err));
-  const found = await probeDeviceFiles(urls, deviceFetch);
-  if (found.state === 'missing') e.missing = found.file;
-  else if (found.state === 'offline') e.lost = true;
+  e.kind = kind;
+  if (file) e.file = file;
   return e;
 }
 
-let pipelinePromise = null;
-let pipelineModel = null;         // the model pipelinePromise is building/built
-let activeModel = null;
-let activeDevice = null;
+// After a failed step, ask the device about the files that step needed, then
+// decide what to tell the user.
+async function classify(err, urls, downloadFailed) {
+  const found = await probeDeviceFiles(urls, deviceFetch);
+  if (found.state === 'missing') return tagged(err, 'card', found.file);
+  if (found.state === 'unreachable') return tagged(err, 'connection');
+  return tagged(err, downloadFailed ? 'download' : 'engine');
+}
 
-async function buildPipeline(modelId, english, useGpu) {
+async function build(modelId, english, useGpu) {
   let mod;
   try {
     mod = await import(LIBRARY);
   } catch (err) {
-    throw await diagnose(err, [LIBRARY]);
+    throw await classify(err, [LIBRARY], false);
   }
-  // The library is up. What follows is either the model download (progress
-  // events) or, for a model already saved, building the session with no
-  // events at all - tell the page so it allows for that long quiet stretch.
+  // The library is up. What follows is the model download (progress events)
+  // and/or building the session, which can compute silently for a long time -
+  // tell the page so it allows for that.
   self.postMessage({ type: 'building' });
   const { env, pipeline } = mod;
   env.allowLocalModels = false;
@@ -70,30 +122,41 @@ async function buildPipeline(modelId, english, useGpu) {
   const device = useGpu ? 'webgpu' : 'wasm';
   const perFile = new Map();
   let preparingPosted = false;
-  // The session build fetches the runtime from the card; a failure here is a
-  // bad card copy, a lost device connection, or (neither) a model download.
-  const p = await pipeline('automatic-speech-recognition', modelId, {
-    dtype: 'q4',
-    device,
-    progress_callback: (ev) => {
-      if (ev.status === 'progress' && ev.total) {
-        perFile.set(ev.file, { loaded: ev.loaded, total: ev.total });
-        let loaded = 0; let total = 0;
-        for (const f of perFile.values()) { loaded += f.loaded; total += f.total; }
-        const pct = Math.round((loaded / total) * 100);
-        self.postMessage({ type: 'progress', pct, label: ev.file });
-        // Downloads done -> the pipeline is now building the inference session
-        // (and on WebGPU, compiling shaders) with NO further progress events.
-        // Tell the UI so it doesn't look frozen at "downloading 100%".
-        if (pct >= 100 && !preparingPosted) {
-          preparingPosted = true;
-          self.postMessage({ type: 'status', phase: 'preparing' });
+  building = { downloadFailed: false };
+  let p;
+  try {
+    p = await pipeline('automatic-speech-recognition', modelId, {
+      dtype: 'q4',
+      device,
+      progress_callback: (ev) => {
+        if (ev.status === 'progress' && ev.total) {
+          perFile.set(ev.file, { loaded: ev.loaded, total: ev.total });
+          let loaded = 0; let total = 0;
+          for (const f of perFile.values()) { loaded += f.loaded; total += f.total; }
+          const pct = Math.round((loaded / total) * 100);
+          // fileDone: this file has fully arrived. Files are discovered one at
+          // a time, so the overall % can touch 100 early and drop back; what
+          // follows the LAST finished file is the silent session build, and
+          // the page gives every finished file the long allowance.
+          self.postMessage({ type: 'progress', pct, label: ev.file, fileDone: ev.loaded >= ev.total });
+          // Tell the UI it isn't frozen at "downloading 100%" - and again if a
+          // later file made the download resume and finish again.
+          if (pct >= 100 && !preparingPosted) {
+            preparingPosted = true;
+            self.postMessage({ type: 'status', phase: 'preparing' });
+          } else if (pct < 100) {
+            preparingPosted = false;
+          }
         }
-      }
-    },
-  }).catch(async (err) => { throw await diagnose(err, RUNTIME_FILES); });
-  activeModel = modelId;
-  activeDevice = device;
+      },
+    });
+  } catch (err) {
+    // A bad card copy (the runtime comes from the card), a device we can't
+    // reach, a failed internet download, or none of those.
+    throw await classify(err, RUNTIME_FILES, building.downloadFailed);
+  } finally {
+    building = null;
+  }
   await settingSet('engineReadyFor:' + modelId, true);
 
   // Warm up: the FIRST real inference compiles graph/shaders and is slow. Run
@@ -105,34 +168,31 @@ async function buildPipeline(modelId, english, useGpu) {
     await p(warm, english ? {} : { task: 'transcribe', language: 'english' });
   } catch (e) { /* warmup is best-effort */ }
 
-  return p;
+  return { modelId, pipe: p, device };
 }
 
-async function getPipeline(modelId, english, useGpu) {
-  // Keyed by the model being BUILT, not the last one that finished: otherwise
-  // a request for the old model during (or after a failed) build of a new one
-  // would be handed the new model's pipeline, or its rejection.
-  if (pipelinePromise && pipelineModel === modelId) return pipelinePromise;
-  const build = buildPipeline(modelId, english, useGpu);
-  pipelinePromise = build;
-  pipelineModel = modelId;
-  // A failed build is not kept: the next request tries again.
-  build.catch(() => {
-    if (pipelinePromise === build) { pipelinePromise = null; pipelineModel = null; }
-  });
-  return build;
+// The pipeline for modelId, building it (and releasing any other) if needed.
+// Only ever called from inside the queue, so builds never overlap.
+async function pipelineFor(modelId, english, useGpu) {
+  if (current && current.modelId === modelId) return current.pipe;
+  const old = current;
+  current = null;
+  if (old && old.pipe && typeof old.pipe.dispose === 'function') {
+    try { await old.pipe.dispose(); } catch { /* released either way */ }
+  }
+  current = await build(modelId, english, useGpu);
+  return current.pipe;
 }
 
-self.onmessage = async (e) => {
-  const msg = e.data;
+async function handle(msg) {
   try {
     if (msg.type === 'load') {
-      await getPipeline(msg.modelId, msg.english, msg.useGpu);
-      self.postMessage({ type: 'loaded', id: msg.id, device: activeDevice });
+      await pipelineFor(msg.modelId, msg.english, msg.useGpu);
+      self.postMessage({ type: 'loaded', id: msg.id, device: current.device });
       return;
     }
     if (msg.type === 'transcribe') {
-      const p = await getPipeline(msg.modelId, msg.english, msg.useGpu);
+      const p = await pipelineFor(msg.modelId, msg.english, msg.useGpu);
       // English-only models reject `task`/`language`;
       // only multilingual models take them (to force English output).
       const opts = {};
@@ -145,17 +205,31 @@ self.onmessage = async (e) => {
         opts.chunk_length_s = 30;
         opts.stride_length_s = 5;
       }
-      const out = await p(msg.audio, opts);
+      let out;
+      try {
+        out = await p(msg.audio, opts);
+      } catch (err) {
+        throw tagged(err, 'engine');
+      }
       self.postMessage({ type: 'result', id: msg.id, text: (out && out.text ? out.text : '').trim() });
-      return;
     }
   } catch (err) {
     self.postMessage({
       type: 'error',
       id: msg && msg.id,
       error: String(err && err.message ? err.message : err),
-      missing: (err && err.missing) || undefined,
-      lost: (err && err.lost) || undefined,
+      kind: (err && err.kind) || undefined,
+      file: (err && err.file) || undefined,
     });
   }
+}
+
+// The single queue. handle() never throws, so one failed job never blocks
+// the next.
+let queue = Promise.resolve();
+self.onmessage = (e) => {
+  const msg = e.data;
+  queue = queue.then(() => handle(msg));
 };
+
+self.postMessage({ type: 'hello', protocol: PROTOCOL });

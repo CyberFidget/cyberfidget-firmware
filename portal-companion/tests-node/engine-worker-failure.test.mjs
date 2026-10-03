@@ -2,109 +2,37 @@
 // Copyright (c) 2023-2026 Dismo Industries LLC
 //
 // The transcription engine facade (src/js/engine.js) against a fake Worker:
-// a worker that fails to load must be diagnosed (incomplete card copy vs lost
-// connection), must be dropped so the next load starts a fresh one, a load
-// that goes quiet must time out instead of hanging - but a long, legitimate
-// session build must not - overlapping loads must not answer each other, and
-// removing the download must not strand anything waiting on the worker.
+// a worker that fails to load is diagnosed (incomplete card copy vs a device
+// we can't reach) and dropped so the next load starts fresh; a quiet load
+// times out but a long legitimate build does not; overlapping loads don't
+// answer each other; removing the download fails everything waiting and
+// never lets a queued load mark anything ready; every failure gets plain
+// words, and only a real download failure is blamed on the internet.
 //
 //   npm test
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-
-// ---- browser stand-ins (just enough for engine.js + db.js) ----
-
-const workers = [];
-class FakeWorker {
-  constructor(url, opts) {
-    this.url = url;
-    this.opts = opts;
-    this.posted = [];
-    this.terminated = false;
-    this.onmessage = null;
-    this.onerror = null;
-    workers.push(this);
-  }
-  postMessage(msg) { this.posted.push(msg); }
-  terminate() { this.terminated = true; }
-  // Test drivers.
-  emit(data) { this.onmessage && this.onmessage({ data }); }
-  fail(event) { this.onerror && this.onerror(event); }
-  loads() { return this.posted.filter((m) => m.type === 'load'); }
-  lastLoad() { const l = this.loads(); return l[l.length - 1]; }
-  // Answer the most recent load request (the worker echoes its id).
-  loaded() { this.emit({ type: 'loaded', id: this.lastLoad().id, device: 'wasm' }); }
-}
-
-// Minimal IndexedDB: every open succeeds, every transaction completes. Uses
-// microtasks (not timers) so it keeps working while timers are mocked.
-const later = (fn) => Promise.resolve().then(fn);
-const fakeDb = {
-  version: 1,
-  objectStoreNames: { contains: () => true },
-  close() {},
-  transaction() {
-    const t = {
-      objectStore: () => ({
-        put: () => ({ result: undefined }),
-        delete: () => ({ result: undefined }),
-        clear: () => ({ result: undefined }),
-        openCursor: () => ({}),
-        get: () => { const r = {}; later(() => r.onsuccess && r.onsuccess()); return r; },
-      }),
-    };
-    later(() => t.oncomplete && t.oncomplete());
-    return t;
-  },
-};
-globalThis.indexedDB = {
-  open() {
-    const req = {};
-    later(() => { req.result = fakeDb; req.onsuccess && req.onsuccess(); });
-    return req;
-  },
-};
-globalThis.window = {};
-globalThis.Worker = FakeWorker;
-
-// How the device answers a probe of a companion file.
-let deviceAnswer = 'missing';
-const probed = [];
-globalThis.fetch = async (url) => {
-  probed.push(url);
-  if (deviceAnswer === 'offline') throw new TypeError('Failed to fetch');
-  if (deviceAnswer === 'missing') return new Response('not found', { status: 404, headers: { 'content-type': 'text/plain' } });
-  return new Response('', { status: 200, headers: { 'content-type': 'text/javascript' } });
-};
+import { workers, device, dbWrites, watch, flush, settle } from './support/page-fakes.mjs';
 
 const engine = await import('../src/js/engine.js');
 const [MODEL_A, MODEL_B] = engine.listModels().map((m) => m.id);
-
-// Track a promise's state without awaiting it.
-function watch(p) {
-  const s = { state: 'pending', value: undefined };
-  p.then((v) => { s.state = 'resolved'; s.value = v; },
-    (e) => { s.state = 'rejected'; s.value = e; });
-  return s;
-}
-const flush = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
-const settle = () => new Promise((r) => setImmediate(r));   // lets a fake fetch finish
 const MIN = 60 * 1000;
+const last = () => workers[workers.length - 1];
 
-test('a worker script the device does not have reports the card copy as incomplete', async () => {
-  deviceAnswer = 'missing';
+test('a worker script the device says is missing reports the card copy as incomplete', async () => {
+  device.answer = 'missing';
   const p = watch(engine.load(MODEL_A));
   await flush();
   assert.equal(workers.length, 1);
-  assert.equal(workers[0].lastLoad().type, 'load');
+  assert.equal(last().lastLoad().modelId, MODEL_A);
 
   // A script load failure fires a bare error event: no message.
-  workers[0].fail({ type: 'error' });
-  assert.equal(workers[0].terminated, true, 'the dead worker is dropped at once');
+  last().fail({ type: 'error' });
+  assert.equal(last().terminated, true, 'the dead worker is dropped at once');
   await settle(); await flush();
 
-  assert.deepEqual(probed, ['/web/engine.worker.js'], 'the device was asked about the worker file');
+  assert.deepEqual(device.probed, ['/web/engine.worker.js'], 'the device was asked about the worker file');
   assert.equal(p.state, 'rejected');
   assert.equal(p.value.kind, 'card');
   assert.match(p.value.message, /memory card/);
@@ -114,100 +42,146 @@ test('a worker script the device does not have reports the card copy as incomple
 });
 
 test('retrying after a failed worker starts a fresh worker and settles', async () => {
+  const dead = last();
   const p = watch(engine.load(MODEL_A));
   await flush();
   assert.equal(workers.length, 2, 'a new worker is created, not the dead one reused');
-  assert.equal(workers[1].lastLoad().type, 'load');
 
-  // A late event from the dropped worker must not touch the new attempt.
-  workers[0].fail({ type: 'error' });
-  workers[0].emit({ type: 'error', error: 'stale' });
+  // Late events from the dropped worker must not touch the new attempt.
+  dead.fail({ type: 'error' });
+  dead.emit({ type: 'loaded', id: last().lastLoad().id, device: 'wasm' });
   await settle(); await flush();
   assert.equal(p.state, 'pending');
 
-  workers[1].loaded();
+  last().hello();
+  last().loaded();
   await flush();
   assert.equal(p.state, 'resolved');
   assert.equal(engine.loaded(), true);
   assert.equal(engine.backend(), 'wasm');
 });
 
-test('a worker script the device cannot be reached for reports a lost connection', async () => {
-  deviceAnswer = 'offline';
+test('a worker script the device never answers for says the device could not be reached', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  device.answer = 'offline';
+  device.probed.length = 0;
   const p = watch(engine.load(MODEL_B));
   await flush();
-  workers[1].fail({ type: 'error' });
-  await settle(); await flush();
+  last().fail({ type: 'error' });
+  // The probe retries a missing answer twice, with pauses, before giving up.
+  for (let i = 0; i < 10 && p.state === 'pending'; i++) { await settle(); t.mock.timers.tick(5000); await flush(); }
+  assert.equal(device.probed.length, 3, 'tried three times');
   assert.equal(p.state, 'rejected');
   assert.equal(p.value.kind, 'connection');
-  assert.match(p.value.message, /connection to your Cyber Fidget/);
-  assert.doesNotMatch(p.value.message, /memory card|internet/i);
+  assert.match(p.value.message, /reach your Cyber Fidget/);
+  assert.doesNotMatch(p.value.message, /memory card|internet|lost/i);
 });
 
 test('a worker that fails although the device has its file says to reload', async () => {
-  deviceAnswer = 'ok';
+  device.answer = 'ok';
   const p = watch(engine.load(MODEL_B));
   await flush();
-  assert.equal(workers.length, 3);
-  workers[2].fail({ type: 'error' });
+  last().fail({ type: 'error' });
   await settle(); await flush();
   assert.equal(p.state, 'rejected');
   assert.equal(p.value.kind, 'engine');
+  assert.match(p.value.message, /Reload/);
   assert.doesNotMatch(p.value.message, /memory card|internet/i);
 });
 
-test('a load that hears nothing times out, drops the worker, and the next load recovers', async (t) => {
+test('a download that goes quiet times out as a download problem; the next load recovers', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const p = watch(engine.load(MODEL_B));
   await flush();
-  assert.equal(workers.length, 4);
-
-  // Download progress keeps it alive: the clock restarts on every message.
+  const w = last();
+  w.hello();
+  // Progress keeps it alive: the clock restarts on every message.
   t.mock.timers.tick(engine.LOAD_IDLE_MS - 1);
-  workers[3].emit({ type: 'progress', pct: 40, label: 'model.onnx' });
+  w.emit({ type: 'progress', pct: 40, label: 'model.onnx', fileDone: false });
   t.mock.timers.tick(engine.LOAD_IDLE_MS - 1);
   await flush();
   assert.equal(p.state, 'pending', 'still alive while the download keeps reporting');
 
-  // Silence for the full window: the waiter is rejected, not left hanging.
   t.mock.timers.tick(1);
   await flush();
   assert.equal(p.state, 'rejected');
-  assert.match(p.value.message, /stopped responding/);
-  assert.equal(workers[3].terminated, true);
+  assert.equal(p.value.kind, 'download', 'a stalled download keeps the internet advice');
+  assert.equal(w.terminated, true);
   assert.equal(engine.loaded(), false);
 
   const again = watch(engine.load(MODEL_B));
   await flush();
-  assert.equal(workers.length, 5, 'the next load starts a fresh worker');
-  workers[4].loaded();
+  assert.notEqual(last(), w, 'the next load starts a fresh worker');
+  last().hello();
+  last().loaded();
   await flush();
   assert.equal(again.state, 'resolved');
 });
 
-test('a long silent session build after a status is not cut off', async (t) => {
+test('a worker that goes quiet before any download says setup stopped responding', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const p = watch(engine.load(MODEL_A));
   await flush();
-  // The worker says it is building / preparing, then computes silently for
-  // far longer than the download allowance.
-  workers[4].emit({ type: 'building' });
-  t.mock.timers.tick(10 * MIN);
-  workers[4].emit({ type: 'status', phase: 'preparing' });
-  t.mock.timers.tick(10 * MIN);
+  // Same (live) worker, which said hello long ago: the short allowance applies.
+  t.mock.timers.tick(engine.LOAD_IDLE_MS);
+  await flush();
+  assert.equal(p.state, 'rejected');
+  assert.equal(p.value.kind, 'engine');
+  assert.match(p.value.message, /stopped responding/);
+});
+
+test('a long silent build after the last file finishes is not cut off', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const p = watch(engine.load(MODEL_A));
+  await flush();
+  const w = last();
+  w.hello();
+  w.emit({ type: 'building' });
+  // An early file finishes, a later one downloads and then finishes too...
+  w.emit({ type: 'progress', pct: 100, label: 'config.json', fileDone: true });
+  w.emit({ type: 'progress', pct: 50, label: 'model.onnx', fileDone: false });
+  t.mock.timers.tick(engine.LOAD_IDLE_MS - 1);
+  w.emit({ type: 'progress', pct: 100, label: 'model.onnx', fileDone: true });
+  // ...then the session build computes silently for a long time.
+  t.mock.timers.tick(12 * MIN);
   await flush();
   assert.equal(p.state, 'pending', 'a slow phone building the session is left alone');
-  assert.equal(workers[4].terminated, false);
-  workers[4].loaded();
+  assert.equal(w.terminated, false);
+  w.emit({ type: 'status', phase: 'warming' });
+  t.mock.timers.tick(12 * MIN);
+  w.loaded();
   await flush();
   assert.equal(p.state, 'resolved');
 });
 
-test('a status-phase silence still ends eventually', async (t) => {
+test('an older worker that never says hello gets the long allowance throughout', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  device.answer = 'ok';
+  // Fail the current worker so the next load starts one that stays silent.
+  last().fail({ type: 'error', message: 'boom' });
+  await flush();
+  const p = watch(engine.load(MODEL_B));
+  await flush();
+  const old = last();
+  t.mock.timers.tick(10 * MIN);
+  old.emit({ type: 'progress', pct: 30, label: 'model.onnx' });   // no fileDone either
+  t.mock.timers.tick(engine.LOAD_BUSY_MS - 1);
+  await flush();
+  assert.equal(p.state, 'pending', 'an older worker cannot announce its silent build');
+  // Its replies carry no kind: its own words, and the old internet advice.
+  old.emit({ type: 'error', id: old.lastLoad().id, error: 'Failed to fetch' });
+  await flush();
+  assert.equal(p.state, 'rejected');
+  assert.equal(p.value.kind, undefined);
+  assert.equal(p.value.message, 'Failed to fetch');
+});
+
+test('a long silence still ends eventually', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const p = watch(engine.load(MODEL_B));
   await flush();
-  workers[4].emit({ type: 'status', phase: 'warming' });
+  const w = last();
+  w.emit({ type: 'status', phase: 'warming' });
   t.mock.timers.tick(engine.LOAD_BUSY_MS - 1);
   await flush();
   assert.equal(p.state, 'pending');
@@ -215,25 +189,26 @@ test('a status-phase silence still ends eventually', async (t) => {
   await flush();
   assert.equal(p.state, 'rejected');
   assert.match(p.value.message, /stopped responding/);
-  assert.equal(workers[4].terminated, true);
+  assert.equal(w.terminated, true);
 });
 
 test('a finished load leaves no timer behind', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const p = watch(engine.load(MODEL_A));
   await flush();
-  assert.equal(workers.length, 6);
-  workers[5].loaded();
+  const w = last();
+  w.hello();
+  w.loaded();
   await flush();
   assert.equal(p.state, 'resolved');
   t.mock.timers.tick(engine.LOAD_BUSY_MS * 2);
   await flush();
-  assert.equal(workers[5].terminated, false, 'a ready worker is not timed out');
+  assert.equal(w.terminated, false, 'a ready worker is not timed out');
   assert.equal(engine.loaded(), true);
 });
 
 test('overlapping loads run one at a time and only their own reply settles them', async () => {
-  const w = workers[5];
+  const w = last();
   const before = w.loads().length;
   const b = watch(engine.load(MODEL_B));
   const a = watch(engine.load(MODEL_A));
@@ -242,10 +217,9 @@ test('overlapping loads run one at a time and only their own reply settles them'
   const bReq = w.lastLoad();
   assert.equal(bReq.modelId, MODEL_B);
 
-  // A reply for some other request settles nothing.
   w.emit({ type: 'loaded', id: bReq.id + 1000, device: 'wasm' });
   await flush();
-  assert.equal(b.state, 'pending');
+  assert.equal(b.state, 'pending', 'a reply for another request settles nothing');
 
   w.emit({ type: 'loaded', id: bReq.id, device: 'wasm' });
   await flush();
@@ -253,19 +227,17 @@ test('overlapping loads run one at a time and only their own reply settles them'
   assert.equal(a.state, 'pending', 'B finishing does not mark A ready');
   const aReq = w.lastLoad();
   assert.equal(aReq.modelId, MODEL_A);
-  assert.notEqual(aReq.id, bReq.id);
-
   w.emit({ type: 'loaded', id: aReq.id, device: 'wasm' });
   await flush();
   assert.equal(a.state, 'resolved');
 });
 
 test('a failed load does not block the next queued load', async () => {
-  const w = workers[5];
+  const w = last();
   const b = watch(engine.load(MODEL_B));
   const a = watch(engine.load(MODEL_A));
   await flush();
-  w.emit({ type: 'error', id: w.lastLoad().id, error: 'Failed to fetch' });
+  w.emit({ type: 'error', id: w.lastLoad().id, error: 'x', kind: 'download' });
   await flush();
   assert.equal(b.state, 'rejected');
   assert.equal(w.lastLoad().modelId, MODEL_A, 'the queued load went ahead');
@@ -274,71 +246,101 @@ test('a failed load does not block the next queued load', async () => {
   assert.equal(a.state, 'resolved');
 });
 
-test('removing the download fails whatever was waiting on the worker', async () => {
-  const w = workers[5];
+test('removing the download fails everything waiting and cancels queued loads', async () => {
+  const w = last();
+  const count = workers.length;
   const tr = watch(engine.transcribe(new Float32Array(16000), MODEL_A));
-  const ld = watch(engine.load(MODEL_B));
+  const running = watch(engine.load(MODEL_B));
+  const queued = watch(engine.load(MODEL_A));
   await flush();
-  assert.equal(tr.state, 'pending');
-  assert.equal(ld.state, 'pending');
+  assert.equal(running.state, 'pending');
 
   await engine.dropDownload();
   await flush();
   assert.equal(w.terminated, true);
   assert.equal(tr.state, 'rejected', 'a running transcription is not left hanging');
-  assert.equal(ld.state, 'rejected', 'a running load is not left hanging');
+  assert.equal(running.state, 'rejected', 'a running load is not left hanging');
+  assert.equal(running.value.kind, 'removed');
+  assert.equal(queued.state, 'rejected', 'a load queued before the removal does not download again');
+  assert.equal(queued.value.kind, 'removed');
+  assert.equal(workers.length, count, 'no new worker was started for it');
   assert.equal(engine.loaded(), false);
 
-  // The dropped worker's late reply can't resolve anything on a new one.
-  const again = watch(engine.load(MODEL_B));
+  // A load asked for AFTER the removal is a new request and goes ahead.
+  const fresh = watch(engine.load(MODEL_B));
   await flush();
-  assert.equal(workers.length, 7);
-  w.emit({ type: 'loaded', id: workers[6].lastLoad().id, device: 'wasm' });
+  assert.equal(workers.length, count + 1);
+  w.emit({ type: 'loaded', id: last().lastLoad().id, device: 'wasm' });   // the dropped worker
   await flush();
-  assert.equal(again.state, 'pending');
-  workers[6].loaded();
+  assert.equal(fresh.state, 'pending', 'the dropped worker cannot answer for the new one');
+  last().hello();
+  last().loaded();
   await flush();
-  assert.equal(again.state, 'resolved');
+  assert.equal(fresh.state, 'resolved');
 });
 
-test('worker errors naming a device file or a lost connection keep that meaning', async () => {
-  const w = workers[6];
+test('a removal right as a load finishes leaves nothing marked ready', async () => {
+  const p = watch(engine.load(MODEL_A));
+  await flush();
+  const w = last();
+  dbWrites.length = 0;
+  w.loaded();
+  const removal = engine.dropDownload();     // before the load records itself
+  await removal; await flush();
+  assert.equal(p.state, 'rejected');
+  assert.equal(p.value.kind, 'removed');
+  assert.equal(engine.loaded(), false);
+  const readyWrites = dbWrites.filter(([op, , key]) => op === 'put' && String(key).startsWith('engineReadyFor:'));
+  assert.deepEqual(readyWrites, [], 'no ready flag written after the removal');
+});
+
+test('worker replies say what failed in plain words', async () => {
   let p = watch(engine.load(MODEL_A));
   await flush();
-  w.emit({ type: 'error', id: w.lastLoad().id, error: 'x', missing: 'vendor/ort/ort-wasm-simd-threaded.wasm' });
+  const w = last();
+  w.hello();
+  w.emit({ type: 'error', id: w.lastLoad().id, error: 'x', kind: 'card', file: 'vendor/ort/ort-wasm-simd-threaded.wasm' });
   await flush();
   assert.equal(p.value.kind, 'card');
   assert.match(p.value.message, /vendor\/ort\/ort-wasm-simd-threaded\.wasm/);
 
-  p = watch(engine.load(MODEL_A));
-  await flush();
-  w.emit({ type: 'error', id: w.lastLoad().id, error: 'x', lost: true });
-  await flush();
-  assert.equal(p.value.kind, 'connection');
-
-  p = watch(engine.load(MODEL_A));
-  await flush();
-  w.emit({ type: 'error', id: w.lastLoad().id, error: 'Failed to fetch' });
-  await flush();
-  assert.equal(p.state, 'rejected');
-  assert.equal(p.value.kind, undefined, 'an internet download failure keeps the internet advice');
-  assert.equal(p.value.message, 'Failed to fetch');
+  const cases = [
+    ['connection', /reach your Cyber Fidget/],
+    ['download', /could not be downloaded/],
+    ['engine', /could not start in this browser/],
+    [undefined, /could not start in this browser/],   // a current worker always means engine
+  ];
+  for (const [kind, words] of cases) {
+    p = watch(engine.load(MODEL_A));
+    await flush();
+    w.emit({ type: 'error', id: w.lastLoad().id, error: 'no available backend found', kind });
+    await flush();
+    assert.equal(p.state, 'rejected');
+    assert.equal(p.value.kind, kind || 'engine');
+    assert.match(p.value.message, words);
+    assert.doesNotMatch(p.value.message, /backend/, 'no internal error text');
+  }
 });
 
-test('a crash inside a running worker keeps its message and drops the worker', async () => {
-  const w = workers[6];
-  const p = watch(engine.load(MODEL_A));
+test('a failed transcription and a crashing worker get plain words too', async () => {
+  let p = watch(engine.load(MODEL_A));
+  await flush();
+  const w = last();
+  w.loaded();
+  await flush();
+  const tr = watch(engine.transcribe(new Float32Array(16000), MODEL_A));
+  w.emit({ type: 'error', id: w.posted[w.posted.length - 1].id, error: 'Aborted()', kind: 'engine' });
+  await flush();
+  assert.equal(tr.state, 'rejected');
+  assert.equal(tr.value.kind, 'engine');
+  assert.match(tr.value.message, /Transcription failed/);
+
+  p = watch(engine.load(MODEL_B));
   await flush();
   w.fail({ type: 'error', message: 'out of memory' });
   await flush();
   assert.equal(p.state, 'rejected');
-  assert.match(p.value.message, /out of memory/);
+  assert.equal(p.value.kind, 'engine');
+  assert.match(p.value.message, /stopped unexpectedly/);
   assert.equal(w.terminated, true);
-
-  const again = watch(engine.load(MODEL_A));
-  await flush();
-  assert.equal(workers.length, 8);
-  workers[7].loaded();
-  await flush();
-  assert.equal(again.state, 'resolved');
 });

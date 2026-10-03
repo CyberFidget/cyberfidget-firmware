@@ -69,158 +69,226 @@ const LEGACY_READY_SETTING = 'engineReadyFor';
 const READY_PREFIX = 'engineReadyFor:';
 let modelMigration = null;
 
-let worker = null;
-let workerReadyFor = null;        // modelId the worker has built a pipeline for
-let activeDevice = null;          // 'webgpu' | 'wasm' (reported by the worker)
-let onProgressCb = null;
-let nextReqId = 1;
-const pending = new Map();        // transcribe id -> {resolve, reject}
-const loadWaiters = new Map();    // load request id -> {resolve, reject}
-let loadTimer = null;             // fires when a load goes quiet for too long
-let loadChain = Promise.resolve(); // loads run one at a time (see load())
+// The worker file, versioned by its content at build time so a new shell never
+// runs a stale copy out of the browser's long-lived cache (the device serves
+// /web/ files as immutable and ignores the query). Unbundled (tests), no query.
+/* global __CF_WORKER_VERSION__ */
+const WORKER_URL = '/web/engine.worker.js' +
+  (typeof __CF_WORKER_VERSION__ !== 'undefined' ? '?v=' + __CF_WORKER_VERSION__ : '');
 
 // A load that hears nothing from the worker for too long is treated as
 // failed, so no failure mode can leave the Download button waiting forever.
-// Every message restarts the clock, and the allowance depends on what the
-// worker said last:
-//  - nothing yet, or download progress: LOAD_IDLE_MS. Starting the worker and
-//    each step of a download report back well within this.
-//  - 'building' or a status ('preparing', 'warming'): LOAD_BUSY_MS. Building the
-//    session and the warm-up run compute for a long time with no messages at
-//    all, and a slow phone must not be cut off mid-build.
+// Every message restarts the clock; how long it allows depends on the phase:
+//  - 'loading' (worker starting, library loading, a file downloading):
+//    LOAD_IDLE_MS. Each of those reports back well within it.
+//  - 'building' (library up, a file finished, preparing, warming up):
+//    LOAD_BUSY_MS. Building the session and the warm-up compute for a long time
+//    with no messages at all, and a slow phone must not be cut off mid-build.
+// A worker that hasn't said hello (just started, or an older copy that never
+// will) gets LOAD_BUSY_MS throughout: it can't announce its silent phases.
 export const LOAD_IDLE_MS = 3 * 60 * 1000;
 export const LOAD_BUSY_MS = 15 * 60 * 1000;
 
-// These texts reach the user's screen. `kind` tells the Download button not to
-// add "check your internet" to failures that have nothing to do with it.
-function cardError(file) {
-  const err = new Error('The transcription files on the memory card are incomplete (' + file +
-    ' is missing or unreadable). Copy them to the card again, then try again.');
-  err.kind = 'card';
+// ---- The engine's ONE state machine ----
+// phase: 'idle'     no worker (nothing loaded yet, or the download was removed)
+//        'loading'  a load is waiting on the worker            (short allowance)
+//        'building' a long silent stretch may follow            (long allowance)
+//        'ready'    the worker has a pipeline for S.readyFor
+//        'failed'   the last load failed (the worker may still be usable)
+// gen: bumped by removing the download; a load queued or running under an
+// older gen can never mark anything ready.
+// Only the functions in this section change S.
+const S = {
+  phase: 'idle',
+  gen: 0,
+  worker: null,
+  protocol: 0,                    // from the worker's hello; 0 = not (yet) heard
+  readyFor: null,
+  device: null,                   // 'webgpu' | 'wasm' (reported by the worker)
+  load: null,                     // the one load in flight (see loadNow)
+  pending: new Map(),             // transcribe id -> {resolve, reject}
+  timer: null,
+};
+let nextReqId = 1;
+let loadChain = Promise.resolve();   // loads run one at a time
+let storageChain = Promise.resolve(); // ready-flag writes vs. removal, in order
+
+// These texts reach the user's screen. `kind` lets the Download button give
+// the right advice: only 'download' (and an older worker's unclassified
+// errors) get "check your internet".
+function kindError(kind, message) {
+  const err = new Error(message);
+  err.kind = kind;
   return err;
 }
+const cardError = (file) => kindError('card',
+  'The transcription files on the memory card are incomplete (' + file +
+  ' is missing). Copy them to the card again, then try again.');
+const connectionError = () => kindError('connection',
+  "Couldn't reach your Cyber Fidget. Make sure your phone is still connected to it, then try again.");
+const downloadError = () => kindError('download', 'the transcription pack could not be downloaded');
+const downloadStalledError = () => kindError('download', 'the download stopped');
+const startError = () => kindError('engine',
+  'Transcription could not start in this browser. Reload the page and try again.');
+const stalledError = () => kindError('engine',
+  'Transcription setup stopped responding. Reload the page and try again.');
+const crashError = () => kindError('engine',
+  'Transcription stopped unexpectedly. Reload the page and try again.');
+const transcribeError = () => kindError('engine', 'Transcription failed on this audio. Try again.');
+const removedError = () => kindError('removed', 'The transcription download was removed.');
 
-function connectionError() {
-  const err = new Error('Lost the connection to your Cyber Fidget. Make sure your phone is ' +
-    'still connected to it, then try again.');
-  err.kind = 'connection';
-  return err;
+// A worker 'error' reply -> the error the caller sees.
+function replyError(msg, forLoad) {
+  if (msg.kind === 'card') return cardError(msg.file || 'a file');
+  if (msg.kind === 'connection') return connectionError();
+  if (msg.kind === 'download') return downloadError();
+  if (msg.kind === 'engine' || S.protocol >= 2) return forLoad ? startError() : transcribeError();
+  return new Error(msg.error);    // an older worker: keep its own words
 }
 
-function startError() {
-  const err = new Error('Transcription could not start. Reload the page and try again.');
-  err.kind = 'engine';
-  return err;
+function allowance() {
+  if (S.phase === 'building' || S.protocol < 2) return LOAD_BUSY_MS;
+  return LOAD_IDLE_MS;
 }
 
-// A worker error message -> the error the caller sees.
-function workerError(msg) {
-  if (msg.missing) return cardError(msg.missing);
-  if (msg.lost) return connectionError();
-  return new Error(msg.error);
+function clearTimer() {
+  if (S.timer) { clearTimeout(S.timer); S.timer = null; }
 }
 
-function clearLoadTimer() {
-  if (loadTimer) { clearTimeout(loadTimer); loadTimer = null; }
+// (Re)start the quiet-worker clock for the load in flight. The callback
+// checks it still belongs to that load, so a timer can never act on a load
+// that has already settled.
+function arm() {
+  clearTimer();
+  const L = S.load;
+  if (!L) return;
+  S.timer = setTimeout(() => {
+    S.timer = null;
+    if (S.load !== L) return;
+    teardown(S.phase === 'loading' && L.sawProgress ? downloadStalledError() : stalledError());
+  }, allowance());
 }
 
-function armLoadTimer(ms) {
-  clearLoadTimer();
-  if (!loadWaiters.size) return;
-  loadTimer = setTimeout(() => {
-    loadTimer = null;
-    failWorker(new Error('transcription setup stopped responding'));
-  }, ms);
+function setPhase(phase) {
+  if (!S.load) return;
+  S.phase = phase;
+  arm();
 }
 
-function settleLoad(id, fn) {
-  const w = loadWaiters.get(id);
-  if (!w) return;
-  loadWaiters.delete(id);
-  if (!loadWaiters.size) clearLoadTimer();
-  fn(w);
+// Settle the load in flight, exactly once.
+function finishLoad(err, device) {
+  const L = S.load;
+  if (!L) return;
+  S.load = null;
+  clearTimer();
+  if (err) {
+    // The worker let go of its previous pipeline to build this one.
+    S.phase = 'failed';
+    S.readyFor = null;
+    L.reject(err);
+  } else {
+    S.phase = 'ready';
+    S.readyFor = L.modelId;
+    S.device = device || null;
+    L.resolve();
+  }
 }
 
-function settleAllLoads(fn) {
-  [...loadWaiters.keys()].forEach((id) => settleLoad(id, fn));
-}
-
-// The worker is unusable (or being thrown away): drop it at once, so the next
-// load() starts a fresh one instead of posting to a dead worker, and fail
-// everything that was waiting on it. `why` may be a promise of the error, for
-// failures that need a moment to diagnose; the waiters are taken now either way.
-function failWorker(why) {
-  clearLoadTimer();
-  const loads = [...loadWaiters.values()]; loadWaiters.clear();
-  const reqs = [...pending.values()]; pending.clear();
-  if (worker) { worker.terminate(); worker = null; }
-  workerReadyFor = null;
-  activeDevice = null;
+// Throw the worker away and fail everything waiting on it, exactly once.
+// `why` may be a promise of the error (a failure that needs a moment to
+// diagnose); the waiters are detached now either way.
+function teardown(why, phase = 'failed') {
+  clearTimer();
+  const L = S.load; S.load = null;
+  const reqs = [...S.pending.values()]; S.pending.clear();
+  if (S.worker) { S.worker.terminate(); S.worker = null; }
+  S.protocol = 0;
+  S.readyFor = null;
+  S.device = null;
+  S.phase = phase;
   return Promise.resolve(why).then((err) => {
-    loads.forEach((w) => w.reject(err));
+    if (L) L.reject(err);
     reqs.forEach((p) => p.reject(err));
   });
 }
 
-// The worker script itself failed to load. Ask the device about it: a missing
-// or wrongly-typed file is a bad card copy; no answer is a lost connection.
+function withStorage(fn) {
+  const run = storageChain.then(fn);
+  storageChain = run.catch(() => {});
+  return run;
+}
+
+// The worker script itself failed to load. Ask the device about it: a file
+// the device says is missing is a bad card copy; no proper answer from the
+// device means we couldn't reach it.
 async function workerLoadError() {
   const found = await probeDeviceFiles(['/web/engine.worker.js']);
   if (found.state === 'missing') return cardError(found.file);
-  if (found.state === 'offline') return connectionError();
+  if (found.state === 'unreachable') return connectionError();
   return startError();
 }
 
+function onWorkerMessage(msg) {
+  const L = S.load;
+  const mine = L && (msg.id === L.id || (msg.id == null && S.protocol < 2));
+  switch (msg.type) {
+    case 'hello':
+      S.protocol = msg.protocol || 0;
+      if (L) arm();
+      break;
+    case 'building':
+      setPhase('building');
+      break;
+    case 'progress':
+      if (!L) break;
+      L.sawProgress = true;
+      // A finished file may be the last one, and the silent build follows it.
+      setPhase(msg.fileDone ? 'building' : 'loading');
+      if (L.onProgress) L.onProgress({ pct: msg.pct, label: msg.label });
+      break;
+    case 'status':
+      // 'preparing' (compiling the session) / 'warming' (warmup inference) —
+      // the post-download phases that have no % so the UI doesn't look frozen.
+      if (!L) break;
+      setPhase('building');
+      if (L.onProgress) L.onProgress({ phase: msg.phase });
+      break;
+    case 'loaded':
+      if (mine) finishLoad(null, msg.device);
+      break;
+    case 'result': {
+      const p = S.pending.get(msg.id);
+      if (p) { S.pending.delete(msg.id); p.resolve(msg.text); }
+      break;
+    }
+    case 'error': {
+      const p = msg.id != null && S.pending.get(msg.id);
+      if (p) { S.pending.delete(msg.id); p.reject(replyError(msg, false)); }
+      else if (mine) finishLoad(replyError(msg, true));
+      break;
+    }
+    default:
+      break;
+  }
+}
+
 function ensureWorker() {
-  if (worker) return worker;
+  if (S.worker) return S.worker;
   // Separate on-demand file (NOT inlined in the shell) so page load stays a
   // single request; the worker is fetched only when captions/transcription
   // start. Module worker so it can `import()` the device-served library.
-  const w = new Worker('/web/engine.worker.js', { type: 'module' });
-  worker = w;
+  const w = new Worker(WORKER_URL, { type: 'module' });
+  S.worker = w;
+  S.protocol = 0;
   w.onmessage = (e) => {
-    if (worker !== w) return;     // a dropped worker's late message
-    const msg = e.data;
-    if (msg.type === 'progress') {
-      armLoadTimer(LOAD_IDLE_MS);
-      if (onProgressCb) onProgressCb({ pct: msg.pct, label: msg.label });
-    } else if (msg.type === 'building') {
-      // The library is up; a long silent build may follow. Only moves the
-      // timer - the UI has nothing to show for it. (Its own message type, not
-      // a 'status' phase, so an older page that forwards every status to the
-      // progress display just ignores it.)
-      armLoadTimer(LOAD_BUSY_MS);
-    } else if (msg.type === 'status') {
-      armLoadTimer(LOAD_BUSY_MS);
-      // 'preparing' (compiling the session) / 'warming' (warmup inference) —
-      // the post-download phases that have no % so the UI doesn't look frozen.
-      if (onProgressCb) onProgressCb({ phase: msg.phase });
-    } else if (msg.type === 'loaded') {
-      activeDevice = msg.device;
-      if (msg.id != null) settleLoad(msg.id, (x) => x.resolve());
-      else settleAllLoads((x) => x.resolve());
-    } else if (msg.type === 'result') {
-      const p = pending.get(msg.id);
-      if (p) { pending.delete(msg.id); p.resolve(msg.text); }
-    } else if (msg.type === 'error') {
-      const err = workerError(msg);
-      if (msg.id != null && pending.has(msg.id)) {
-        const p = pending.get(msg.id); pending.delete(msg.id); p.reject(err);
-      } else if (msg.id != null && loadWaiters.has(msg.id)) {
-        settleLoad(msg.id, (x) => x.reject(err));
-      } else if (msg.id == null) {
-        settleAllLoads((x) => x.reject(err));
-      }
-    }
+    if (S.worker === w) onWorkerMessage(e.data);   // else: a dropped worker
   };
   w.onerror = (e) => {
-    if (worker !== w) return;
-    // A script that fails to load (missing, wrong type, or the device stopped
-    // answering) fires a bare error event with no message; a crash inside a
+    if (S.worker !== w) return;
+    // A script that fails to load (missing, wrong type, or the device didn't
+    // answer) fires a bare error event with no message; a crash inside a
     // running worker carries one.
-    failWorker(e && e.message
-      ? new Error('transcription stopped unexpectedly: ' + e.message)
-      : workerLoadError());
+    teardown(e && e.message ? crashError() : workerLoadError());
   };
   return w;
 }
@@ -281,12 +349,16 @@ export async function downloadedBytes() {
 }
 
 export async function dropDownload() {
-  // Drop the worker first so the next load rebuilds cleanly, and so nothing
-  // still waiting on it (a load, a transcription) is left hanging.
-  failWorker(new Error('the transcription download was removed'));
-  await modelFilesClear();
-  await settingsDeletePrefix(READY_PREFIX);
-  await settingDelete(LEGACY_READY_SETTING);
+  // Invalidate every load queued or running so far, drop the worker (so the
+  // next load rebuilds cleanly) and fail anything still waiting on it. Then
+  // clear storage - in turn with any ready flag a finished load is writing.
+  S.gen++;
+  teardown(removedError(), 'idle');
+  await withStorage(async () => {
+    await modelFilesClear();
+    await settingsDeletePrefix(READY_PREFIX);
+    await settingDelete(LEGACY_READY_SETTING);
+  });
 }
 
 export function gpuAvailable() {
@@ -294,7 +366,7 @@ export function gpuAvailable() {
 }
 
 // Which backend the worker actually built on ('webgpu' | 'wasm' | null).
-export function backend() { return activeDevice; }
+export function backend() { return S.device; }
 
 // Build (or reuse) the recognition pipeline in the worker. onProgress({pct,label})
 // fires during the model download. Resolves when the worker is ready.
@@ -309,58 +381,57 @@ export async function load(modelId, onProgress) {
     return;
   }
   if (!MODELS.some((m) => m.id === modelId)) throw new Error('unknown transcription model');
-  const run = loadChain.then(() => loadNow(modelId, onProgress));
+  const gen = S.gen;
+  const run = loadChain.then(() => loadNow(gen, modelId, onProgress));
   loadChain = run.catch(() => {});
   return run;
 }
 
-async function loadNow(modelId, onProgress) {
-  if (workerReadyFor === modelId && worker) return;
+async function loadNow(gen, modelId, onProgress) {
+  // Queued before the download was removed: don't quietly download it again.
+  if (gen !== S.gen) throw removedError();
+  if (S.readyFor === modelId && S.worker) return;
 
-  onProgressCb = onProgress || null;
   const model = MODELS.find((m) => m.id === modelId);
   const id = nextReqId++;
-  try {
-    ensureWorker().postMessage({
-      type: 'load',
-      id,
-      modelId,
-      english: !!(model && model.english),
-      useGpu: gpuAvailable(),
-    });
-    await new Promise((resolve, reject) => {
-      loadWaiters.set(id, { resolve, reject });
-      armLoadTimer(LOAD_IDLE_MS);
-    });
-  } catch (err) {
-    // The worker started replacing its pipeline and didn't finish: it is no
-    // longer ready for the previous model either.
-    workerReadyFor = null;
-    throw err;
-  } finally {
-    onProgressCb = null;
-  }
-  workerReadyFor = modelId;
-  await settingSet(READY_PREFIX + modelId, true);
+  const w = ensureWorker();
+  const done = new Promise((resolve, reject) => {
+    S.load = { id, gen, modelId, onProgress: onProgress || null, sawProgress: false, resolve, reject };
+  });
+  S.phase = 'loading';
+  arm();
+  w.postMessage({
+    type: 'load',
+    id,
+    modelId,
+    english: !!(model && model.english),
+    useGpu: gpuAvailable(),
+  });
+  await done;
+  // Record it as downloaded - unless the download was removed meanwhile.
+  await withStorage(async () => {
+    if (gen !== S.gen) throw removedError();
+    await settingSet(READY_PREFIX + modelId, true);
+  });
   tryPersist();
 }
 
 export function loaded() {
   if (window.__cfTestEngine) return true;
-  return workerReadyFor !== null;
+  return S.readyFor !== null;
 }
 
 // Transcribe mono Float32 PCM at 16,000 samples/second. Returns plain text.
 // Runs in the worker; the audio buffer is transferred (zero-copy).
 export async function transcribe(float32Audio, modelId) {
   if (window.__cfTestEngine) return window.__cfTestEngine.transcribe(float32Audio, modelId);
-  if (!worker) throw new Error('engine not loaded');
+  if (!S.worker) throw new Error('engine not loaded');
   const model = MODELS.find((m) => m.id === modelId);
   const id = nextReqId++;
   const longForm = float32Audio.length > 16000 * 30;
   return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    worker.postMessage({
+    S.pending.set(id, { resolve, reject });
+    S.worker.postMessage({
       type: 'transcribe',
       id,
       audio: float32Audio,
