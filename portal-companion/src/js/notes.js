@@ -26,6 +26,7 @@ let sidecars = new Set();   // basenames that already have a .txt on the card
 let selected = new Set();   // basenames ticked for a bulk action
 let openName = null;        // the one expanded row, if any
 let openAudio = null;       // its <audio>, so leaving the row stops playback
+let listed = false;         // the list has been drawn at least once
 
 function base(name) {
   const dot = name.lastIndexOf('.');
@@ -84,7 +85,19 @@ export async function loadNotes() {
   }
 }
 
+// The pack answer arrived after the list was drawn (see app.js boot). Drawing
+// before the answer assumes the pack is there, so only a "no pack" answer changes
+// anything: redraw so the gate replaces the transcribe actions.
+export function applyPack() {
+  if (!listed || hasPack()) return;
+  // The redraw replaces the open row's player; stop the old one so it does not
+  // keep playing unseen.
+  if (openAudio) { try { openAudio.pause(); } catch { /* already gone */ } }
+  render();
+}
+
 function render() {
+  listed = true;
   const list = $('notesList');
 
   // Live listening works with nothing on the card; turning speech into text does

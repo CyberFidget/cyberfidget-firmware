@@ -18,7 +18,7 @@ import { localNaiveEpochMs, todayISO } from './ui.js';
 import * as engine from './engine.js';
 import * as keepawake from './keepawake.js';
 import { transcriptPut } from './db.js';
-import { hasPack, renderGate, navigate } from './app.js';
+import { hasPack, renderGate, navigate, statusKnown, whenStatusKnown } from './app.js';
 
 const SAMPLE_RATE = 16000;
 
@@ -42,6 +42,13 @@ let rafId = 0;
 
 // Captions
 let captionsOn = false;
+// Bumped whenever a session starts or ends, so a captions start that was still
+// waiting (on the device, or on the engine) when Stop was pressed gives up.
+let captionGen = 0;
+// Bumped whenever a caption run starts or stops (session end stops it too), so
+// a transcription still in flight from an earlier run is dropped, never shown,
+// sent or saved under the new one.
+let captionRun = 0;
 // One IndexedDB record per caption session: the source key is fixed at
 // caption start (not per commit), so successive commits overwrite one
 // growing transcript instead of leaving overlapping copies that the Daily
@@ -267,6 +274,7 @@ function emitCaptionSummary() {
 }
 
 function stopCaptionRun() {
+  captionRun++;
   if (!captionsOn) return;
   captionsOn = false;
   clearInterval(backlogTimer);
@@ -333,6 +341,7 @@ async function inferTick() {
   if (pendingSeconds() < 1.0) return;
 
   inferBusy = true;
+  const run = captionRun;
   const samplesAtStart = capSamples;
   discardedSinceInferStart = 0;
   lastInferSamples = capSamples;
@@ -350,10 +359,12 @@ async function inferTick() {
     try {
       text = await engine.transcribe(window, liveModelId);
     } finally {
-      windowsTranscribed++;
-      inferenceTimesMs.push(performance.now() - inferenceStart);
+      if (run === captionRun) {
+        windowsTranscribed++;
+        inferenceTimesMs.push(performance.now() - inferenceStart);
+      }
     }
-    if (!captionsOn) return;
+    if (run !== captionRun || !captionsOn) return;
     if (commitAfter) {
       discardEpisodeOpen = false;
       if (text) {
@@ -388,7 +399,9 @@ async function inferTick() {
       if (!partial || partial.textContent !== text.trim()) feedAppend('', text);
     }
   } catch (e) {
-    notice('sessionNotice', 'Caption trouble: ' + (e && e.message ? e.message : e), 'err');
+    if (run === captionRun) {
+      notice('sessionNotice', 'Caption trouble: ' + (e && e.message ? e.message : e), 'err');
+    }
   } finally {
     inferBusy = false;
     // Audio piles up while an inference runs (incoming frames see busy and
@@ -494,6 +507,7 @@ export async function startSession() {
   if (!yes) return;
 
   wantSession = true;
+  captionGen++;
   retries = 0;
   liveLineStart = '';
   capChunks = [];
@@ -536,6 +550,7 @@ export async function startSession() {
 
 export function endSession(message, kind) {
   wantSession = false;
+  captionGen++;
   stopCaptionRun();
   if (sock) {
     try { sock.close(); } catch { /* already closed */ }
@@ -573,8 +588,19 @@ async function toggleCaptions() {
     $('chipCaptions').hidden = true;
     return;
   }
+  // Every wait below can outlast the session: if it ended (or a new one began)
+  // meanwhile, this start is stale and must not turn captions on.
+  const gen = captionGen;
+  const stale = () => gen !== captionGen || !wantSession;
+  // Whether the pack is there is still being asked of the device. Wait for the
+  // answer; if it says no, the gate replaces this button.
+  if (!statusKnown()) toast('Still connecting to the device - one moment.');
+  await whenStatusKnown();
+  if (stale() || !hasPack()) return;
   const modelId = await engine.pickedModel('live');
-  if (!(await engine.isDownloaded(modelId))) {
+  const downloaded = await engine.isDownloaded(modelId);
+  if (stale()) return;
+  if (!downloaded) {
     toast('Captions need the one-time transcription download.');
     navigate('settings/transcription');
     return;
@@ -591,12 +617,20 @@ async function toggleCaptions() {
       else if (p.pct != null) $('btnCaptions').textContent = 'Loading ' + p.pct + '%';
     });
   } catch (e) {
-    notice('sessionNotice', 'Could not start transcription: ' + (e && e.message ? e.message : e), 'err');
+    if (!stale()) {
+      notice('sessionNotice', 'Could not start transcription: ' + (e && e.message ? e.message : e), 'err');
+    }
+    $('btnCaptions').disabled = false;
+    $('btnCaptions').textContent = 'Start captions';
+    return;
+  }
+  if (stale()) {
     $('btnCaptions').disabled = false;
     $('btnCaptions').textContent = 'Start captions';
     return;
   }
   captionsOn = true;
+  captionRun++;
   $('captionCard').hidden = false;
   capChunks = [];
   capSamples = 0;
@@ -641,7 +675,10 @@ export function wire() {
   $('btnHear').onclick = toggleHear;
   $('btnCaptions').onclick = toggleCaptions;
   setHearLabel();
+}
 
+// Runs once the device has said whether the pack is there (see app.js boot).
+export function applyPack() {
   // Captions need the transcription pack; live listening does not. When the pack
   // is missing the button is simply absent and one gate sits where the captions
   // card would be - the session controls are untouched, because the session

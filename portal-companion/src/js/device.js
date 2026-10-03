@@ -4,16 +4,46 @@
 // Thin client for the device's own web endpoints (same-origin; the device
 // is the server). Everything voice-related stays on this origin.
 
-async function getJSON(path) {
-  const r = await fetch(path);
-  if (!r.ok) throw new Error(`device said ${r.status} for ${path}`);
-  return r.json();
+// The device serves one request at a time, so a busy moment can leave a request
+// pending with no answer. Quick lookups give up after a while and fail like any
+// other unreachable-device error, instead of leaving the page waiting forever.
+// Card listings get longer (big folders are slow to read). Transfers, uploads
+// and changes to files (delete, rename, new folder) get no limit: a transfer is
+// long by nature, and timing out a change the device may still finish would
+// report a failure that did not happen.
+const QUICK_MS = 5000;
+const LISTING_MS = 20000;
+
+// AbortSignal.timeout is missing on some older phone browsers.
+function timeoutSignal(ms) {
+  if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
+    return AbortSignal.timeout(ms);
+  }
+  if (typeof AbortController === 'undefined') return undefined;
+  const c = new AbortController();
+  setTimeout(() => c.abort(), ms);
+  return c.signal;
 }
 
-export function getRecordings() { return getJSON('/api/recordings'); }
-export function getBrowse(path) { return getJSON('/api/browse?path=' + encodeURIComponent(path)); }
-export function getWifiStatus() { return getJSON('/api/wifi/status'); }
-export function getStatus() { return getJSON('/api/status'); }
+function isTimeout(e) {
+  return !!e && (e.name === 'TimeoutError' || e.name === 'AbortError');
+}
+
+async function getJSON(path, ms) {
+  try {
+    const r = await fetch(path, { signal: timeoutSignal(ms) });
+    if (!r.ok) throw new Error(`device said ${r.status} for ${path}`);
+    return await r.json();
+  } catch (e) {
+    if (isTimeout(e)) throw new Error(`the device did not answer in time for ${path}`);
+    throw e;
+  }
+}
+
+export function getRecordings() { return getJSON('/api/recordings', LISTING_MS); }
+export function getBrowse(path) { return getJSON('/api/browse?path=' + encodeURIComponent(path), LISTING_MS); }
+export function getWifiStatus() { return getJSON('/api/wifi/status', QUICK_MS); }
+export function getStatus() { return getJSON('/api/status', QUICK_MS); }
 
 export async function fetchText(path) {
   const r = await fetch(path);
@@ -68,6 +98,6 @@ export async function uploadText(dir, filename, text) {
 // page sends). Harmless if it fails; recordings just stay undated.
 export async function setClock(epochMs) {
   try {
-    await fetch('/api/time?ms=' + epochMs, { method: 'POST' });
+    await fetch('/api/time?ms=' + epochMs, { method: 'POST', signal: timeoutSignal(QUICK_MS) });
   } catch { /* not fatal */ }
 }

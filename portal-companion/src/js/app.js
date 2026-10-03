@@ -45,6 +45,7 @@ const LEGACY = {
 };
 
 let route = 'listen';
+let painted = false;   // a view has been entered at least once
 
 function parseHash() {
   const raw = decodeURIComponent((location.hash || '').replace('#', '')).toLowerCase();
@@ -56,6 +57,7 @@ function parseHash() {
 
 function go(target, push) {
   route = target;
+  painted = true;
   const base = target.split('/')[0];
   const r = ROUTES[base];
   const sub = SUB[target];
@@ -116,6 +118,14 @@ function applyConn(patch) {
 }
 
 export function hasPack() { return packPresent; }
+
+// Controls are live before the device has answered (so a slow answer can never
+// leave a button dead). A control that needs the pack answer waits on this.
+let statusDone = false;
+let markStatusDone;
+const statusReady = new Promise((resolve) => { markStatusDone = resolve; });
+export function statusKnown() { return statusDone; }
+export function whenStatusKnown() { return statusReady; }
 
 // One gate treatment, wherever something needs a part that is not installed.
 // Yellow is notice, never error: the device is working exactly as shipped.
@@ -329,12 +339,8 @@ async function boot() {
   CFK.nav('companion', ROUTES[parseHash().split('/')[0]].dest, onDestination);
   CFK.onToast(toast);
 
-  await refreshConnection();
-  // Whether the pack is present decides what several views render, so settle it
-  // before anything wires up or paints - otherwise affordances appear and then
-  // flash away, which reads as a fault rather than a state.
-  await refreshStatus();
-
+  // Every control is wired before the device is asked anything: if an answer is
+  // slow, buttons must still respond rather than sit dead until it arrives.
   live.wire();
   notes.wire();
   daily.wire();
@@ -352,7 +358,21 @@ async function boot() {
     engine.pickModel('notes', $('modelPickNotes').value).then(refreshSetup));
 
   window.addEventListener('hashchange', () => go(parseHash(), false));
-  go(parseHash(), false);
+
+  await refreshConnection();
+  // Whether the pack is present decides what several views render, so settle it
+  // before the first paint - otherwise affordances appear and then flash away,
+  // which reads as a fault rather than a state.
+  await refreshStatus();
+  live.applyPack();
+  statusDone = true;
+  markStatusDone();
+
+  // If the person already moved around while the device was answering, they are
+  // using a view: re-entering it now would reset what they started (a gathered
+  // daily note, a half-typed key). Update the pack-dependent parts in place.
+  if (painted) notes.applyPack();
+  else go(parseHash(), false);
 
   device.setClock(localNaiveEpochMs());
 
