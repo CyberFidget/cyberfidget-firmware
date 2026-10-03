@@ -20,9 +20,36 @@ with the version and date automatically.
 
 ### Added
 
+- Drawings and animations sent to the device can now play from the Screensavers
+  menu.
+- Wi-Fi networks can be found, saved, and tested over USB, without opening the
+  Web Portal.
+- The device can now report its built-in menu over USB, even when no custom
+  menu has been saved.
+
 ### Changed
 
+- The phone companion now tells incomplete memory card copies, device
+  connection problems, and speech download failures apart, with advice for each.
+
 ### Fixed
+
+- Menu changes now keep nested categories and leave apps that were not part of
+  the change in place.
+- Reordering the menu on the device now saves the new order for the next start.
+- The battery bar screen now clears the lights when it opens and closes.
+- Phone companion buttons now respond while waiting for device status. A late
+  reply no longer resets the page you are using or clears work in progress.
+- Creating a daily note without a saved provider key now opens the correct
+  transcription settings.
+- Notes checkboxes now work with the keyboard and screen readers, and Select
+  All shows when only some notes are selected.
+- Speech downloads now catch badly cut-off files before saving them, and
+  transcription can be retried after a failed setup instead of staying stuck.
+- Live captions now warn when speech repeatedly returns no text, with advice
+  to replace a damaged speech pack.
+- Stopping live captions now cancels a start that is still waiting. Text from
+  a stopped run is no longer shown, sent to the device, or saved in a later run.
 
 ### Removed
 
