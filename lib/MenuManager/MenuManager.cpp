@@ -631,7 +631,12 @@ static void collectLeaves(const std::vector<MenuItem>& items,
                           out);
         } else {
             LoadoutManifest::ArrangeItem item;
-            item.id          = appIds[mi.appIndex];
+            item.id = LoadoutManifest::menuLeafId(!mi.blobPath.empty(),
+                mi.blobPath.empty() ? appDefs[mi.appIndex].name : nullptr,
+                mi.blobId);
+            // Omit leaves without a usable saved-menu id instead of sending
+            // an id that cannot match an entry (e.g. a blob with no blobId).
+            if (item.id.empty()) continue;
             item.category    = categoryPath;
             item.hasCategory = true;
             out.push_back(item);

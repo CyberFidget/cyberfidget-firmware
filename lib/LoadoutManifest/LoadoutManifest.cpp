@@ -438,6 +438,11 @@ std::string slugifyBuiltinName(const char* name) {
     return slug;
 }
 
+std::string menuLeafId(bool isBlob, const char* builtinName,
+                       const std::string& blobId) {
+    return isBlob ? blobId : slugifyBuiltinName(builtinName);
+}
+
 bool normalizeBuiltinIds(Loadout& loadout, const RegistryApp* apps, int count) {
     if (!apps || count <= 0) return false;
     bool changed = false;

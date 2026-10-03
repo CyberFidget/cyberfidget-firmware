@@ -72,6 +72,9 @@ struct RegistryApp {
 };
 
 std::string slugifyBuiltinName(const char* name);
+/// Saved-menu id for a leaf; empty means the leaf cannot be arranged.
+std::string menuLeafId(bool isBlob, const char* builtinName,
+                       const std::string& blobId);
 bool normalizeBuiltinIds(Loadout& loadout, const RegistryApp* apps, int count);
 
 /// One merged menu row: an index into the registry array passed to
