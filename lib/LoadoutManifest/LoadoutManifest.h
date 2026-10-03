@@ -37,11 +37,20 @@ constexpr const char* kDataScreensaverCategory = "Screensavers";
 inline bool isPlayerFormat(const std::string& format) { return format == kFormatCfsprite; }
 
 /**
+ * The one rule for a data screensaver's file, shared by the manifest (add /
+ * replace) and the player, so the two can never disagree:
+ * `/assets/ss/<id>-<hash8>.cfs` - top level, `<id>` non-empty, made of
+ * letters, digits, '_', '-' and single '.' (not first, never "..");
+ * `<hash8>` exactly 8 lowercase hex digits.
+ */
+bool isDataScreensaverPath(const std::string& path);
+
+/**
  * Whether a file path fits an entry of `format`: a data screensaver's must
- * be `/assets/ss/<id>-<hash8>.cfs` (8 lowercase hex digits, top level), a
- * delivered app's ("wasm" / "blob") must be under `/apps/`. An empty path,
- * and any other format, fits. add and replace refuse a path that does not
- * fit, so an entry can never point its player at a file it cannot open.
+ * pass isDataScreensaverPath(), a delivered app's ("wasm" / "blob") must be
+ * under `/apps/`. An empty path, and any other format, fits. add and
+ * replace refuse a path that does not fit, so an entry can never point its
+ * player at a file it cannot open.
  */
 bool blobPathFitsFormat(const std::string& format, const std::string& blobPath);
 

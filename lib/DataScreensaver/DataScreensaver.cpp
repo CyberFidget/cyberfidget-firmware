@@ -16,6 +16,7 @@
 #include "CfsPlayback.h"
 #include "DisplayProxy.h"
 #include "HAL.h"
+#include "LoadoutManifest.h"
 #include "LoadoutStore.h"
 #include "MenuManager.h"
 #include "RGBController.h"
@@ -23,9 +24,6 @@
 
 namespace DataScreensaver {
 namespace {
-
-// Data screensavers live here and nowhere else (the manifest's blobPath).
-constexpr char kDir[] = "/assets/ss/";
 
 std::string s_pendingPath;
 std::string s_pendingLabel;
@@ -127,7 +125,8 @@ void appBegin() {
     unregisterButtons();
 
     const std::string& path = s_pendingPath;
-    if (path.compare(0, sizeof(kDir) - 1, kDir) != 0 || path.find("..") != std::string::npos) {
+    // The same rule the manifest applies on add / replace.
+    if (!LoadoutManifest::isDataScreensaverPath(path)) {
         fail("path");
         return;
     }

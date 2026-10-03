@@ -351,6 +351,9 @@ void test_ops_blob_path_must_fit_format(void) {
         "/assets/ss/sub/APP_A-00000001.cfs", "/assets/ss/APP_A-00000001.wasm",
         "/assets/ss/-00000001.cfs", "/assets/ss/.x-00000001.cfs",
         "/assets/ss/APP_A-00000001.bmp",
+        "/assets/ss/doodle..v2-0123abcd.cfs", "/assets/ss/..-0123abcd.cfs",
+        "/assets/ss/a..-0123abcd.cfs", "/assets/ss/doo%dle-0123abcd.cfs",
+        "/assets/ss/doo dle-0123abcd.cfs", "/assets/ss/doo\\dle-0123abcd.cfs",
     };
     for (const char* p : badSprite) {
         Loadout l = makeBaseline();
@@ -385,6 +388,9 @@ void test_ops_blob_path_must_fit_format(void) {
         "\"blobPath\":\"/apps/W.wasm\"}}]}", nullptr));
     TEST_ASSERT_EQUAL_INT(6, (int)l.entries.size());
     TEST_ASSERT_TRUE(blobPathFitsFormat("cfsprite", ""));
+    // Single dots, dashes and underscores in the id are fine.
+    TEST_ASSERT_TRUE(isDataScreensaverPath("/assets/ss/my-doodle_v2.1-0123abcd.cfs"));
+    TEST_ASSERT_TRUE(blobPathFitsFormat("cfsprite", "/assets/ss/my-doodle_v2.1-0123abcd.cfs"));
     TEST_ASSERT_TRUE(blobPathFitsFormat("builtin", "/anything"));
 }
 

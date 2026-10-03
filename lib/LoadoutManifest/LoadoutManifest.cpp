@@ -695,18 +695,14 @@ int parseAbiVersion(const std::string& abi) {
     return (int)value;
 }
 
-bool blobPathFitsFormat(const std::string& format, const std::string& blobPath) {
-    if (blobPath.empty()) return true;
-    if (format == "wasm" || format == "blob") return blobPath.compare(0, 6, "/apps/") == 0;
-    if (!isPlayerFormat(format)) return true;
+bool isDataScreensaverPath(const std::string& path) {
     static const char kDir[] = "/assets/ss/";
     static const char kExt[] = ".cfs";
     const size_t dirLen = sizeof(kDir) - 1, extLen = sizeof(kExt) - 1;
-    if (blobPath.compare(0, dirLen, kDir) != 0) return false;
-    const std::string name = blobPath.substr(dirLen);
-    // <id>-<8 lowercase hex>.cfs: a non-empty id not starting with '.',
-    // no further directory, no spaces or control bytes.
-    if (name.size() < 1 + 1 + 8 + extLen || name[0] == '.') return false;
+    if (path.compare(0, dirLen, kDir) != 0) return false;
+    const std::string name = path.substr(dirLen);
+    // <id>-<8 lowercase hex>.cfs
+    if (name.size() < 1 + 1 + 8 + extLen) return false;
     if (name.compare(name.size() - extLen, extLen, kExt) != 0) return false;
     const size_t hashAt = name.size() - extLen - 8;
     if (name[hashAt - 1] != '-') return false;
@@ -714,11 +710,24 @@ bool blobPathFitsFormat(const std::string& format, const std::string& blobPath) 
         const char h = name[i];
         if (!((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f'))) return false;
     }
-    for (char ch : name) {
-        const unsigned char c = (unsigned char)ch;
-        if (c <= 0x20 || c == 0x7F || c == '/' || c == '\\') return false;
+    // The id: letters, digits, '_', '-', and '.' - never first, never "..".
+    const size_t idLen = hashAt - 1;
+    if (idLen == 0 || name[0] == '.') return false;
+    for (size_t i = 0; i < idLen; i++) {
+        const char c = name[i];
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        if (!ok) return false;
+        if (c == '.' && i + 1 < name.size() && name[i + 1] == '.') return false;
     }
     return true;
+}
+
+bool blobPathFitsFormat(const std::string& format, const std::string& blobPath) {
+    if (blobPath.empty()) return true;
+    if (format == "wasm" || format == "blob") return blobPath.compare(0, 6, "/apps/") == 0;
+    if (!isPlayerFormat(format)) return true;
+    return isDataScreensaverPath(blobPath);
 }
 
 bool applyAdd(Loadout& loadout, const LoadoutEntry& entry) {
