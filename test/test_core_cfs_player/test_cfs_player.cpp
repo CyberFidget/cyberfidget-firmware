@@ -3,7 +3,9 @@
 
 // The `.cfs` v1 reader (lib/DataScreensaver/CfsFormat): byte layout, a
 // bit-identical round trip of the 8-frame dinosaur through the streaming
-// reader, the 32 KB / 255-frame / 128x64 limits, and every refusal.
+// reader, the 32 KB / 255-frame / 128x64 limits, and every refusal. Plus
+// the playback (CfsPlayback) on a fake clock and the recording DisplayProxy:
+// the first frame is drawn before its time starts, centering, late updates.
 
 #include <unity.h>
 
@@ -11,6 +13,7 @@
 #include <vector>
 
 #include "CfsFormat.h"
+#include "CfsPlayback.h"
 #include "cfs_dino_fixture.h"
 
 using namespace Cfs;
@@ -362,6 +365,110 @@ void test_status_names_are_distinct(void) {
             TEST_ASSERT_NOT_EQUAL(0, strcmp(statusName(all[i]), statusName(all[j])));
 }
 
+// ---------- playback ----------
+
+namespace {
+
+std::vector<uint8_t> dinoFile(uint8_t loop) {
+    std::vector<std::vector<uint8_t>> frames;
+    std::vector<uint16_t> durations;
+    for (int i = 0; i < kDinoFrames; ++i) {
+        frames.emplace_back(kDinoFramesBits[i], kDinoFramesBits[i] + kDinoFrameBytes);
+        durations.push_back(kDinoDurationMs[i]);
+    }
+    return encode(kDinoW, kDinoH, loop, durations, frames);
+}
+
+DisplayProxy g_display;
+Playback g_playback;
+MemSource g_src;
+
+// The bytes the last recorded drawXbm call pointed at.
+const unsigned char* lastDrawn() {
+    TEST_ASSERT_TRUE(g_display.callCount > 0);
+    return g_display.calls[g_display.callCount - 1].data;
+}
+
+}  // namespace
+
+// A one-frame, 20 ms, play-once drawing whose first update comes late: the
+// frame must already be on screen (drawn at begin, before its time starts),
+// not skipped straight to the blank end.
+void test_playback_first_frame_drawn_before_clock(void) {
+    const std::vector<uint8_t> file = encode(16, 8, 0, {20}, blankFrames(16, 8, 1));
+    g_src = MemSource{&file};
+    TEST_ASSERT_EQUAL_STRING("ok", statusName(g_reader.open(memRead, &g_src, (uint32_t)file.size())));
+    g_display.reset();
+    TEST_ASSERT_TRUE(g_playback.begin(g_reader, g_display));
+    TEST_ASSERT_EQUAL_INT(1, g_display.callCount);
+    TEST_ASSERT_EQUAL_INT(0, g_playback.shownIndex());
+    TEST_ASSERT_EQUAL_INT16(56, g_display.calls[0].x);   // (128 - 16) / 2
+    TEST_ASSERT_EQUAL_INT16(28, g_display.calls[0].y);   // (64 - 8) / 2
+    TEST_ASSERT_EQUAL_INT16(16, g_display.calls[0].w);
+    TEST_ASSERT_EQUAL_INT16(8, g_display.calls[0].h);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(file.data() + 16, lastDrawn(), 16);
+
+    // No time passes before the clock starts, however long the caller takes.
+    TEST_ASSERT_TRUE(g_playback.update(60000) == Playback::Step::Unchanged);
+    TEST_ASSERT_EQUAL_INT(0, g_playback.shownIndex());
+
+    g_playback.startClock(1000);
+    TEST_ASSERT_TRUE(g_playback.update(1019) == Playback::Step::Unchanged);
+    // First update 25 ms after the clock started: the frame has had its 20 ms
+    // on screen, and a play-once item now goes blank.
+    TEST_ASSERT_TRUE(g_playback.update(1025) == Playback::Step::Redraw);
+    TEST_ASSERT_EQUAL_INT(-1, g_playback.shownIndex());
+    g_display.reset();
+    g_playback.draw(g_display);
+    TEST_ASSERT_EQUAL_INT(0, g_display.callCount);       // blank: nothing drawn
+    TEST_ASSERT_TRUE(g_playback.update(5000) == Playback::Step::Unchanged);
+}
+
+// A late first update lands on the frame that is due, with its bytes; the
+// dinosaur (64x64) sits centered; a loop wraps back to frame 0.
+void test_playback_late_update_and_loop(void) {
+    const std::vector<uint8_t> file = dinoFile(2);
+    g_src = MemSource{&file};
+    TEST_ASSERT_EQUAL_STRING("ok", statusName(g_reader.open(memRead, &g_src, (uint32_t)file.size())));
+    g_display.reset();
+    TEST_ASSERT_TRUE(g_playback.begin(g_reader, g_display));
+    TEST_ASSERT_EQUAL_INT16(32, g_display.calls[0].x);
+    TEST_ASSERT_EQUAL_INT16(0, g_display.calls[0].y);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(kDinoFramesBits[0], lastDrawn(), kDinoFrameBytes);
+
+    g_playback.startClock(0);
+    TEST_ASSERT_TRUE(g_playback.update(99) == Playback::Step::Unchanged);
+    TEST_ASSERT_TRUE(g_playback.update(250) == Playback::Step::Redraw);  // first update, late
+    TEST_ASSERT_EQUAL_INT(2, g_playback.shownIndex());
+    g_playback.draw(g_display);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(kDinoFramesBits[2], lastDrawn(), kDinoFrameBytes);
+    TEST_ASSERT_TRUE(g_playback.update(299) == Playback::Step::Unchanged);
+    TEST_ASSERT_TRUE(g_playback.update(850) == Playback::Step::Redraw);  // 8 x 100 ms: wrapped
+    TEST_ASSERT_EQUAL_INT(0, g_playback.shownIndex());
+    g_playback.draw(g_display);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(kDinoFramesBits[0], lastDrawn(), kDinoFrameBytes);
+}
+
+// Full screen at 0,0; a frame that cannot be read mid-play is reported.
+void test_playback_full_screen_and_read_failure(void) {
+    const std::vector<uint8_t> file = simpleFile(128, 64, 2);
+    g_src = MemSource{&file};
+    TEST_ASSERT_EQUAL_STRING("ok", statusName(g_reader.open(memRead, &g_src, (uint32_t)file.size())));
+    g_display.reset();
+    TEST_ASSERT_TRUE(g_playback.begin(g_reader, g_display));
+    TEST_ASSERT_EQUAL_INT16(0, g_display.calls[0].x);
+    TEST_ASSERT_EQUAL_INT16(0, g_display.calls[0].y);
+    g_playback.startClock(0);
+    g_src.shortBy = 1;
+    TEST_ASSERT_TRUE(g_playback.update(100) == Playback::Step::Failed);
+
+    // A reader that is not open cannot begin.
+    static Reader closed;
+    g_display.reset();
+    TEST_ASSERT_FALSE(g_playback.begin(closed, g_display));
+    TEST_ASSERT_EQUAL_INT(0, g_display.callCount);
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_layout_golden_bytes);
@@ -381,5 +488,8 @@ int main(int, char**) {
     RUN_TEST(test_rejects_over_32k);
     RUN_TEST(test_short_reads_refused);
     RUN_TEST(test_status_names_are_distinct);
+    RUN_TEST(test_playback_first_frame_drawn_before_clock);
+    RUN_TEST(test_playback_late_update_and_loop);
+    RUN_TEST(test_playback_full_screen_and_read_failure);
     return UNITY_END();
 }

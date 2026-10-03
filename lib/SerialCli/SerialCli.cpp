@@ -2127,7 +2127,10 @@ void SerialCli::cmdSoak(const char* arg) {
 
 void SerialCli::cmdApp() {
     AppIndex idx = AppManager::instance().activeApp();
-    const char* name = (appDefs[idx].name[0] != '\0') ? appDefs[idx].name : "menu";
+    // The shared data-screensaver slot has no menu name of its own; report
+    // it by an internal name here only (it never shows in a menu).
+    const char* name = (appDefs[idx].name[0] != '\0') ? appDefs[idx].name
+                     : (idx == APP_DATA_SCREENSAVER) ? "data-screensaver" : "menu";
     Serial.printf("[cmd] app.index=%d\n", (int)idx);
     Serial.printf("[cmd] app.name=%s\n", name);
     Serial.printf("[cmd] app.uptime_ms=%lu\n", static_cast<unsigned long>(millis()));

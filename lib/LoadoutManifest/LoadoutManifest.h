@@ -36,6 +36,15 @@ constexpr const char* kDataScreensaverCategory = "Screensavers";
 /// True for a data screensaver entry (format "cfsprite").
 inline bool isPlayerFormat(const std::string& format) { return format == kFormatCfsprite; }
 
+/**
+ * Whether a file path fits an entry of `format`: a data screensaver's must
+ * be `/assets/ss/<id>-<hash8>.cfs` (8 lowercase hex digits, top level), a
+ * delivered app's ("wasm" / "blob") must be under `/apps/`. An empty path,
+ * and any other format, fits. add and replace refuse a path that does not
+ * fit, so an entry can never point its player at a file it cannot open.
+ */
+bool blobPathFitsFormat(const std::string& format, const std::string& blobPath);
+
 /// Only schema version this firmware reads. Anything else is treated as
 /// unreadable and the menu falls back to compiled-in order (no legacy
 /// readers, no migration shims — a version bump is a conscious decision).
@@ -186,7 +195,8 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
 // ---- first shown entry, at every level; only 8 path levels considered).
 
 /// Add a new entry at the end of its category section (new categories
-/// become a new section at the end). Fails on duplicate id or empty id.
+/// become a new section at the end). Fails on duplicate id or empty id, or
+/// a blobPath that does not fit the entry's format (blobPathFitsFormat).
 bool applyAdd(Loadout& loadout, const LoadoutEntry& entry);
 
 /// Remove the entry with `id`. Fails if not present.
@@ -226,7 +236,8 @@ bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order,
  * its blobPath, version, abi, name (the label) and signature are replaced
  * with the values in `entry`. Position, category, hidden flag and format
  * are kept. Fails (loadout untouched) on an empty/unknown id, an empty
- * blobPath (a replace always names the new blob), or an existing entry
+ * blobPath (a replace always names the new blob), a blobPath that does not
+ * fit the kept format (blobPathFitsFormat), or an existing entry
  * that is not a delivered item (format other than "wasm" / "blob" /
  * "cfsprite"; a data screensaver swaps its drawing the same way).
  */

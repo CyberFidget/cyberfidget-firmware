@@ -695,8 +695,35 @@ int parseAbiVersion(const std::string& abi) {
     return (int)value;
 }
 
+bool blobPathFitsFormat(const std::string& format, const std::string& blobPath) {
+    if (blobPath.empty()) return true;
+    if (format == "wasm" || format == "blob") return blobPath.compare(0, 6, "/apps/") == 0;
+    if (!isPlayerFormat(format)) return true;
+    static const char kDir[] = "/assets/ss/";
+    static const char kExt[] = ".cfs";
+    const size_t dirLen = sizeof(kDir) - 1, extLen = sizeof(kExt) - 1;
+    if (blobPath.compare(0, dirLen, kDir) != 0) return false;
+    const std::string name = blobPath.substr(dirLen);
+    // <id>-<8 lowercase hex>.cfs: a non-empty id not starting with '.',
+    // no further directory, no spaces or control bytes.
+    if (name.size() < 1 + 1 + 8 + extLen || name[0] == '.') return false;
+    if (name.compare(name.size() - extLen, extLen, kExt) != 0) return false;
+    const size_t hashAt = name.size() - extLen - 8;
+    if (name[hashAt - 1] != '-') return false;
+    for (size_t i = hashAt; i < hashAt + 8; i++) {
+        const char h = name[i];
+        if (!((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f'))) return false;
+    }
+    for (char ch : name) {
+        const unsigned char c = (unsigned char)ch;
+        if (c <= 0x20 || c == 0x7F || c == '/' || c == '\\') return false;
+    }
+    return true;
+}
+
 bool applyAdd(Loadout& loadout, const LoadoutEntry& entry) {
     if (entry.id.empty()) return false;
+    if (!blobPathFitsFormat(entry.format, entry.blobPath)) return false;
     if (findEntry(loadout, entry.id.c_str()) >= 0) return false; // duplicate
     // Insert at the end of the entry's category section so contiguity
     // holds by construction; unknown categories start a new section at
@@ -1050,6 +1077,8 @@ bool applyReplace(Loadout& loadout, const LoadoutEntry& entry) {
     // Only a delivered app or data screensaver has a file to swap; builtin
     // (and any other kind, e.g. sprite packs) entries are refused.
     if (e.format != "wasm" && e.format != "blob" && !isPlayerFormat(e.format)) return false;
+    // The format is kept, so the new file must be one that format can use.
+    if (!blobPathFitsFormat(e.format, entry.blobPath)) return false;
     e.blobPath = entry.blobPath;
     e.version  = entry.version;
     e.abi      = entry.abi;

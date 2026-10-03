@@ -323,8 +323,7 @@ void test_ops_replace_only_on_delivered_blob_entries(void) {
             "\"blobPath\":\"/apps/APP_A-00000001.wasm\"}}]}", nullptr), f);
         TEST_ASSERT_EQUAL_STRING("/apps/APP_A.bin", l.entries[0].blobPath.c_str());
     }
-    // A data screensaver ("cfsprite") swaps its drawing the same way.
-    const char* ok[] = { "wasm", "blob", "cfsprite" };
+    const char* ok[] = { "wasm", "blob" };
     for (const char* f : ok) {
         Loadout l = makeBaseline();
         l.entries[0].format = f;
@@ -332,6 +331,61 @@ void test_ops_replace_only_on_delivered_blob_entries(void) {
             "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
             "\"blobPath\":\"/apps/APP_A-00000001.wasm\"}}]}", nullptr), f);
     }
+    // A data screensaver ("cfsprite") swaps its drawing the same way.
+    Loadout l = makeBaseline();
+    l.entries[0].format = "cfsprite";
+    TEST_ASSERT_TRUE(applyOps(l,
+        "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
+        "\"blobPath\":\"/assets/ss/APP_A-00000001.cfs\"}}]}", nullptr));
+    TEST_ASSERT_EQUAL_STRING("/assets/ss/APP_A-00000001.cfs", l.entries[0].blobPath.c_str());
+}
+
+// A file must be one its entry's format can use: a data screensaver only
+// plays /assets/ss/<id>-<hash8>.cfs, and a delivered app lives under /apps/.
+// Replace keeps the format, so a cross-format path is refused there too -
+// otherwise the sweep would delete the drawing it replaced.
+void test_ops_blob_path_must_fit_format(void) {
+    const char* badSprite[] = {
+        "/apps/APP_A-00000001.wasm", "/assets/APP_A-00000001.cfs",
+        "/assets/ss/APP_A.cfs", "/assets/ss/APP_A-0000000G.cfs",
+        "/assets/ss/sub/APP_A-00000001.cfs", "/assets/ss/APP_A-00000001.wasm",
+        "/assets/ss/-00000001.cfs", "/assets/ss/.x-00000001.cfs",
+        "/assets/ss/APP_A-00000001.bmp",
+    };
+    for (const char* p : badSprite) {
+        Loadout l = makeBaseline();
+        l.entries[0].format = "cfsprite";
+        l.entries[0].blobPath = "/assets/ss/APP_A-0123abcd.cfs";
+        const std::string rep = std::string("{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
+                                "\"blobPath\":\"") + p + "\"}}]}";
+        TEST_ASSERT_FALSE_MESSAGE(applyOps(l, rep.c_str(), nullptr), p);
+        TEST_ASSERT_EQUAL_STRING("/assets/ss/APP_A-0123abcd.cfs", l.entries[0].blobPath.c_str());
+        const std::string add = std::string("{\"ops\":[{\"op\":\"add\",\"entry\":{\"id\":\"NEW\","
+                                "\"format\":\"cfsprite\",\"blobPath\":\"") + p + "\"}}]}";
+        TEST_ASSERT_FALSE_MESSAGE(applyOps(l, add.c_str(), nullptr), p);
+        TEST_ASSERT_EQUAL_INT(4, (int)l.entries.size());
+        TEST_ASSERT_FALSE(blobPathFitsFormat("cfsprite", p));
+    }
+    // A delivered app may not point into the drawings directory.
+    Loadout l = makeBaseline();
+    l.entries[0].format = "wasm";
+    l.entries[0].blobPath = "/apps/APP_A-0123abcd.wasm";
+    TEST_ASSERT_FALSE(applyOps(l,
+        "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
+        "\"blobPath\":\"/assets/ss/APP_A-00000001.cfs\"}}]}", nullptr));
+    TEST_ASSERT_EQUAL_STRING("/apps/APP_A-0123abcd.wasm", l.entries[0].blobPath.c_str());
+    TEST_ASSERT_FALSE(applyOps(l,
+        "{\"ops\":[{\"op\":\"add\",\"entry\":{\"id\":\"NEW\",\"format\":\"blob\","
+        "\"blobPath\":\"/assets/ss/NEW-00000001.cfs\"}}]}", nullptr));
+    // Paths that fit are accepted by add.
+    TEST_ASSERT_TRUE(applyOps(l,
+        "{\"ops\":[{\"op\":\"add\",\"entry\":{\"id\":\"SS\",\"format\":\"cfsprite\","
+        "\"blobPath\":\"/assets/ss/SS-89abcdef.cfs\"}},"
+        "{\"op\":\"add\",\"entry\":{\"id\":\"W\",\"format\":\"wasm\","
+        "\"blobPath\":\"/apps/W.wasm\"}}]}", nullptr));
+    TEST_ASSERT_EQUAL_INT(6, (int)l.entries.size());
+    TEST_ASSERT_TRUE(blobPathFitsFormat("cfsprite", ""));
+    TEST_ASSERT_TRUE(blobPathFitsFormat("builtin", "/anything"));
 }
 
 // Replacing a data screensaver swaps its drawing file; the entry stays a
@@ -419,6 +473,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_ops_replace_unknown_or_blobless_rejected);
     RUN_TEST(test_ops_replace_only_on_delivered_blob_entries);
     RUN_TEST(test_ops_replace_swaps_data_screensaver_file);
+    RUN_TEST(test_ops_blob_path_must_fit_format);
     RUN_TEST(test_collect_op_blob_paths);
     RUN_TEST(test_applied_record_round_trip);
     return UNITY_END();

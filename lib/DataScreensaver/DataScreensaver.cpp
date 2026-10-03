@@ -13,6 +13,7 @@
 
 #include "ButtonManager.h"
 #include "CfsFormat.h"
+#include "CfsPlayback.h"
 #include "DisplayProxy.h"
 #include "HAL.h"
 #include "LoadoutStore.h"
@@ -30,18 +31,11 @@ std::string s_pendingPath;
 std::string s_pendingLabel;
 
 // Everything one playback needs, allocated at begin() and freed at end(),
-// so the player costs no RAM while it is not on screen. All frames point
-// at the one Sprite whose data is the reader's frame buffer.
+// so the player costs no RAM while it is not on screen.
 struct Playback {
-    File                         file;
-    Cfs::Reader                  reader;
-    cf::gfx::Sprite              sprite;
-    const cf::gfx::Sprite*       frames[Cfs::kMaxFrames];
-    cf::gfx::Animation           anim;
-    cf::gfx::AnimationPlayer     player;
-    int16_t                      x = 0;
-    int16_t                      y = 0;
-    int                          shownIndex = -2;  // -2 = nothing drawn yet, -1 = blank
+    File            file;
+    Cfs::Reader     reader;
+    Cfs::Playback   playback;
 };
 
 Playback* s_play = nullptr;
@@ -147,18 +141,15 @@ void appBegin() {
 
     const Cfs::Status st = s_play->reader.open(readAt, &s_play->file, (uint32_t)s_play->file.size());
     if (st != Cfs::Status::Ok) { fail(Cfs::statusName(st)); return; }
-    if (!s_play->reader.loadFrame(0)) { fail("read_failed"); return; }
 
+    // Frame 0 goes on screen now, and its duration counts from when it is
+    // there: however late the first update comes, the opening frame shows.
+    DisplayProxy& d = HAL::displayProxy();
+    d.clear();
+    if (!s_play->playback.begin(s_play->reader, d)) { fail("read_failed"); return; }
+    d.display();
+    s_play->playback.startClock(millis());
     const Cfs::Header& h = s_play->reader.header();
-    s_play->sprite = cf::gfx::Sprite{s_play->reader.frame(), h.width, h.height, 0, 0,
-                                     cf::gfx::BO_LSB_FIRST};
-    for (uint16_t i = 0; i < h.frameCount; ++i) s_play->frames[i] = &s_play->sprite;
-    s_play->anim = cf::gfx::Animation{"cfs", s_play->frames, s_play->reader.durations(), 0,
-                                      (uint8_t)h.frameCount, (cf::gfx::LoopMode)h.loopMode};
-    // Smaller than the screen: centered.
-    s_play->x = (int16_t)((128 - (int)h.width) / 2);
-    s_play->y = (int16_t)((64 - (int)h.height) / 2);
-    s_play->player.play(&s_play->anim, millis());
 
     HAL::buttonManager().registerCallback(button_BottomLeftIndex, onBack);
     s_backButton = true;
@@ -180,30 +171,24 @@ void appUpdate() {
         return;
     }
     Playback& p = *s_play;
-    p.player.update(millis());
-    const cf::gfx::Sprite* sprite = p.player.sprite();
-    const int want = sprite ? (int)p.player.frameIndex() : -1;
-    if (want == p.shownIndex) return;  // nothing changed: no push
-
-    if (want >= 0 && want != p.reader.loadedIndex()) {
 #ifdef CF_TEST_CLI
-        const uint32_t t0 = micros();
+    const uint32_t t0 = micros();
 #endif
-        if (!p.reader.loadFrame((uint16_t)want)) { fail("read_failed"); return; }
+    const Cfs::Playback::Step step = p.playback.update(millis());
+    if (step == Cfs::Playback::Step::Failed) { fail("read_failed"); return; }
+    if (step == Cfs::Playback::Step::Unchanged) return;  // nothing changed: no push
 #ifdef CF_TEST_CLI
-        const uint32_t readUs = micros() - t0;
-        if (readUs > s_statReadMaxUs) s_statReadMaxUs = readUs;
+    const uint32_t readUs = micros() - t0;  // includes the frame read
+    if (readUs > s_statReadMaxUs) s_statReadMaxUs = readUs;
 #endif
-    }
 
     DisplayProxy& d = HAL::displayProxy();
     d.clear();
-    if (sprite) cf::gfx::drawSprite(d, *sprite, p.x, p.y);
+    p.playback.draw(d);
 #ifdef CF_TEST_CLI
     const uint32_t t1 = micros();
 #endif
     d.display();
-    p.shownIndex = want;
 #ifdef CF_TEST_CLI
     const uint32_t pushUs = micros() - t1;
     ++s_statFrames;
