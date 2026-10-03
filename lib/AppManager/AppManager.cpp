@@ -275,7 +275,8 @@ void AppManager::setup() {
         LoadoutManifest::Loadout lo;
         if (loadLoadoutManifest(lo, nullptr)) {
             for (const auto& e : lo.entries) {
-                if (e.id != bootWasmId || e.blobPath.empty() || e.format == "builtin") continue;
+                if (e.id != bootWasmId || e.blobPath.empty() || e.format == "builtin" ||
+                    LoadoutManifest::isPlayerFormat(e.format)) continue;
                 WasmFsApp::setPending(e.blobPath.c_str(), e.name.empty() ? e.id.c_str() : e.name.c_str(),
                                       LoadoutManifest::parseAbiVersion(e.abi), e.id.c_str());
                 bootWasm = true;

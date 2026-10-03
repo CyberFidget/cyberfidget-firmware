@@ -403,6 +403,25 @@ void test_delivered_blob_name_shape(void) {
     TEST_ASSERT_FALSE(isDeliveredBlobName(nullptr));
 }
 
+void test_delivered_sprite_name_shape(void) {
+    TEST_ASSERT_TRUE(isDeliveredSpriteName("doodle-0123abcd.cfs"));
+    TEST_ASSERT_TRUE(isDeliveredSpriteName("my-dino-deadbeef.cfs"));
+    TEST_ASSERT_TRUE(isDeliveredSpriteName("x-00000000.cfs"));
+    TEST_ASSERT_FALSE(isDeliveredSpriteName("doodle-0123abcd.wasm"));  // an app, not a drawing
+    TEST_ASSERT_FALSE(isDeliveredBlobName("doodle-0123abcd.cfs"));     // and the reverse
+    TEST_ASSERT_FALSE(isDeliveredSpriteName("doodle.cfs"));
+    TEST_ASSERT_FALSE(isDeliveredSpriteName("-0123abcd.cfs"));
+    TEST_ASSERT_FALSE(isDeliveredSpriteName("doodle-0123ABCD.cfs"));
+    TEST_ASSERT_FALSE(isDeliveredSpriteName("doodle-0123abc.cfs"));
+    TEST_ASSERT_FALSE(isDeliveredSpriteName("doodle-0123abcd.cfs.part"));
+    TEST_ASSERT_FALSE(isDeliveredSpriteName(".x-0123abcd.cfs"));
+    TEST_ASSERT_FALSE(isDeliveredSpriteName("sub/x-0123abcd.cfs"));
+    TEST_ASSERT_FALSE(isDeliveredSpriteName(""));
+    TEST_ASSERT_FALSE(isDeliveredSpriteName(nullptr));
+    TEST_ASSERT_EQUAL_STRING("/assets/ss", kDeliveredSpriteDir);
+    TEST_ASSERT_EQUAL_STRING("cfs1", kPlayerCapability);
+}
+
 void setUp(void)    {}
 void tearDown(void) {}
 
@@ -532,6 +551,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_flist_nontruncated_summary);
     RUN_TEST(test_confinement_rejects_applied_record);
     RUN_TEST(test_delivered_blob_name_shape);
+    RUN_TEST(test_delivered_sprite_name_shape);
     RUN_TEST(test_session_and_store_write_verbs);
     RUN_TEST(test_session_hold_window);
     RUN_TEST(test_busy_wait_steps);

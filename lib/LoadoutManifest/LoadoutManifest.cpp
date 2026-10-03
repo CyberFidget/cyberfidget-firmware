@@ -291,9 +291,12 @@ std::string topSegment(const std::string& path) {
 
 // The category the merge renders for a kept row (`row` from mergeRows): a
 // built-in with an empty category falls back to the first segment of its
-// compiled path; otherwise the stored category, as is.
+// compiled path, a data screensaver with none to Screensavers; otherwise
+// the stored category, as is.
 std::string renderedCategory(const LoadoutEntry& entry, int row, const RegistryApp* apps) {
     if (row >= 0 && entry.category.empty()) return topSegment(apps[row].category);
+    if (row == kMergedBlob && entry.category.empty() && isPlayerFormat(entry.format))
+        return kDataScreensaverCategory;
     return entry.category;
 }
 
@@ -651,12 +654,13 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
         if (rows[k] == kMergedBlob) {
             MergedApp m;
             m.appIndex = -1;
-            m.category = entry.category;
+            m.category = renderedCategory(entry, kMergedBlob, apps);
             m.hidden   = entry.hidden;
             m.label    = entry.name.empty() ? entry.id : entry.name;
             m.blobPath = entry.blobPath;
             m.abi      = parseAbiVersion(entry.abi);
             m.id       = entry.id;
+            m.format   = entry.format;
             out.push_back(m);
             continue;
         }
@@ -1043,9 +1047,9 @@ bool applyReplace(Loadout& loadout, const LoadoutEntry& entry) {
     int idx = findEntry(loadout, entry.id.c_str());
     if (idx < 0) return false; // replace never creates an entry
     LoadoutEntry& e = loadout.entries[(size_t)idx];
-    // Only a delivered blob app has a blob to swap; builtin (and any other
-    // kind, e.g. sprite packs) entries are refused.
-    if (e.format != "wasm" && e.format != "blob") return false;
+    // Only a delivered app or data screensaver has a file to swap; builtin
+    // (and any other kind, e.g. sprite packs) entries are refused.
+    if (e.format != "wasm" && e.format != "blob" && !isPlayerFormat(e.format)) return false;
     e.blobPath = entry.blobPath;
     e.version  = entry.version;
     e.abi      = entry.abi;

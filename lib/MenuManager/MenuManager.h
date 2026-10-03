@@ -85,13 +85,17 @@ public:
      * shared WASM_HOST slot, staging blobPath first.
      * @param path      category path, e.g. "Games"
      * @param label     the app's display name
-     * @param blobPath  confined /apps/... path to the .wasm file
+     * @param blobPath  confined /apps/... path to the .wasm file (or the
+     *                  /assets/ss/... .cfs file of a data screensaver)
+     * @param host      the slot the leaf launches: APP_WASM_HOST, or
+     *                  APP_DATA_SCREENSAVER for a data screensaver
      */
     void registerBlobApp(const std::string &path,
                          const std::string &label,
                          const std::string &blobPath,
                          int blobAbi,
-                         const std::string &blobId = std::string());
+                         const std::string &blobId = std::string(),
+                         AppIndex host = APP_WASM_HOST);
 
     /**
      * @brief Initialize the menu system. 

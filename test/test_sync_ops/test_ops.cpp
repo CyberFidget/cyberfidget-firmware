@@ -311,7 +311,9 @@ void test_ops_replace_unknown_or_blobless_rejected(void) {
 }
 
 void test_ops_replace_only_on_delivered_blob_entries(void) {
-    const char* formats[] = { "builtin", "cfsprite", "" };
+    // Built-ins and any kind the firmware does not deliver (e.g. a sprite
+    // pack) have no file to swap.
+    const char* formats[] = { "builtin", "", "spritepack" };
     for (const char* f : formats) {
         Loadout l = makeBaseline();
         l.entries[0].format = f;
@@ -321,7 +323,8 @@ void test_ops_replace_only_on_delivered_blob_entries(void) {
             "\"blobPath\":\"/apps/APP_A-00000001.wasm\"}}]}", nullptr), f);
         TEST_ASSERT_EQUAL_STRING("/apps/APP_A.bin", l.entries[0].blobPath.c_str());
     }
-    const char* ok[] = { "wasm", "blob" };
+    // A data screensaver ("cfsprite") swaps its drawing the same way.
+    const char* ok[] = { "wasm", "blob", "cfsprite" };
     for (const char* f : ok) {
         Loadout l = makeBaseline();
         l.entries[0].format = f;
@@ -329,6 +332,23 @@ void test_ops_replace_only_on_delivered_blob_entries(void) {
             "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_A\","
             "\"blobPath\":\"/apps/APP_A-00000001.wasm\"}}]}", nullptr), f);
     }
+}
+
+// Replacing a data screensaver swaps its drawing file; the entry stays a
+// data screensaver in its place.
+void test_ops_replace_swaps_data_screensaver_file(void) {
+    Loadout l = makeBaseline();
+    l.entries[1].format = "cfsprite";
+    l.entries[1].blobPath = "/assets/ss/APP_B-0123abcd.cfs";
+    l.entries[1].name = "Old";
+    TEST_ASSERT_TRUE(applyOps(l,
+        "{\"ops\":[{\"op\":\"replace\",\"entry\":{\"id\":\"APP_B\",\"name\":\"New\","
+        "\"blobPath\":\"/assets/ss/APP_B-89abcdef.cfs\"}}]}", nullptr));
+    TEST_ASSERT_EQUAL_STRING("/assets/ss/APP_B-89abcdef.cfs", l.entries[1].blobPath.c_str());
+    TEST_ASSERT_EQUAL_STRING("cfsprite", l.entries[1].format.c_str());
+    TEST_ASSERT_EQUAL_STRING("New", l.entries[1].name.c_str());
+    TEST_ASSERT_EQUAL_STRING("Games", l.entries[1].category.c_str());
+    TEST_ASSERT_EQUAL_INT(1, l.entries[1].position);
 }
 
 void test_collect_op_blob_paths(void) {
@@ -398,6 +418,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_ops_replace_swaps_blob_fields_only);
     RUN_TEST(test_ops_replace_unknown_or_blobless_rejected);
     RUN_TEST(test_ops_replace_only_on_delivered_blob_entries);
+    RUN_TEST(test_ops_replace_swaps_data_screensaver_file);
     RUN_TEST(test_collect_op_blob_paths);
     RUN_TEST(test_applied_record_round_trip);
     return UNITY_END();

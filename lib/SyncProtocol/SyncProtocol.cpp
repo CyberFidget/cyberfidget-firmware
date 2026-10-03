@@ -174,12 +174,13 @@ bool pathConfined(const char* path) {
     return true;
 }
 
-bool isDeliveredBlobName(const char* name) {
+namespace {
+// `<id>-<hash8><ext>`: see isDeliveredBlobName.
+bool hasDeliveredShape(const char* name, const char* kExt) {
     if (!name) return false;
-    static const char kExt[] = ".wasm";
-    const size_t extLen = sizeof(kExt) - 1;
+    const size_t extLen = std::strlen(kExt);
     const size_t len = std::strlen(name);
-    // At least a 1-byte id + "-" + 8 hex + ".wasm".
+    // At least a 1-byte id + "-" + 8 hex + the extension.
     if (len < 1 + 1 + 8 + extLen) return false;
     if (name[0] == '.') return false;
     if (std::strcmp(name + len - extLen, kExt) != 0) return false;
@@ -195,6 +196,11 @@ bool isDeliveredBlobName(const char* name) {
     }
     return true;
 }
+}  // namespace
+
+bool isDeliveredBlobName(const char* name) { return hasDeliveredShape(name, ".wasm"); }
+
+bool isDeliveredSpriteName(const char* name) { return hasDeliveredShape(name, ".cfs"); }
 
 bool parseWriteOpen(const char* args, char* pathOut, size_t pathCap,
                     uint32_t& sizeOut, uint32_t& crcOut) {

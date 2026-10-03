@@ -123,10 +123,13 @@ void buildNestedMenu() {
        for (const auto& m : merged) {
            if (m.hidden) continue;
            if (m.appIndex < 0) {
-               // A wasm app sent from the website at runtime: register a blob leaf launched
-               // through the shared WASM_HOST slot.
+               // An item sent from the website at runtime: a wasm app launches
+               // through the shared WASM_HOST slot, a data screensaver plays
+               // through the shared player slot.
                MenuManager::instance().registerBlobApp(
-                   m.category, m.label, m.blobPath, m.abi, m.id);
+                   m.category, m.label, m.blobPath, m.abi, m.id,
+                   LoadoutManifest::isPlayerFormat(m.format) ? APP_DATA_SCREENSAVER
+                                                              : APP_WASM_HOST);
                continue;
            }
            addAppToMenu(appDefs[m.appIndex].name, m.category.c_str(), m.appIndex);

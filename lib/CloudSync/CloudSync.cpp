@@ -635,7 +635,7 @@ bool clearPreviousApps(bool& changed) {
     if (loadout.entries.size() == before) return true;
     bool removed = true;
     for (const auto& path : blobs) {
-        if (path.compare(0, 6, "/apps/") == 0 &&
+        if ((path.compare(0, 6, "/apps/") == 0 || path.compare(0, 11, "/assets/ss/") == 0) &&
             SyncProtocol::pathConfined(path.c_str()) &&
             LittleFS.exists(path.c_str()) && !LittleFS.remove(path.c_str())) removed = false;
     }

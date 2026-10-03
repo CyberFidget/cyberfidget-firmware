@@ -147,7 +147,7 @@ exactly as before.
   `name` and `signature` (a signature belongs to the blob it signed),
   keeping its position, category, hidden flag and format. An unknown id,
   an empty `blobPath`, or an existing entry whose `format` is not `wasm` /
-  `blob` (builtin and sprite entries) rejects the document. `add` of an
+  `blob` / `cfsprite` (builtin and other entries) rejects the document. `add` of an
   installed id stays rejected.
 * `collectOpBlobPaths` lists every `add` / `replace` entry's `blobPath` so
   the transport can refuse a document pointing outside its confined write
@@ -172,7 +172,15 @@ reference.
 Delivered app blobs are named `/apps/<id>-<hash8>.wasm` (hash8 = the first
 8 lowercase hex digits of the blob's SHA-256). Because the name changes
 with the content, a `replace` points the entry at a new file and the old
-one becomes an orphan the transport sweeps after the apply. The schema is
+one becomes an orphan the transport sweeps after the apply.
+
+Data screensavers (drawings sent as data) are entries with
+`format: "cfsprite"` and `blobPath` = `/assets/ss/<id>-<hash8>.cfs`. The
+merge keeps them as file-backed rows like delivered apps (no path = dropped)
+and carries the format on the merged row, so the menu launches them through
+the data-screensaver player (`lib/DataScreensaver`), never as an app. One
+with an empty `category` shows under `Screensavers`. They are swept,
+replaced and cleared like delivered apps. The schema is
 unchanged (still version 1), so firmware without `replace` still reads a
 manifest written by firmware with it.
 

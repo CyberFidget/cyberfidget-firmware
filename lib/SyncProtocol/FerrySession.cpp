@@ -415,23 +415,31 @@ bool FerrySession::writeAppliedRecord(const std::string& record) {
     return ok;
 }
 
-// Delete top-level /apps blobs of the delivered shape that the manifest no
-// longer references. Anything not of that shape (a browser send's
-// `<id>.wasm`, assets, nested files, the diary) is never touched. If the
-// manifest cannot be read, nothing is deleted.
+// Delete top-level /apps blobs and /assets/ss data screensavers of the
+// delivered shape that the manifest no longer references. Anything not of
+// that shape (a browser send's `<id>.wasm`, other assets, nested files, the
+// diary) is never touched. If the manifest cannot be read, nothing is
+// deleted.
 void FerrySession::sweepOrphanBlobs(const std::string& manifestJson) {
     LoadoutManifest::Loadout loadout;
     if (!LoadoutManifest::parseManifest(manifestJson.c_str(), loadout)) return;
-    std::vector<std::string> names;
-    if (!storage_.listFiles(kDeliveredBlobDir, names)) return;
-    for (const std::string& name : names) {
-        if (!isDeliveredBlobName(name.c_str())) continue;
-        const std::string path = std::string(kDeliveredBlobDir) + "/" + name;
-        bool referenced = false;
-        for (const auto& e : loadout.entries) {
-            if (e.blobPath == path) { referenced = true; break; }
+    struct SweptDir { const char* dir; bool (*shape)(const char*); };
+    const SweptDir dirs[] = {
+        { kDeliveredBlobDir,   isDeliveredBlobName },
+        { kDeliveredSpriteDir, isDeliveredSpriteName },
+    };
+    for (const SweptDir& d : dirs) {
+        std::vector<std::string> names;
+        if (!storage_.listFiles(d.dir, names)) continue;
+        for (const std::string& name : names) {
+            if (!d.shape(name.c_str())) continue;
+            const std::string path = std::string(d.dir) + "/" + name;
+            bool referenced = false;
+            for (const auto& e : loadout.entries) {
+                if (e.blobPath == path) { referenced = true; break; }
+            }
+            if (!referenced) storage_.remove(path.c_str());
         }
-        if (!referenced) storage_.remove(path.c_str());
     }
 }
 

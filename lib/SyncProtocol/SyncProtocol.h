@@ -61,8 +61,18 @@ constexpr const char* kAppliedRecordTemp = "/apps/.applied.json.part";
 /// for an incompatible change to the batch contract.
 constexpr const char* kLapplyCapability = "batch1";
 
+/// Data-screensaver player capability advertised as
+/// `[cmd] syncinfo.player=<value>`: the `.cfs` versions the built-in player
+/// reads. A sender only sends a `format:"cfsprite"` entry to a device
+/// reporting it; older firmware has no such line (older senders ignore it).
+constexpr const char* kPlayerCapability = "cfs1";
+
 /// Directory the orphan-blob sweep after a batch apply walks (top level only).
 constexpr const char* kDeliveredBlobDir = "/apps";
+
+/// Directory of data screensavers (`<id>-<hash8>.cfs`); the same sweep walks
+/// it (top level only).
+constexpr const char* kDeliveredSpriteDir = "/assets/ss";
 
 /**
  * True if `name` (a basename, no directory) has the delivered-app blob shape
@@ -72,6 +82,13 @@ constexpr const char* kDeliveredBlobDir = "/apps";
  * send's `<id>.wasm`) is left alone.
  */
 bool isDeliveredBlobName(const char* name);
+
+/**
+ * True if `name` has the data-screensaver shape `<id>-<hash8>.cfs` (the
+ * same rules as isDeliveredBlobName, with `.cfs`). Only files of this shape
+ * in kDeliveredSpriteDir are ever deleted by the orphan sweep.
+ */
+bool isDeliveredSpriteName(const char* name);
 
 /// Format ESP.getEfuseMac() as the canonical 12-character lowercase unit id.
 /// `out` must have room for 13 bytes including the terminator.

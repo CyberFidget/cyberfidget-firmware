@@ -304,7 +304,8 @@ void relaunchDelivered() {
     if (!have) return;
     const LoadoutManifest::LoadoutEntry* hit = nullptr;
     for (const auto& e : lo.entries) {
-        if (e.id == id && !e.blobPath.empty() && e.format != "builtin") { hit = &e; break; }
+        if (e.id == id && !e.blobPath.empty() && e.format != "builtin" &&
+            !LoadoutManifest::isPlayerFormat(e.format)) { hit = &e; break; }
     }
     if (!hit || hit->blobPath == path) return;
     const AppIndex active = AppManager::instance().activeApp();
