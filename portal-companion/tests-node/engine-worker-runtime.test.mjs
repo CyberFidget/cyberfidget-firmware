@@ -59,9 +59,13 @@ globalThis.self = {
     url = String(url);
     if (/^https?:\/\/(?!device\.test)/.test(url)) {
       if (internet === 'offline') throw new TypeError('Failed to fetch');
+      if (typeof internet === 'number') return new Response('', { status: internet });
       return new Response('weights', { status: 200 });
     }
     probed.push(url);
+    if (url === '/api/status') {
+      return new Response(JSON.stringify({ files: 3, totalBytes: 100, usedBytes: 50, clients: 1 }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     const a = answers[url] || 'ok';
     if (a === 'missing') return new Response('not found', { status: 404 });
     const type = url.endsWith('.wasm') ? 'application/wasm' : 'text/javascript';
@@ -87,7 +91,8 @@ test('a session build that fails on a missing runtime file names it', async () =
   posted.length = 0; probed.length = 0;
   send({ type: 'load', id: 1, modelId: 'model-a', english: true });
   await until(() => reply(1));
-  assert.equal(posted[0].type, 'building', 'the page is told a silent build may follow');
+  assert.deepEqual(posted[0], { type: 'started', id: 1 }, 'the load says when its turn in the queue came');
+  assert.equal(posted[1].type, 'building', 'the page is told a silent build may follow');
   const err = reply(1);
   assert.equal(err.type, 'error');
   assert.equal(err.kind, 'card');
@@ -95,7 +100,8 @@ test('a session build that fails on a missing runtime file names it', async () =
   assert.deepEqual(probed, [
     '/web/vendor/ort/ort-wasm-simd-threaded.mjs',
     '/web/vendor/ort/ort-wasm-simd-threaded.wasm',
-  ], 'probes stop at the first bad file');
+    '/api/status',
+  ], 'probes stop at the first bad file, then confirm it was the device');
 });
 
 test('a build that fails after an internet download failed is a download problem', async () => {
@@ -162,7 +168,7 @@ test('loads and transcriptions share one queue: one build at a time, always the 
   assert.deepEqual(builds, ['model-b', 'model-a', 'model-b'], 'built in request order, reused when current');
   assert.equal(reply(11).text, 'heard by model-a');
   assert.equal(reply(13).text, 'heard by model-b');
-  const order = posted.filter((m) => [10, 11, 12, 13].includes(m.id) && m.type !== 'progress').map((m) => m.id);
+  const order = posted.filter((m) => [10, 11, 12, 13].includes(m.id) && ['loaded', 'result', 'error'].includes(m.type)).map((m) => m.id);
   assert.deepEqual(order, [10, 11, 12, 13], 'answered in request order');
 });
 
@@ -190,4 +196,73 @@ test('a failing transcription is an engine problem', async () => {
   await until(() => reply(31));
   assert.equal(reply(31).type, 'error');
   assert.equal(reply(31).kind, 'engine');
+});
+
+for (const status of [403, 408, 429, 503]) {
+  test(`an internet answer of ${status} during the download makes a failed build a download problem`, async () => {
+    answers = {};
+    internet = status;
+    globalThis.__pipeline = async () => {
+      const res = await self.fetch('https://models.example/model.onnx');
+      throw new Error('Could not load model: ' + res.status);
+    };
+    posted.length = 0;
+    const id = 100 + status;
+    send({ type: 'load', id, modelId: 'model-x', english: true });
+    await until(() => reply(id));
+    assert.equal(reply(id).kind, 'download');
+    internet = 'ok';
+  });
+}
+
+test('an optional file the internet does not have (404) is not a download failure', async () => {
+  internet = 404;
+  globalThis.__pipeline = async () => {
+    await self.fetch('https://models.example/generation_config.json');   // optional, absent
+    throw new Error('no available backend found');
+  };
+  posted.length = 0;
+  send({ type: 'load', id: 120, modelId: 'model-x', english: true });
+  await until(() => reply(120));
+  assert.equal(reply(120).kind, 'engine');
+  internet = 'ok';
+});
+
+test('a file the library calls done just short of its size counts as finished', async () => {
+  globalThis.__pipeline = async (task, modelId, opts) => {
+    const cb = opts.progress_callback;
+    cb({ status: 'progress', file: 'model.onnx', loaded: 50, total: 100 });
+    cb({ status: 'progress', file: 'model.onnx', loaded: 97, total: 100 });   // last count, a little short
+    cb({ status: 'done', file: 'model.onnx' });
+    cb({ status: 'done', file: 'tokenizer.json' });                          // never reported progress
+    return async () => ({ text: '' });
+  };
+  posted.length = 0;
+  send({ type: 'load', id: 130, modelId: 'model-y', english: true });
+  await until(() => reply(130));
+  const seq = posted.filter((m) => ['progress', 'status', 'building'].includes(m.type))
+    .map((m) => (m.type === 'progress' ? 'p' + m.pct + (m.fileDone ? 'done' : '') : m.phase || m.type));
+  assert.deepEqual(seq, ['building', 'p50', 'p97', 'p100done', 'preparing', 'building', 'warming']);
+});
+
+test('a load queued behind a transcription says "started" only when its turn comes', async () => {
+  let release;
+  let calls = 0;
+  globalThis.__pipeline = async (task, modelId) => async () => {
+    if (calls++ === 0) return { text: '' };              // the warm-up run
+    await new Promise((r) => { release = r; });           // the long transcription
+    return { text: 'long ' + modelId };
+  };
+  posted.length = 0;
+  send({ type: 'load', id: 140, modelId: 'model-z', english: true });
+  await until(() => reply(140));
+  send({ type: 'transcribe', id: 141, modelId: 'model-z', english: true, audio: new Float32Array(16000) });
+  send({ type: 'load', id: 142, modelId: 'model-z', english: true });
+  await until(() => typeof release === 'function');    // the transcription is running
+  for (let i = 0; i < 20; i++) await tick();
+  assert.equal(posted.some((m) => m.type === 'started' && m.id === 142), false, 'still waiting behind the transcription');
+  release();
+  await until(() => reply(142));
+  const idx = (pred) => posted.findIndex(pred);
+  assert.ok(idx((m) => m.type === 'result' && m.id === 141) < idx((m) => m.type === 'started' && m.id === 142));
 });

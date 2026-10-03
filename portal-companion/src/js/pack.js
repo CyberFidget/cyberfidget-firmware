@@ -10,7 +10,8 @@
 //   'ok'          - the device has it, with the right type
 //   'missing'     - the DEVICE says it isn't there: a 404, or (older firmware,
 //                   which answered a missing file with its HTML page) a 200 of
-//                   the wrong type from something confirmed to be the device
+//                   the wrong type - and in both cases the device's own status
+//                   answer confirms it was the device that said so
 //   'unreachable' - no answer, a redirect or page from something that is not
 //                   the device (a captive portal, another network), or a busy
 //                   device that kept failing after retries
@@ -41,6 +42,41 @@ function expectedType(url) {
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// The device's status answer carries these fields (handleStatus in the
+// firmware's portal server). A captive portal or another network's server may
+// answer with JSON too, but not with this shape.
+export function looksLikeDeviceStatus(j) {
+  return !!j && typeof j === 'object' &&
+    ['files', 'totalBytes', 'usedBytes', 'clients'].every((k) => typeof j[k] === 'number');
+}
+
+// Is it really the device answering? Ask for its status and check the content.
+// Returns true, false (something else answered), or null (no answer).
+async function deviceAnswers(fetchImpl, delays) {
+  for (let i = 0; i <= delays.length; i++) {
+    if (i > 0) await sleep(delays[i - 1]);
+    const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+    const timer = ctl ? setTimeout(() => ctl.abort(), PROBE_TIMEOUT_MS) : null;
+    try {
+      const res = await fetchImpl('/api/status', {
+        cache: 'no-store',
+        redirect: 'manual',
+        signal: ctl ? ctl.signal : undefined,
+      });
+      if (res.status === 408 || res.status === 429 || res.status >= 500) continue;
+      if (!res.ok) return false;
+      let body;
+      try { body = await res.json(); } catch { return false; }
+      return looksLikeDeviceStatus(body);
+    } catch {
+      // no answer, or too slow: try again
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+  return null;
+}
 
 // One request. Returns 'ok' | 'missing' | 'wrongtype' | 'elsewhere' | 'retry'.
 async function attempt(url, fetchImpl) {
@@ -83,12 +119,12 @@ async function attemptWithRetries(url, fetchImpl, delays) {
 
 export async function probeDeviceFile(url, fetchImpl = fetch, delays = PROBE_RETRY_DELAYS_MS) {
   const result = await attemptWithRetries(url, fetchImpl, delays);
-  if (result === 'ok' || result === 'missing') return result;
-  if (result === 'wrongtype') {
-    // Only the device's own answer may blame the card: confirm it is the
-    // device by asking for its status, which only the device answers in JSON.
-    const status = await attemptWithRetries('/api/status', fetchImpl, delays);
-    return status === 'ok' ? 'missing' : 'unreachable';
+  if (result === 'ok') return 'ok';
+  if (result === 'missing' || result === 'wrongtype') {
+    // Only the device's own answer may blame the card. A 404 or a page can
+    // come from something in the way (a captive portal), so confirm it is the
+    // device by the content of its status answer.
+    return (await deviceAnswers(fetchImpl, delays)) ? 'missing' : 'unreachable';
   }
   return 'unreachable';
 }

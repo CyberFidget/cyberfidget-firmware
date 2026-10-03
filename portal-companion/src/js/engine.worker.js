@@ -13,6 +13,7 @@
 //   in : {type:'load', id, modelId, english, useGpu}
 //        {type:'transcribe', id, audio:Float32Array, modelId, english, longForm}
 //   out: {type:'hello', protocol}            once, when the worker starts
+//        {type:'started', id}                a load's turn in the queue came
 //        {type:'building'}                   library up; a silent build may follow
 //        {type:'progress', pct, label, fileDone}
 //        {type:'status', phase}              'preparing' | 'warming' (for the UI)
@@ -49,9 +50,11 @@ function markDownloadFailed() { if (building) building.downloadFailed = true; }
 
 // transformers.js downloads with the global fetch. Make a download that ends
 // early throw instead of being cached zero-padded (lengthCheckedFetch), and
-// note when an INTERNET download fails, so a failed build can be blamed on
-// the download only when the download really did fail. (A 404 is not noted:
-// the library asks for optional files that legitimately don't exist.)
+// note when an INTERNET download fails (no answer, an unsuccessful answer such
+// as 403/408/429/5xx, or a body that broke off), so a failed build can be
+// blamed on the download only when the download really did fail. (A 404 is
+// not noted: the library asks for optional files that legitimately don't
+// exist.)
 const deviceFetch = self.fetch.bind(self);
 const checkedFetch = lengthCheckedFetch(deviceFetch);
 self.fetch = async (input, init) => {
@@ -63,7 +66,7 @@ self.fetch = async (input, init) => {
     markDownloadFailed();
     throw err;
   }
-  if (res.status >= 500) markDownloadFailed();
+  if (!res.ok && res.status !== 404) markDownloadFailed();
   if (!res.body) return res;
   const reader = res.body.getReader();
   const body = new ReadableStream({
@@ -122,6 +125,24 @@ async function build(modelId, english, useGpu) {
   const device = useGpu ? 'webgpu' : 'wasm';
   const perFile = new Map();
   let preparingPosted = false;
+  // fileDone: this file has fully arrived. Files are discovered one at a time,
+  // so the overall % can touch 100 early and drop back; what follows the LAST
+  // finished file is the silent session build, and the page gives every
+  // finished file the long allowance.
+  const report = (file, fileDone) => {
+    let loaded = 0; let total = 0;
+    for (const f of perFile.values()) { loaded += f.loaded; total += f.total; }
+    const pct = Math.round((loaded / total) * 100);
+    self.postMessage({ type: 'progress', pct, label: file, fileDone });
+    // Tell the UI it isn't frozen at "downloading 100%" - and again if a
+    // later file made the download resume and finish again.
+    if (pct >= 100 && !preparingPosted) {
+      preparingPosted = true;
+      self.postMessage({ type: 'status', phase: 'preparing' });
+    } else if (pct < 100) {
+      preparingPosted = false;
+    }
+  };
   building = { downloadFailed: false };
   let p;
   try {
@@ -131,21 +152,19 @@ async function build(modelId, english, useGpu) {
       progress_callback: (ev) => {
         if (ev.status === 'progress' && ev.total) {
           perFile.set(ev.file, { loaded: ev.loaded, total: ev.total });
-          let loaded = 0; let total = 0;
-          for (const f of perFile.values()) { loaded += f.loaded; total += f.total; }
-          const pct = Math.round((loaded / total) * 100);
-          // fileDone: this file has fully arrived. Files are discovered one at
-          // a time, so the overall % can touch 100 early and drop back; what
-          // follows the LAST finished file is the silent session build, and
-          // the page gives every finished file the long allowance.
-          self.postMessage({ type: 'progress', pct, label: ev.file, fileDone: ev.loaded >= ev.total });
-          // Tell the UI it isn't frozen at "downloading 100%" - and again if a
-          // later file made the download resume and finish again.
-          if (pct >= 100 && !preparingPosted) {
-            preparingPosted = true;
-            self.postMessage({ type: 'status', phase: 'preparing' });
-          } else if (pct < 100) {
-            preparingPosted = false;
+          report(ev.file, ev.loaded >= ev.total);
+        } else if (ev.status === 'done') {
+          // The library says this file is finished - also when its last count
+          // stopped a little short of the advertised size (small shortfalls
+          // are accepted, see lengthCheckedFetch). Count it as complete.
+          const f = perFile.get(ev.file);
+          if (f) {
+            f.loaded = f.total;
+            report(ev.file, true);
+          } else {
+            // A file that never reported progress (e.g. already saved): still
+            // a sign the silent build may follow.
+            self.postMessage({ type: 'building' });
           }
         }
       },
@@ -187,6 +206,9 @@ async function pipelineFor(modelId, english, useGpu) {
 async function handle(msg) {
   try {
     if (msg.type === 'load') {
+      // Its turn in the queue has come: the page starts its quiet-worker
+      // clock now, not while this load waited behind a long transcription.
+      self.postMessage({ type: 'started', id: msg.id });
       await pipelineFor(msg.modelId, msg.english, msg.useGpu);
       self.postMessage({ type: 'loaded', id: msg.id, device: current.device });
       return;

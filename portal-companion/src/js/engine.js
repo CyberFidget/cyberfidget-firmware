@@ -91,6 +91,8 @@ export const LOAD_BUSY_MS = 15 * 60 * 1000;
 
 // ---- The engine's ONE state machine ----
 // phase: 'idle'     no worker (nothing loaded yet, or the download was removed)
+//        'queued'   a load waits behind transcriptions the worker is still
+//                   running (they can take minutes)             (no deadline)
 //        'loading'  a load is waiting on the worker            (short allowance)
 //        'building' a long silent stretch may follow            (long allowance)
 //        'ready'    the worker has a pipeline for S.readyFor
@@ -111,6 +113,22 @@ const S = {
 };
 let nextReqId = 1;
 let loadChain = Promise.resolve();   // loads run one at a time
+
+// Wrap a promise's settle functions so a second attempt is noticed: the
+// promise would silently ignore it, but it means two paths both thought they
+// owned the request - a lifecycle bug. Tests listen on __cfOnDoubleSettle.
+function settleOnce(resolve, reject, what) {
+  let done = false;
+  const guard = (fn) => (value) => {
+    if (done) {
+      if (typeof window !== 'undefined' && window.__cfOnDoubleSettle) window.__cfOnDoubleSettle(what);
+      return;
+    }
+    done = true;
+    fn(value);
+  };
+  return { resolve: guard(resolve), reject: guard(reject) };
+}
 let storageChain = Promise.resolve(); // ready-flag writes vs. removal, in order
 
 // These texts reach the user's screen. `kind` lets the Download button give
@@ -157,11 +175,12 @@ function clearTimer() {
 
 // (Re)start the quiet-worker clock for the load in flight. The callback
 // checks it still belongs to that load, so a timer can never act on a load
-// that has already settled.
+// that has already settled. A load still queued behind transcriptions has no
+// deadline yet: the worker is busy, not quiet.
 function arm() {
   clearTimer();
   const L = S.load;
-  if (!L) return;
+  if (!L || S.phase === 'queued') return;
   S.timer = setTimeout(() => {
     S.timer = null;
     if (S.load !== L) return;
@@ -228,19 +247,39 @@ async function workerLoadError() {
   return startError();
 }
 
+// A transcription the queued load was waiting behind has finished. Once none
+// are left, the worker should reach the load promptly: start its clock.
+function transcribeDone(id) {
+  const L = S.load;
+  if (!L || !L.ahead.delete(id)) return;
+  if (S.phase === 'queued' && !L.ahead.size) setPhase('loading');
+}
+
 function onWorkerMessage(msg) {
   const L = S.load;
   const mine = L && (msg.id === L.id || (msg.id == null && S.protocol < 2));
+  // Phase messages carry no id. A current worker only sends them for the job
+  // it is running, so before this load has started they belong to a
+  // transcription ahead of it (which may build a pipeline of its own).
+  const phaseForLoad = L && (L.started || S.protocol < 2) ? L : null;
   switch (msg.type) {
     case 'hello':
       S.protocol = msg.protocol || 0;
-      if (L) arm();
+      if (L && !L.started && L.ahead.size && S.protocol >= 2) setPhase('queued');
+      else if (L) arm();
+      break;
+    case 'started':
+      // The worker has reached this load in its queue: start the clock now.
+      if (L && msg.id === L.id) {
+        L.started = true;
+        setPhase(S.phase === 'queued' ? 'loading' : S.phase);
+      }
       break;
     case 'building':
-      setPhase('building');
+      if (phaseForLoad) setPhase('building');
       break;
     case 'progress':
-      if (!L) break;
+      if (!phaseForLoad) break;
       L.sawProgress = true;
       // A finished file may be the last one, and the silent build follows it.
       setPhase(msg.fileDone ? 'building' : 'loading');
@@ -249,7 +288,7 @@ function onWorkerMessage(msg) {
     case 'status':
       // 'preparing' (compiling the session) / 'warming' (warmup inference) —
       // the post-download phases that have no % so the UI doesn't look frozen.
-      if (!L) break;
+      if (!phaseForLoad) break;
       setPhase('building');
       if (L.onProgress) L.onProgress({ phase: msg.phase });
       break;
@@ -258,12 +297,12 @@ function onWorkerMessage(msg) {
       break;
     case 'result': {
       const p = S.pending.get(msg.id);
-      if (p) { S.pending.delete(msg.id); p.resolve(msg.text); }
+      if (p) { S.pending.delete(msg.id); p.resolve(msg.text); transcribeDone(msg.id); }
       break;
     }
     case 'error': {
       const p = msg.id != null && S.pending.get(msg.id);
-      if (p) { S.pending.delete(msg.id); p.reject(replyError(msg, false)); }
+      if (p) { S.pending.delete(msg.id); p.reject(replyError(msg, false)); transcribeDone(msg.id); }
       else if (mine) finishLoad(replyError(msg, true));
       break;
     }
@@ -335,12 +374,18 @@ export async function isDownloaded(id) {
     const answer = window.__cfTestEngine.downloaded;
     return typeof answer === 'object' ? !!answer[id] : !!answer;
   }
-  if (await settingGet(READY_PREFIX + id, false)) return true;
-  const legacy = await settingGet(LEGACY_READY_SETTING, '');
-  if (!legacy) return false;
-  await settingSet(READY_PREFIX + legacy, true);
-  await settingDelete(LEGACY_READY_SETTING);
-  return legacy === id;
+  // In turn with removal (see dropDownload): otherwise the legacy flag could
+  // be read before a removal and re-written as a new flag after it.
+  const gen = S.gen;
+  return withStorage(async () => {
+    if (gen !== S.gen) return false;       // removed since it was asked
+    if (await settingGet(READY_PREFIX + id, false)) return true;
+    const legacy = await settingGet(LEGACY_READY_SETTING, '');
+    if (!legacy) return false;
+    await settingSet(READY_PREFIX + legacy, true);
+    await settingDelete(LEGACY_READY_SETTING);
+    return legacy === id;
+  });
 }
 
 export async function downloadedBytes() {
@@ -396,9 +441,17 @@ async function loadNow(gen, modelId, onProgress) {
   const id = nextReqId++;
   const w = ensureWorker();
   const done = new Promise((resolve, reject) => {
-    S.load = { id, gen, modelId, onProgress: onProgress || null, sawProgress: false, resolve, reject };
+    S.load = {
+      id, gen, modelId,
+      onProgress: onProgress || null,
+      sawProgress: false,
+      started: false,
+      // Transcriptions the worker will run before reaching this load.
+      ahead: new Set(S.pending.keys()),
+      ...settleOnce(resolve, reject, 'load'),
+    };
   });
-  S.phase = 'loading';
+  S.phase = S.protocol >= 2 && S.load.ahead.size ? 'queued' : 'loading';
   arm();
   w.postMessage({
     type: 'load',
@@ -430,7 +483,7 @@ export async function transcribe(float32Audio, modelId) {
   const id = nextReqId++;
   const longForm = float32Audio.length > 16000 * 30;
   return new Promise((resolve, reject) => {
-    S.pending.set(id, { resolve, reject });
+    S.pending.set(id, settleOnce(resolve, reject, 'transcribe'));
     S.worker.postMessage({
       type: 'transcribe',
       id,

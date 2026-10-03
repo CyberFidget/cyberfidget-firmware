@@ -22,13 +22,14 @@ globalThis.self = {
     url = String(url);
     probed.push(url);
     if (deviceAnswer === 'offline') throw new TypeError('Failed to fetch');
+    if (url === '/api/status' && deviceAnswer !== 'portal') {
+      return new Response(JSON.stringify({ files: 3, totalBytes: 100, usedBytes: 50, clients: 1 }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }
     if (deviceAnswer === 'missing') return new Response('not found', { status: 404 });
     if (deviceAnswer === 'portal') return new Response('<html>', { status: 200, headers: { 'content-type': 'text/html' } });
     if (deviceAnswer === 'old-firmware') {
       // Answered a missing file with its HTML page, but it IS the device.
-      return url === '/api/status'
-        ? new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } })
-        : new Response('<html>', { status: 200, headers: { 'content-type': 'text/html' } });
+      return new Response('<html>', { status: 200, headers: { 'content-type': 'text/html' } });
     }
     return new Response('', { status: 200, headers: { 'content-type': 'text/javascript' } });
   },
@@ -60,7 +61,7 @@ test('a library the device says is missing is reported as a card problem', async
   assert.equal(err.id, 7, 'the load request id is echoed');
   assert.equal(err.kind, 'card');
   assert.equal(err.file, 'vendor/transformers.min.js');
-  assert.deepEqual(probed, ['/web/vendor/transformers.min.js']);
+  assert.deepEqual(probed, ['/web/vendor/transformers.min.js', '/api/status'], 'confirmed with the device');
 });
 
 test('older firmware answering with its own page is still a card problem', async () => {

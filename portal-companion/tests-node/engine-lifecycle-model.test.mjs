@@ -4,7 +4,8 @@
 // Model-based test of the engine facade's lifecycle (src/js/engine.js): drive
 // random sequences of load / transcribe / remove / worker failure / worker
 // replies / clock ticks against a fake worker, and check after every step:
-//   - every request settles at most once, and all of them settle by the end
+//   - every request settles at most once - no second settle is even
+//     attempted - and all of them settle by the end
 //   - nothing asked for before a removal becomes ready after it, and a
 //     removal never restarts a queued load (no new worker without a new load)
 //   - at most one load is outstanding in the worker at any time
@@ -17,7 +18,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { workers, device, watch, flush, settle } from './support/page-fakes.mjs';
+import { workers, device, doubleSettles, watch, flush, settle } from './support/page-fakes.mjs';
 
 const engine = await import('../src/js/engine.js');
 const MODELS = engine.listModels().map((m) => m.id).slice(0, 2);
@@ -66,12 +67,24 @@ test('random lifecycles keep the invariants', async (t) => {
     };
     const outstandingLoads = (w) => w.loads().filter((m) => !answered.has(m.id));
     const outstandingTranscribes = (w) => w.posted.filter((m) => m.type === 'transcribe' && !answered.has(m.id));
+    const started = new Set();       // load ids the worker announced as started
+    // A current worker says hello before anything else; one that has already
+    // said something else is an older worker and never will.
+    const spoke = new WeakSet();
+    const say = (w, msg) => { spoke.add(w); w.emit(msg); };
+    // A phase message counts for the load only once it has started (a
+    // current worker sends them for the job it is running); hello and
+    // 'started' themselves always restart the clock.
     const signal = (w, phase) => {
-      if (track && track.worker === w) { track.lastAt = now; if (phase) track.phase = phase; }
+      if (!track || track.worker !== w) return;
+      if (phase && hello.has(w) && !started.has(track.id)) return;
+      track.lastAt = now;
+      if (phase) track.phase = phase;
     };
 
     const check = (step) => {
       for (const c of calls) assert.ok(c.w.settles <= 1, where(step, 'a request settled twice'));
+      assert.deepEqual(doubleSettles, [], where(step, 'a second attempt to settle a request'));
       for (const c of calls) {
         if (c.type === 'load' && c.gen < removals && c.w.state === 'resolved') {
           assert.ok(c.resolvedAtRemoval, where(step, 'a load asked for before a removal became ready after it'));
@@ -81,16 +94,21 @@ test('random lifecycles keep the invariants', async (t) => {
         assert.equal(workers.length, workersAtRemoval, where(step, 'a removal restarted a queued load'));
         assert.equal(engine.loaded(), false, where(step, 'ready after a removal with no new load'));
       }
-      const w = cur();
-      if (w) {
-        const out = outstandingLoads(w);
-        assert.ok(out.length <= 1, where(step, 'two loads outstanding in the worker'));
-        // Start tracking silence for a newly sent load.
-        if (out.length === 1 && (!track || track.id !== out[0].id)) {
-          track = { worker: w, id: out[0].id, lastAt: now, phase: 'loading' };
-        }
-      }
+      trackNewLoad(step, now);
     };
+
+    // Start tracking silence for a newly sent load. `since`: the earliest it
+    // can have been sent (a load can start mid-tick, when the one before it
+    // settles), so the silence measured is never shorter than the real one.
+    function trackNewLoad(step, since) {
+      const w = cur();
+      if (!w) return;
+      const out = outstandingLoads(w);
+      assert.ok(out.length <= 1, where(step, 'two loads outstanding in the worker'));
+      if (out.length === 1 && (!track || track.id !== out[0].id)) {
+        track = { worker: w, id: out[0].id, lastAt: since, phase: 'loading' };
+      }
+    }
 
     // A stalled load was rejected: it must have been silent for a full allowance.
     const checkStall = (step, c) => {
@@ -121,29 +139,34 @@ test('random lifecycles keep the invariants', async (t) => {
         workersAtRemoval = workers.length;
         loadsSinceRemoval = 0;
         track = null;
-      } else if (r < 0.38 && w && !hello.has(w)) {
+      } else if (r < 0.38 && w && !hello.has(w) && !spoke.has(w)) {
         hello.add(w);
         w.hello();
         signal(w);
+      } else if (r < 0.44 && w && hello.has(w) && outstandingLoads(w).length && !started.has(outstandingLoads(w)[0].id)) {
+        const id = outstandingLoads(w)[0].id;
+        started.add(id);
+        say(w, { type: 'started', id });
+        signal(w);
       } else if (r < 0.52 && w && outstandingLoads(w).length) {
         const m = pick(['building', 'progress', 'progress', 'status']);
-        if (m === 'building') { w.emit({ type: 'building' }); signal(w, 'building'); }
-        else if (m === 'status') { w.emit({ type: 'status', phase: 'preparing' }); signal(w, 'building'); }
+        if (m === 'building') { say(w, { type: 'building' }); signal(w, 'building'); }
+        else if (m === 'status') { say(w, { type: 'status', phase: 'preparing' }); signal(w, 'building'); }
         else {
           const done = rand() < 0.5;
-          w.emit({ type: 'progress', pct: Math.floor(rand() * 100), label: 'f', fileDone: done });
+          say(w, { type: 'progress', pct: Math.floor(rand() * 100), label: 'f', fileDone: done });
           signal(w, done ? 'building' : 'loading');
         }
       } else if (r < 0.64 && w && outstandingLoads(w).length) {
         const m = outstandingLoads(w)[0];
         answered.add(m.id);
-        if (rand() < 0.75) w.emit({ type: 'loaded', id: m.id, device: 'wasm' });
-        else w.emit({ type: 'error', id: m.id, error: 'x', kind: pick(['card', 'connection', 'download', 'engine']) });
+        if (rand() < 0.75) say(w, { type: 'loaded', id: m.id, device: 'wasm' });
+        else say(w, { type: 'error', id: m.id, error: 'x', kind: pick(['card', 'connection', 'download', 'engine']) });
       } else if (r < 0.72 && w && outstandingTranscribes(w).length) {
         const m = pick(outstandingTranscribes(w));
         answered.add(m.id);
-        if (rand() < 0.8) w.emit({ type: 'result', id: m.id, text: 'hi' });
-        else w.emit({ type: 'error', id: m.id, error: 'x', kind: 'engine' });
+        if (rand() < 0.8) say(w, { type: 'result', id: m.id, text: 'hi' });
+        else say(w, { type: 'error', id: m.id, error: 'x', kind: 'engine' });
       } else if (r < 0.77 && w) {
         if (rand() < 0.5) w.fail({ type: 'error' });
         else w.fail({ type: 'error', message: 'out of memory' });
@@ -159,10 +182,12 @@ test('random lifecycles keep the invariants', async (t) => {
         let left = ms;
         while (left > 0) {
           const d = Math.min(left, 30 * 1000);
+          const pieceStart = now;
           now += d; left -= d;
           t.mock.timers.tick(d);
           await flush();
           for (const c of calls) checkStall(step, c);
+          trackNewLoad(step, pieceStart);
         }
       }
       await settle(); await flush();
@@ -175,9 +200,9 @@ test('random lifecycles keep the invariants', async (t) => {
     for (let round = 0; round < 30 && calls.some((c) => c.w.state === 'pending'); round++) {
       const w = cur();
       if (w) {
-        if (!hello.has(w)) { hello.add(w); w.hello(); }
-        for (const m of outstandingLoads(w)) { answered.add(m.id); w.emit({ type: 'loaded', id: m.id, device: 'wasm' }); }
-        for (const m of outstandingTranscribes(w)) { answered.add(m.id); w.emit({ type: 'result', id: m.id, text: 'hi' }); }
+        if (!hello.has(w) && !spoke.has(w)) { hello.add(w); w.hello(); }
+        for (const m of outstandingLoads(w)) { answered.add(m.id); say(w, { type: 'loaded', id: m.id, device: 'wasm' }); }
+        for (const m of outstandingTranscribes(w)) { answered.add(m.id); say(w, { type: 'result', id: m.id, text: 'hi' }); }
       }
       await settle(); await flush();
       if (round % 3 === 2) { now += LOAD_BUSY_MS; t.mock.timers.tick(LOAD_BUSY_MS); await settle(); await flush(); }

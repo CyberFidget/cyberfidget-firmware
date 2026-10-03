@@ -13,7 +13,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { workers, device, dbWrites, watch, flush, settle } from './support/page-fakes.mjs';
+import { workers, device, dbWrites, stores, storage, doubleSettles, watch, flush, settle } from './support/page-fakes.mjs';
 
 const engine = await import('../src/js/engine.js');
 const [MODEL_A, MODEL_B] = engine.listModels().map((m) => m.id);
@@ -32,7 +32,8 @@ test('a worker script the device says is missing reports the card copy as incomp
   assert.equal(last().terminated, true, 'the dead worker is dropped at once');
   await settle(); await flush();
 
-  assert.deepEqual(device.probed, ['/web/engine.worker.js'], 'the device was asked about the worker file');
+  assert.deepEqual(device.probed, ['/web/engine.worker.js', '/api/status'],
+    'the device was asked about the worker file, and confirmed it was the device answering');
   assert.equal(p.state, 'rejected');
   assert.equal(p.value.kind, 'card');
   assert.match(p.value.message, /memory card/);
@@ -95,6 +96,7 @@ test('a download that goes quiet times out as a download problem; the next load 
   await flush();
   const w = last();
   w.hello();
+  w.started();
   // Progress keeps it alive: the clock restarts on every message.
   t.mock.timers.tick(engine.LOAD_IDLE_MS - 1);
   w.emit({ type: 'progress', pct: 40, label: 'model.onnx', fileDone: false });
@@ -136,6 +138,7 @@ test('a long silent build after the last file finishes is not cut off', async (t
   await flush();
   const w = last();
   w.hello();
+  w.started();
   w.emit({ type: 'building' });
   // An early file finishes, a later one downloads and then finishes too...
   w.emit({ type: 'progress', pct: 100, label: 'config.json', fileDone: true });
@@ -343,4 +346,110 @@ test('a failed transcription and a crashing worker get plain words too', async (
   assert.equal(p.value.kind, 'engine');
   assert.match(p.value.message, /stopped unexpectedly/);
   assert.equal(w.terminated, true);
+});
+
+test('a load queued behind a long transcription is not timed out while it waits', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const first = watch(engine.load(MODEL_A));
+  await flush();
+  const w = last();
+  w.hello();
+  w.emit({ type: 'started', id: w.lastLoad().id });
+  w.loaded();
+  await flush();
+  assert.equal(first.state, 'resolved');
+
+  // A long transcription keeps the worker busy; a load for another model
+  // waits behind it in the worker's queue.
+  const tr = watch(engine.transcribe(new Float32Array(16000 * 600), MODEL_A));
+  const trId = w.posted[w.posted.length - 1].id;
+  const p = watch(engine.load(MODEL_B));
+  await flush();
+  t.mock.timers.tick(25 * MIN);
+  await flush();
+  assert.equal(p.state, 'pending', 'waiting in the queue is not silence');
+  assert.equal(tr.state, 'pending');
+  assert.equal(w.terminated, false, 'the busy worker is not thrown away');
+
+  // The transcription finishes, the worker reaches the load and says so.
+  w.emit({ type: 'result', id: trId, text: 'a long note' });
+  w.emit({ type: 'started', id: w.lastLoad().id });
+  t.mock.timers.tick(engine.LOAD_IDLE_MS - 1);
+  w.loaded();
+  await flush();
+  assert.equal(tr.state, 'resolved');
+  assert.equal(p.state, 'resolved');
+});
+
+test('a queued load whose turn never comes after the queue empties still times out', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const w = last();
+  const tr = watch(engine.transcribe(new Float32Array(16000), MODEL_B));
+  const trId = w.posted[w.posted.length - 1].id;
+  const p = watch(engine.load(MODEL_A));
+  await flush();
+  w.emit({ type: 'result', id: trId, text: 'hi' });
+  t.mock.timers.tick(engine.LOAD_IDLE_MS);
+  await flush();
+  assert.equal(tr.state, 'resolved');
+  assert.equal(p.state, 'rejected');
+  assert.match(p.value.message, /stopped responding/);
+});
+
+test('checking for an old-style download at the moment it is removed leaves nothing ready', async () => {
+  stores.settings.clear();
+  stores.settings.set('engineReadyFor', MODEL_A);    // the legacy flag
+  const check = engine.isDownloaded(MODEL_A);        // migrates the legacy flag...
+  const removal = engine.dropDownload();             // ...while the download is removed
+  await Promise.all([check, removal]);
+  await flush();
+  const left = [...stores.settings.keys()].filter((k) => String(k).startsWith('engineReadyFor'));
+  assert.deepEqual(left, [], 'no ready flag survives the removal');
+  assert.equal(await engine.isDownloaded(MODEL_A), false);
+});
+
+test('the same, with storage answering slowly', async () => {
+  storage.hops = () => 2;
+  try {
+    stores.settings.clear();
+    stores.settings.set('engineReadyFor', MODEL_B);
+    const removal = engine.dropDownload();
+    const check = engine.isDownloaded(MODEL_B);      // asked after the removal began
+    assert.equal(await check, false);
+    await removal;
+    const left = [...stores.settings.keys()].filter((k) => String(k).startsWith('engineReadyFor'));
+    assert.deepEqual(left, []);
+  } finally {
+    storage.hops = () => 0;
+  }
+});
+
+test('no request was ever settled twice in this file', () => {
+  assert.deepEqual(doubleSettles, []);
+});
+
+test('progress from a transcription ahead of a queued load does not start the load\'s clock', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const first = watch(engine.load(MODEL_A));
+  await flush();
+  const w = last();
+  w.hello(); w.started(); w.loaded();
+  await flush();
+  assert.equal(first.state, 'resolved');
+  // A transcription for another model makes the worker build that model,
+  // reporting progress - for the transcription, not for the load behind it.
+  const tr = watch(engine.transcribe(new Float32Array(16000), MODEL_B));
+  const trId = w.posted[w.posted.length - 1].id;
+  const p = watch(engine.load(MODEL_B));
+  await flush();
+  w.emit({ type: 'building' });
+  w.emit({ type: 'progress', pct: 40, label: 'model.onnx', fileDone: false });
+  t.mock.timers.tick(20 * MIN);                       // then a long silent inference
+  await flush();
+  assert.equal(p.state, 'pending', 'the queued load has no deadline yet');
+  w.emit({ type: 'result', id: trId, text: 'hi' });
+  w.started(); w.loaded();
+  await flush();
+  assert.equal(tr.state, 'resolved');
+  assert.equal(p.state, 'resolved');
 });
