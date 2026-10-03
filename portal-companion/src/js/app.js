@@ -290,7 +290,9 @@ async function downloadModel() {
     $('modelFill').style.width = '100%';
     toast('Transcription is ready - works offline from now on.');
   } catch (e) {
-    notice('engineNotice',
+    // A pack missing from the memory card is not an internet problem: say so
+    // instead of sending the user off to check their connection.
+    notice('engineNotice', e && e.cardIncomplete ? e.message :
       'Download did not finish: ' + (e && e.message ? e.message : e) +
       '. Check your internet and try again - it resumes cleanly.', 'err');
   } finally {

@@ -75,45 +75,101 @@ let onProgressCb = null;
 let nextReqId = 1;
 const pending = new Map();        // transcribe id -> {resolve, reject}
 let loadWaiters = [];             // resolvers waiting on 'loaded'
+let loadTimer = null;             // fires when a load goes quiet for too long
+
+// A load that hears nothing from the worker for this long is treated as
+// failed, so no failure mode can leave the Download button waiting forever.
+// Every progress/status message restarts the clock; the longest legitimate
+// silence is building the session after the download (no progress events).
+export const LOAD_IDLE_MS = 3 * 60 * 1000;
+
+// Shown when the worker script itself can't be loaded from the device: the
+// device serves it from the memory card, so the copy there is incomplete.
+// This text reaches the user's screen.
+const CARD_INCOMPLETE = (file) =>
+  'The transcription files on the memory card are incomplete (' + file +
+  ' could not be loaded). Copy them to the card again, then try again.';
+
+function cardError(file) {
+  const err = new Error(CARD_INCOMPLETE(file));
+  err.cardIncomplete = true;
+  return err;
+}
+
+function clearLoadTimer() {
+  if (loadTimer) { clearTimeout(loadTimer); loadTimer = null; }
+}
+
+function armLoadTimer() {
+  clearLoadTimer();
+  if (!loadWaiters.length) return;
+  loadTimer = setTimeout(() => {
+    loadTimer = null;
+    failWorker(new Error('transcription setup stopped responding'));
+  }, LOAD_IDLE_MS);
+}
+
+function settleLoadWaiters(fn) {
+  clearLoadTimer();
+  const ws = loadWaiters; loadWaiters = [];
+  ws.forEach(fn);
+}
+
+// The worker is unusable: fail everything waiting on it and drop it, so the
+// next load() starts a fresh one instead of posting to a dead worker.
+function failWorker(err) {
+  settleLoadWaiters((w) => w.reject(err));
+  pending.forEach((p) => p.reject(err));
+  pending.clear();
+  if (worker) { worker.terminate(); worker = null; }
+  workerReadyFor = null;
+  activeDevice = null;
+}
 
 function ensureWorker() {
   if (worker) return worker;
   // Separate on-demand file (NOT inlined in the shell) so page load stays a
   // single request; the worker is fetched only when captions/transcription
   // start. Module worker so it can `import()` the device-served library.
-  worker = new Worker('/web/engine.worker.js', { type: 'module' });
-  worker.onmessage = (e) => {
+  const w = new Worker('/web/engine.worker.js', { type: 'module' });
+  worker = w;
+  w.onmessage = (e) => {
+    if (worker !== w) return;     // a dropped worker's late message
     const msg = e.data;
     if (msg.type === 'progress') {
+      armLoadTimer();
       if (onProgressCb) onProgressCb({ pct: msg.pct, label: msg.label });
     } else if (msg.type === 'status') {
+      armLoadTimer();
       // 'preparing' (compiling the session) / 'warming' (warmup inference) —
       // the post-download phases that have no % so the UI doesn't look frozen.
       if (onProgressCb) onProgressCb({ phase: msg.phase });
     } else if (msg.type === 'loaded') {
       activeDevice = msg.device;
-      const ws = loadWaiters; loadWaiters = [];
-      ws.forEach((w) => w.resolve());
+      settleLoadWaiters((x) => x.resolve());
     } else if (msg.type === 'result') {
       const p = pending.get(msg.id);
       if (p) { pending.delete(msg.id); p.resolve(msg.text); }
     } else if (msg.type === 'error') {
+      // msg.missing: a file the worker could not load from the device.
+      const err = msg.missing ? cardError(msg.missing) : new Error(msg.error);
       if (msg.id != null && pending.has(msg.id)) {
-        const p = pending.get(msg.id); pending.delete(msg.id); p.reject(new Error(msg.error));
+        const p = pending.get(msg.id); pending.delete(msg.id); p.reject(err);
       } else {
-        const ws = loadWaiters; loadWaiters = [];
-        ws.forEach((w) => w.reject(new Error(msg.error)));
+        settleLoadWaiters((x) => x.reject(err));
       }
     }
   };
-  worker.onerror = (e) => {
-    const err = new Error('transcription worker failed: ' + (e.message || 'unknown'));
-    const ws = loadWaiters; loadWaiters = [];
-    ws.forEach((w) => w.reject(err));
-    pending.forEach((p) => p.reject(err));
-    pending.clear();
+  w.onerror = (e) => {
+    if (worker !== w) return;
+    // A script that fails to load (missing, or served as the wrong type)
+    // fires a bare error event with no message; a crash inside a running
+    // worker carries one.
+    failWorker(e && e.message
+      ? new Error('transcription stopped unexpectedly: ' + e.message)
+      : cardError('engine.worker.js'));
   };
-  return worker;
+  return w;
 }
 
 export function listModels() { return MODELS; }
@@ -205,7 +261,10 @@ export async function load(modelId, onProgress) {
     english: !!(model && model.english),
     useGpu: gpuAvailable(),
   });
-  await new Promise((resolve, reject) => loadWaiters.push({ resolve, reject }));
+  await new Promise((resolve, reject) => {
+    loadWaiters.push({ resolve, reject });
+    armLoadTimer();
+  });
   workerReadyFor = modelId;
   onProgressCb = null;
   await settingSet(READY_PREFIX + modelId, true);

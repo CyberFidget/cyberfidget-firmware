@@ -13,7 +13,7 @@
 //   in : {type:'load', modelId, english, useGpu}
 //        {type:'transcribe', id, audio:Float32Array, english, longForm}
 //   out: {type:'progress', pct, label} | {type:'loaded', device}
-//        {type:'result', id, text} | {type:'error', id?, error}
+//        {type:'result', id, text} | {type:'error', id?, error, missing?}
 
 import { modelFileCache, lengthCheckedFetch, settingSet } from './db.js';
 
@@ -26,7 +26,16 @@ let activeModel = null;
 let activeDevice = null;
 
 async function buildPipeline(modelId, english, useGpu) {
-  const mod = await import('/web/vendor/transformers.min.js');
+  let mod;
+  try {
+    mod = await import('/web/vendor/transformers.min.js');
+  } catch (err) {
+    // The library comes from the memory card, not the internet: a failed
+    // import means the card's copy is missing or incomplete. The page turns
+    // `missing` into a message that says so.
+    err.missing = 'vendor/transformers.min.js';
+    throw err;
+  }
   const { env, pipeline } = mod;
   env.allowLocalModels = false;
   env.useBrowserCache = false;
@@ -109,6 +118,11 @@ self.onmessage = async (e) => {
       return;
     }
   } catch (err) {
-    self.postMessage({ type: 'error', id: msg && msg.id, error: String(err && err.message ? err.message : err) });
+    self.postMessage({
+      type: 'error',
+      id: msg && msg.id,
+      error: String(err && err.message ? err.message : err),
+      missing: (err && err.missing) || undefined,
+    });
   }
 };
