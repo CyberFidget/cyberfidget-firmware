@@ -20,6 +20,16 @@ with the version and date automatically.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+## [1.4.1] - 2026-10-03
+
+### Added
+
 - Drawings and animations sent to the device can now play from the Screensavers
   menu.
 - Wi-Fi networks can be found, saved, and tested over USB, without opening the
@@ -108,5 +118,6 @@ with the version and date automatically.
 
 - Dead header generation left over in the app module build.
 
-[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.3.3-rc2...v1.4.0
