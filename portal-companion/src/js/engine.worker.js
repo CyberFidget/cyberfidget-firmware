@@ -10,32 +10,53 @@
 // The worker loads the vendored transformers.js from the device (/web/vendor/)
 // and caches model weights in IndexedDB (shared with the page) so offline use
 // survives a cleared browser cache. Messages:
-//   in : {type:'load', modelId, english, useGpu}
+//   in : {type:'load', id, modelId, english, useGpu}
 //        {type:'transcribe', id, audio:Float32Array, english, longForm}
-//   out: {type:'progress', pct, label} | {type:'loaded', device}
-//        {type:'result', id, text} | {type:'error', id?, error, missing?}
+//   out: {type:'progress', pct, label} | {type:'status', phase} | {type:'building'}
+//        {type:'loaded', id, device} | {type:'result', id, text}
+//        {type:'error', id?, error, missing?, lost?}
+//   (`id` on load replies echoes the load request, so overlapping loads can't
+//   answer each other; `missing` names a device file that is absent or of the
+//   wrong type; `lost` means the device stopped answering.)
 
 import { modelFileCache, lengthCheckedFetch, settingSet } from './db.js';
+import { RUNTIME_FILES, probeDeviceFiles } from './pack.js';
+
+const LIBRARY = '/web/vendor/transformers.min.js';
 
 // transformers.js downloads with the global fetch; make a download that ends
 // early throw instead of being cached zero-padded.
-self.fetch = lengthCheckedFetch(self.fetch.bind(self));
+const deviceFetch = self.fetch.bind(self);
+self.fetch = lengthCheckedFetch(deviceFetch);
+
+// After a failure, ask the device about the files that step needed, so the
+// page can say "the card copy is incomplete" or "lost the connection" instead
+// of guessing. Neither tag means the device files are fine (e.g. the model
+// download from the internet failed).
+async function diagnose(err, urls) {
+  const e = err instanceof Error ? err : new Error(String(err));
+  const found = await probeDeviceFiles(urls, deviceFetch);
+  if (found.state === 'missing') e.missing = found.file;
+  else if (found.state === 'offline') e.lost = true;
+  return e;
+}
 
 let pipelinePromise = null;
+let pipelineModel = null;         // the model pipelinePromise is building/built
 let activeModel = null;
 let activeDevice = null;
 
 async function buildPipeline(modelId, english, useGpu) {
   let mod;
   try {
-    mod = await import('/web/vendor/transformers.min.js');
+    mod = await import(LIBRARY);
   } catch (err) {
-    // The library comes from the memory card, not the internet: a failed
-    // import means the card's copy is missing or incomplete. The page turns
-    // `missing` into a message that says so.
-    err.missing = 'vendor/transformers.min.js';
-    throw err;
+    throw await diagnose(err, [LIBRARY]);
   }
+  // The library is up. What follows is either the model download (progress
+  // events) or, for a model already saved, building the session with no
+  // events at all - tell the page so it allows for that long quiet stretch.
+  self.postMessage({ type: 'building' });
   const { env, pipeline } = mod;
   env.allowLocalModels = false;
   env.useBrowserCache = false;
@@ -49,6 +70,8 @@ async function buildPipeline(modelId, english, useGpu) {
   const device = useGpu ? 'webgpu' : 'wasm';
   const perFile = new Map();
   let preparingPosted = false;
+  // The session build fetches the runtime from the card; a failure here is a
+  // bad card copy, a lost device connection, or (neither) a model download.
   const p = await pipeline('automatic-speech-recognition', modelId, {
     dtype: 'q4',
     device,
@@ -68,7 +91,7 @@ async function buildPipeline(modelId, english, useGpu) {
         }
       }
     },
-  });
+  }).catch(async (err) => { throw await diagnose(err, RUNTIME_FILES); });
   activeModel = modelId;
   activeDevice = device;
   await settingSet('engineReadyFor:' + modelId, true);
@@ -86,9 +109,18 @@ async function buildPipeline(modelId, english, useGpu) {
 }
 
 async function getPipeline(modelId, english, useGpu) {
-  if (pipelinePromise && activeModel === modelId) return pipelinePromise;
-  pipelinePromise = buildPipeline(modelId, english, useGpu);
-  return pipelinePromise;
+  // Keyed by the model being BUILT, not the last one that finished: otherwise
+  // a request for the old model during (or after a failed) build of a new one
+  // would be handed the new model's pipeline, or its rejection.
+  if (pipelinePromise && pipelineModel === modelId) return pipelinePromise;
+  const build = buildPipeline(modelId, english, useGpu);
+  pipelinePromise = build;
+  pipelineModel = modelId;
+  // A failed build is not kept: the next request tries again.
+  build.catch(() => {
+    if (pipelinePromise === build) { pipelinePromise = null; pipelineModel = null; }
+  });
+  return build;
 }
 
 self.onmessage = async (e) => {
@@ -96,7 +128,7 @@ self.onmessage = async (e) => {
   try {
     if (msg.type === 'load') {
       await getPipeline(msg.modelId, msg.english, msg.useGpu);
-      self.postMessage({ type: 'loaded', device: activeDevice });
+      self.postMessage({ type: 'loaded', id: msg.id, device: activeDevice });
       return;
     }
     if (msg.type === 'transcribe') {
@@ -123,6 +155,7 @@ self.onmessage = async (e) => {
       id: msg && msg.id,
       error: String(err && err.message ? err.message : err),
       missing: (err && err.missing) || undefined,
+      lost: (err && err.lost) || undefined,
     });
   }
 };

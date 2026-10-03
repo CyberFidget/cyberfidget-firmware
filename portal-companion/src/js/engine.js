@@ -18,6 +18,7 @@ import {
   modelFilesClear, modelFilesList, settingDelete, settingGet, settingSet,
   settingsDeletePrefix, tryPersist,
 } from './db.js';
+import { probeDeviceFiles } from './pack.js';
 
 // Captions run single-thread on the phone's CPU (WebGPU and multi-thread WASM
 // both need a secure context, which the device's plain-http origin can't be),
@@ -74,56 +75,100 @@ let activeDevice = null;          // 'webgpu' | 'wasm' (reported by the worker)
 let onProgressCb = null;
 let nextReqId = 1;
 const pending = new Map();        // transcribe id -> {resolve, reject}
-let loadWaiters = [];             // resolvers waiting on 'loaded'
+const loadWaiters = new Map();    // load request id -> {resolve, reject}
 let loadTimer = null;             // fires when a load goes quiet for too long
+let loadChain = Promise.resolve(); // loads run one at a time (see load())
 
-// A load that hears nothing from the worker for this long is treated as
+// A load that hears nothing from the worker for too long is treated as
 // failed, so no failure mode can leave the Download button waiting forever.
-// Every progress/status message restarts the clock; the longest legitimate
-// silence is building the session after the download (no progress events).
+// Every message restarts the clock, and the allowance depends on what the
+// worker said last:
+//  - nothing yet, or download progress: LOAD_IDLE_MS. Starting the worker and
+//    each step of a download report back well within this.
+//  - 'building' or a status ('preparing', 'warming'): LOAD_BUSY_MS. Building the
+//    session and the warm-up run compute for a long time with no messages at
+//    all, and a slow phone must not be cut off mid-build.
 export const LOAD_IDLE_MS = 3 * 60 * 1000;
+export const LOAD_BUSY_MS = 15 * 60 * 1000;
 
-// Shown when the worker script itself can't be loaded from the device: the
-// device serves it from the memory card, so the copy there is incomplete.
-// This text reaches the user's screen.
-const CARD_INCOMPLETE = (file) =>
-  'The transcription files on the memory card are incomplete (' + file +
-  ' could not be loaded). Copy them to the card again, then try again.';
-
+// These texts reach the user's screen. `kind` tells the Download button not to
+// add "check your internet" to failures that have nothing to do with it.
 function cardError(file) {
-  const err = new Error(CARD_INCOMPLETE(file));
-  err.cardIncomplete = true;
+  const err = new Error('The transcription files on the memory card are incomplete (' + file +
+    ' is missing or unreadable). Copy them to the card again, then try again.');
+  err.kind = 'card';
   return err;
+}
+
+function connectionError() {
+  const err = new Error('Lost the connection to your Cyber Fidget. Make sure your phone is ' +
+    'still connected to it, then try again.');
+  err.kind = 'connection';
+  return err;
+}
+
+function startError() {
+  const err = new Error('Transcription could not start. Reload the page and try again.');
+  err.kind = 'engine';
+  return err;
+}
+
+// A worker error message -> the error the caller sees.
+function workerError(msg) {
+  if (msg.missing) return cardError(msg.missing);
+  if (msg.lost) return connectionError();
+  return new Error(msg.error);
 }
 
 function clearLoadTimer() {
   if (loadTimer) { clearTimeout(loadTimer); loadTimer = null; }
 }
 
-function armLoadTimer() {
+function armLoadTimer(ms) {
   clearLoadTimer();
-  if (!loadWaiters.length) return;
+  if (!loadWaiters.size) return;
   loadTimer = setTimeout(() => {
     loadTimer = null;
     failWorker(new Error('transcription setup stopped responding'));
-  }, LOAD_IDLE_MS);
+  }, ms);
 }
 
-function settleLoadWaiters(fn) {
+function settleLoad(id, fn) {
+  const w = loadWaiters.get(id);
+  if (!w) return;
+  loadWaiters.delete(id);
+  if (!loadWaiters.size) clearLoadTimer();
+  fn(w);
+}
+
+function settleAllLoads(fn) {
+  [...loadWaiters.keys()].forEach((id) => settleLoad(id, fn));
+}
+
+// The worker is unusable (or being thrown away): drop it at once, so the next
+// load() starts a fresh one instead of posting to a dead worker, and fail
+// everything that was waiting on it. `why` may be a promise of the error, for
+// failures that need a moment to diagnose; the waiters are taken now either way.
+function failWorker(why) {
   clearLoadTimer();
-  const ws = loadWaiters; loadWaiters = [];
-  ws.forEach(fn);
-}
-
-// The worker is unusable: fail everything waiting on it and drop it, so the
-// next load() starts a fresh one instead of posting to a dead worker.
-function failWorker(err) {
-  settleLoadWaiters((w) => w.reject(err));
-  pending.forEach((p) => p.reject(err));
-  pending.clear();
+  const loads = [...loadWaiters.values()]; loadWaiters.clear();
+  const reqs = [...pending.values()]; pending.clear();
   if (worker) { worker.terminate(); worker = null; }
   workerReadyFor = null;
   activeDevice = null;
+  return Promise.resolve(why).then((err) => {
+    loads.forEach((w) => w.reject(err));
+    reqs.forEach((p) => p.reject(err));
+  });
+}
+
+// The worker script itself failed to load. Ask the device about it: a missing
+// or wrongly-typed file is a bad card copy; no answer is a lost connection.
+async function workerLoadError() {
+  const found = await probeDeviceFiles(['/web/engine.worker.js']);
+  if (found.state === 'missing') return cardError(found.file);
+  if (found.state === 'offline') return connectionError();
+  return startError();
 }
 
 function ensureWorker() {
@@ -137,37 +182,45 @@ function ensureWorker() {
     if (worker !== w) return;     // a dropped worker's late message
     const msg = e.data;
     if (msg.type === 'progress') {
-      armLoadTimer();
+      armLoadTimer(LOAD_IDLE_MS);
       if (onProgressCb) onProgressCb({ pct: msg.pct, label: msg.label });
+    } else if (msg.type === 'building') {
+      // The library is up; a long silent build may follow. Only moves the
+      // timer - the UI has nothing to show for it. (Its own message type, not
+      // a 'status' phase, so an older page that forwards every status to the
+      // progress display just ignores it.)
+      armLoadTimer(LOAD_BUSY_MS);
     } else if (msg.type === 'status') {
-      armLoadTimer();
+      armLoadTimer(LOAD_BUSY_MS);
       // 'preparing' (compiling the session) / 'warming' (warmup inference) —
       // the post-download phases that have no % so the UI doesn't look frozen.
       if (onProgressCb) onProgressCb({ phase: msg.phase });
     } else if (msg.type === 'loaded') {
       activeDevice = msg.device;
-      settleLoadWaiters((x) => x.resolve());
+      if (msg.id != null) settleLoad(msg.id, (x) => x.resolve());
+      else settleAllLoads((x) => x.resolve());
     } else if (msg.type === 'result') {
       const p = pending.get(msg.id);
       if (p) { pending.delete(msg.id); p.resolve(msg.text); }
     } else if (msg.type === 'error') {
-      // msg.missing: a file the worker could not load from the device.
-      const err = msg.missing ? cardError(msg.missing) : new Error(msg.error);
+      const err = workerError(msg);
       if (msg.id != null && pending.has(msg.id)) {
         const p = pending.get(msg.id); pending.delete(msg.id); p.reject(err);
-      } else {
-        settleLoadWaiters((x) => x.reject(err));
+      } else if (msg.id != null && loadWaiters.has(msg.id)) {
+        settleLoad(msg.id, (x) => x.reject(err));
+      } else if (msg.id == null) {
+        settleAllLoads((x) => x.reject(err));
       }
     }
   };
   w.onerror = (e) => {
     if (worker !== w) return;
-    // A script that fails to load (missing, or served as the wrong type)
-    // fires a bare error event with no message; a crash inside a running
-    // worker carries one.
+    // A script that fails to load (missing, wrong type, or the device stopped
+    // answering) fires a bare error event with no message; a crash inside a
+    // running worker carries one.
     failWorker(e && e.message
       ? new Error('transcription stopped unexpectedly: ' + e.message)
-      : cardError('engine.worker.js'));
+      : workerLoadError());
   };
   return w;
 }
@@ -228,11 +281,12 @@ export async function downloadedBytes() {
 }
 
 export async function dropDownload() {
+  // Drop the worker first so the next load rebuilds cleanly, and so nothing
+  // still waiting on it (a load, a transcription) is left hanging.
+  failWorker(new Error('the transcription download was removed'));
   await modelFilesClear();
   await settingsDeletePrefix(READY_PREFIX);
   await settingDelete(LEGACY_READY_SETTING);
-  // Drop the worker so the next load rebuilds cleanly.
-  if (worker) { worker.terminate(); worker = null; workerReadyFor = null; activeDevice = null; }
 }
 
 export function gpuAvailable() {
@@ -244,6 +298,10 @@ export function backend() { return activeDevice; }
 
 // Build (or reuse) the recognition pipeline in the worker. onProgress({pct,label})
 // fires during the model download. Resolves when the worker is ready.
+//
+// Loads run one at a time: the worker holds ONE pipeline, so captions loading
+// one model while notes load another would otherwise race, and the first to
+// finish would mark the other as downloaded and ready.
 export async function load(modelId, onProgress) {
   if (window.__cfTestEngine) {
     if (window.__cfTestEngine.load) await window.__cfTestEngine.load(modelId);
@@ -251,22 +309,38 @@ export async function load(modelId, onProgress) {
     return;
   }
   if (!MODELS.some((m) => m.id === modelId)) throw new Error('unknown transcription model');
+  const run = loadChain.then(() => loadNow(modelId, onProgress));
+  loadChain = run.catch(() => {});
+  return run;
+}
+
+async function loadNow(modelId, onProgress) {
   if (workerReadyFor === modelId && worker) return;
 
   onProgressCb = onProgress || null;
   const model = MODELS.find((m) => m.id === modelId);
-  ensureWorker().postMessage({
-    type: 'load',
-    modelId,
-    english: !!(model && model.english),
-    useGpu: gpuAvailable(),
-  });
-  await new Promise((resolve, reject) => {
-    loadWaiters.push({ resolve, reject });
-    armLoadTimer();
-  });
+  const id = nextReqId++;
+  try {
+    ensureWorker().postMessage({
+      type: 'load',
+      id,
+      modelId,
+      english: !!(model && model.english),
+      useGpu: gpuAvailable(),
+    });
+    await new Promise((resolve, reject) => {
+      loadWaiters.set(id, { resolve, reject });
+      armLoadTimer(LOAD_IDLE_MS);
+    });
+  } catch (err) {
+    // The worker started replacing its pipeline and didn't finish: it is no
+    // longer ready for the previous model either.
+    workerReadyFor = null;
+    throw err;
+  } finally {
+    onProgressCb = null;
+  }
   workerReadyFor = modelId;
-  onProgressCb = null;
   await settingSet(READY_PREFIX + modelId, true);
   tryPersist();
 }
