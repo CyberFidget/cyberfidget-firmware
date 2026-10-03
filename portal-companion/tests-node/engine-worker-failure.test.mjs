@@ -240,11 +240,15 @@ test('a failed load does not block the next queued load', async () => {
   const b = watch(engine.load(MODEL_B));
   const a = watch(engine.load(MODEL_A));
   await flush();
+  const count = workers.length;
   w.emit({ type: 'error', id: w.lastLoad().id, error: 'x', kind: 'download' });
   await flush();
   assert.equal(b.state, 'rejected');
-  assert.equal(w.lastLoad().modelId, MODEL_A, 'the queued load went ahead');
-  w.loaded();
+  assert.equal(w.terminated, true, 'the failed worker was discarded');
+  assert.equal(workers.length, count + 1, 'the queued load starts a fresh worker');
+  assert.notEqual(last(), w);
+  assert.equal(last().lastLoad().modelId, MODEL_A, 'the queued load went ahead');
+  last().loaded();
   await flush();
   assert.equal(a.state, 'resolved');
 });
@@ -314,10 +318,15 @@ test('worker replies say what failed in plain words', async () => {
     [undefined, /could not start in this browser/],   // a current worker always means engine
   ];
   for (const [kind, words] of cases) {
+    const count = workers.length;
     p = watch(engine.load(MODEL_A));
     await flush();
+    assert.equal(workers.length, count + 1, 'each failed load is retried with a new worker');
+    const w = last();
+    w.hello();
     w.emit({ type: 'error', id: w.lastLoad().id, error: 'no available backend found', kind });
     await flush();
+    assert.equal(w.terminated, true);
     assert.equal(p.state, 'rejected');
     assert.equal(p.value.kind, kind || 'engine');
     assert.match(p.value.message, words);

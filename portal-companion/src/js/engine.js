@@ -96,7 +96,7 @@ export const LOAD_BUSY_MS = 15 * 60 * 1000;
 //        'loading'  a load is waiting on the worker            (short allowance)
 //        'building' a long silent stretch may follow            (long allowance)
 //        'ready'    the worker has a pipeline for S.readyFor
-//        'failed'   the last load failed (the worker may still be usable)
+//        'failed'   the last load failed (no worker; retry starts fresh)
 // gen: bumped by removing the download; a load queued or running under an
 // older gen can never mark anything ready.
 // Only the functions in this section change S.
@@ -198,19 +198,15 @@ function setPhase(phase) {
 function finishLoad(err, device) {
   const L = S.load;
   if (!L) return;
+  // A failed build can leave runtime initialization permanently aborted.
+  // Detach every waiter before rejecting; the next load needs a fresh worker.
+  if (err) return teardown(err);
   S.load = null;
   clearTimer();
-  if (err) {
-    // The worker let go of its previous pipeline to build this one.
-    S.phase = 'failed';
-    S.readyFor = null;
-    L.reject(err);
-  } else {
-    S.phase = 'ready';
-    S.readyFor = L.modelId;
-    S.device = device || null;
-    L.resolve();
-  }
+  S.phase = 'ready';
+  S.readyFor = L.modelId;
+  S.device = device || null;
+  L.resolve();
 }
 
 // Throw the worker away and fail everything waiting on it, exactly once.
