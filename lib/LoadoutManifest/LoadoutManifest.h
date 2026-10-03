@@ -26,6 +26,34 @@
 
 namespace LoadoutManifest {
 
+/// Manifest format of a data screensaver: a drawing stored as a `.cfs` file
+/// under /assets/ss/ and played by the built-in player (never run as an app).
+constexpr const char* kFormatCfsprite = "cfsprite";
+
+/// Menu category a data screensaver shows under when its entry has none.
+constexpr const char* kDataScreensaverCategory = "Screensavers";
+
+/// True for a data screensaver entry (format "cfsprite").
+inline bool isPlayerFormat(const std::string& format) { return format == kFormatCfsprite; }
+
+/**
+ * The one rule for a data screensaver's file, shared by the manifest (add /
+ * replace) and the player, so the two can never disagree:
+ * `/assets/ss/<id>-<hash8>.cfs` - top level, `<id>` non-empty, made of
+ * letters, digits, '_', '-' and single '.' (not first, never "..");
+ * `<hash8>` exactly 8 lowercase hex digits.
+ */
+bool isDataScreensaverPath(const std::string& path);
+
+/**
+ * Whether a file path fits an entry of `format`: a data screensaver's must
+ * pass isDataScreensaverPath(), a delivered app's ("wasm" / "blob") must be
+ * under `/apps/`. An empty path, and any other format, fits. add and
+ * replace refuse a path that does not fit, so an entry can never point its
+ * player at a file it cannot open.
+ */
+bool blobPathFitsFormat(const std::string& format, const std::string& blobPath);
+
 /// Only schema version this firmware reads. Anything else is treated as
 /// unreadable and the menu falls back to compiled-in order (no legacy
 /// readers, no migration shims — a version bump is a conscious decision).
@@ -90,6 +118,7 @@ struct MergedApp {
     std::string blobPath;  ///< blob: confined /apps/... path to the .wasm
     int         abi = 0;   ///< blob: required HAL ABI; 0 = unversioned
     std::string id;        ///< blob: manifest entry id; empty for builtin rows
+    std::string format;    ///< blob: manifest format ("wasm", "blob", "cfsprite")
 };
 
 /// Parse a manifest ABI string. Empty or invalid values are unversioned (0).
@@ -175,7 +204,8 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
 // ---- first shown entry, at every level; only 8 path levels considered).
 
 /// Add a new entry at the end of its category section (new categories
-/// become a new section at the end). Fails on duplicate id or empty id.
+/// become a new section at the end). Fails on duplicate id or empty id, or
+/// a blobPath that does not fit the entry's format (blobPathFitsFormat).
 bool applyAdd(Loadout& loadout, const LoadoutEntry& entry);
 
 /// Remove the entry with `id`. Fails if not present.
@@ -215,8 +245,10 @@ bool applyArrange(Loadout& loadout, const std::vector<ArrangeItem>& order,
  * its blobPath, version, abi, name (the label) and signature are replaced
  * with the values in `entry`. Position, category, hidden flag and format
  * are kept. Fails (loadout untouched) on an empty/unknown id, an empty
- * blobPath (a replace always names the new blob), or an existing entry
- * that is not a delivered blob app (format other than "wasm" / "blob").
+ * blobPath (a replace always names the new blob), a blobPath that does not
+ * fit the kept format (blobPathFitsFormat), or an existing entry
+ * that is not a delivered item (format other than "wasm" / "blob" /
+ * "cfsprite"; a data screensaver swaps its drawing the same way).
  */
 bool applyReplace(Loadout& loadout, const LoadoutEntry& entry);
 

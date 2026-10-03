@@ -6,7 +6,8 @@
 Drives the serial verbs end-to-end: version ritual, syncinfo, write/list/stat/
 read-back comparison, corruption rejection, confinement, nested paths, lapply
 and reboot persistence, timeout/hostage fix, CRLF tolerance, deep-nesting
-rejection.
+rejection, and a data screensaver (.cfs under /assets/ss/) added, listed and
+removed with its file reclaimed.
 Leaves the device clean (test blobs deleted, manifest restored).
 """
 import sys, time, zlib, json
@@ -110,6 +111,32 @@ def read_syncinfo(d, timeout=4.0):
 
 def crc(b):
     return format(zlib.crc32(b) & 0xFFFFFFFF, "08x")
+
+def cfs_bytes(w, h, frames, durations, loop=2):
+    """A .cfs v1 file (see lib/DataScreensaver/CfsFormat.h)."""
+    import struct
+    out = b"CFS1" + bytes([1, 0, loop, 0]) + struct.pack("<HHH", w, h, len(frames))
+    out += b"".join(struct.pack("<H", d) for d in durations)
+    return out + b"".join(frames)
+
+def lget_manifest(d):
+    """(header crc hex, parsed manifest or None) from one lget."""
+    d.send_line("lget")
+    h, payload = d.read_payload_reply(timeout=6)
+    crc_hex = None
+    for tok in (h or "").split():
+        if tok.startswith("crc="):
+            crc_hex = tok[4:]
+    try:
+        return crc_hex, json.loads(payload.decode("utf-8", "replace")) if payload else None
+    except Exception:
+        return crc_hex, None
+
+def lapply_doc(d, doc):
+    ops = json.dumps(doc).encode()
+    d.send_line(f"lapply {len(ops)} {crc(ops)}")
+    d.send_bytes(ops)
+    return d.read_lines(n=1, timeout=8)
 
 def write_file(d, path, data, corrupt_chunk=False, term=b"\n"):
     """Full fwrite/fwdata/fwcommit flow. Returns (ok_line_or_None, transcript)."""
@@ -353,6 +380,41 @@ def main():
         # the first lapply), so allow a modest permanent delta for it.
         report("storage reclaimed after cleanup (manifest remains)", fs_free1 >= fs_free0 - 16384,
                f"free before={fs_free0} after={fs_free1}")
+
+        # --- 11. data screensaver: player advertised, .cfs written under
+        # /assets/ss/, added as a cfsprite entry, listed, then removed with its
+        # file reclaimed by the orphan sweep (needs a batch with a base).
+        d.send_line("syncinfo")
+        lines = read_syncinfo(d)
+        report("A2: syncinfo advertises the player", any(".player=cfs1" in l for l in lines),
+               " | ".join(l for l in lines if ".player=" in l) or "no player line")
+        frames = [bytes(((i * 37 + k * 11) & 0xFF) for k in range(2 * 8)) for i in range(2)]
+        cfs = cfs_bytes(16, 8, frames, [200, 200])
+        ss_path = f"/assets/ss/benchss-{crc(cfs)}.cfs"
+        okline, tr = write_file(d, ss_path, cfs)
+        report("A2: fwrite .cfs to /assets/ss/", bool(okline), okline or str(tr))
+        stamp = str(int(time.time()))
+        base, _ = lget_manifest(d)
+        r = lapply_doc(d, {"batch": "bench-ss-add-" + stamp, "base": base or "0", "ops": [
+            {"op": "add", "entry": {"id": "benchss", "name": "Bench Drawing",
+                                    "category": "Screensavers", "format": "cfsprite",
+                                    "blobPath": ss_path, "version": "1"}}]})
+        report("A2: lapply add cfsprite entry", bool(r) and ".ok" in r[0], r[0] if r else "")
+        base, man = lget_manifest(d)
+        listed = man is not None and any(
+            e.get("id") == "benchss" and e.get("format") == "cfsprite" and
+            e.get("blobPath") == ss_path for e in man.get("entries", []))
+        report("A2: lget lists the cfsprite entry", listed)
+        r = lapply_doc(d, {"batch": "bench-ss-rm-" + stamp, "base": base or "0", "ops": [
+            {"op": "remove", "id": "benchss"}]})
+        report("A2: lapply remove cfsprite entry", bool(r) and ".ok" in r[0], r[0] if r else "")
+        d.send_line(f"fstat {ss_path}")
+        r = d.read_lines(n=1, timeout=6)
+        report("A2: remove reclaims the .cfs file", bool(r) and "fstat.absent=" in r[0],
+               r[0] if r else "")
+        if not (r and "fstat.absent=" in r[0]):
+            d.send_line(f"fdelete {ss_path}")  # leave the device clean either way
+            d.read_lines(n=1)
 
         # final reboot to leave the device in a fresh state
         d.reset()

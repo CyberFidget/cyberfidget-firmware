@@ -42,7 +42,7 @@ void unlock() {
 // outside the app/asset area. Cheap: one shallow directory listing per root,
 // once per boot on the first successful mount.
 static void sweepPartFiles() {
-    static const char* kRoots[] = {"/apps", "/assets"};
+    static const char* kRoots[] = {"/apps", "/assets", "/assets/ss"};
     for (unsigned r = 0; r < sizeof(kRoots) / sizeof(kRoots[0]); ++r) {
         const char* root = kRoots[r];
         File dir = LittleFS.open(root);

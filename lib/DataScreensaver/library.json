@@ -1,0 +1,6 @@
+{
+    "name": "DataScreensaver",
+    "version": "1.0.0",
+    "description": "Data screensaver player: the .cfs v1 reader (pure core, host-tested) and the app slot that plays a stored drawing through cf::gfx AnimationPlayer.",
+    "dependencies": []
+}

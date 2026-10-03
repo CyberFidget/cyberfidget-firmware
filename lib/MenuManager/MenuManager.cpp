@@ -7,6 +7,7 @@
 #include "globals.h"      // If you have global for 'millis_NOW', etc.
 #include "AppDefs.h"      // For AppIndex enum
 #include "WasmFsApp.h"    // stage a website-sent wasm app before launch
+#include "DataScreensaver.h"  // stage a data screensaver before launch
 #include "StatusView.h"   // status bar across the top, Status item badge
 #include "CategoryPath.h" // splitCategoryPath (no <sstream>)
 #include "LoadoutStore.h"  // manifest lock for the in-place rebuild
@@ -433,16 +434,18 @@ void MenuManager::registerBlobApp(const std::string &path,
                                     const std::string &label,
                                     const std::string &blobPath,
                                     int blobAbi,
-                                    const std::string &blobId)
+                                    const std::string &blobId,
+                                    AppIndex host)
 {
     auto categories = parseCategoryPath(path);
     std::vector<MenuItem> *level = &rootMenuItems;
     for (auto &catName : categories) {
         level = &findOrCreateCategory(*level, catName);
     }
-    // Leaf points at the shared WASM_HOST slot; blobPath/blobLabel carry
-    // what the launch needs to stage before switching to it.
-    MenuItem leaf(label, false, APP_WASM_HOST);
+    // Leaf points at the shared host slot (WASM_HOST, or the data-screensaver
+    // player); blobPath/blobLabel carry what the launch needs to stage
+    // before switching to it.
+    MenuItem leaf(label, false, host);
     leaf.blobPath  = blobPath;
     leaf.blobLabel = label;
     leaf.blobAbi   = blobAbi;
@@ -681,9 +684,12 @@ void MenuManager::selectCurrentItem()
         // Leaf => launch
         menuActive = false;
         unregisterMenuCallbacks();
-        // A ferried wasm leaf stages its file, then launches the shared
-        // WASM_HOST slot; built-ins launch by their own AppIndex.
-        if (!mi.blobPath.empty()) {
+        // A ferried leaf stages its file, then launches its shared slot
+        // (WASM_HOST, or the data-screensaver player); built-ins launch by
+        // their own AppIndex.
+        if (!mi.blobPath.empty() && mi.appIndex == APP_DATA_SCREENSAVER) {
+            DataScreensaver::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str());
+        } else if (!mi.blobPath.empty()) {
             WasmFsApp::setPending(mi.blobPath.c_str(), mi.blobLabel.c_str(), mi.blobAbi,
                                   mi.blobId.c_str());
         }

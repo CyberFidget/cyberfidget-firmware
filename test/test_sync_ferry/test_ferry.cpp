@@ -919,6 +919,44 @@ void test_lapply_sweep_deletes_only_orphan_delivered_blobs(void) {
     TEST_ASSERT_EQUAL_INT(1, (int)fs.removed.size());
 }
 
+// Data screensavers under /assets/ss are swept by the same rule: removing
+// the entry frees its file; only the delivered `<id>-<hash8>.cfs` shape at
+// the top of /assets/ss is ever deleted.
+void test_lapply_remove_sweeps_orphan_data_screensaver(void) {
+    FakeStorage fs;
+    fs.manifest = baseline();
+    LoadoutManifest::LoadoutEntry ss;
+    ss.id = "doodle";
+    ss.name = "Doodle";
+    ss.category = "Screensavers";
+    ss.format = "cfsprite";
+    ss.blobPath = "/assets/ss/doodle-0123abcd.cfs";
+    fs.manifest.entries.push_back(ss);
+    LoadoutManifest::LoadoutEntry keep = ss;
+    keep.id = "dino";
+    keep.blobPath = "/assets/ss/dino-89abcdef.cfs";
+    fs.manifest.entries.push_back(keep);
+    fs.files["/assets/ss/doodle-0123abcd.cfs"] = {1};  // its entry is removed: deleted
+    fs.files["/assets/ss/dino-89abcdef.cfs"] = {1};    // still referenced: kept
+    fs.files["/assets/ss/old-00c0ffee.cfs"] = {1};     // orphan of the shape: deleted
+    fs.files["/assets/ss/notes.cfs"] = {1};            // other name: kept
+    fs.files["/assets/ss/x-00c0ffee.wasm"] = {1};      // not .cfs: kept
+    fs.files["/assets/ss/sub/y-00000000.cfs"] = {1};   // nested: kept
+    fs.files["/assets/z-00000000.cfs"] = {1};          // other directory: kept
+    FerrySession s(fs);
+    assertReply("[cmd] lapply.ok=applied 1 entries 3\n",
+                lapply(s, "{\"batch\":\"b-ss\",\"base\":\"" + hex8(manifestCrc(fs)) +
+                          "\",\"ops\":[{\"op\":\"remove\",\"id\":\"doodle\"}]}"));
+    TEST_ASSERT_FALSE(fs.has("/assets/ss/doodle-0123abcd.cfs"));
+    TEST_ASSERT_FALSE(fs.has("/assets/ss/old-00c0ffee.cfs"));
+    TEST_ASSERT_TRUE(fs.has("/assets/ss/dino-89abcdef.cfs"));
+    TEST_ASSERT_TRUE(fs.has("/assets/ss/notes.cfs"));
+    TEST_ASSERT_TRUE(fs.has("/assets/ss/x-00c0ffee.wasm"));
+    TEST_ASSERT_TRUE(fs.has("/assets/ss/sub/y-00000000.cfs"));
+    TEST_ASSERT_TRUE(fs.has("/assets/z-00000000.cfs"));
+    TEST_ASSERT_EQUAL_INT(2, (int)fs.removed.size());
+}
+
 void test_lapply_replace_then_sweep_drops_old_blob(void) {
     FakeStorage fs;
     fs.manifest = deliveredBaseline();
@@ -1120,6 +1158,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_lapply_failure_between_apply_and_record_is_consistent);
     RUN_TEST(test_lapply_sweep_deletes_only_orphan_delivered_blobs);
     RUN_TEST(test_lapply_replace_then_sweep_drops_old_blob);
+    RUN_TEST(test_lapply_remove_sweeps_orphan_data_screensaver);
     RUN_TEST(test_lapply_sweep_skipped_during_write_session);
     RUN_TEST(test_lapply_invalid_batch_or_base_rejected);
     RUN_TEST(test_applied_record_not_reachable_by_fwrite);

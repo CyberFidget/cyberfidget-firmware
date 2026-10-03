@@ -291,9 +291,12 @@ std::string topSegment(const std::string& path) {
 
 // The category the merge renders for a kept row (`row` from mergeRows): a
 // built-in with an empty category falls back to the first segment of its
-// compiled path; otherwise the stored category, as is.
+// compiled path, a data screensaver with none to Screensavers; otherwise
+// the stored category, as is.
 std::string renderedCategory(const LoadoutEntry& entry, int row, const RegistryApp* apps) {
     if (row >= 0 && entry.category.empty()) return topSegment(apps[row].category);
+    if (row == kMergedBlob && entry.category.empty() && isPlayerFormat(entry.format))
+        return kDataScreensaverCategory;
     return entry.category;
 }
 
@@ -651,12 +654,13 @@ std::vector<MergedApp> mergeWithRegistry(const Loadout& loadout,
         if (rows[k] == kMergedBlob) {
             MergedApp m;
             m.appIndex = -1;
-            m.category = entry.category;
+            m.category = renderedCategory(entry, kMergedBlob, apps);
             m.hidden   = entry.hidden;
             m.label    = entry.name.empty() ? entry.id : entry.name;
             m.blobPath = entry.blobPath;
             m.abi      = parseAbiVersion(entry.abi);
             m.id       = entry.id;
+            m.format   = entry.format;
             out.push_back(m);
             continue;
         }
@@ -691,8 +695,44 @@ int parseAbiVersion(const std::string& abi) {
     return (int)value;
 }
 
+bool isDataScreensaverPath(const std::string& path) {
+    static const char kDir[] = "/assets/ss/";
+    static const char kExt[] = ".cfs";
+    const size_t dirLen = sizeof(kDir) - 1, extLen = sizeof(kExt) - 1;
+    if (path.compare(0, dirLen, kDir) != 0) return false;
+    const std::string name = path.substr(dirLen);
+    // <id>-<8 lowercase hex>.cfs
+    if (name.size() < 1 + 1 + 8 + extLen) return false;
+    if (name.compare(name.size() - extLen, extLen, kExt) != 0) return false;
+    const size_t hashAt = name.size() - extLen - 8;
+    if (name[hashAt - 1] != '-') return false;
+    for (size_t i = hashAt; i < hashAt + 8; i++) {
+        const char h = name[i];
+        if (!((h >= '0' && h <= '9') || (h >= 'a' && h <= 'f'))) return false;
+    }
+    // The id: letters, digits, '_', '-', and '.' - never first, never "..".
+    const size_t idLen = hashAt - 1;
+    if (idLen == 0 || name[0] == '.') return false;
+    for (size_t i = 0; i < idLen; i++) {
+        const char c = name[i];
+        const bool ok = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                        (c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.';
+        if (!ok) return false;
+        if (c == '.' && i + 1 < name.size() && name[i + 1] == '.') return false;
+    }
+    return true;
+}
+
+bool blobPathFitsFormat(const std::string& format, const std::string& blobPath) {
+    if (blobPath.empty()) return true;
+    if (format == "wasm" || format == "blob") return blobPath.compare(0, 6, "/apps/") == 0;
+    if (!isPlayerFormat(format)) return true;
+    return isDataScreensaverPath(blobPath);
+}
+
 bool applyAdd(Loadout& loadout, const LoadoutEntry& entry) {
     if (entry.id.empty()) return false;
+    if (!blobPathFitsFormat(entry.format, entry.blobPath)) return false;
     if (findEntry(loadout, entry.id.c_str()) >= 0) return false; // duplicate
     // Insert at the end of the entry's category section so contiguity
     // holds by construction; unknown categories start a new section at
@@ -1043,9 +1083,11 @@ bool applyReplace(Loadout& loadout, const LoadoutEntry& entry) {
     int idx = findEntry(loadout, entry.id.c_str());
     if (idx < 0) return false; // replace never creates an entry
     LoadoutEntry& e = loadout.entries[(size_t)idx];
-    // Only a delivered blob app has a blob to swap; builtin (and any other
-    // kind, e.g. sprite packs) entries are refused.
-    if (e.format != "wasm" && e.format != "blob") return false;
+    // Only a delivered app or data screensaver has a file to swap; builtin
+    // (and any other kind, e.g. sprite packs) entries are refused.
+    if (e.format != "wasm" && e.format != "blob" && !isPlayerFormat(e.format)) return false;
+    // The format is kept, so the new file must be one that format can use.
+    if (!blobPathFitsFormat(e.format, entry.blobPath)) return false;
     e.blobPath = entry.blobPath;
     e.version  = entry.version;
     e.abi      = entry.abi;

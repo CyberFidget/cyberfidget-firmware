@@ -236,7 +236,8 @@ as above (same checks, same reply bytes, no extra effects).
      `[err] lapply.record=<crc after hex>\n`.
   5. **Orphan sweep**: after a successful batch document, top-level
      `/apps` files named `<id>-<hash8>.wasm` (8 lowercase hex digits) that
-     the manifest no longer references are deleted. Skipped while a
+     the manifest no longer references are deleted, and likewise top-level
+     `/assets/ss` data screensavers named `<id>-<hash8>.cfs`. Skipped while a
      `fwrite` session is active, when the manifest cannot be re-read, and
      when the manifest BEFORE the apply was absent or unreadable (`base`
      `00000000`): a manifest rebuilt from the built-in apps references no
@@ -266,8 +267,9 @@ as above (same checks, same reply bytes, no extra effects).
 **Names the orphan sweep never deletes.** A browser send today writes
 `/apps/<id>.wasm`; that shape has no `-<8 hex>` suffix, so those blobs are
 never swept (the site removes them itself with `fdelete`). Also never swept:
-anything outside the top level of `/apps` (nested files, `/apps/.diary/`,
-`/assets/`), non-`.wasm` files, `.part` temps (the boot sweep owns those),
+anything outside the top level of `/apps` and `/assets/ss` (nested files,
+`/apps/.diary/`, the rest of `/assets/`), non-`.wasm` files in `/apps`,
+non-`.cfs` files in `/assets/ss`, `.part` temps (the boot sweep owns those),
 and names whose suffix is not exactly 8 lowercase hex digits. One overlap
 remains: a browser-sent id that itself ends in `-` plus 8 lowercase hex
 digits looks delivered, and is deleted if a batch apply runs while the
@@ -282,11 +284,21 @@ syncinfo   -> [cmd] syncinfo.fs_total=<n> fs_used=<n> fs_free=<n>
               [cmd] syncinfo.lapply=batch1
               [cmd] syncinfo.setup=1
               [cmd] syncinfo.builtin=1
+              [cmd] syncinfo.player=cfs1
               [cmd] syncinfo.fw=<version-string>
 ```
 
 `syncinfo.builtin=1` advertises `lbuiltin` (see "Loadout manifest"). Absent
 on older firmware, which answers `lbuiltin` with `[err] unknown command`.
+
+`syncinfo.player=cfs1` advertises the data-screensaver player: a
+`format: "cfsprite"` manifest entry whose `blobPath` names a `.cfs` v1 file
+(layout in `lib/DataScreensaver/CfsFormat.h`, at most 32 KB) under
+`/assets/ss/<id>-<hash8>.cfs` shows under Screensavers by its name and
+plays on the device. Absent on older firmware, which must not be sent such
+entries (it would list them as apps that fail to open). A new `.cfs`
+version the player reads is added to the value; the player refuses
+versions it does not know.
 
 `syncinfo.lapply` advertises the `lapply` batch contract (`batch`, `base`,
 `replace`, applied record, orphan sweep - see "Batch documents"). Absent on
@@ -336,6 +348,7 @@ the reply to the reader's next command.
 <-- [cmd] syncinfo.lapply=batch1\n
 <-- [cmd] syncinfo.setup=1\n
 <-- [cmd] syncinfo.builtin=1\n
+<-- [cmd] syncinfo.player=cfs1\n
 <-- [cmd] syncinfo.fw=1.4.2+ab12cd3\n
 ```
 

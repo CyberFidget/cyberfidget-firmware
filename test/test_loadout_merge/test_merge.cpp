@@ -358,6 +358,46 @@ void test_blob_rows_carry_their_manifest_id(void) {
     TEST_ASSERT_EQUAL_STRING("", merged[2].id.c_str());   // builtin rows use the index
 }
 
+// A data screensaver (format "cfsprite") is a file-backed row like a
+// delivered app, but carries its format so the menu launches the player,
+// and shows under Screensavers when its entry names no category.
+void test_data_screensaver_rows_carry_format_and_category(void) {
+    Loadout l;
+    l.entries.push_back(makeEntry("doodle", ""));
+    l.entries[0].format = "cfsprite";
+    l.entries[0].name = "My doodle";
+    l.entries[0].blobPath = "/assets/ss/doodle-0123abcd.cfs";
+    l.entries.push_back(makeEntry("dino", "Art"));
+    l.entries[1].format = "cfsprite";
+    l.entries[1].blobPath = "/assets/ss/dino-89abcdef.cfs";
+    l.entries.push_back(makeEntry("nofile", ""));
+    l.entries[2].format = "cfsprite";                 // no blobPath: dropped
+    l.entries.push_back(makeEntry("app", ""));
+    l.entries[3].format = "wasm";
+    l.entries[3].blobPath = "/apps/app-0123abcd.wasm";
+    auto merged = mergeWithRegistry(l, kRegistry, kRegistryCount);
+    // 3 kept file rows + the 5 menu apps of the registry appended.
+    TEST_ASSERT_EQUAL_INT(3 + 5, (int)merged.size());
+    TEST_ASSERT_EQUAL_INT(-1, merged[0].appIndex);
+    TEST_ASSERT_EQUAL_STRING("cfsprite", merged[0].format.c_str());
+    TEST_ASSERT_EQUAL_STRING("Screensavers", merged[0].category.c_str());
+    TEST_ASSERT_EQUAL_STRING("My doodle", merged[0].label.c_str());
+    TEST_ASSERT_EQUAL_STRING("doodle", merged[0].id.c_str());
+    TEST_ASSERT_EQUAL_STRING("/assets/ss/doodle-0123abcd.cfs", merged[0].blobPath.c_str());
+    TEST_ASSERT_EQUAL_STRING("cfsprite", merged[1].format.c_str());
+    TEST_ASSERT_EQUAL_STRING("Art", merged[1].category.c_str());   // stored category wins
+    TEST_ASSERT_EQUAL_STRING("dino", merged[1].label.c_str());     // no name: the id
+    // A delivered app keeps its stored (empty) category, as before.
+    TEST_ASSERT_EQUAL_STRING("wasm", merged[2].format.c_str());
+    TEST_ASSERT_EQUAL_STRING("", merged[2].category.c_str());
+    TEST_ASSERT_EQUAL_STRING("app", merged[2].id.c_str());
+    // Built-in rows carry no format.
+    TEST_ASSERT_EQUAL_STRING("", merged[3].format.c_str());
+    TEST_ASSERT_TRUE(isPlayerFormat("cfsprite"));
+    TEST_ASSERT_FALSE(isPlayerFormat("wasm"));
+    TEST_ASSERT_FALSE(isPlayerFormat(""));
+}
+
 // The REAL compiled-in registry, straight from AppManifest.h: only the
 // label and category columns are expanded (the lifecycle columns are macro
 // arguments that are dropped, so nothing app-side has to link here).
@@ -489,5 +529,6 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_compiled_menu_rows_empty_registry);
     RUN_TEST(test_builtin_report_keeps_nested_paths);
     RUN_TEST(test_builtin_report_empty_and_null_paths);
+    RUN_TEST(test_data_screensaver_rows_carry_format_and_category);
     return UNITY_END();
 }

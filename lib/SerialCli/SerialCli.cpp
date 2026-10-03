@@ -42,6 +42,7 @@
 #include "ButtonManager.h"   // injectEvent / ButtonEvent for `btn` (spike port)
 #include "HAL.h"             // HAL::buttonManager()
 #include "WasmFsApp.h"       // wasm runtime status
+#include "DataScreensaver.h" // `launch` of a data screensaver
 #include "WasmHostImports.h"  // device HAL ABI version
 #include "UvloLogic.h"
 #include "ModalPrompt.h"     // prompt (sample modal for bench screenshots)
@@ -1917,6 +1918,8 @@ void SerialCli::cmdSyncinfo() {
     Serial.println("[cmd] syncinfo.setup=1");
     // `lbuiltin` (the firmware's built-in menu) is here.
     Serial.println("[cmd] syncinfo.builtin=1");
+    // The data-screensaver player (format "cfsprite" entries) is here.
+    Serial.printf("[cmd] syncinfo.player=%s\n", SyncProtocol::kPlayerCapability);
     Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
 }
 
@@ -2047,6 +2050,19 @@ bool SerialCli::launchResolved(const char* arg, const char* replyVerb,
         LoadoutManifest::Loadout lo;
         if (loadLoadoutManifest(lo, nullptr)) {
             for (const auto& e : lo.entries) {
+                // A data screensaver plays through the player slot instead.
+                if (LoadoutManifest::isPlayerFormat(e.format) && !e.blobPath.empty() &&
+                    (ieq(arg, e.id.c_str()) || ieq(arg, e.name.c_str()))) {
+                    DataScreensaver::setPending(e.blobPath.c_str(),
+                                                e.name.empty() ? e.id.c_str() : e.name.c_str());
+                    AppManager::instance().switchToApp(APP_DATA_SCREENSAVER);
+                    if (appIndex) *appIndex = APP_DATA_SCREENSAVER;
+                    if (ieq(replyVerb, "launch"))
+                        Serial.printf("[cmd] launch.ok=player path=%s\n", e.blobPath.c_str());
+                    else
+                        Serial.printf("[cmd] soak=%s\n", arg);
+                    return true;
+                }
                 if (e.format != "builtin" && !e.format.empty() && !e.blobPath.empty() &&
                     (ieq(arg, e.id.c_str()) || ieq(arg, e.name.c_str()))) {
                     int abi = LoadoutManifest::parseAbiVersion(e.abi);
@@ -2111,7 +2127,10 @@ void SerialCli::cmdSoak(const char* arg) {
 
 void SerialCli::cmdApp() {
     AppIndex idx = AppManager::instance().activeApp();
-    const char* name = (appDefs[idx].name[0] != '\0') ? appDefs[idx].name : "menu";
+    // The shared data-screensaver slot has no menu name of its own; report
+    // it by an internal name here only (it never shows in a menu).
+    const char* name = (appDefs[idx].name[0] != '\0') ? appDefs[idx].name
+                     : (idx == APP_DATA_SCREENSAVER) ? "data-screensaver" : "menu";
     Serial.printf("[cmd] app.index=%d\n", (int)idx);
     Serial.printf("[cmd] app.name=%s\n", name);
     Serial.printf("[cmd] app.uptime_ms=%lu\n", static_cast<unsigned long>(millis()));
