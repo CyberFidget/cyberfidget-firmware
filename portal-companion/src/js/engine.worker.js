@@ -35,7 +35,7 @@ const PROTOCOL = 2;
 const LIBRARY = '/web/vendor/transformers.min.js';
 
 let current = null;               // { modelId, pipe, device } once built
-let building = null;              // the build in progress: { downloadFailed }
+let building = null;              // the build in progress: { downloadFailed, notFound }
 
 function isInternet(input) {
   const url = typeof input === 'string' ? input : (input && input.url) || String(input);
@@ -48,13 +48,26 @@ function isInternet(input) {
 
 function markDownloadFailed() { if (building) building.downloadFailed = true; }
 
+function urlOf(input) {
+  return typeof input === 'string' ? input : (input && input.url) || String(input);
+}
+
+// Did the build fail on a file the internet said doesn't exist? The library
+// only stops for a REQUIRED file, and then names its URL in the error
+// ('Could not locate file: "<url>".'); an optional file that 404'd is
+// skipped and never named.
+function failedOnMissingFile(err, notFound) {
+  const message = String(err && err.message ? err.message : err);
+  return notFound.some((url) => message.includes(url));
+}
+
 // transformers.js downloads with the global fetch. Make a download that ends
 // early throw instead of being cached zero-padded (lengthCheckedFetch), and
 // note when an INTERNET download fails (no answer, an unsuccessful answer such
 // as 403/408/429/5xx, or a body that broke off), so a failed build can be
 // blamed on the download only when the download really did fail. (A 404 is
-// not noted: the library asks for optional files that legitimately don't
-// exist.)
+// only remembered: the library asks for optional files that legitimately
+// don't exist, so a 404 counts only if the build then fails on that file.)
 const deviceFetch = self.fetch.bind(self);
 const checkedFetch = lengthCheckedFetch(deviceFetch);
 self.fetch = async (input, init) => {
@@ -66,7 +79,8 @@ self.fetch = async (input, init) => {
     markDownloadFailed();
     throw err;
   }
-  if (!res.ok && res.status !== 404) markDownloadFailed();
+  if (res.status === 404) { if (building) building.notFound.push(urlOf(input)); }
+  else if (!res.ok) markDownloadFailed();
   if (!res.body) return res;
   const reader = res.body.getReader();
   const body = new ReadableStream({
@@ -143,7 +157,7 @@ async function build(modelId, english, useGpu) {
       preparingPosted = false;
     }
   };
-  building = { downloadFailed: false };
+  building = { downloadFailed: false, notFound: [] };
   let p;
   try {
     p = await pipeline('automatic-speech-recognition', modelId, {
@@ -172,7 +186,8 @@ async function build(modelId, english, useGpu) {
   } catch (err) {
     // A bad card copy (the runtime comes from the card), a device we can't
     // reach, a failed internet download, or none of those.
-    throw await classify(err, RUNTIME_FILES, building.downloadFailed);
+    throw await classify(err, RUNTIME_FILES,
+      building.downloadFailed || failedOnMissingFile(err, building.notFound));
   } finally {
     building = null;
   }

@@ -228,6 +228,36 @@ test('an optional file the internet does not have (404) is not a download failur
   internet = 'ok';
 });
 
+test('a REQUIRED file the internet does not have (404) is a download failure', async () => {
+  internet = 404;
+  const url = 'https://models.example/onnx/encoder_model_q4.onnx';
+  globalThis.__pipeline = async () => {
+    await self.fetch('https://models.example/generation_config.json');   // optional, absent
+    await self.fetch(url);                                               // required, absent
+    // What the library throws for a required file (hub.js handleError).
+    throw new Error(`Could not locate file: "${url}".`);
+  };
+  posted.length = 0;
+  send({ type: 'load', id: 121, modelId: 'model-x', english: true });
+  await until(() => reply(121));
+  assert.equal(reply(121).kind, 'download');
+  internet = 'ok';
+});
+
+test('an optional file that 404s does not stop a build that otherwise succeeds', async () => {
+  globalThis.__pipeline = async () => {
+    internet = 404;
+    await self.fetch('https://models.example/generation_config.json');   // optional, absent
+    internet = 'ok';
+    await self.fetch('https://models.example/onnx/model.onnx');
+    return async () => ({ text: '' });
+  };
+  posted.length = 0;
+  send({ type: 'load', id: 122, modelId: 'model-w', english: true });
+  await until(() => reply(122));
+  assert.equal(reply(122).type, 'loaded');
+});
+
 test('a file the library calls done just short of its size counts as finished', async () => {
   globalThis.__pipeline = async (task, modelId, opts) => {
     const cb = opts.progress_callback;
