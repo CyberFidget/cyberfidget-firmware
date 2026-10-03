@@ -10,7 +10,8 @@
     "chrome:sync": "node sync_chrome.mjs",
     "verify": "node verify_chrome.mjs && node verify_shell_header.mjs && node verify_tokens.mjs",
     "verify:tokens": "node verify_tokens.mjs",
-    "verify:chrome": "node verify_chrome.mjs"
+    "verify:chrome": "node verify_chrome.mjs",
+    "test": "node --test tests-node/*.mjs"
   },
   "devDependencies": {
     "@huggingface/transformers": "^3.4.0",

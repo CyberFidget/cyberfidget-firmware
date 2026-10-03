@@ -290,7 +290,10 @@ async function downloadModel() {
     $('modelFill').style.width = '100%';
     toast('Transcription is ready - works offline from now on.');
   } catch (e) {
-    notice('engineNotice',
+    // Only a failed download is an internet problem (an older worker can't
+    // tell, so its errors keep the old advice). An incomplete card copy, a
+    // device we can't reach or a page that needs a reload say what happened.
+    notice('engineNotice', e && e.kind && e.kind !== 'download' ? e.message :
       'Download did not finish: ' + (e && e.message ? e.message : e) +
       '. Check your internet and try again - it resumes cleanly.', 'err');
   } finally {
