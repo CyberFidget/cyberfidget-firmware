@@ -283,7 +283,7 @@ void finishCheck(const CloudSync::Result& r) {
     checkHeadline = "";
     if (!r.ok) {
         const bool notLinked = strcmp(r.err, "not-linked") == 0;
-        snprintf(checkLine, sizeof(checkLine), notLinked ? "Not linked yet" : "Could not check");
+        snprintf(checkLine, sizeof(checkLine), "%s", sessionFailureCopy(r.err));
         checkNote = errorNote(r.err);
         if (notLinked) checkHeadline = "Not linked: Settings > Link";
     } else if (r.appliedNow) {
@@ -589,6 +589,43 @@ void checkEnd() {
     setColorsOff();
 }
 
+static void drawCheckProgress() {
+    const CloudSync::SessionSnapshot status = CloudSync::sessionSnapshot();
+    CheckLines lines;
+    formatSessionStatus(status, lines);
+    const CloudSync::SessionPhase step = status.phase == CloudSync::SessionPhase::Waiting
+        ? status.step : status.phase;
+    int current = 0;
+    switch (step) {
+        case CloudSync::SessionPhase::CheckingIn: current = 1; break;
+        case CloudSync::SessionPhase::LookingForUpdate: current = 2; break;
+        case CloudSync::SessionPhase::GettingApps: current = 3; break;
+        default: break;
+    }
+    const char* steps[] = {"Joining WiFi", "Checking in", "Looking for updates", "Getting apps"};
+    const int first = current > 1 ? current - 1 : 0;
+    char line[kCheckLineLen];
+    const uint32_t started = checkState == CheckState::WaitingDev ? devCheckAt : status.startedMs;
+    snprintf(line, sizeof(line), "Check: %lu s", (unsigned long)((millis() - started) / 1000));
+    display.clear();
+    display.setColor(WHITE);
+    display.setFont(ArialMT_Plain_10);
+    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    display.drawString(2, 0, line);
+    for (int row = 0; row < 3 && first + row < 4; ++row) {
+        const int index = first + row;
+        const int y = 13 + row * 12;
+        if (index == current) {
+            display.fillRect(0, y, kScreenW, 12);
+            display.setColor(BLACK);
+        }
+        display.drawString(2, y, index == current ? lines.lines[0] : steps[index]);
+        display.setColor(WHITE);
+    }
+    if (lines.count > 1) display.drawString(2, 50, lines.lines[1]);
+    display.display();
+}
+
 void checkUpdate() {
     if (checkState == CheckState::Start) startCheck();
     if (checkState == CheckState::WaitingDev) {
@@ -602,7 +639,7 @@ void checkUpdate() {
             finishCheck(none);
             if (ModalPrompt::instance().isOpen()) return;
         } else {
-            drawMessage(kChecking, "");
+            drawCheckProgress();
             return;
         }
     }
@@ -611,7 +648,7 @@ void checkUpdate() {
             finishCheck(CloudSync::lastResult());
             if (ModalPrompt::instance().isOpen()) return;   // the prompt draws
         } else {
-            drawMessage(kChecking, "");
+            drawCheckProgress();
             return;
         }
     }

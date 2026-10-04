@@ -93,6 +93,42 @@ std::atomic<int> linkChoice{-1};
 LinkSnapshot linkView;
 portMUX_TYPE linkViewLock = portMUX_INITIALIZER_UNLOCKED;
 
+SessionSnapshot sessionView;
+portMUX_TYPE sessionViewLock = portMUX_INITIALIZER_UNLOCKED;
+
+void publishPhase(SessionPhase phase, uint32_t current = 0, uint32_t total = 0) {
+    portENTER_CRITICAL(&sessionViewLock);
+    sessionView.phase = phase;
+    sessionView.step = phase;
+    sessionView.current = current;
+    sessionView.total = total;
+    sessionView.secondsLeft = 0;
+    portEXIT_CRITICAL(&sessionViewLock);
+}
+
+void publishWait(uint32_t ms, bool serverWait = true) {
+    if (workerKind != WorkerKind::Cloud) return;
+    portENTER_CRITICAL(&sessionViewLock);
+    sessionView.phase = SessionPhase::Waiting;
+    sessionView.secondsLeft = ms / 1000 + (ms % 1000 != 0);
+    sessionView.serverWait = serverWait;
+    portEXIT_CRITICAL(&sessionViewLock);
+}
+
+void publishSessionResult(const Result& r) {
+    portENTER_CRITICAL(&sessionViewLock);
+    sessionView.phase = r.ok ? SessionPhase::Done : SessionPhase::Failed;
+    sessionView.outcome = r.appliedNow ? SessionOutcome::AppsApplied :
+        r.waiting ? SessionOutcome::AppsWaiting : strcmp(r.offered, "fw") == 0 ?
+        SessionOutcome::UpdateFound : r.none ? SessionOutcome::NoChanges : SessionOutcome::Complete;
+    memcpy(sessionView.error, r.err, sizeof(sessionView.error));
+    portEXIT_CRITICAL(&sessionViewLock);
+}
+
+void publishJoinAttempt(void*, uint32_t attempt, uint32_t total) {
+    publishPhase(SessionPhase::JoiningWifi, attempt, total);
+}
+
 void publishLink(LinkState state, const char* code = nullptr,
                  const char* account = nullptr, const char* error = nullptr) {
     portENTER_CRITICAL(&linkViewLock);
@@ -506,6 +542,7 @@ std::string checkinBody(const Session& s, bool autoapply, const char* answerBatc
 }
 
 bool postCheckin(Session& s, const std::string& body, HttpReply& reply) {
+    publishPhase(SessionPhase::CheckingIn);
     reply = HttpReply();
     const bool ok = request(s, s.checkinUrl, &body, reply, jsonSink, &reply);
     s.lastCheckinAt = millis();
@@ -513,12 +550,17 @@ bool postCheckin(Session& s, const std::string& body, HttpReply& reply) {
 }
 
 // Sleeps in watchdog-fed steps; false when cancelled or out of budget.
-bool sleepFor(const Session& s, uint32_t ms) {
+bool sleepFor(const Session& s, uint32_t ms, bool serverWait = true) {
+    const SessionSnapshot before = sessionSnapshot();
     const uint32_t since = millis();
     while (millis() - since < ms) {
         if (cancelRequested || s.elapsed() >= s.limitMs) return false;
+        const uint32_t elapsed = millis() - since;
+        publishWait(elapsed < ms ? ms - elapsed : 0, serverWait);
         vTaskDelay(pdMS_TO_TICKS(200));
     }
+    if (workerKind == WorkerKind::Cloud && ms)
+        publishPhase(before.step, before.current, before.total);
     return true;
 }
 
@@ -603,7 +645,7 @@ void drainRevoke(Session& s) {
             answered = sent && revokeIsFinal(reply.status);
             if (answered || attempt == 1) break;
             const uint32_t wait = reply.retry > 0 ? retryWaitMs(reply.retry) : 1000;
-            if (!wait || !sleepFor(s, wait)) break;
+            if (!wait || !sleepFor(s, wait, reply.retry > 0)) break;
         }
         s.credential = credential;
         memcpy(s.token, active, sizeof(active));
@@ -963,11 +1005,14 @@ bool fileMatches(const std::string& path, const std::string& sha, uint32_t size)
 BlobVerdict fetchBlobs(const Session& s, const Offer& offer,
                        SyncProtocol::FerrySession& ferry, Result& r,
                        const char*& rejection) {
+    uint32_t index = 0;
     for (const BlobOffer& blob : offer.blobs) {
+        ++index;
         std::vector<const std::string*> needed;
         for (const std::string& target : blob.targets)
             if (!fileMatches(target, blob.sha256, blob.size)) needed.push_back(&target);
         if (needed.empty()) continue;
+        publishPhase(SessionPhase::GettingApps, index, (uint32_t)offer.blobs.size());
         const std::string url = s.base + blob.url + "&" + s.query;
         // FerrySession needs the whole-file CRC at open, so the first GET
         // checks SHA-256 and computes it.
@@ -1186,6 +1231,7 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
                                           lastManifest, budget) &&
         (!dev || manualDev || (!s.reply.hasBatch && devOfferDue()))) {
         if (s.checkinConnection) s.checkinConnection->clear();
+        publishPhase(SessionPhase::LookingForUpdate);
         const bool answered = UpdateSession::refreshOffer(s.started + s.limitMs - kReserveMs);
         if (answered && CheckinPolicy::clockPlausible(now) && manifestStamp.begin("upd", false)) {
             manifestStamp.putUInt(CheckinPolicy::kKeyManifestAt, now);
@@ -1203,6 +1249,7 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
     Offer offer;
     OfferError offerError = OfferError::None;
     for (;;) {
+        publishPhase(SessionPhase::GettingApps);
         offerReply = HttpReply();
         if (!request(s, loadoutUrl, nullptr, offerReply, jsonSink, &offerReply)) {
             setError(r, "offer-transport"); step = Step::Error; break;
@@ -1485,6 +1532,8 @@ bool devSleep(uint32_t ms) {
     while (millis() - since < ms) {
         if (cancelRequested) return false;
         if (devWake.exchange(false)) return true;
+        const uint32_t elapsed = millis() - since;
+        publishWait(elapsed < ms ? ms - elapsed : 0, false);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     return !cancelRequested;
@@ -1493,6 +1542,7 @@ bool devSleep(uint32_t ms) {
 // Dev mode: back on the saved network. The station usually reconnects by
 // itself; after kDevReconnectMs it is asked to join again.
 bool devRejoin() {
+    publishPhase(SessionPhase::JoiningWifi);
     uint32_t at = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - at < kDevReconnectMs) {
         if (cancelRequested) return false;
@@ -1505,6 +1555,7 @@ bool devRejoin() {
     joinOpt.firstMs = kJoinMs;
     joinOpt.fallbackMs = kJoinMs;
     joinOpt.stop = [](void*) { return cancelRequested.load(); };
+    joinOpt.attempt = publishJoinAttempt;
     SavedWifi::JoinResult joined;
     return SavedWifi::join(joinOpt, joined);
 }
@@ -1626,6 +1677,7 @@ void devLoop(Session& s, const String& account, String& linkedAt, Result& total,
         r.totalMs = millis() - cycleAt;
         r.unlinkedNotice = s.serverUnlinked;
         r.mismatchNotice = s.serverWrongDevice;
+        publishSessionResult(r);
         ++polls;
         const uint8_t failedBefore = failures;
         failures = r.ok ? 0 : (failures < 250 ? failures + 1 : failures);
@@ -1767,6 +1819,7 @@ void runWorker(Result& r) {
         joinOpt.scheduled = automatic;
         joinOpt.stop = sessionStop;
         joinOpt.ctx = &s;
+        joinOpt.attempt = publishJoinAttempt;
 #ifdef CF_TEST_CLI
         {
             // Bench: a network name that is not in range, so the absent-
@@ -1787,6 +1840,7 @@ void runWorker(Result& r) {
             break;
         }
         if (WiFi.status() == WL_CONNECTED) r.joinMs = joined.totalMs;
+        publishPhase(SessionPhase::CheckingIn);
 
         const DeviceIdentity::Fingerprint live = DeviceIdentity::readLive();
         strcpy(s.id, live.id);
@@ -1860,6 +1914,7 @@ void runWorker(Result& r) {
     r.largestMin = largestLow == SIZE_MAX ? 0 : (uint32_t)largestLow;
     r.totalMs = s.elapsed();
     if (!r.ok && strcmp(r.err, "none") == 0 && s.elapsed() >= s.limitMs) setError(r, "deadline");
+    publishSessionResult(r);
     if (plan.failure(radioOff) == Step::Reboot) {
         // A radio that did not switch off must not be followed by
         // Bluetooth in this power cycle. Deliver the error after restart.
@@ -1951,6 +2006,11 @@ bool runSession(Reason reason, bool applyWaiting, int32_t dailyVbat, int32_t dai
     sessionApplyOnce = applyWaiting;
     cancelRequested = false;
     available = false;
+    portENTER_CRITICAL(&sessionViewLock);
+    sessionView = SessionSnapshot();
+    sessionView.phase = SessionPhase::JoiningWifi;
+    sessionView.startedMs = millis();
+    portEXIT_CRITICAL(&sessionViewLock);
     running = true;
     // Dev mode listening runs for as long as the mode is on: it is shown by
     // its own marker, not as a check.
@@ -1970,6 +2030,7 @@ bool runSession(Reason reason, bool applyWaiting, int32_t dailyVbat, int32_t dai
         StatusService::instance().clear(StatusKind::Checking);
         result = Result();
         setError(result, "task-create");
+        publishSessionResult(result);
         result.heapMin = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
         result.reason = reason;
         available = true;
@@ -2145,6 +2206,12 @@ bool cancelPending() {
 }
 void requestCancel() { cancelRequested = true; }
 bool busy() { return running; }
+SessionSnapshot sessionSnapshot() {
+    portENTER_CRITICAL(&sessionViewLock);
+    const SessionSnapshot copy = sessionView;
+    portEXIT_CRITICAL(&sessionViewLock);
+    return copy;
+}
 bool automaticSessionRunning() {
     return running && workerKind == WorkerKind::Cloud && sessionReason != Reason::Manual &&
            sessionReason != Reason::Dev;

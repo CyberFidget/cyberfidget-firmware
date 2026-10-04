@@ -297,6 +297,8 @@ bool join(const JoinOptions& opt, JoinResult& out) {
         out.hinted = false;
     }
 #endif
+    const uint32_t attempts = !opt.firstOnly && WifiList::fallbackScan(list.count, out.hinted) ? 2 : 1;
+    if (opt.attempt) opt.attempt(opt.ctx, 1, attempts);
     if (out.hinted) WiFi.begin(firstName, list.nets[0].pass, list.hint.channel, list.hint.address);
     else WiFi.begin(firstName, list.nets[0].pass);
     Wait first = waitJoin(opt, opt.firstMs,
@@ -385,6 +387,7 @@ bool join(const JoinOptions& opt, JoinResult& out) {
                 // No scan to choose from: a plain join of the first network,
                 // whose own connect looks on every channel.
                 const uint32_t joinAt = millis();
+                if (opt.attempt) opt.attempt(opt.ctx, 2, attempts);
                 WiFi.begin(list.nets[0].name, list.nets[0].pass);
                 last = waitJoin(opt, opt.fallbackMs, false);
                 out.fallbackMs = millis() - joinAt;
@@ -396,6 +399,7 @@ bool join(const JoinOptions& opt, JoinResult& out) {
                 last = Wait::Absent;
             } else {
                 const uint32_t joinAt = millis();
+                if (opt.attempt) opt.attempt(opt.ctx, 2, attempts);
                 WiFi.begin(list.nets[pick].name, list.nets[pick].pass, channel, address);
                 // The scan just saw it: wait the budget out rather than
                 // trusting a status left over from the first attempt.
