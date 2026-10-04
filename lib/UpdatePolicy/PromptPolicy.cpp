@@ -242,10 +242,35 @@ void appsTitle(char* out, size_t len, uint32_t count) {
                   count == 1 ? "" : "s");
 }
 
+void formatAboutLines(const char* fullVersion, const char* type, const char* built,
+                      AboutLines* out) {
+    if (!out) return;
+    *out = AboutLines();
+    const char* version = fullVersion ? fullVersion : "";
+    const char* build = strchr(version, '+');
+    const size_t versionLen = build ? (size_t)(build - version) : strlen(version);
+    const int shown = (int)(versionLen < kAboutLineLen ? versionLen : kAboutLineLen - 1);
+    snprintf(out->lines[out->count++], kAboutLineLen, "Version %.*s", shown, version);
+    if (build && build[1])
+        snprintf(out->lines[out->count++], kAboutLineLen, "Build %s", build + 1);
+    snprintf(out->lines[out->count++], kAboutLineLen, "Type %s", type ? type : "");
+    snprintf(out->lines[out->count++], kAboutLineLen, "Built %s", built ? built : "");
+}
+
+void formatStatusVersion(const char* fullVersion, const char* type, char* out, size_t len) {
+    if (!out || !len) return;
+    const char* version = fullVersion ? fullVersion : "";
+    const size_t versionLen = strcspn(version, "+");
+    const int shown = (int)(versionLen < kAboutLineLen ? versionLen : kAboutLineLen - 1);
+    const bool showType = type && type[0] && strcmp(type, "release") != 0;
+    snprintf(out, len < kAboutLineLen ? len : kAboutLineLen, "fw %.*s%s%s", shown, version,
+             showType ? " " : "", showType ? type : "");
+}
+
 Row settingsRow(int index) {
     static const Row order[kSettingsRows] = {
         Row::CheckNow, Row::AutoCheck, Row::BootCheck, Row::ShareBattery, Row::AutoApply, Row::Channel, Row::Source,
-        Row::Skip, Row::Link, Row::Awake, Row::Status,
+        Row::Skip, Row::Link, Row::Awake, Row::About, Row::Status,
     };
     return index >= 0 && index < kSettingsRows ? order[index] : Row::Status;
 }
@@ -298,6 +323,9 @@ void settingsLabel(Row row, const SettingsState& s, char* out, size_t len) {
             break;
         case Row::Awake:
             snprintf(out, len, "Awake & dev mode: %s", AwakePolicy::modeName(s.awake.mode));
+            break;
+        case Row::About:
+            snprintf(out, len, "About this Fidget");
             break;
         case Row::Status:
             if (!s.hasUpdateSlot && offerEligible(s.avail, s.rej, s.running))

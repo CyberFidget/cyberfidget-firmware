@@ -14,6 +14,8 @@
 #include "RGBController.h"
 #include "ModalPromptModel.h"
 #include "ScrollLabel.h"
+#include "PromptPolicy.h"
+#include "globals.h"
 
 namespace {
 
@@ -129,11 +131,12 @@ int              focusFor = -1;
 // Rows: check-in, battery (+ trend when the reading is plausible), then one
 // per pending notification (or "No notifications"). Only visible rows are
 // formatted, each frame, into a stack buffer.
+// The firmware summary is the last scrollable row.
 int headerRows() { return batteryPlausible() ? 3 : 2; }
 
 int rowCount() {
     const int n = StatusService::instance().count();
-    return headerRows() + (n > 0 ? n : 1);
+    return headerRows() + (n > 0 ? n : 1) + 1;
 }
 
 void formatRow(int idx, uint32_t nowSec, const StatusEntry *const *list, int n,
@@ -174,6 +177,11 @@ void formatRow(int idx, uint32_t nowSec, const StatusEntry *const *list, int n,
         return;
     }
     const int i = idx - header;
+    if (i == (n > 0 ? n : 1)) {
+        PromptPolicy::formatStatusVersion(getFirmwareVersionString(), getFirmwareBuildType(),
+                                          out, len);
+        return;
+    }
     if (n == 0 || i >= n) {
         snprintf(out, len, "No notifications");
         return;

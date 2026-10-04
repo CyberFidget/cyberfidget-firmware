@@ -224,8 +224,17 @@ void appsTitle(char* out, size_t len, uint32_t count);
 
 // ---- Settings > Updates ---------------------------------------------------------
 
+constexpr size_t kAboutLineLen = 22;
+struct AboutLines {
+    char lines[5][kAboutLineLen] = {};
+    int count = 0;
+};
+void formatAboutLines(const char* fullVersion, const char* type, const char* built,
+                      AboutLines* out);
+void formatStatusVersion(const char* fullVersion, const char* type, char* out, size_t len);
+
 enum class Row : uint8_t {
-    CheckNow, AutoCheck, BootCheck, ShareBattery, AutoApply, Channel, Source, Skip, Link, Awake, Status,
+    CheckNow, AutoCheck, BootCheck, ShareBattery, AutoApply, Channel, Source, Skip, Link, Awake, About, Status,
 };
 
 struct SettingsState {
@@ -244,7 +253,7 @@ struct SettingsState {
     const char* status = "";    ///< the status bar's current line, "" = none
 };
 
-constexpr int kSettingsRows = 11;
+constexpr int kSettingsRows = 12;
 constexpr int kRowText = 96;
 
 /// Row kinds in screen order (always kSettingsRows of them).
