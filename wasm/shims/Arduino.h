@@ -87,20 +87,23 @@ public:
     String() : _str() {}
     String(const char* s) : _str(s ? s : "") {}
     String(const String& s) : _str(s._str) {}
-    String(int val) : _str(std::to_string(val)) {}
-    String(unsigned int val) : _str(std::to_string(val)) {}
-    String(long val) : _str(std::to_string(val)) {}
-    String(unsigned long val) : _str(std::to_string(val)) {}
-    String(float val, int dec = 2) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%.*f", dec, val);
-        _str = buf;
-    }
-    String(double val, int dec = 2) {
-        char buf[32];
-        snprintf(buf, sizeof(buf), "%.*f", dec, val);
-        _str = buf;
-    }
+    explicit String(char c) : _str(c ? std::string(1, c) : std::string()) {}
+    explicit String(unsigned char val, unsigned char base = 10)
+        : _str(formatInteger(val, base, false)) {}
+    explicit String(int val, unsigned char base = 10)
+        : _str(formatInteger(val < 0 ? static_cast<unsigned int>(0) - static_cast<unsigned int>(val) : static_cast<unsigned int>(val), base, val < 0)) {}
+    explicit String(unsigned int val, unsigned char base = 10)
+        : _str(formatInteger(val, base, false)) {}
+    explicit String(long val, unsigned char base = 10)
+        : _str(formatInteger(val < 0 ? static_cast<unsigned long>(0) - static_cast<unsigned long>(val) : static_cast<unsigned long>(val), base, val < 0)) {}
+    explicit String(unsigned long val, unsigned char base = 10)
+        : _str(formatInteger(val, base, false)) {}
+    explicit String(long long val, unsigned char base = 10)
+        : _str(formatInteger(val < 0 ? static_cast<unsigned long long>(0) - static_cast<unsigned long long>(val) : static_cast<unsigned long long>(val), base, val < 0)) {}
+    explicit String(unsigned long long val, unsigned char base = 10)
+        : _str(formatInteger(val, base, false)) {}
+    explicit String(float val, unsigned int dec = 2) : _str(formatFloat(val, dec)) {}
+    explicit String(double val, unsigned int dec = 2) : _str(formatFloat(val, dec)) {}
 
     const char* c_str() const { return _str.c_str(); }
     unsigned int length() const { return _str.length(); }
@@ -118,17 +121,56 @@ public:
 
     String operator+(const String& rhs) const { return String((_str + rhs._str).c_str()); }
     String operator+(const char* rhs) const { return String((_str + (rhs ? rhs : "")).c_str()); }
+    String operator+(char c) const { String result(*this); result += c; return result; }
+    String operator+(unsigned char val) const { return *this + String(val); }
+    friend String operator+(unsigned char lhs, const String& rhs) { return String(lhs) + rhs; }
     String operator+(int val) const { return *this + String(val); }
+    friend String operator+(int lhs, const String& rhs) { return String(lhs) + rhs; }
     String operator+(unsigned int val) const { return *this + String(val); }
+    friend String operator+(unsigned int lhs, const String& rhs) { return String(lhs) + rhs; }
+    String operator+(long val) const { return *this + String(val); }
+    friend String operator+(long lhs, const String& rhs) { return String(lhs) + rhs; }
+    String operator+(unsigned long val) const { return *this + String(val); }
+    friend String operator+(unsigned long lhs, const String& rhs) { return String(lhs) + rhs; }
+    String operator+(long long val) const { return *this + String(val); }
+    friend String operator+(long long lhs, const String& rhs) { return String(lhs) + rhs; }
+    String operator+(unsigned long long val) const { return *this + String(val); }
+    friend String operator+(unsigned long long lhs, const String& rhs) { return String(lhs) + rhs; }
     String operator+(float val) const { return *this + String(val); }
+    friend String operator+(float lhs, const String& rhs) { return String(lhs) + rhs; }
+    String operator+(double val) const { return *this + String(val); }
+    friend String operator+(double lhs, const String& rhs) { return String(lhs) + rhs; }
+    friend String operator+(char lhs, const String& rhs) { return String(lhs) + rhs; }
 
     friend String operator+(const char* lhs, const String& rhs) {
         return String((std::string(lhs ? lhs : "") + rhs._str).c_str());
     }
 
-    String& operator+=(const String& rhs) { _str += rhs._str; return *this; }
-    String& operator+=(const char* rhs) { if (rhs) _str += rhs; return *this; }
-    String& operator+=(char c) { _str += c; return *this; }
+    bool concat(const String& rhs) { _str += rhs._str; return true; }
+    bool concat(const char* rhs) { if (!rhs) return false; _str += rhs; return true; }
+    bool concat(char c) { _str += c; return true; }
+    bool concat(unsigned char val) { return concat(String(val)); }
+    bool concat(int val) { return concat(String(val)); }
+    bool concat(unsigned int val) { return concat(String(val)); }
+    bool concat(long val) { return concat(String(val)); }
+    bool concat(unsigned long val) { return concat(String(val)); }
+    bool concat(long long val) { return concat(String(val)); }
+    bool concat(unsigned long long val) { return concat(String(val)); }
+    bool concat(float val) { return concat(String(val)); }
+    bool concat(double val) { return concat(String(val)); }
+
+    String& operator+=(const String& rhs) { concat(rhs); return *this; }
+    String& operator+=(const char* rhs) { concat(rhs); return *this; }
+    String& operator+=(char c) { concat(c); return *this; }
+    String& operator+=(unsigned char val) { concat(val); return *this; }
+    String& operator+=(int val) { concat(val); return *this; }
+    String& operator+=(unsigned int val) { concat(val); return *this; }
+    String& operator+=(long val) { concat(val); return *this; }
+    String& operator+=(unsigned long val) { concat(val); return *this; }
+    String& operator+=(long long val) { concat(val); return *this; }
+    String& operator+=(unsigned long long val) { concat(val); return *this; }
+    String& operator+=(float val) { concat(val); return *this; }
+    String& operator+=(double val) { concat(val); return *this; }
 
     bool operator==(const String& rhs) const { return _str == rhs._str; }
     bool operator==(const char* rhs) const { return _str == (rhs ? rhs : ""); }
@@ -154,6 +196,44 @@ public:
     }
 
 private:
+    static std::string formatInteger(unsigned long long magnitude, unsigned char base, bool negative) {
+        if (base < 2 || base > 16) return "";
+        std::string result;
+        do {
+            result += "0123456789abcdef"[magnitude % base];
+            magnitude /= base;
+        } while (magnitude);
+        if (negative) result += '-';
+        std::reverse(result.begin(), result.end());
+        return result;
+    }
+
+    static std::string formatFloat(double val, unsigned int dec) {
+        if (std::isnan(val)) return "nan";
+        if (std::isinf(val)) return "inf";
+        const bool negative = val < 0;
+        if (negative) val = -val;
+        // Match Arduino-ESP32 dtostrf: round half up, then extract digits.
+        double divisor = 2.0;
+        for (unsigned int i = 0; i < dec; ++i) divisor *= 10.0;
+        val += 1.0 / divisor;
+        double place = 1.0;
+        unsigned int digits = 1;
+        while (val >= place * 10.0) { place *= 10.0; ++digits; }
+        val /= place;
+        std::string result;
+        // Constructors use a minimum width of decimal places + 2.
+        if (dec == 0 && digits == 1 && !negative) result += ' ';
+        if (negative) result += '-';
+        for (unsigned int i = 0; i < digits + dec; ++i) {
+            if (i == digits && dec != 0) result += '.';
+            const int digit = std::min(static_cast<int>(val), 9);
+            result += static_cast<char>('0' + digit);
+            val = (val - digit) * 10.0;
+        }
+        return result;
+    }
+
     std::string _str;
 };
 
