@@ -11,6 +11,78 @@ namespace PromptPolicy {
 using CheckinPolicy::Policy;
 using CheckinPolicy::Verdict;
 
+const char* sessionFailureCopy(const char* error) {
+    if (!error) return "Could not check";
+    if (strcmp(error, "join") == 0 || strcmp(error, "no-network") == 0 ||
+        strcmp(error, "sta-mode") == 0) return "Couldn't join WiFi";
+    if (strcmp(error, "no-wifi") == 0) return "No saved WiFi yet";
+    if (strcmp(error, "deadline") == 0) return "Check timed out";
+    if (strcmp(error, "not-linked") == 0) return "Not linked yet";
+    if (strcmp(error, "cancelled") == 0) return "Check stopped";
+    if (strcmp(error, "rate-limited") == 0 || strcmp(error, "backoff") == 0)
+        return "Try again later";
+    if (strstr(error, "transport") || strcmp(error, "roots-parse") == 0)
+        return "No answer from server";
+    if (strstr(error, "-body") || strstr(error, "-http")) return "Couldn't read reply";
+    if (strncmp(error, "blob-", 5) == 0 || strncmp(error, "rejected:", 9) == 0)
+        return "Couldn't get apps";
+    return "Could not check";
+}
+
+void formatSessionStatus(const CloudSync::SessionSnapshot& status, CheckLines& out,
+                         const char* network) {
+    using CloudSync::SessionPhase;
+    using CloudSync::SessionOutcome;
+    out = CheckLines();
+    const char* line = "Ready to check";
+    switch (status.phase) {
+        case SessionPhase::Idle: break;
+        case SessionPhase::JoiningWifi:
+            line = "Joining WiFi";
+            if (network && network[0]) {
+                snprintf(out.lines[1], kCheckLineLen, "%s", network);
+                out.count = 2;
+            }
+            if (status.total) {
+                const int row = out.count ? 2 : 1;
+                snprintf(out.lines[row], kCheckLineLen, "Try %lu of %lu",
+                         (unsigned long)status.current, (unsigned long)status.total);
+                out.count = row + 1;
+            }
+            break;
+        case SessionPhase::CheckingIn: line = "Checking in"; break;
+        case SessionPhase::LookingForUpdate: line = "Looking for updates"; break;
+        case SessionPhase::GettingApps:
+            if (status.total) {
+                snprintf(out.lines[0], kCheckLineLen, "Getting apps %lu of %lu",
+                         (unsigned long)status.current, (unsigned long)status.total);
+                out.count = 1;
+                return;
+            }
+            line = "Getting apps";
+            break;
+        case SessionPhase::Waiting:
+            snprintf(out.lines[0], kCheckLineLen, "Waiting %lu s",
+                     (unsigned long)status.secondsLeft);
+            snprintf(out.lines[1], kCheckLineLen, "%s",
+                     status.serverWait ? "(server asks us to)" : "Next check soon");
+            out.count = 2;
+            return;
+        case SessionPhase::Done:
+            switch (status.outcome) {
+                case SessionOutcome::Complete: line = "Check complete"; break;
+                case SessionOutcome::NoChanges: line = "No changes found"; break;
+                case SessionOutcome::AppsApplied: line = "App changes applied"; break;
+                case SessionOutcome::AppsWaiting: line = "App changes waiting"; break;
+                case SessionOutcome::UpdateFound: line = "Update available"; break;
+            }
+            break;
+        case SessionPhase::Failed: line = sessionFailureCopy(status.error); break;
+    }
+    snprintf(out.lines[0], kCheckLineLen, "%s", line);
+    if (!out.count) out.count = 1;
+}
+
 namespace {
 const char* orDefault(const char* text, const char* fallback) {
     return text && text[0] ? text : fallback;

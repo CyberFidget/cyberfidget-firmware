@@ -24,6 +24,7 @@
 
 #include "AwakePolicy.h"
 #include "CheckinPolicy.h"
+#include "SessionStatus.h"
 
 namespace PromptPolicy {
 
@@ -64,6 +65,15 @@ constexpr const char* kBootCheckExplanation =
 constexpr const char* kRestartingToCheck = "Restarting to check...";
 constexpr const char* kChecking = "Checking for updates...";
 constexpr const char* kAlreadyChecking = "A check is already running";
+
+constexpr size_t kCheckLineLen = 22;
+struct CheckLines {
+    char lines[3][kCheckLineLen] = {};
+    int count = 0;
+};
+const char* sessionFailureCopy(const char* error);
+void formatSessionStatus(const CloudSync::SessionSnapshot& status, CheckLines& out,
+                         const char* network = nullptr);
 /// Install now for an offer this Fidget will not install over WiFi (not
 /// signed with a key it knows, and not opted in over USB).
 constexpr const char* kInstallComingSoon =
