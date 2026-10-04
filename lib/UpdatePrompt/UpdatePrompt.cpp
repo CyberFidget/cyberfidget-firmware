@@ -370,6 +370,9 @@ bool enterArmed = false;
 bool shareExplanation = false;
 Stored cache;
 bool cacheLinked = false;
+bool showingAbout = false;
+AboutLines aboutLines;
+ModalPromptModel aboutModel;
 
 void refresh() {
     cache = readStored();
@@ -474,6 +477,17 @@ void activate(Row row) {
         case Row::Awake:
             AppManager::instance().switchToApp(APP_AWAKE);
             return;
+        case Row::About: {
+            formatAboutLines(running(), getFirmwareBuildType(), getFirmwareBuildTimestamp(),
+                             &aboutLines);
+            const BoardInfo::Info& board = HAL::boardInfo();
+            snprintf(aboutLines.lines[aboutLines.count++], kAboutLineLen, "Board %u.%u",
+                     (unsigned)board.major, (unsigned)board.minor);
+            aboutModel.open(aboutLines.count, kRows, (uint32_t)millis(), 0);
+            showingAbout = true;
+            focusFor = -1;
+            return;
+        }
         case Row::Status:
             AppManager::instance().switchToApp(APP_STATUS);
             return;
@@ -483,9 +497,17 @@ void activate(Row row) {
 }
 
 void onSettingsUp(const ButtonEvent& event) {
+    if (showingAbout) {
+        if (event.eventType == ButtonEvent_Pressed) aboutModel.moveUp((uint32_t)millis());
+        return;
+    }
     if (event.eventType == ButtonEvent_Pressed) listModel.moveUp((uint32_t)millis());
 }
 void onSettingsDown(const ButtonEvent& event) {
+    if (showingAbout) {
+        if (event.eventType == ButtonEvent_Pressed) aboutModel.moveDown((uint32_t)millis());
+        return;
+    }
     if (event.eventType == ButtonEvent_Pressed) listModel.moveDown((uint32_t)millis());
 }
 void onSettingsEnter(const ButtonEvent& event) {
@@ -493,10 +515,16 @@ void onSettingsEnter(const ButtonEvent& event) {
     if (event.eventType == ButtonEvent_Pressed) enterArmed = true;
     if (event.eventType != ButtonEvent_Released || !enterArmed) return;
     enterArmed = false;
+    if (showingAbout) { showingAbout = false; focusFor = -1; return; }
     if (shareExplanation) { shareExplanation = false; return; }
     activate(settingsRow(listModel.selected()));
 }
 void onSettingsBack(const ButtonEvent& event) {
+    if (showingAbout && event.eventType == ButtonEvent_Released) {
+        showingAbout = false;
+        focusFor = -1;
+        return;
+    }
     if (shareExplanation && event.eventType == ButtonEvent_Released) { shareExplanation = false; return; }
     if (event.eventType == ButtonEvent_Released) MenuManager::instance().returnToMenu();
 }
@@ -624,6 +652,7 @@ void settingsBegin() {
     focusFor = -1;
     enterArmed = false;
     shareExplanation = false;
+    showingAbout = false;
     refresh();
 }
 
@@ -634,6 +663,7 @@ void settingsEnd() {
     buttons.unregisterCallback(button_EnterIndex);
     buttons.unregisterCallback(button_SelectIndex);
     listModel.dismiss();
+    aboutModel.dismiss();
     setColorsOff();
 }
 
@@ -655,6 +685,8 @@ void settingsUpdate() {
     }
     const SettingsState s = settingsState();
     char line[kRowText];
+    ModalPromptModel& model = showingAbout ? aboutModel : listModel;
+    const int totalRows = showingAbout ? aboutLines.count : kSettingsRows;
 
     display.clear();
     display.setFont(ArialMT_Plain_10);
@@ -662,20 +694,21 @@ void settingsUpdate() {
     display.fillRect(0, 0, kScreenW, kTitleH);
     display.setColor(BLACK);
     display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(kScreenW / 2, 1, "Updates");
+    display.drawString(kScreenW / 2, 1, showingAbout ? "About this Fidget" : "Updates");
     display.setColor(WHITE);
 
-    if (listModel.selected() != focusFor) {
-        focusFor = listModel.selected();
+    if (model.selected() != focusFor) {
+        focusFor = model.selected();
         focusLabel.restart((uint32_t)millis());
     }
     const int rowW = kScreenW - kGutter;
-    const int start = listModel.windowStart();
-    for (int r = 0; r < listModel.windowCount(); r++) {
+    const int start = model.windowStart();
+    for (int r = 0; r < model.windowCount(); r++) {
         const int idx = start + r;
         const int y = kListY + r * kRowH;
-        settingsLabel(settingsRow(idx), s, line, sizeof(line));
-        if (idx == listModel.selected()) {
+        if (showingAbout) snprintf(line, sizeof(line), "%s", aboutLines.lines[idx]);
+        else settingsLabel(settingsRow(idx), s, line, sizeof(line));
+        if (idx == model.selected()) {
             display.setColor(WHITE);
             display.fillRect(0, y, rowW, kRowH);
             display.setColor(BLACK);
@@ -691,8 +724,8 @@ void settingsUpdate() {
     display.setColor(BLACK);
     display.fillRect(rowW, kListY, kGutter, listH);
     display.setColor(WHITE);
-    const int thumbH = (listH * listModel.windowCount()) / kSettingsRows;
-    const int thumbY = kListY + (listH * start) / kSettingsRows;
+    const int thumbH = (listH * model.windowCount()) / totalRows;
+    const int thumbY = kListY + (listH * start) / totalRows;
     display.drawRect(kScreenW - 2, kListY, 2, listH);
     display.fillRect(kScreenW - 2, thumbY, 2, thumbH);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
