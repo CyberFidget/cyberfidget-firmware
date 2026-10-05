@@ -153,7 +153,8 @@ void Booper::handleButtonEvent(const ButtonEvent& event) {
 
 float Booper::getFrequencyForButton(int buttonIndex) {
     // Base frequencies for buttons
-    float baseFrequencies[] = { 261.63f, 293.66f, 329.63f, 349.23f }; // C4, D4, E4, F4
+    // A C major chord (C4, E4, G4, C5): any buttons held together sound consonant.
+    float baseFrequencies[] = { 261.63f, 329.63f, 392.00f, 523.25f };
 
     int buttonOrder[] = {
         button_TopLeftIndex,
