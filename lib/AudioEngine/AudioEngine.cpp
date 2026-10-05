@@ -170,6 +170,21 @@ Command Command::noteOff(uint8_t voice) {
     return c;
 }
 
+Command Command::noteOnId(uint32_t noteId, Wave wave, uint32_t inc, uint32_t gateSamples,
+                          uint16_t level, uint8_t duty, const Envelope& env) {
+    Command c = noteOn(kAnyNoteVoice, wave, inc, gateSamples, level, duty, env);
+    c.noteId = noteId;
+    return c;
+}
+
+Command Command::noteOffId(uint32_t noteId) {
+    Command c;
+    memset(&c, 0, sizeof(c));
+    c.type = CmdType::NoteOffId;
+    c.noteId = noteId;
+    return c;
+}
+
 Command Command::allOff() {
     Command c;
     memset(&c, 0, sizeof(c));
@@ -298,7 +313,7 @@ void Engine::reset(uint32_t seed) {
     peakVoices_.store(0, std::memory_order_relaxed);
     hook_ = nullptr;
     hookCtx_ = nullptr;
-    for (int k = 0; k < 3; ++k) {
+    for (int k = 0; k < kStopKinds; ++k) {
         stopEpoch_[k].store(0, std::memory_order_relaxed);
         stopApplied_[k] = 0;
     }
@@ -315,14 +330,16 @@ void Engine::stamp(Command& c) const {
     c.stampKind = 0;
     if (c.type == CmdType::NoteOn && c.voice == kToneVoice) {
         c.stampKind = stopEpoch_[kStopTone].load(std::memory_order_acquire);
+    } else if (c.type == CmdType::NoteOn && c.voice == kAnyNoteVoice) {
+        c.stampKind = stopEpoch_[kStopNotes].load(std::memory_order_acquire);
     } else if (c.type == CmdType::SeqPlay) {
         c.stampKind = stopEpoch_[kStopSequence].load(std::memory_order_acquire);
     }
 }
 
-void Engine::presetStopCounters(uint32_t tone, uint32_t sequence, uint32_t all) {
-    const uint32_t v[3] = {tone, sequence, all};
-    for (int k = 0; k < 3; ++k) {
+void Engine::presetStopCounters(uint32_t tone, uint32_t sequence, uint32_t all, uint32_t notes) {
+    const uint32_t v[kStopKinds] = {tone, sequence, all, notes};
+    for (int k = 0; k < kStopKinds; ++k) {
         stopEpoch_[k].store(v[k], std::memory_order_relaxed);
         stopApplied_[k] = v[k];
     }
@@ -344,6 +361,12 @@ void Engine::applyStops() {
         stopApplied_[kStopTone] = tone;
         noteOff(kToneVoice);
     }
+    const uint32_t notes = stopEpoch_[kStopNotes].load(std::memory_order_acquire);
+    if (notes != stopApplied_[kStopNotes]) {
+        stopApplied_[kStopNotes] = notes;
+        for (uint8_t i = 0; i < kVoices; ++i)
+            if (voices_[i].noteId != 0) noteOff(i);
+    }
 }
 
 // True for a queued command that a later stop has overtaken: a note or
@@ -353,7 +376,9 @@ bool Engine::stale(const Command& c) const {
     // before this command was queued: any change since its stamp cancels it.
     const bool all = c.stampAll != stopApplied_[kStopAll];
     switch (c.type) {
-        case CmdType::NoteOn:  return all || (c.voice == kToneVoice && c.stampKind != stopApplied_[kStopTone]);
+        case CmdType::NoteOn:
+            return all || (c.voice == kToneVoice && c.stampKind != stopApplied_[kStopTone]) ||
+                   (c.voice == kAnyNoteVoice && c.stampKind != stopApplied_[kStopNotes]);
         case CmdType::SeqPlay: return all || c.stampKind != stopApplied_[kStopSequence];
         default:               return false;
     }
@@ -375,8 +400,9 @@ void Engine::apply(const Command& c) {
     if (stale(c)) return;  // sent before a stop that cancels it
     switch (c.type) {
         case CmdType::NoteOn:
-            noteOn(c.voice, (Wave)c.wave, c.on.inc, c.on.gate, c.on.level, c.duty, c.on.env);
+            noteOn(c.voice, (Wave)c.wave, c.on.inc, c.on.gate, c.on.level, c.duty, c.on.env, c.noteId);
             break;
+        case CmdType::NoteOffId: noteOffId(c.noteId); break;
         case CmdType::NoteOff:  noteOff(c.voice); break;
         case CmdType::AllOff:   allOff(); break;
         case CmdType::SeqPlay:  startSequence(c.gen); break;
@@ -388,24 +414,26 @@ void Engine::apply(const Command& c) {
     }
 }
 
-int Engine::pickVoice() const {
-    for (int i = 0; i < kVoices; ++i)
+int Engine::pickVoice(bool skipToneVoice) const {
+    const int first = (skipToneVoice && kToneVoice == 0) ? 1 : 0;
+    for (int i = first; i < kVoices; ++i)
         if (voices_[i].stage == kIdle) return i;
     int best = -1;
-    for (int i = 0; i < kVoices; ++i)
+    for (int i = first; i < kVoices; ++i)
         if (voices_[i].stage == kRelease && (best < 0 || voices_[i].env < voices_[best].env)) best = i;
     if (best >= 0) return best;
-    best = 0;
-    for (int i = 1; i < kVoices; ++i)
+    best = first;
+    for (int i = first + 1; i < kVoices; ++i)
         if ((int32_t)(voices_[i].startStamp - voices_[best].startStamp) < 0) best = i;
     return best;
 }
 
 void Engine::noteOn(uint8_t voice, Wave wave, uint32_t inc, uint32_t gateSamples,
-                    uint16_t level, uint8_t duty, const Envelope& env) {
-    int vi = (voice == kAnyVoice) ? pickVoice() : (int)voice;
+                    uint16_t level, uint8_t duty, const Envelope& env, uint32_t noteId) {
+    int vi = (voice == kAnyVoice) ? pickVoice(false) : (voice == kAnyNoteVoice) ? pickVoice(true) : (int)voice;
     if (vi < 0 || vi >= kVoices) return;
     Voice& v = voices_[vi];
+    v.noteId = noteId;   // a new note owns the voice (0 for untagged notes)
     if (wave > kSoftSquare) wave = kSine;
     if (level > kLevelUnity) level = kLevelUnity;
     v.startStamp = ++noteCounter_;
@@ -493,6 +521,12 @@ void Engine::noteOff(uint8_t voice) {
     Voice& v = voices_[voice];
     v.pending = false;   // a note waiting on a switch fade never starts
     if (v.stage != kIdle && v.stage != kRelease) enterRelease(v, v.release);
+}
+
+void Engine::noteOffId(uint32_t noteId) {
+    if (noteId == 0) return;
+    for (uint8_t i = 0; i < kVoices; ++i)
+        if (voices_[i].noteId == noteId) noteOff(i);   // stolen voices carry another id
 }
 
 void Engine::allOff() {
@@ -925,6 +959,26 @@ bool ToneControl::isSequencePlaying(const Engine* engine) const {
     // unless a later stop (which changes the tag again) cancels it.
     if ((status >> 1) != gen_) return wanted_;
     return (status & 1u) != 0;
+}
+
+int ToneControl::playNote(Engine* engine, float hz, int durationMs) {
+    if (engine == nullptr || !(hz > 0.0f)) return -1;
+    noteSeq_ = (noteSeq_ % 0x7FFFFFFFu) + 1u;   // 1..2^31-1, never 0
+    const uint32_t gate = durationMs > 0 ? Engine::msToSamples((uint32_t)durationMs) : 0;
+    Command c = Command::noteOnId(noteSeq_, kToneWave, Engine::hzToInc(hz), gate, kToneLevel, 128, kToneEnvelope);
+    engine->stamp(c);
+    return send_(c) ? (int)noteSeq_ : -1;
+}
+
+void ToneControl::stopNote(Engine* engine, int handle) {
+    if (engine == nullptr || handle <= 0) return;
+    Command c = Command::noteOffId((uint32_t)handle);
+    engine->stamp(c);
+    if (!send_(c)) engine->requestStop(kStopNotes);   // never leave a note stuck
+}
+
+void ToneControl::stopNotes(Engine* engine) {
+    if (engine) engine->requestStop(kStopNotes);
 }
 
 // ------------------------------------------------------------- EQ design

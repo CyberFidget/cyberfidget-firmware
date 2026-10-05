@@ -43,6 +43,17 @@ public:
     void stopSequence();
     bool isSequencePlaying() const;
 
+    // Notes, for built-in apps that want several sounds at once (chords).
+    // Each note gets its own voice (never the one playTone uses) with the
+    // same sound as playTone; when all are busy the oldest note is replaced.
+    // playNote returns a handle (> 0), or -1 if the note could not start;
+    // durationMs 0 = until stopNote. stopNote ends only that note - a handle
+    // whose note was already replaced does nothing. stopNotes ends them all.
+    // Leaving the app ends them too.
+    int  playNote(float frequency, int durationMs = 0);
+    void stopNote(int handle);
+    void stopNotes();
+
     // Sound is playing, played within the last second, or an app streams on
     // port 0. Cheap; for deferring flash writes that would stall audio.
     bool isAudioActive() const;

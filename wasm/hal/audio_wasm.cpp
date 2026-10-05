@@ -60,16 +60,60 @@ EM_JS(void, js_audio_stop_tone, (), {
 });
 
 EM_JS(void, js_audio_set_volume, (float volume), {
+    var master = (typeof Module._emulatorMasterVolume !== 'undefined' ? Module._emulatorMasterVolume : 1);
     if (Module._audioGain) {
-        var master = (typeof Module._emulatorMasterVolume !== 'undefined' ? Module._emulatorMasterVolume : 1);
         Module._audioGain.gain.setValueAtTime(volume * master, Module._audioCtx.currentTime);
     }
+    if (Module._audioNotes) {
+        for (var h in Module._audioNotes) {
+            Module._audioNotes[h].gain.gain.setValueAtTime(volume * master, Module._audioCtx.currentTime);
+        }
+    }
+});
+
+// Notes (playNote): one oscillator per handle, alongside the tone.
+EM_JS(void, js_audio_note_stop, (int handle), {
+    var n = Module._audioNotes && Module._audioNotes[handle];
+    if (!n) return;
+    delete Module._audioNotes[handle];
+    if (n.timeout) clearTimeout(n.timeout);
+    try { n.osc.stop(); } catch(e) {}
+});
+
+EM_JS(void, js_audio_note_play, (int handle, float frequency, float volume, int duration_ms), {
+    if (!Module._audioCtx) {
+        Module._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (!Module._audioNotes) Module._audioNotes = {};
+    var ctx = Module._audioCtx;
+    var osc = ctx.createOscillator();
+    var gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.setValueAtTime(frequency, ctx.currentTime);
+    var master = (typeof Module._emulatorMasterVolume !== 'undefined' ? Module._emulatorMasterVolume : 1);
+    gain.gain.setValueAtTime(Math.max(0, Math.min(1, volume)) * master, ctx.currentTime);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start();
+    var note = { osc: osc, gain: gain, timeout: null };
+    Module._audioNotes[handle] = note;
+    if (duration_ms > 0) {
+        note.timeout = setTimeout(function() { js_audio_note_stop(handle); }, duration_ms);
+    }
+});
+
+EM_JS(void, js_audio_notes_stop_all, (), {
+    if (!Module._audioNotes) return;
+    for (var h in Module._audioNotes) js_audio_note_stop(+h);
 });
 
 #else
 inline void js_audio_play_tone(float, float, int) {}
 inline void js_audio_stop_tone() {}
 inline void js_audio_set_volume(float) {}
+inline void js_audio_note_play(int, float, float, int) {}
+inline void js_audio_note_stop(int) {}
+inline void js_audio_notes_stop_all() {}
 #endif
 
 static float s_volume = 0.3f;
@@ -157,6 +201,25 @@ void AudioManager::stopSequence() {
 
 bool AudioManager::isSequencePlaying() const {
     return currentSequence != nullptr;
+}
+
+// Notes: one browser oscillator per handle. Handles count up from 1, so a
+// stale handle never matches a newer note.
+static int s_lastNoteHandle = 0;
+
+int AudioManager::playNote(float frequency, int durationMs) {
+    if (!(frequency > 0.0f)) return -1;
+    s_lastNoteHandle = (s_lastNoteHandle % 0x7FFFFFFF) + 1;
+    js_audio_note_play(s_lastNoteHandle, frequency, s_volume, durationMs);
+    return s_lastNoteHandle;
+}
+
+void AudioManager::stopNote(int handle) {
+    if (handle > 0) js_audio_note_stop(handle);
+}
+
+void AudioManager::stopNotes() {
+    js_audio_notes_stop_all();
 }
 
 void AudioManager::enableMic(bool) {}

@@ -168,6 +168,18 @@ void AudioManager::stopSequence() {
     s_tone.stopSequence(AudioEngineTask::engine());   // also releases the tone voice
 }
 
+int AudioManager::playNote(float frequency, int durationMs) {
+    return s_tone.playNote(AudioEngineTask::engine(), frequency, durationMs);
+}
+
+void AudioManager::stopNote(int handle) {
+    s_tone.stopNote(AudioEngineTask::engine(), handle);   // 5 ms fade; never left stuck
+}
+
+void AudioManager::stopNotes() {
+    s_tone.stopNotes(AudioEngineTask::engine());
+}
+
 bool AudioManager::isSequencePlaying() const {
     return s_tone.isSequencePlaying(AudioEngineTask::engine());
 }
