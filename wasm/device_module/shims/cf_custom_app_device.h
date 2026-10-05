@@ -19,6 +19,12 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cmath>
+// std::function / std::vector / std::sort. Header-only: they add no code
+// unless an app uses them, and keeping them here lets the website's
+// in-browser build precompile them instead of parsing them on every build.
+#include <functional>
+#include <vector>
+#include <algorithm>
 
 #include "App.h"           // optional base class some generated apps use
 #include "cf_gfx.h"

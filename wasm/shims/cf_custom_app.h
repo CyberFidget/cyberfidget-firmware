@@ -8,6 +8,12 @@
 #ifndef CF_CUSTOM_APP_H
 #define CF_CUSTOM_APP_H
 
+// Same standard headers as the device twin (device_module/shims/
+// cf_custom_app_device.h), so both builds accept the same app source.
+#include <functional>
+#include <vector>
+#include <algorithm>
+
 #include "App.h"
 #include "cf_gfx.h"
 #include <Arduino.h>
