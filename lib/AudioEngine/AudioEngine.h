@@ -99,6 +99,10 @@ constexpr uint8_t  kToneVoice    = 0;
 constexpr Wave     kToneWave     = kSoftSquare;
 constexpr uint16_t kToneLevel    = 230;
 constexpr Envelope kToneEnvelope = {132, 0, kSustainFull, 220};
+// Notes (playNote) are meant to be held together as chords, so each one plays
+// 3 dB below a single tone (230 * 0.707 = 163): a compromise between clean
+// two-to-four-note chords and a solo note that is still loud enough.
+constexpr uint16_t kNoteLevel    = 163;
 
 // AllOff fades every voice over this many samples (5 ms).
 constexpr uint16_t kFastRelease  = 220;
