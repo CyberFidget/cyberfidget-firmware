@@ -397,6 +397,10 @@ namespace HAL
     void enterDeepSleep(bool hardShutdown)
     {
         if (!UpdateSession::prepareDeepSleep(hardShutdown)) return;
+        // Every path to sleep ends audio here: fade, let the render task
+        // acknowledge its exit, delete the channel (no cut-off tone at sleep
+        // entry). A port lent to an app's own stream is left to that app.
+        s_audioManager.releaseI2S();
         // Arms the next background check-in (only a timer wake can run one).
         if (!hardShutdown && s_beforeSleep) s_beforeSleep();
         if (!hardShutdown) {
