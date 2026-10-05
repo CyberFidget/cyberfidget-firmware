@@ -822,4 +822,21 @@ int32_t dbToGainQ8(double gainDb) {
     return satRound(256.0 * pow(10.0, gainDb / 20.0));   // validated at commit
 }
 
+namespace {
+bool inRange(float x, float lo, float hi) { return x >= lo && x <= hi; }   // false for NaN
+}
+
+bool designSpeakerEq(const SpeakerEq& eq, BiquadCoefs bands[3], int32_t* gainQ8) {
+    if (!inRange(eq.hpfHz, 20, 20000) || !inRange(eq.p1Hz, 20, 20000) || !inRange(eq.p2Hz, 20, 20000) ||
+        !inRange(eq.p1Q, 0.1f, 20) || !inRange(eq.p2Q, 0.1f, 20) ||
+        !inRange(eq.p1Db, -24, 24) || !inRange(eq.p2Db, -24, 24) || !inRange(eq.gainDb, -24, 24)) {
+        return false;
+    }
+    bands[0] = designHighpass(eq.hpfHz, 0.7071);
+    bands[1] = designPeaking(eq.p1Hz, eq.p1Db, eq.p1Q);
+    bands[2] = designPeaking(eq.p2Hz, eq.p2Db, eq.p2Q);
+    *gainQ8 = dbToGainQ8(eq.gainDb);
+    return Engine::eqSettingValid(bands, 3, *gainQ8);
+}
+
 }  // namespace cf_audio

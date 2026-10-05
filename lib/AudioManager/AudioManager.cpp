@@ -4,6 +4,7 @@
 // lib/AudioManager/AudioManager.cpp
 #include "AudioManager.h"
 #include "AudioEngineTask.h"
+#include "SpeakerEqPresets.h"
 #include "globals.h"
 #include <math.h>
 
@@ -27,6 +28,23 @@ uint32_t masterForVolume(float v) {
 cf_audio::ToneControl s_tone(&AudioEngineTask::send);
 
 constexpr uint32_t kEngineRetryMs = 2000;
+
+// Loads a speaker EQ preset into the running engine (applied atomically at
+// its next block). An invalid preset leaves the bus flat.
+void applySpeakerEq(const SpeakerEqPreset& preset) {
+    if (!preset.enabled) {
+        AudioEngineTask::send(Command::eqCommit(0, false, 256));
+        return;
+    }
+    cf_audio::BiquadCoefs bands[3];
+    int32_t gainQ8 = 256;
+    if (!cf_audio::designSpeakerEq(preset.eq, bands, &gainQ8)) {
+        Serial.printf("[audio] err=speaker_eq_invalid preset=%s\n", preset.name);
+        return;
+    }
+    for (uint8_t b = 0; b < 3; ++b) AudioEngineTask::send(Command::eqBand(b, bands[b]));
+    AudioEngineTask::send(Command::eqCommit(3, true, gainQ8));
+}
 
 }  // namespace
 
@@ -93,8 +111,10 @@ bool AudioManager::startEngine() {
         engineRetryAtMs = millis() + kEngineRetryMs;
         return false;
     }
-    // A fresh engine starts at unity: give it the current volume.
+    // A fresh engine starts at unity and flat: give it the current volume
+    // and the speaker EQ.
     volumePending = !AudioEngineTask::send(Command::master(masterForVolume(volume)));
+    applySpeakerEq(kSpeakerEqPresets[kSpeakerEqDefault]);
     return true;
 }
 

@@ -16,6 +16,7 @@
 #include <string.h>
 
 #include "AudioEngine.h"
+#include "SpeakerEqPresets.h"
 #include "golden_script.h"
 
 using namespace cf_audio;
@@ -464,6 +465,37 @@ void test_eq_extreme_gain_never_wraps() {
     TEST_ASSERT_EQUAL_UINT32(0, e.clipCount());
 }
 
+void test_default_speaker_eq_preset_is_valid_and_clean() {
+    TEST_ASSERT_TRUE(kSpeakerEqDefault > 0 && kSpeakerEqDefault < kSpeakerEqPresetCount);
+    TEST_ASSERT_FALSE(kSpeakerEqPresets[0].enabled);   // index 0 = off
+    for (int i = 0; i < kSpeakerEqPresetCount; ++i) {
+        if (!kSpeakerEqPresets[i].enabled) continue;
+        BiquadCoefs b[3];
+        int32_t gain = 0;
+        TEST_ASSERT_TRUE(designSpeakerEq(kSpeakerEqPresets[i].eq, b, &gain));
+    }
+    // The default on a full-volume tone and on an 8-voice overload: no clips.
+    BiquadCoefs b[3];
+    int32_t gain = 0;
+    TEST_ASSERT_TRUE(designSpeakerEq(kSpeakerEqPresets[kSpeakerEqDefault].eq, b, &gain));
+    Engine& e = g_engine;
+    for (uint8_t i = 0; i < 3; ++i) e.apply(Command::eqBand(i, b[i]));
+    TEST_ASSERT_TRUE(e.commitEq(3, true, gain));
+    e.apply(Command::noteOn(kToneVoice, kSine, Engine::hzToInc(2500.0f), 0, kLevelUnity, 128, kToneEnvelope));
+    e.render(g_buf, 44100);
+    for (uint8_t v = 1; v < kVoices; ++v)
+        e.apply(Command::noteOn(v, kPulse, Engine::hzToInc(500.0f * v), 0, kLevelUnity, 128, kToneEnvelope));
+    e.render(g_buf, 44100);
+    TEST_ASSERT_EQUAL_UINT32(0, e.clipCount());
+    // Out-of-range settings are refused.
+    SpeakerEq bad = kSpeakerEqPresets[kSpeakerEqDefault].eq;
+    bad.gainDb = 30;
+    TEST_ASSERT_FALSE(designSpeakerEq(bad, b, &gain));
+    bad = kSpeakerEqPresets[kSpeakerEqDefault].eq;
+    bad.p1Q = 0;
+    TEST_ASSERT_FALSE(designSpeakerEq(bad, b, &gain));
+}
+
 // ------------------------------------------- stops, queue and sequence status
 
 // A tiny bounded queue standing in for the device's command queue.
@@ -701,6 +733,7 @@ int main(int, char**) {
     RUN_TEST(test_voice_steal_fades_the_stolen_note);
     RUN_TEST(test_eq_rejects_out_of_range_settings);
     RUN_TEST(test_eq_extreme_gain_never_wraps);
+    RUN_TEST(test_default_speaker_eq_preset_is_valid_and_clean);
     RUN_TEST(test_stop_overtakes_queued_play);
     RUN_TEST(test_stop_survives_a_full_queue);
     RUN_TEST(test_sequence_status_matches_the_engine);

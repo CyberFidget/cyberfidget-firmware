@@ -359,6 +359,19 @@ BiquadCoefs designHighpass(double hz, double q);
 BiquadCoefs designPeaking(double hz, double gainDb, double q);
 int32_t     dbToGainQ8(double gainDb);
 
+// A speaker EQ in user terms: a 2nd-order Butterworth high-pass, two peaking
+// bands and a make-up gain. Order matches the bench's `eq set` arguments.
+struct SpeakerEq {
+    float hpfHz;
+    float p1Hz, p1Db, p1Q;
+    float p2Hz, p2Db, p2Q;
+    float gainDb;
+};
+// Designs the three bands (RBJ) and the gain. False when a parameter is out
+// of range (Hz 20..20000, Q 0.1..20, dB -24..24) or the result fails
+// Engine::eqSettingValid; then nothing should be sent.
+bool designSpeakerEq(const SpeakerEq& eq, BiquadCoefs bands[3], int32_t* gainQ8);
+
 }  // namespace cf_audio
 
 #endif  // CF_AUDIO_ENGINE_H

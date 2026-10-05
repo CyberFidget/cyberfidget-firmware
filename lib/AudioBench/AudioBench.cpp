@@ -22,6 +22,7 @@
 #include "AudioManager.h"
 #include "HAL.h"
 #include "MicCapture.h"
+#include "SpeakerEqPresets.h"
 
 namespace {
 
@@ -193,25 +194,19 @@ void printStats() {
                   (unsigned)st.stackHighWater);
 }
 
-// ---- speaker EQ (bench A/B; the product bus keeps it bypassed)
+// ---- speaker EQ A/B. The product applies the default preset at engine
+// start; `eq off` bypasses it, `eq on` applies these parameters (the default
+// preset until `eq set` changes them).
 // hpf p1hz p1db p1q p2hz p2db p2q gaindb
-float s_eqParams[8] = {800, 2000, 4, 1.0f, 6400, -6, 2.0f, 6};
+const cf_audio::SpeakerEq& kDefaultEq = kSpeakerEqPresets[kSpeakerEqDefault].eq;
+float s_eqParams[8] = {kDefaultEq.hpfHz, kDefaultEq.p1Hz, kDefaultEq.p1Db, kDefaultEq.p1Q,
+                       kDefaultEq.p2Hz, kDefaultEq.p2Db, kDefaultEq.p2Q, kDefaultEq.gainDb};
 
-bool inRange(float x, float lo, float hi) { return x >= lo && x <= hi; }   // false for NaN
-
-// Designs the three bands from p; false (nothing sent) when a parameter or
-// the resulting setting is out of range.
+// Designs the three bands from p (the same path as the product preset);
+// false (nothing sent) when a parameter or the resulting setting is out of range.
 bool designEq(const float* p, cf_audio::BiquadCoefs* b, int32_t* gainQ8) {
-    if (!inRange(p[0], 20, 20000) || !inRange(p[1], 20, 20000) || !inRange(p[4], 20, 20000) ||
-        !inRange(p[3], 0.1f, 20) || !inRange(p[6], 0.1f, 20) ||
-        !inRange(p[2], -24, 24) || !inRange(p[5], -24, 24) || !inRange(p[7], -24, 24)) {
-        return false;
-    }
-    b[0] = cf_audio::designHighpass(p[0], 0.7071);
-    b[1] = cf_audio::designPeaking(p[1], p[2], p[3]);
-    b[2] = cf_audio::designPeaking(p[4], p[5], p[6]);
-    *gainQ8 = cf_audio::dbToGainQ8(p[7]);
-    return Engine::eqSettingValid(b, 3, *gainQ8);
+    const cf_audio::SpeakerEq eq = {p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7]};
+    return cf_audio::designSpeakerEq(eq, b, gainQ8);
 }
 
 bool sendEq(bool enable) {
