@@ -279,7 +279,9 @@ private:
     void enterRelease(Voice& v, uint32_t samples);
     void fireSequence();
     void publishSequence();
-    void bus(const int32_t* acc, int16_t* out, int n);
+    struct Biquad;
+    void bus(int32_t* acc, int16_t* out, int n);   // acc is used as scratch
+    template <int Form> static void eqRun(Biquad& q, int32_t* buf, int n);
     int  pickVoice() const;
 
     Voice voices_[kVoices];

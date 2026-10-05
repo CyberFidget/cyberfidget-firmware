@@ -63,8 +63,23 @@ constexpr int kLimReleaseShift = 10;
 // narrowing, so EQ gain can never wrap the int32 path.
 constexpr int64_t kBusSat = 1 << 24;
 
-inline int32_t satBus(int64_t v) {
-    return (int32_t)(v > kBusSat ? kBusSat : (v < -kBusSat ? -kBusSat : v));
+inline int32_t clampBus(int32_t v) {
+    return v > (int32_t)kBusSat ? (int32_t)kBusSat : (v < -(int32_t)kBusSat ? -(int32_t)kBusSat : v);
+}
+
+// The EQ inner loop is the bus's hottest code: let GCC optimise it for speed
+// even in size-optimised builds (the arithmetic is the same either way).
+#if defined(__GNUC__) && !defined(__clang__)
+#define CF_AUDIO_HOT __attribute__((optimize("O2")))
+#else
+#define CF_AUDIO_HOT
+#endif
+
+// One multiply-accumulate of the EQ (see eqRun): v is pre-scaled by 8.
+inline void eqTerm(int32_t c, int32_t v, int32_t& hi, uint32_t& lo) {
+    const int64_t p = (int64_t)c * v;
+    hi += (int32_t)(p >> 32);
+    lo += (uint32_t)p >> 3;
 }
 
 
@@ -670,33 +685,88 @@ void Engine::renderVoices(int32_t* acc, int n) {
         if (v.stage != kIdle) renderVoice(v, acc, n);
 }
 
-void Engine::bus(const int32_t* acc, int16_t* out, int n) {
-    uint32_t clips = 0;
+// One EQ band over a block, in place, with its coefficients and state in
+// registers. Bit-exact with the plain form
+//     y = clamp((b0 x + b1 x1 + b2 x2 - a1 y1 - a2 y2) >> 29)   (int64 sum)
+// but without 64-bit additions: every input is pre-scaled by 8 (|x| <= 2^24,
+// so 8x fits 32 bits). Then each product's high word is floor(p / 2^29) and
+// its low word a multiple of 8, and the exact floor of the whole sum is
+//     sum(high words) + (sum(low words / 8) >> 29),
+// where the second sum stays below 2^32 (at most five terms below 2^29).
+// Two exact shortcuts take one multiply-accumulate out (integer identities,
+// so the result is unchanged); the designs produce them every time:
+//   kEqPeak  b1 == a1 (peaking):   b1 x1 - a1 y1 = b1 (x1 - y1)
+//   kEqEdge  b0 == b2 (high-pass): b0 x + b2 x2 = b0 (x + x2)
+// (|x1 - y1|, |x + x2| <= 2^25, so the scaled sums still fit 32 bits.)
+enum : int { kEqGeneral = 0, kEqPeak = 1, kEqEdge = 2 };
+
+template <int Form>
+CF_AUDIO_HOT void Engine::eqRun(Biquad& q, int32_t* buf, int n) {
+    const int32_t b0 = q.c.b0, b1 = q.c.b1, b2 = q.c.b2;
+    const int32_t na1 = -q.c.a1, na2 = -q.c.a2;   // |a1| < 2, |a2| < 1 (validated): exact
+    int32_t x1 = q.x1 * 8, x2 = q.x2 * 8, y1 = q.y1 * 8, y2 = q.y2 * 8;
+    for (int32_t* const end = buf + n; buf != end; ++buf) {
+        const int32_t x = *buf * 8;
+        int32_t hi = 0;
+        uint32_t lo = 0;
+        if (Form == kEqEdge) {
+            eqTerm(b0, x + x2, hi, lo);
+        } else {
+            eqTerm(b0, x, hi, lo);
+            eqTerm(b2, x2, hi, lo);
+        }
+        if (Form == kEqPeak) {
+            eqTerm(b1, x1 - y1, hi, lo);
+        } else {
+            eqTerm(b1, x1, hi, lo);
+            eqTerm(na1, y1, hi, lo);
+        }
+        eqTerm(na2, y2, hi, lo);
+        const int32_t y = clampBus(hi + (int32_t)(lo >> 29));
+        *buf = y;
+        x2 = x1;
+        x1 = x;
+        y2 = y1;
+        y1 = y * 8;
+    }
+    q.x1 = x1 / 8; q.x2 = x2 / 8; q.y1 = y1 / 8; q.y2 = y2 / 8;   // exact: multiples of 8
+}
+
+// The bus runs stage by stage over the block. Every stage depends only on its
+// own state and its input sample, so this is the same arithmetic as one
+// sample at a time through all stages.
+void Engine::bus(int32_t* acc, int16_t* out, int n) {
     for (int i = 0; i < n; ++i) {
         if (masterRampLeft_) {
             masterQ30_ += masterStep_;
             if (--masterRampLeft_ == 0) masterQ30_ = masterTargetQ30_;
         }
-        int32_t y = (int32_t)(((int64_t)acc[i] * (masterQ30_ >> 15)) >> 15);
+        const int32_t x = (int32_t)(((int64_t)acc[i] * (masterQ30_ >> 15)) >> 15);
 
         // DC blocker: y[n] = x[n] - x[n-1] + R * y[n-1]
-        const int32_t d = y - dcX_ + mulPole(dcY_);
-        dcX_ = y;
+        const int32_t d = x - dcX_ + mulPole(dcY_);
+        dcX_ = x;
         dcY_ = d;
-        y = d;
+        acc[i] = d;   // |d| <= 2 x 8 voices full scale, far below kBusSat
+    }
 
-        if (eqOn_) {
-            for (int b = 0; b < eqBands_; ++b) {
-                Biquad& q = eq_[b];
-                const int64_t a = (int64_t)q.c.b0 * y + (int64_t)q.c.b1 * q.x1 + (int64_t)q.c.b2 * q.x2
-                                - (int64_t)q.c.a1 * q.y1 - (int64_t)q.c.a2 * q.y2;
-                const int32_t r = satBus(a >> 29);
-                q.x2 = q.x1; q.x1 = y; q.y2 = q.y1; q.y1 = r;
-                y = r;
-            }
-            y = satBus(((int64_t)y * eqGainQ8_) >> 8);
+    const bool eq = eqOn_;
+    if (eq) {
+        for (int b = 0; b < eqBands_; ++b) {
+            Biquad& q = eq_[b];
+            if (q.c.b1 == q.c.a1) eqRun<kEqPeak>(q, acc, n);
+            else if (q.c.b0 == q.c.b2) eqRun<kEqEdge>(q, acc, n);
+            else eqRun<kEqGeneral>(q, acc, n);
         }
+    }
 
+    const int32_t eqGain = eqGainQ8_;
+    uint32_t clips = 0;
+    for (int i = 0; i < n; ++i) {
+        int32_t y = acc[i];
+        // EQ make-up gain: |y| <= 2^24 and gain <= 16 x 256, so the product
+        // >> 8 fits 32 bits.
+        if (eq) y = clampBus((int32_t)(((int64_t)y * eqGain) >> 8));
         const int32_t ax = y < 0 ? -y : y;   // |y| <= kBusSat here
         if (limGainQ30_ != kOneQ30 || ax > kLimKnee) {
             if (limGainQ30_ != kOneQ30) {
