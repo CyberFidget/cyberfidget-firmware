@@ -93,32 +93,7 @@ void setRgbLedsOff() { cf_led_all_off(); }
 
 MenuManager& MenuManager::instance() { return g_menuManager; }
 
-// ---- ButtonManager (guest-local callback table) ----
-void ButtonManager::registerCallback(int buttonIndex, ButtonCallback callback) {
-    if (buttonIndex < 0 || buttonIndex >= kMaxButtons) return;
-    callbacks[buttonIndex] = callback;
-}
-void ButtonManager::unregisterCallback(int buttonIndex) {
-    if (buttonIndex < 0 || buttonIndex >= kMaxButtons) return;
-    callbacks[buttonIndex] = nullptr;
-}
-bool ButtonManager::hasCallback(int buttonIndex) const {
-    return buttonIndex >= 0 && buttonIndex < kMaxButtons && callbacks[buttonIndex];
-}
-ButtonCallback ButtonManager::getCallback(int buttonIndex) const {
-    if (buttonIndex < 0 || buttonIndex >= kMaxButtons) return nullptr;
-    return callbacks[buttonIndex];
-}
-void ButtonManager::dispatch(int buttonIndex, int eventType) {
-    if (buttonIndex < 0 || buttonIndex >= kMaxButtons) return;
-    ButtonCallback cb = callbacks[buttonIndex];
-    if (!cb) return;
-    ButtonEvent ev;
-    ev.buttonIndex = buttonIndex;
-    ev.eventType   = (ButtonEventType)eventType;
-    ev.duration    = 0;  // The host ABI does not yet carry event duration.
-    cb(ev);
-}
+// ---- ButtonManager: implemented inline in shims/ButtonManager.h ----
 
 // ---- RGBController free functions ----
 void setRandomColors() {
