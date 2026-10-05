@@ -9,6 +9,13 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Deterministic, manually stepped DinoGame surface used only by the parity
 # proof under tools/dino_parity. Normal emulator builds leave this disabled.
 option(CF_DINO_PARITY "Enable deterministic DinoGame parity hooks" OFF)
+option(CF_WASM_MODULE_HOST "Build an app-free device-module emulator core" OFF)
+if(CF_WASM_MODULE_HOST AND NOT EMSCRIPTEN)
+    message(FATAL_ERROR "CF_WASM_MODULE_HOST requires the Emscripten toolchain")
+endif()
+if(CF_WASM_MODULE_HOST AND CF_DINO_PARITY)
+    message(FATAL_ERROR "Module host and Dino parity are separate targets")
+endif()
 
 # ---- App selection ----
 # Pass -DWASM_APP=DinoGame (or Flashlight, Demo) to select which app to build.
@@ -116,7 +123,14 @@ set(FW_SOURCES
 )
 
 # ---- Per-app sources and defines ----
-if(WASM_APP STREQUAL "DinoGame")
+if(CF_WASM_MODULE_HOST)
+    add_compile_definitions(CF_WASM_MODULE_HOST)
+    include_directories(${LIB_DIR}/WasmAppRuntime)
+    list(APPEND WASM_SOURCES
+        module_host/cf_exports.cpp
+        ${LIB_DIR}/WasmAppRuntime/WasmHostImports.cpp
+    )
+elseif(WASM_APP STREQUAL "DinoGame")
     add_compile_definitions(WASM_APP_DINOGAME)
     list(APPEND FW_SOURCES
         ${LIB_DIR}/DinoGame/DinoGame.cpp
@@ -236,6 +250,20 @@ else()
 endif()
 
 add_executable(cyberfidget ${WASM_SOURCES} ${FW_SOURCES})
+if(CF_WASM_MODULE_HOST)
+    set_target_properties(cyberfidget PROPERTIES OUTPUT_NAME "cyberfidget-core")
+    add_custom_command(
+        OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/cf-imports.json"
+        COMMAND ${CMAKE_C_COMPILER} -E -P -x c
+            "${CMAKE_CURRENT_SOURCE_DIR}/device_module/import_manifest.c"
+            -o "${CMAKE_CURRENT_BINARY_DIR}/cf-imports.json"
+        DEPENDS device_module/import_manifest.c device_module/cf_imports.def device_module/cf_params.h
+        VERBATIM
+    )
+    add_custom_target(device-interface-manifest ALL
+        DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/cf-imports.json")
+    add_dependencies(cyberfidget device-interface-manifest)
+endif()
 
 # ---- Emscripten-specific settings ----
 if(EMSCRIPTEN)

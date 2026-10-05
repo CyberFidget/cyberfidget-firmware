@@ -5,6 +5,7 @@ on:
     paths:
       - 'lib/**'
       - 'wasm/**'
+      - 'test/test_emu_device_interface/**'
       - 'scripts/check_hal_imports_additive/**'
       - 'scripts/check_shim_drift/**'
       - 'scripts/generate_version.py'
@@ -49,7 +50,7 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: |
           git fetch origin "$BASE_REF"
-          python scripts/check_hal_imports_additive/check_hal_imports_additive.py \
+          python wasm/device_module/check_interface_additive.py \
             --base-ref "origin/$BASE_REF"
 
   wasm-build:
@@ -105,6 +106,27 @@ jobs:
             sudo apt-get update && sudo apt-get install -y binaryen
           fi
           bash wasm/device_module/verify_device_contract.sh wasm/build/cyberfidget.device.wasm
+
+      - name: Check device contract rejects invalid imports
+        run: |
+          source emsdk/emsdk_env.sh
+          export PATH="$EMSDK/upstream/bin:$PATH"
+          node --test test/test_emu_device_interface/test_contract.mjs
+
+      - name: Build app-free emulator core
+        run: |
+          source emsdk/emsdk_env.sh
+          emcmake cmake -S wasm -B wasm/build/module-host -G Ninja \
+            -DCF_WASM_MODULE_HOST=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build wasm/build/module-host
+
+      - name: Smoke app-free core with example device module
+        run: |
+          source emsdk/emsdk_env.sh
+          node wasm/module_host/smoke_core.mjs \
+            wasm/build/module-host/cyberfidget-core.js \
+            wasm/build/cyberfidget.device.wasm \
+            wasm/build/module-host/cf-imports.json
 
   core-app-list:
     runs-on: ubuntu-latest

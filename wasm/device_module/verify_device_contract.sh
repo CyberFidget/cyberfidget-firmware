@@ -3,7 +3,7 @@
 # Verify a device-profile WASM module's exports, imports, memory, and HAL ABI.
 #
 # Usage: verify_device_contract.sh <path-to-device.wasm>
-# Requires wasm-dis (binaryen) on PATH.
+# Requires wasm-dis (binaryen), Node, and emcc (or CF_CPP) on PATH.
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
@@ -36,17 +36,10 @@ for export_name in app_begin app_update app_end app_handle_button; do
 done
 
 imports_ok=true
-invalid_import_count=0
-while IFS= read -r import_module; do
-  case "$import_module" in
-    cf|wasi_snapshot_preview1|env) ;;
-    *) invalid_import_count=$((invalid_import_count + 1)) ;;
-  esac
-done < <(sed -nE 's/^[[:space:]]*\(import "([^"]+)".*/\1/p' "$DEVICE_WAT")
-if [ "$invalid_import_count" -eq 0 ]; then
-  echo "Device WASM import modules: allowed"
-else
-  echo "::error::Device WASM imports use ${invalid_import_count} unsupported module(s)"
+# Use the preprocessor itself to materialize the interface, including stubs.
+# The binary checker verifies (module, name, wasm3 signature), not just modules.
+if ! "${CF_CPP:-emcc}" -E -P -x c "$REPO_ROOT/wasm/device_module/import_manifest.c" | \
+    node "$REPO_ROOT/wasm/device_module/verify_imports.mjs" "$DEVICE_WASM"; then
   imports_ok=false
 fi
 
