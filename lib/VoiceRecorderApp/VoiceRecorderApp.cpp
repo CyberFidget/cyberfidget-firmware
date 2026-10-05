@@ -1095,9 +1095,12 @@ bool VoiceRecorderApp::buildPlaybackPipeline(const char* path) {
 }
 
 // Deep sleep during playback: the app's own teardown (closes the stream and
-// returns port 0).
-void VoiceRecorderApp::stopPlaybackForSleep() {
-    if (instance != nullptr) instance->destroyPlaybackPipeline();
+// returns port 0). No write may wait on the speaker while tearing down. The
+// output is deleted mid-buffer with no fade: playback is cut, not faded.
+void VoiceRecorderApp::stopPlaybackForSleep(bool) {
+    if (instance == nullptr) return;
+    if (instance->pI2sOut != nullptr) instance->pI2sOut->driver()->setWaitTimeWriteMs(0);
+    instance->destroyPlaybackPipeline();
 }
 
 void VoiceRecorderApp::destroyPlaybackPipeline() {

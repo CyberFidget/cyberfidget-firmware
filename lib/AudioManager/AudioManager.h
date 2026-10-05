@@ -47,14 +47,19 @@ public:
     // releaseI2S: silence tones/sequences and free port 0. Returns false if
     // port 0 could not be freed - the caller must not open it then. A caller
     // that streams on port 0 passes its own stop function (ends its stream
-    // and calls reclaimI2S); stopForSleep() uses it.
+    // and calls reclaimI2S); stopForSleep() uses it. That function must
+    // return in bounded time (finite output waits); with hardShutdown true it
+    // must not wait on the output at all.
     // reclaimI2S: take port 0 back for tones; on failure loop() keeps retrying.
-    bool releaseI2S(void (*stopBorrower)() = nullptr);
+    typedef void (*BorrowerStop)(bool hardShutdown);
+    bool releaseI2S(BorrowerStop stopBorrower = nullptr);
     bool reclaimI2S();
 
     // Before deep sleep: stop whichever app streams on port 0 (its own stop
     // path), then stop the engine. True when port 0 is quiet and released.
-    bool stopForSleep();
+    // From the first call on, the engine is never restarted (a deferred
+    // sleep retries this instead).
+    bool stopForSleep(bool hardShutdown = false);
 
     // Mic control
     void enableMic(bool on);
@@ -71,8 +76,8 @@ private:
     bool     engineWanted = false;     // set by init()/reclaimI2S(), cleared by releaseI2S()
     bool     volumePending = false;    // a volume change still to send
     uint32_t engineRetryAtMs = 0;
-    void   (*borrowerStop)() = nullptr;  // the current port-0 borrower's own stop
-    bool     quiescing = false;        // stopForSleep(): a returned port stays released
+    BorrowerStop borrowerStop = nullptr;   // the current port-0 borrower's own stop
+    bool     sleepHold = false;        // going to sleep: no engine restarts any more
 
     // --- Mic chain (RX) ---
     I2SConfig            micCfg;             // persisted RX config

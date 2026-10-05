@@ -152,7 +152,7 @@ bool AudioManager::isSequencePlaying() const {
     return s_tone.isSequencePlaying(AudioEngineTask::engine());
 }
 
-bool AudioManager::releaseI2S(void (*stopBorrower)()) {
+bool AudioManager::releaseI2S(BorrowerStop stopBorrower) {
     // stop() fades every voice, stops the sequencer and lets the DMA cushion
     // play out silence; it reports success only once the render task has
     // acknowledged its exit and the channel is deleted.
@@ -168,21 +168,26 @@ bool AudioManager::releaseI2S(void (*stopBorrower)()) {
 
 bool AudioManager::reclaimI2S() {
     borrowerStop = nullptr;
-    if (quiescing) return true;   // going to sleep: the port stays released
+    if (sleepHold) return true;   // going to sleep: the port stays released
     engineWanted = true;   // loop() keeps retrying if this start fails
     if (AudioEngineTask::running()) return true;
     return startEngine();
 }
 
-bool AudioManager::stopForSleep() {
+bool AudioManager::stopForSleep(bool hardShutdown) {
+    // From here on nothing restarts the engine: not loop(), not a borrower's
+    // reclaimI2S(). A sleep that has to wait retries this call instead.
+    sleepHold = true;
+    engineWanted = false;
     if (borrowerStop != nullptr) {
         // The app streaming on port 0 ends its stream through its own stop
-        // path, which hands the port back with reclaimI2S().
-        void (*stopFn)() = borrowerStop;
+        // path (bounded output waits; none at all on hardShutdown), which
+        // hands the port back with reclaimI2S().
+        BorrowerStop stopFn = borrowerStop;
         borrowerStop = nullptr;
-        quiescing = true;
-        stopFn();
-        quiescing = false;
+        const uint32_t t0 = millis();
+        stopFn(hardShutdown);
+        Serial.printf("[audio] sleep: port-0 app stopped in %u ms\n", (unsigned)(millis() - t0));
     }
     return releaseI2S();
 }

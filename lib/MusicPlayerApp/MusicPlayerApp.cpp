@@ -574,10 +574,15 @@ void MusicPlayerApp::startOnboardSpeaker() {
 }
 
 // Deep sleep while the speaker plays: the same stop as leaving the app
-// (playback stops with its fade, then the I2S output is torn down and port 0
-// returned).
-void MusicPlayerApp::stopSpeakerForSleep() {
+// (playback stops, then the I2S output is torn down and port 0 returned),
+// with every speaker write bounded so sleep cannot hang on a stalled output.
+// On an empty-battery shutdown nothing waits on the output: no fade.
+// The output is deleted without draining its DMA buffers, so whatever is
+// still queued (including the fade tail) is cut, not played out.
+void MusicPlayerApp::stopSpeakerForSleep(bool hardShutdown) {
     if (instance == nullptr) return;
+    if (instance->pI2sOut) instance->pI2sOut->driver()->setWaitTimeWriteMs(hardShutdown ? 0 : 20);
+    if (hardShutdown && instance->pPlayer) instance->pPlayer->setAutoFade(false);   // no fade writes
     instance->stopPlayback();
     instance->destroyAudioPipeline();
 }
