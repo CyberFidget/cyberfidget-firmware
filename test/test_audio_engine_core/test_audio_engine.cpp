@@ -23,6 +23,10 @@ using namespace cf_audio;
 
 namespace {
 
+// Recorded before the EQ path was restructured for speed.
+constexpr uint32_t kEqPresetChecksum = 0x7976754Cu;
+constexpr uint32_t kEqExtremeChecksum = 0x0E64BCEFu;
+
 Engine g_engine;          // big (render buffers inside): keep off the stack
 int16_t g_buf[44100];
 
@@ -465,6 +469,48 @@ void test_eq_extreme_gain_never_wraps() {
     TEST_ASSERT_EQUAL_UINT32(0, e.clipCount());
 }
 
+// Pins the EQ'd bus output bit-for-bit: the default preset's coefficients
+// (as literals, so libm cannot move them) over a mix that drives the
+// limiter, and the largest accepted setting, which drives the saturation.
+// Any optimisation of the EQ path must keep these checksums.
+uint32_t renderEqChecksum(const BiquadCoefs* bands, int32_t gainQ8, uint16_t level) {
+    Engine* e = new Engine(7);
+    for (uint8_t i = 0; i < 3; ++i) e->apply(Command::eqBand(i, bands[i]));
+    TEST_ASSERT_TRUE(e->commitEq(3, true, gainQ8));
+    const Envelope env = {44, 300, 20000, 300};
+    static int16_t buf[4410];
+    uint32_t h = 2166136261u;
+    for (int block = 0; block < 20; ++block) {
+        const uint8_t v = (uint8_t)(block % kVoices);
+        e->apply(Command::noteOn(v, (Wave)(block % 5), Engine::hzToInc(300.0f + 410.0f * block), 3000,
+                                 level, (uint8_t)(32 + 9 * block), env));
+        e->render(buf, 4410);
+        h = cf_audio_golden::fnv1a(h, buf, 4410);
+    }
+    delete e;
+    return h;
+}
+
+void test_eq_output_is_pinned() {
+    const BiquadCoefs preset[3] = {
+        {497797779, -995595559, 497797779, -992748116, 461572090},
+        {588736073, -840128163, 307656580, -840128163, 359521741},
+        {479964948, -194630328, 204082353, -194630328, 147176389},
+    };
+    const BiquadCoefs extreme[3] = {
+        {INT32_MAX, INT32_MIN, INT32_MAX, -1000000000, 499999999},
+        {INT32_MIN, INT32_MAX, 0, 1000000000, 499999999},
+        {INT32_MAX, 0, INT32_MIN, 0, -536870911},
+    };
+    const uint32_t a = renderEqChecksum(preset, 322, kLevelUnity);
+    const uint32_t b = renderEqChecksum(extreme, kEqMaxGainQ8, kLevelUnity);
+    char msg[64];
+    snprintf(msg, sizeof(msg), "eq checksums preset=0x%08X extreme=0x%08X", (unsigned)a, (unsigned)b);
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_EQUAL_HEX32(kEqPresetChecksum, a);
+    TEST_ASSERT_EQUAL_HEX32(kEqExtremeChecksum, b);
+}
+
 void test_default_speaker_eq_preset_is_valid_and_clean() {
     TEST_ASSERT_TRUE(kSpeakerEqDefault > 0 && kSpeakerEqDefault < kSpeakerEqPresetCount);
     TEST_ASSERT_FALSE(kSpeakerEqPresets[0].enabled);   // index 0 = off
@@ -734,6 +780,7 @@ int main(int, char**) {
     RUN_TEST(test_eq_rejects_out_of_range_settings);
     RUN_TEST(test_eq_extreme_gain_never_wraps);
     RUN_TEST(test_default_speaker_eq_preset_is_valid_and_clean);
+    RUN_TEST(test_eq_output_is_pinned);
     RUN_TEST(test_stop_overtakes_queued_play);
     RUN_TEST(test_stop_survives_a_full_queue);
     RUN_TEST(test_sequence_status_matches_the_engine);
