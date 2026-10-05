@@ -604,6 +604,9 @@ void AppManager::switchToApp(AppIndex newApp)
 
     // end old
     appDefs[appActive].endFunc();
+    // Whatever the app left playing (a held tone, a sequence) stops here, so
+    // no sound outlives its app - built-in or device module alike.
+    HAL::stopAudio();
 
     appPreviously = appActive;
     appActive     = newApp;
@@ -628,6 +631,7 @@ void AppManager::relaunchActive()
     // arrived). An open prompt closes first, as for any switch.
     ModalPrompt::instance().closeForTeardown();
     appDefs[appActive].endFunc();
+    HAL::stopAudio();
     if (appActive == APP_WASM_HOST && wasmRestartHelps()) {
         std::string id, label;
         if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
