@@ -5,8 +5,8 @@
 #include "globals.h"
 #include "DisplayProxy.h"
 #include "ButtonManager.h"
-#ifdef CF_WASM_MODULE_HOST
 #include "AudioManager.h"
+#ifdef CF_WASM_MODULE_HOST
 #include "WasmHostFunctions.h"
 #endif
 #include "RGBController.h"
@@ -217,9 +217,9 @@ static void demoUpdate() {
 static void mainLoop() {
     HAL::loopHardware();
     updateStrip();
-#ifdef CF_WASM_MODULE_HOST
+    // Keeps the audio engine's clock running until the page pulls samples
+    // itself (wasm_audio_render); see AUDIO_RENDER_CONTRACT.md.
     HAL::audioManager().loop();
-#endif
 
     ButtonEvent ev;
     while (HAL::buttonManager().getNextEvent(ev)) {

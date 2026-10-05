@@ -52,6 +52,7 @@ include_directories(
     ${LIB_DIR}/DisplayProxy
     ${LIB_DIR}/ButtonManager
     ${LIB_DIR}/AudioManager
+    ${LIB_DIR}/AudioEngine
     ${LIB_DIR}/RGBController
     ${LIB_DIR}/SliderPosition
     ${LIB_DIR}/BatteryManager
@@ -87,6 +88,9 @@ include_directories(
     ${LIB_DIR}/BewilderYourBrain
     ${LIB_DIR}/LoadoutManifest
     ${LIB_DIR}/CFGraphics/include
+    # The audio engine's golden and tone scripts, for the parity self-test
+    # exports in hal/audio_wasm.cpp (wasm/audio_parity.mjs).
+    ${CMAKE_CURRENT_SOURCE_DIR}/../test/test_audio_engine_core
 )
 
 # ---- Source files ----
@@ -105,6 +109,8 @@ set(FW_SOURCES
     ${LIB_DIR}/Globals/globals.cpp
     ${LIB_DIR}/ButtonManager/ButtonManager.cpp
     ${LIB_DIR}/RGBController/RGBController.cpp
+    # The device's audio engine: the emulator renders the same samples.
+    ${LIB_DIR}/AudioEngine/AudioEngine.cpp
     # Pure loadout-manifest core (no Arduino deps) — compiled here to keep
     # the emulator menu model in sync with firmware. The
     # LittleFS-backed LoadoutStore is device-only and deliberately absent.

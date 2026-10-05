@@ -1,246 +1,292 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (c) 2023-2026 Dismo Industries LLC
 
-// WASM AudioManager implementation — uses Web Audio API for tone generation
+// Emulator AudioManager: the device's audio engine (lib/AudioEngine) driven by
+// the same control layer as the device (ToneControl and the shared volume
+// curve), so the emulator renders the same samples as the device does before
+// its speaker stage. The page pulls the sound out with wasm_audio_render();
+// the render contract is in wasm/AUDIO_RENDER_CONTRACT.md.
+//
+// Everything here runs on one thread: the one that runs the app loop and
+// calls wasm_audio_render. Commands are queued as on the device and applied
+// at the start of the next render call; sound (tone lengths, sequence steps)
+// advances only as samples are rendered.
 
 #include "AudioManager.h"
+#include "AudioEngine.h"
+#include "SpeakerEqPresets.h"
+#include "golden_script.h"
+#include "tone_script.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
-
-EM_JS(void, js_audio_play_tone, (float frequency, float volume, int duration_ms), {
-    if (!Module._audioCtx) {
-        Module._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    js_audio_stop_tone();
-    Module._audioPlaying = true;
-
-    var ctx = Module._audioCtx;
-    var osc = ctx.createOscillator();
-    var gain = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(frequency, ctx.currentTime);
-    var appVol = Math.max(0, Math.min(1, volume));
-    var master = (typeof Module._emulatorMasterVolume !== 'undefined' ? Module._emulatorMasterVolume : 1);
-    var vol = appVol * master;
-    gain.gain.setValueAtTime(vol, ctx.currentTime);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.start();
-    Module._audioOsc = osc;
-    Module._audioGain = gain;
-    if (duration_ms > 0) {
-        var stopAt = ctx.currentTime + duration_ms / 1000;
-        gain.gain.setValueAtTime(vol, ctx.currentTime);
-        gain.gain.setValueAtTime(0, stopAt);
-        osc.stop(stopAt);
-        var id = setTimeout(function() {
-            Module._audioStopTimeout = null;
-            if (Module._audioOsc === osc) {
-                Module._audioOsc = null;
-                Module._audioGain = null;
-                Module._audioPlaying = false;
-            }
-        }, duration_ms + 10);
-        Module._audioStopTimeout = id;
-    }
-});
-
-EM_JS(void, js_audio_stop_tone, (), {
-    Module._audioPlaying = false;
-    if (Module._audioStopTimeout) {
-        clearTimeout(Module._audioStopTimeout);
-        Module._audioStopTimeout = null;
-    }
-    if (Module._audioOsc) {
-        try { Module._audioOsc.stop(); } catch(e) {}
-        Module._audioOsc = null;
-        Module._audioGain = null;
-    }
-});
-
-EM_JS(void, js_audio_set_volume, (float volume), {
-    var master = (typeof Module._emulatorMasterVolume !== 'undefined' ? Module._emulatorMasterVolume : 1);
-    if (Module._audioGain) {
-        Module._audioGain.gain.setValueAtTime(volume * master, Module._audioCtx.currentTime);
-    }
-    if (Module._audioNotes) {
-        for (var h in Module._audioNotes) {
-            Module._audioNotes[h].gain.gain.setValueAtTime(0.7071 * volume * master, Module._audioCtx.currentTime);   // notes: -3 dB
-        }
-    }
-});
-
-// Notes (playNote): one oscillator per handle, alongside the tone, at most
-// seven at once like the device (the oldest is replaced). Timed notes stop on
-// the audio clock; every note is removed when its oscillator ends.
-EM_JS(void, js_audio_note_stop, (int handle), {
-    var n = Module._audioNotes && Module._audioNotes[handle];
-    if (!n) return;
-    delete Module._audioNotes[handle];
-    try { n.osc.stop(); } catch(e) {}
-});
-
-EM_JS(void, js_audio_note_play, (int handle, float frequency, float volume, int duration_ms), {
-    if (!Module._audioCtx) {
-        Module._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (!Module._audioNotes) Module._audioNotes = {};
-    var ctx = Module._audioCtx;
-    // A timed note that has passed its end time no longer sounds even if its
-    // onended event hasn't been delivered yet: drop it before counting, so it
-    // can't cause a held note to be replaced (the device reuses idle voices).
-    for (var k in Module._audioNotes) {
-        var e = Module._audioNotes[k];
-        if (e.endAt !== undefined && e.endAt <= ctx.currentTime) delete Module._audioNotes[k];
-    }
-    var held = Object.keys(Module._audioNotes).map(Number).sort(function(a, b) { return a - b; });
-    while (held.length >= 7) js_audio_note_stop(held.shift());   // handles count up: lowest = oldest
-    var osc = ctx.createOscillator();
-    var gain = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(frequency, ctx.currentTime);
-    var master = (typeof Module._emulatorMasterVolume !== 'undefined' ? Module._emulatorMasterVolume : 1);
-    gain.gain.setValueAtTime(Math.max(0, Math.min(1, volume)) * master, ctx.currentTime);
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    var note = { osc: osc, gain: gain };
-    osc.onended = function() {
-        if (Module._audioNotes && Module._audioNotes[handle] === note) delete Module._audioNotes[handle];
-        try { osc.disconnect(); gain.disconnect(); } catch(e) {}
-    };
-    Module._audioNotes[handle] = note;
-    osc.start();
-    if (duration_ms > 0) {
-        note.endAt = ctx.currentTime + duration_ms / 1000;
-        osc.stop(note.endAt);
-    }
-});
-
-EM_JS(void, js_audio_notes_stop_all, (), {
-    if (!Module._audioNotes) return;
-    for (var h in Module._audioNotes) js_audio_note_stop(+h);
-});
-
+#define AUDIO_EXPORT EMSCRIPTEN_KEEPALIVE
 #else
-inline void js_audio_play_tone(float, float, int) {}
-inline void js_audio_stop_tone() {}
-inline void js_audio_set_volume(float) {}
-inline void js_audio_note_play(int, float, float, int) {}
-inline void js_audio_note_stop(int) {}
-inline void js_audio_notes_stop_all() {}
+#define AUDIO_EXPORT
 #endif
 
-static float s_volume = 0.3f;
+using cf_audio::Command;
+using cf_audio::Engine;
 
-// Tone and sequence state. The device's AudioManager keeps different private
-// members (its engine task renders), so the emulator's own state lives here.
-static float              currentFrequency = 0;
-static bool               isPlaying = false;
-static unsigned long      stopAtMillis = 0;
-static const AudioManager::ToneStep* currentSequence = nullptr;
-static int                currentSequenceLen = 0;
-static int                currentSequenceIdx = 0;
-static unsigned long      nextStepAtMs = 0;
+namespace {
+
+constexpr uint32_t kEngineSeed  = 1;      // as the device's engine task
+constexpr int      kQueueDepth  = 64;     // commands between two render calls
+constexpr int      kBufferFrames = 2048;  // most frames one wasm_audio_render call returns
+constexpr uint32_t kAutoClockMaxMs = 250; // the auto clock never catches up more than this
+
+int16_t  s_buffer[kBufferFrames];
+Command  s_queue[kQueueDepth];
+int      s_qHead = 0;
+int      s_qCount = 0;
+float    s_volume = 0.7f;          // the device's default
+bool     s_speakerEq = false;      // desktop speakers: EQ bypassed
+bool     s_autoClock = true;       // until the page pulls samples itself
+bool     s_clockStarted = false;
+uint32_t s_clockLastMs = 0;
+uint32_t s_clockFrac = 0;          // leftover (frames * 1000) of the auto clock
+
+void applySpeakerEq(Engine& e) {
+    if (!s_speakerEq) {
+        e.commitEq(0, false, 256);
+        return;
+    }
+    // The device's default preset, exactly as AudioManager::startEngine loads it.
+    cf_audio::BiquadCoefs bands[3];
+    int32_t gainQ8 = 256;
+    if (!cf_audio::designSpeakerEq(kSpeakerEqPresets[kSpeakerEqDefault].eq, bands, &gainQ8)) {
+        e.commitEq(0, false, 256);
+        return;
+    }
+    for (int b = 0; b < 3; ++b) e.setEqBand(b, bands[b]);
+    e.commitEq(3, true, gainQ8);
+}
+
+// Power-on state of the device's engine after AudioManager::init(): silent,
+// current volume, speaker EQ as chosen.
+void primeEngine(Engine& e) {
+    e.reset(kEngineSeed);
+    e.setMasterVolume(cf_audio::volumeToMasterQ15(s_volume));
+    applySpeakerEq(e);
+}
+
+Engine& engine() {
+    static Engine e(kEngineSeed);
+    static bool primed = (primeEngine(e), true);
+    (void)primed;
+    return e;
+}
+
+// Stamped when queued, like AudioEngineTask::send, so a later stop overtakes it.
+bool send(const Command& c) {
+    if (s_qCount >= kQueueDepth) return false;
+    Command stamped = c;
+    engine().stamp(stamped);
+    s_queue[(s_qHead + s_qCount) % kQueueDepth] = stamped;
+    ++s_qCount;
+    return true;
+}
+
+cf_audio::ToneControl s_tone(&send);
+
+// Applies the queued commands, then renders `frames` mono samples.
+void renderNow(int16_t* out, int frames) {
+    Engine& e = engine();
+    while (s_qCount > 0) {
+        e.apply(s_queue[s_qHead]);
+        s_qHead = (s_qHead + 1) % kQueueDepth;
+        --s_qCount;
+    }
+    e.render(out, frames);
+}
+
+void resetAudio() {
+    s_qHead = s_qCount = 0;
+    primeEngine(engine());
+    s_tone.forget();
+}
+
+// Without a page pulling samples, keep the engine's clock running from
+// millis() and drop the samples, so tones end and sequences finish on time.
+void autoClock() {
+    if (!s_autoClock) return;
+    const uint32_t now = (uint32_t)millis();
+    if (!s_clockStarted) {
+        s_clockStarted = true;
+        s_clockLastMs = now;
+        s_clockFrac = 0;
+        return;
+    }
+    uint32_t elapsed = now - s_clockLastMs;
+    s_clockLastMs = now;
+    if (elapsed > kAutoClockMaxMs) elapsed = kAutoClockMaxMs;
+    s_clockFrac += elapsed * cf_audio::kSampleRate;
+    int frames = (int)(s_clockFrac / 1000);
+    s_clockFrac %= 1000;
+    while (frames > 0) {
+        const int n = frames < kBufferFrames ? frames : kBufferFrames;
+        renderNow(s_buffer, n);
+        frames -= n;
+    }
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------- AudioManager
 
 AudioManager::AudioManager() {}
 
 void AudioManager::init() {}
 
 void AudioManager::loop() {
-    if (isPlaying && stopAtMillis > 0 && millis() >= stopAtMillis) {
-        stopTone();
-    }
-
-    // Sequence advance — mirrors the production AudioManager so jingles
-    // play in the browser emulator with the same timing they do on hardware.
-    if (currentSequence != nullptr && millis() >= nextStepAtMs) {
-        if (currentSequenceIdx >= currentSequenceLen) {
-            currentSequence    = nullptr;
-            currentSequenceLen = 0;
-            currentSequenceIdx = 0;
-        } else {
-            const ToneStep& s = currentSequence[currentSequenceIdx];
-            if (s.freq > 0.0f) {
-                playTone(s.freq, s.durationMs);
-            } else {
-                stopTone(); // rest
-            }
-            nextStepAtMs = millis() + s.durationMs + s.gapAfterMs;
-            currentSequenceIdx++;
-        }
-    }
+    autoClock();
 }
 
-void AudioManager::setVolume(float volume) {
-    if (volume < 0.0f) volume = 0.0f;
-    if (volume > 1.0f) volume = 1.0f;
-    s_volume = volume;
-    js_audio_set_volume(volume);
+void AudioManager::setVolume(float volumeLevel) {
+    float vol = volumeLevel;
+    if (!(vol >= 0.0f)) vol = 0.0f;   // also NaN
+    if (vol > 1.0f) vol = 1.0f;
+    const bool changed = cf_audio::volumeToMasterQ15(vol) != cf_audio::volumeToMasterQ15(s_volume);
+    s_volume = vol;
+    // Ramped over 10 ms by the engine, as on the device.
+    if (changed) send(Command::master(cf_audio::volumeToMasterQ15(s_volume)));
 }
 
 void AudioManager::playTone(float frequency, int durationMs) {
-    currentFrequency = frequency;
-    isPlaying = true;
-    stopAtMillis = (durationMs > 0) ? millis() + durationMs : 0;
-    js_audio_play_tone(frequency, s_volume, durationMs);
+    s_tone.playTone(&engine(), frequency, durationMs);   // durationMs <= 0: until stopTone
 }
 
 void AudioManager::stopTone() {
-    isPlaying = false;
-    currentFrequency = 0;
-    stopAtMillis = 0;
-    js_audio_stop_tone();
+    s_tone.stopTone(&engine());
 }
 
-// Sequence playback — same semantics as the production AudioManager.
-// Caller-provided ToneStep array must outlive playback (typical pattern is
-// static const). loop() drives the per-step advance.
 void AudioManager::playSequence(const ToneStep* steps, int count) {
     if (steps == nullptr || count <= 0) {
         stopSequence();
         return;
     }
-    currentSequence    = steps;
-    currentSequenceLen = count;
-    currentSequenceIdx = 0;
-    nextStepAtMs       = millis(); // first step fires on the next loop() tick
+    if (count > cf_audio::kMaxSeqSteps) count = cf_audio::kMaxSeqSteps;
+    // Copied now, as on the device.
+    cf_audio::SeqStep* buf = s_tone.beginSequence(&engine());
+    if (buf == nullptr) return;
+    for (int i = 0; i < count; ++i) {
+        buf[i].inc = Engine::hzToInc(steps[i].freq);   // 0 = rest
+        buf[i].durMs = steps[i].durationMs;
+        buf[i].gapMs = steps[i].gapAfterMs;
+    }
+    s_tone.commitSequence(&engine(), count);
 }
 
 void AudioManager::stopSequence() {
-    currentSequence    = nullptr;
-    currentSequenceLen = 0;
-    currentSequenceIdx = 0;
-    stopTone();
+    s_tone.stopSequence(&engine());   // also releases the tone voice
 }
 
 bool AudioManager::isSequencePlaying() const {
-    return currentSequence != nullptr;
+    return s_tone.isSequencePlaying(&engine());
 }
 
-// Notes: one browser oscillator per handle. Handles count up from 1 and are
-// never reused (after 2^31 - 1 notes playNote returns -1), so a stale handle
-// never matches a newer note.
-static int s_lastNoteHandle = 0;
-
 int AudioManager::playNote(float frequency, int durationMs) {
-    if (!(frequency > 0.0f)) return -1;
-    if (s_lastNoteHandle >= 0x7FFFFFFF) return -1;
-    ++s_lastNoteHandle;
-    js_audio_note_play(s_lastNoteHandle, frequency, 0.7071f * s_volume, durationMs);   // notes play 3 dB below a tone, as on the device
-    return s_lastNoteHandle;
+    return s_tone.playNote(&engine(), frequency, durationMs);
 }
 
 void AudioManager::stopNote(int handle) {
-    if (handle > 0) js_audio_note_stop(handle);
+    s_tone.stopNote(&engine(), handle);
 }
 
 void AudioManager::stopNotes() {
-    js_audio_notes_stop_all();
+    s_tone.stopNotes(&engine());
 }
 
+// The emulator has no microphone.
 void AudioManager::enableMic(bool) {}
 
 float AudioManager::getMicVolumeDb() const {
     return -60.0f;
 }
+
+// ------------------------------------------------------------- render exports
+
+namespace {
+
+// Test only: the emulator's AudioManager as runToneScript sees it.
+struct EmulatorAm {
+    typedef AudioManager::ToneStep ToneStep;
+    AudioManager& am;   // all of its state is this file's
+    void setVolume(float v) { am.setVolume(v); }
+    void playTone(float hz, int ms) { am.playTone(hz, ms); }
+    void stopTone() { am.stopTone(); }
+    void playSequence(const ToneStep* s, int n) { am.playSequence(s, n); }
+    void stopSequence() { am.stopSequence(); }
+    bool isSequencePlaying() const { return am.isSequencePlaying(); }
+    int playNote(float hz, int ms) { return am.playNote(hz, ms); }
+    void stopNote(int h) { am.stopNote(h); }
+    void stopNotes() { am.stopNotes(); }
+};
+
+}  // namespace
+
+extern "C" {
+
+AUDIO_EXPORT int16_t* wasm_audio_buffer(void) { return s_buffer; }
+
+AUDIO_EXPORT int wasm_audio_buffer_frames(void) { return kBufferFrames; }
+
+AUDIO_EXPORT int wasm_audio_sample_rate(void) { return (int)cf_audio::kSampleRate; }
+
+AUDIO_EXPORT int wasm_audio_render(int frames) {
+    s_autoClock = false;   // the caller is the clock from now on
+    if (frames <= 0) return 0;
+    if (frames > kBufferFrames) frames = kBufferFrames;
+    renderNow(s_buffer, frames);
+    return frames;
+}
+
+AUDIO_EXPORT void wasm_audio_set_autoclock(int on) {
+    s_autoClock = on != 0;
+    s_clockStarted = false;   // no catch-up burst for the time it was off
+}
+
+AUDIO_EXPORT void wasm_audio_reset(void) { resetAudio(); }
+
+AUDIO_EXPORT void wasm_audio_set_speaker_eq(int on) {
+    s_speakerEq = on != 0;
+    applySpeakerEq(engine());   // same thread as render: applied before the next sample
+}
+
+AUDIO_EXPORT int wasm_audio_active(void) {
+    Engine& e = engine();
+    return (s_qCount > 0 || e.activeVoices() > 0 || (e.sequenceStatus() & 1u)) ? 1 : 0;
+}
+
+// Test only (wasm/audio_parity.mjs): the engine golden script on a private
+// engine. Returns its checksum; leaves the emulator's audio untouched.
+AUDIO_EXPORT uint32_t wasm_audio_selftest_golden(void) {
+    static Engine e(cf_audio_golden::kGoldenSeed);
+    e.reset(cf_audio_golden::kGoldenSeed);
+    return cf_audio_golden::renderGolden(e);
+}
+
+// Test only (wasm/audio_parity.mjs): the AudioManager tone script through the
+// emulator's real AudioManager and render path, from a reset engine at the
+// default volume with the speaker EQ off. Resets the emulator's audio before
+// and after; the volume and EQ setting are restored.
+AUDIO_EXPORT uint32_t wasm_audio_selftest_tone_script(void) {
+    const float volume = s_volume;
+    const bool eq = s_speakerEq;
+    const bool autoClockOn = s_autoClock;
+    s_volume = 0.7f;
+    s_speakerEq = false;
+    resetAudio();
+    static AudioManager manager;
+    EmulatorAm am{manager};
+    const uint32_t h = cf_audio_tone_script::runToneScript(
+        am, [](int16_t* out, int frames) { renderNow(out, frames); });
+    s_volume = volume;
+    s_speakerEq = eq;
+    resetAudio();
+    s_autoClock = autoClockOn;
+    s_clockStarted = false;
+    return h;
+}
+
+}  // extern "C"

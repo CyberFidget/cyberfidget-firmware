@@ -13,17 +13,8 @@ if (!manifestPath) throw new Error('Usage: node smoke_core.mjs <core.js> <guest.
 const manifest = readManifest(fs.readFileSync(manifestPath, 'utf8'));
 const bytes = fs.readFileSync(guestPath);
 verifyImports(bytes, manifest);
-// Node has no audio device. This mock lets the existing Web Audio bridge run;
-// it does not establish audible/browser parity.
-const parameter = () => ({ setValueAtTime() {} });
-let toneStarts = 0;
-const frequencies = [];
-class AudioContext {
-    currentTime = 0; destination = {};
-    createOscillator() { return { frequency: { setValueAtTime(value) { frequencies.push(value); } }, connect() {}, start() { ++toneStarts; }, stop() {} }; }
-    createGain() { return { gain: parameter(), connect() {} }; }
-}
-globalThis.window = { AudioContext };
+// Node has no audio device: audio is checked as rendered samples
+// (wasm_audio_render), not as browser playback. See wasm/audio_parity.mjs.
 const factory = createRequire(import.meta.url)(path.resolve(corePath));
 let flushes = 0, ledUpdates = 0, exits = 0;
 const core = await factory({
@@ -63,10 +54,14 @@ steps.setFloat32(stepsPtr + 8, 660, true); steps.setUint16(stepsPtr + 12, 1, tru
 guest.imports.cf.seq_play(stepsPtr, 1000); // Validate/copy only the clamped 64 steps.
 new Uint8Array(memory.buffer, stepsPtr, 512).fill(0);
 core.HEAPU8.fill(0, core._wasm_module_buffer(), core._wasm_module_buffer() + 512);
-core._wasm_module_frame();
-await new Promise(resolve => setTimeout(resolve, 20));
-core._wasm_module_frame();
-assert.deepEqual(frequencies.slice(0, 2), [440, 660], 'Audio loop must play the persistent sequence copy');
+// Steps 440 Hz and 660 Hz, 1 ms each: a zeroed copy would be two silent rests.
+let seqPeak = 0;
+for (let i = 0; i < 4; ++i) {
+    const n = core._wasm_audio_render(256);
+    for (const v of new Int16Array(core.HEAP16.buffer, core._wasm_audio_buffer(), n)) seqPeak = Math.max(seqPeak, Math.abs(v));
+}
+assert.ok(seqPeak > 500, 'Audio engine must play the persistent sequence copy');
+core._wasm_audio_set_autoclock(1);   // nothing pulls samples from here on
 core._cf_seq_stop();
 core._wasm_module_start();
 const hashes = new Set();
@@ -103,5 +98,5 @@ core._wasm_module_frame();
 assert.equal(endCalls, 1);
 assert.equal(exits, 2);
 console.log(JSON.stringify({ frames: 300, nonBlank, distinctFramebuffers: hashes.size, flushes,
-    ledUpdates, toneStarts, importCounts: guest.importCounts, deferredExit: 'passed' }, null, 2));
+    ledUpdates, seqPeak, importCounts: guest.importCounts, deferredExit: 'passed' }, null, 2));
 core._wasm_stop();
