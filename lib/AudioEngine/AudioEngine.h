@@ -233,6 +233,12 @@ public:
     void requestStop(StopKind kind, uint32_t seqGen = 0);
     // Fill c's stamps when queueing it (control thread).
     void stamp(Command& c) const;
+    // Release the note with this id without the command queue (any thread):
+    // parks the id in one of kReleaseSlots slots that the render thread
+    // drains before its next command or block; a start of that note still
+    // waiting in the queue is then dropped too. False when every slot is busy.
+    bool postNoteRelease(uint32_t noteId);
+    static constexpr int kReleaseSlots = 8;
     // Tests only, before any command: start the stop counters at given values.
     void presetStopCounters(uint32_t tone, uint32_t sequence, uint32_t all, uint32_t notes = 0);
     uint32_t voiceNoteId(int v) const { return (v >= 0 && v < kVoices) ? voices_[v].noteId : 0; }
@@ -342,6 +348,12 @@ private:
     // persistent stops: written by control threads, applied by the render thread
     std::atomic<uint32_t> stopEpoch_[kStopKinds];  // per kind: how many stops were requested
     std::atomic<uint32_t> stopSeqGen_{0};
+    // posted id releases (postNoteRelease); 0 = free slot
+    std::atomic<uint32_t> releaseSlots_[kReleaseSlots];
+    // ids released through the slots lately (render thread): a queued start
+    // of one of them is dropped. Ids are never reused, so this is exact.
+    uint32_t releasedIds_[kReleaseSlots] = {0};
+    int      releasedNext_ = 0;
     uint32_t stopApplied_[kStopKinds] = {0, 0, 0, 0};
 
     int32_t acc_[kMaxChunk];
@@ -372,13 +384,18 @@ public:
     // Notes for built-in apps: one voice each (never the tone voice), same
     // timbre, level and envelope as playTone. playNote returns a handle > 0
     // (or -1 when it could not be queued); when every voice is busy the
-    // engine's stealing policy picks one. stopNote releases that note only:
-    // a handle whose voice was taken by a newer note does nothing. If the
-    // release cannot be queued, every note is released instead (persistent),
-    // so no note is ever left stuck. stopNotes releases them all.
+    // engine's stealing policy picks one. Handles are never reused: after
+    // 2^31 - 1 notes (decades of play) playNote returns -1 for good.
+    // stopNote releases that note only: a handle whose voice was taken by a
+    // newer note does nothing. A release the command queue cannot take goes
+    // through the engine's release slots instead; only if those are all
+    // busy too is every note released (so no note is ever left stuck).
+    // stopNotes releases them all.
     int  playNote(Engine* engine, float hz, int durationMs);
     void stopNote(Engine* engine, int handle);
     void stopNotes(Engine* engine);
+    static constexpr uint32_t kLastNoteId = 0x7FFFFFFFu;
+    void presetNoteSeq(uint32_t last) { noteSeq_ = last; }   // tests only
 
 private:
     SendFn send_;

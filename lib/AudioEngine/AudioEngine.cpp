@@ -318,6 +318,20 @@ void Engine::reset(uint32_t seed) {
         stopApplied_[k] = 0;
     }
     stopSeqGen_.store(0, std::memory_order_relaxed);
+    for (int i = 0; i < kReleaseSlots; ++i) {
+        releaseSlots_[i].store(0, std::memory_order_relaxed);
+        releasedIds_[i] = 0;
+    }
+    releasedNext_ = 0;
+}
+
+bool Engine::postNoteRelease(uint32_t noteId) {
+    if (noteId == 0) return true;
+    for (int i = 0; i < kReleaseSlots; ++i) {
+        uint32_t expected = 0;
+        if (releaseSlots_[i].compare_exchange_strong(expected, noteId, std::memory_order_acq_rel)) return true;
+    }
+    return false;
 }
 
 void Engine::requestStop(StopKind kind, uint32_t seqGen) {
@@ -346,6 +360,14 @@ void Engine::presetStopCounters(uint32_t tone, uint32_t sequence, uint32_t all, 
 }
 
 void Engine::applyStops() {
+    for (int i = 0; i < kReleaseSlots; ++i) {
+        if (releaseSlots_[i].load(std::memory_order_relaxed) == 0) continue;
+        const uint32_t id = releaseSlots_[i].exchange(0, std::memory_order_acq_rel);
+        if (id == 0) continue;
+        noteOffId(id);
+        releasedIds_[releasedNext_] = id;   // drop a start of it still queued
+        releasedNext_ = (releasedNext_ + 1) % kReleaseSlots;
+    }
     const uint32_t all = stopEpoch_[kStopAll].load(std::memory_order_acquire);
     if (all != stopApplied_[kStopAll]) {
         stopApplied_[kStopAll] = all;
@@ -432,6 +454,10 @@ void Engine::noteOn(uint8_t voice, Wave wave, uint32_t inc, uint32_t gateSamples
                     uint16_t level, uint8_t duty, const Envelope& env, uint32_t noteId) {
     int vi = (voice == kAnyVoice) ? pickVoice(false) : (voice == kAnyNoteVoice) ? pickVoice(true) : (int)voice;
     if (vi < 0 || vi >= kVoices) return;
+    if (noteId != 0) {
+        for (int i = 0; i < kReleaseSlots; ++i)
+            if (releasedIds_[i] == noteId) return;   // released before it could start
+    }
     Voice& v = voices_[vi];
     v.noteId = noteId;   // a new note owns the voice (0 for untagged notes)
     if (wave > kSoftSquare) wave = kSine;
@@ -963,7 +989,8 @@ bool ToneControl::isSequencePlaying(const Engine* engine) const {
 
 int ToneControl::playNote(Engine* engine, float hz, int durationMs) {
     if (engine == nullptr || !(hz > 0.0f)) return -1;
-    noteSeq_ = (noteSeq_ % 0x7FFFFFFFu) + 1u;   // 1..2^31-1, never 0
+    if (noteSeq_ >= kLastNoteId) return -1;   // ids are never reused
+    ++noteSeq_;
     const uint32_t gate = durationMs > 0 ? Engine::msToSamples((uint32_t)durationMs) : 0;
     Command c = Command::noteOnId(noteSeq_, kToneWave, Engine::hzToInc(hz), gate, kToneLevel, 128, kToneEnvelope);
     engine->stamp(c);
@@ -974,7 +1001,10 @@ void ToneControl::stopNote(Engine* engine, int handle) {
     if (engine == nullptr || handle <= 0) return;
     Command c = Command::noteOffId((uint32_t)handle);
     engine->stamp(c);
-    if (!send_(c)) engine->requestStop(kStopNotes);   // never leave a note stuck
+    if (send_(c)) return;
+    // Queue full: an id-targeted release that cannot be lost. Only if every
+    // release slot is busy too, release all notes rather than leave one stuck.
+    if (!engine->postNoteRelease((uint32_t)handle)) engine->requestStop(kStopNotes);
 }
 
 void ToneControl::stopNotes(Engine* engine) {

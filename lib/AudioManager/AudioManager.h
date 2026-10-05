@@ -49,7 +49,8 @@ public:
     // playNote returns a handle (> 0), or -1 if the note could not start;
     // durationMs 0 = until stopNote. stopNote ends only that note - a handle
     // whose note was already replaced does nothing. stopNotes ends them all.
-    // Leaving the app ends them too.
+    // Leaving the app ends them too. Handles are never reused: after
+    // 2^31 - 1 notes in one power cycle playNote returns -1.
     int  playNote(float frequency, int durationMs = 0);
     void stopNote(int handle);
     void stopNotes();

@@ -904,13 +904,18 @@ void test_note_stops_survive_queue_trouble() {
     drainAndRender(e, 256);
     TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, a));
     TEST_ASSERT_EQUAL_INT(0, e.activeVoices());
-    // A stopNote that cannot be queued releases every note instead.
+    // A stopNote that cannot be queued still releases only its own note.
     const int b = tc.playNote(&e, 440.0f, 0);
     const int c = tc.playNote(&e, 550.0f, 0);
     drainAndRender(e, 256);
     TEST_ASSERT_TRUE(voiceOf(e, b) > 0 && voiceOf(e, c) > 0);
+    const int vb = voiceOf(e, b);
     for (int i = 0; i < 4; ++i) TEST_ASSERT_TRUE(fakeSend(Command::master(32768)));
-    tc.stopNote(&e, b);   // queue full
+    tc.stopNote(&e, b);   // queue full: goes through a release slot
+    drainAndRender(e, 256);
+    TEST_ASSERT_FALSE(e.voiceInfo(vb).active);
+    TEST_ASSERT_TRUE(voiceOf(e, c) > 0);
+    tc.stopNotes(&e);
     drainAndRender(e, 256);
     TEST_ASSERT_EQUAL_INT(0, e.activeVoices());
     // A timed note ends by itself.
@@ -921,6 +926,70 @@ void test_note_stops_survive_queue_trouble() {
     TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, d));
     TEST_ASSERT_EQUAL_INT(-1, tc.playNote(nullptr, 440.0f, 0));
     TEST_ASSERT_EQUAL_INT(-1, tc.playNote(&e, 0.0f, 0));
+}
+
+void test_full_queue_release_of_stolen_handle_spares_the_new_note() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    int h[kVoices];
+    for (int i = 0; i < kVoices - 1; ++i) {
+        h[i] = tc.playNote(&e, 300.0f + 50.0f * i, 0);
+        drainAndRender(e, 64);
+    }
+    const int stolenVoice = voiceOf(e, h[0]);
+    h[kVoices - 1] = tc.playNote(&e, 2000.0f, 0);   // steals h[0]'s voice
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(stolenVoice, voiceOf(e, h[kVoices - 1]));
+    // Queue full, then the stale handle is released: nothing else may stop.
+    for (int i = 0; i < 4; ++i) TEST_ASSERT_TRUE(fakeSend(Command::master(32768)));
+    tc.stopNote(&e, h[0]);
+    drainAndRender(e, 256);
+    for (int i = 1; i < kVoices; ++i) TEST_ASSERT_TRUE(voiceOf(e, h[i]) > 0);
+
+    // A start still in the queue when its release goes through a slot never
+    // sounds: the queue is drained after the slots.
+    g_qn = 0;
+    tc.stopNotes(&e);
+    drainAndRender(e, 512);
+    const int q = tc.playNote(&e, 700.0f, 0);   // queued
+    for (int i = 0; i < 3; ++i) TEST_ASSERT_TRUE(fakeSend(Command::master(32768)));
+    tc.stopNote(&e, q);                          // queue full: slot
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, q));
+    TEST_ASSERT_EQUAL_INT(0, e.activeVoices());
+
+    // With every slot busy as well, it falls back to releasing all notes.
+    g_qn = 0;
+    const int r = tc.playNote(&e, 800.0f, 0);
+    const int s = tc.playNote(&e, 900.0f, 0);
+    drainAndRender(e, 256);
+    for (int i = 0; i < Engine::kReleaseSlots; ++i) TEST_ASSERT_TRUE(e.postNoteRelease(1000000 + i));
+    TEST_ASSERT_FALSE(e.postNoteRelease(2000000));
+    for (int i = 0; i < 4; ++i) TEST_ASSERT_TRUE(fakeSend(Command::master(32768)));
+    tc.stopNote(&e, r);
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, r));
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, s));
+}
+
+void test_note_handles_are_never_reused() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    tc.presetNoteSeq(ToneControl::kLastNoteId - 2);
+    const int a = tc.playNote(&e, 440.0f, 0);
+    const int b = tc.playNote(&e, 550.0f, 0);
+    TEST_ASSERT_EQUAL_INT((int)(ToneControl::kLastNoteId - 1), a);
+    TEST_ASSERT_EQUAL_INT((int)ToneControl::kLastNoteId, b);
+    TEST_ASSERT_EQUAL_INT(-1, tc.playNote(&e, 660.0f, 0));   // exhausted: no wrap to 1
+    TEST_ASSERT_EQUAL_INT(-1, tc.playNote(&e, 660.0f, 0));
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(voiceOf(e, a) > 0 && voiceOf(e, b) > 0);
+    tc.stopNote(&e, a);
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, a));
+    TEST_ASSERT_TRUE(voiceOf(e, b) > 0);
 }
 
 void test_stop_all_cancels_queued_notes() {
@@ -982,6 +1051,8 @@ int main(int, char**) {
     RUN_TEST(test_notes_get_their_own_voices_and_stop_alone);
     RUN_TEST(test_stolen_note_handle_cannot_stop_the_new_note);
     RUN_TEST(test_note_stops_survive_queue_trouble);
+    RUN_TEST(test_full_queue_release_of_stolen_handle_spares_the_new_note);
+    RUN_TEST(test_note_handles_are_never_reused);
     RUN_TEST(test_stop_stamps_do_not_alias_after_many_stops);
     RUN_TEST(test_pulse_duty_switch_fades_instead_of_jumping);
     RUN_TEST(test_stop_counters_compare_by_equality_at_half_range);
