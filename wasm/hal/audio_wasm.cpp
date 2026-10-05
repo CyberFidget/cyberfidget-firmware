@@ -66,7 +66,7 @@ EM_JS(void, js_audio_set_volume, (float volume), {
     }
     if (Module._audioNotes) {
         for (var h in Module._audioNotes) {
-            Module._audioNotes[h].gain.gain.setValueAtTime(0.5 * volume * master, Module._audioCtx.currentTime);   // notes: -6 dB
+            Module._audioNotes[h].gain.gain.setValueAtTime(0.7071 * volume * master, Module._audioCtx.currentTime);   // notes: -3 dB
         }
     }
 });
@@ -227,7 +227,7 @@ int AudioManager::playNote(float frequency, int durationMs) {
     if (!(frequency > 0.0f)) return -1;
     if (s_lastNoteHandle >= 0x7FFFFFFF) return -1;
     ++s_lastNoteHandle;
-    js_audio_note_play(s_lastNoteHandle, frequency, 0.5f * s_volume, durationMs);   // notes play 6 dB below a tone, as on the device
+    js_audio_note_play(s_lastNoteHandle, frequency, 0.7071f * s_volume, durationMs);   // notes play 3 dB below a tone, as on the device
     return s_lastNoteHandle;
 }
 
