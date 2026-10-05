@@ -595,12 +595,13 @@ abench stats [reset]         -> [abench] stats blocks= cpu_avg_pct= cpu_max_pct=
                                 gap_underruns= gap_max_ms= clips= peak_voices= heap_int_free= heap_int_min= stack_hwm=
                                 | [abench] stats.reset
 abench stress on|off         -> [abench] stress=<0|1>   (8-voice pattern, restarts with a fixed seed)
-abench note v wave hz ms vel [duty%] -> [abench] note.ok   (wave 0 pulse 1 tri 2 saw 3 noise 4 sine)
+abench note v wave hz ms vel [duty%] -> [abench] note.ok   (wave 0 pulse 1 tri 2 saw 3 noise 4 sine 5 soft square)
 abench master <q8>           -> [abench] master=<q8>   (256 = unity)
 abench eq on|off|set hpf p1hz p1db p1q p2hz p2db p2q gaindb -> [abench] eq=<0|1> | [abench] eq.set ...
                                 | [abench] err=eq_range   (hz 20..20000, q 0.1..20, db -24..24, stable bands)
 abench measure tone|engine hz ms [vel] -> [abench] rec.start ..., act.fire at_sample=<n>, rec.done samples=<n>
-                                (tone = the product path, AudioManager::playTone; engine = a raw sine note at vel)
+                                (tone = the product path, AudioManager::playTone, a soft square;
+                                engine = a raw sine note at vel)
 abench measure legacy ...    -> [abench] err=legacy_unavailable   (the old tone chain no longer exists)
 abench sweep [vel] | rec <ms> -> same recording lines (on-board mic, 48 kHz, PSRAM)
 abench dump                  -> [abench] dump.begin bytes=<n> rate=48000, [abench] d=<base64 of 768 bytes> ..., [abench] dump.end

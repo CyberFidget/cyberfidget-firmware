@@ -332,7 +332,7 @@ void fsStall(int kb) {
 void help() {
     Serial.println("[abench] verbs: start [desc frames prio core] (engine always runs; reports its config) |"
                    " stop | stats [reset] | stress on|off |"
-                   " note v wave hz ms vel [duty] (wave 0 pulse 1 tri 2 saw 3 noise 4 sine) | off |"
+                   " note v wave hz ms vel [duty] (wave 0 pulse 1 tri 2 saw 3 noise 4 sine 5 soft square) | off |"
                    " master q8 | measure tone|engine hz ms [vel] (tone = AudioManager::playTone;"
                    " legacy -> err=legacy_unavailable) |"
                    " sweep [vel] | rec ms | dump | eq on|off|set hpf p1hz p1db p1q p2hz p2db p2q gaindb |"
@@ -394,7 +394,7 @@ void command(const char* arg) {
         int v = 0, w = 0, msDur = 300, vel = 160, duty = 50;
         float hz = 440;
         if (sscanf(rest, "%d %d %f %d %d %d", &v, &w, &hz, &msDur, &vel, &duty) < 4) { help(); return; }
-        if (v < 0 || v >= cf_audio::kVoices || w < 0 || w > cf_audio::kSine || msDur < 0) {
+        if (v < 0 || v >= cf_audio::kVoices || w < 0 || w > cf_audio::kSoftSquare || msDur < 0) {
             Serial.println("[abench] err=bad_args");
             return;
         }

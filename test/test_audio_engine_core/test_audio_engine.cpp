@@ -10,6 +10,7 @@
 
 #include <unity.h>
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +27,7 @@ namespace {
 // Recorded before the EQ path was restructured for speed.
 constexpr uint32_t kEqPresetChecksum = 0x7976754Cu;
 constexpr uint32_t kEqExtremeChecksum = 0x0E64BCEFu;
+constexpr uint32_t kSoftSquareChecksum = 0xD81342A5u;
 
 Engine g_engine;          // big (render buffers inside): keep off the stack
 int16_t g_buf[44100];
@@ -469,7 +471,7 @@ void test_eq_extreme_gain_never_wraps() {
     TEST_ASSERT_EQUAL_UINT32(0, e.clipCount());
 }
 
-// Pins the EQ'd bus output bit-for-bit: the default preset's coefficients
+// Pins the EQ'd bus output bit-for-bit: the first speaker preset's coefficients
 // (as literals, so libm cannot move them) over a mix that drives the
 // limiter, and the largest accepted setting, which drives the saturation.
 // Any optimisation of the EQ path must keep these checksums.
@@ -540,6 +542,94 @@ void test_default_speaker_eq_preset_is_valid_and_clean() {
     bad = kSpeakerEqPresets[kSpeakerEqDefault].eq;
     bad.p1Q = 0;
     TEST_ASSERT_FALSE(designSpeakerEq(bad, b, &gain));
+}
+
+// ------------------------------------------------------------- soft square
+
+// Magnitude of `hz` in a block (Goertzel), relative to full scale.
+double toneLevel(const int16_t* b, int n, double hz) {
+    const double w = 2.0 * M_PI * hz / kSampleRate, c = 2.0 * cos(w);
+    double s1 = 0, s2 = 0;
+    for (int i = 0; i < n; ++i) {
+        const double s0 = b[i] + c * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    return sqrt(s1 * s1 + s2 * s2 - c * s1 * s2) * 2.0 / n / 32768.0;
+}
+
+void renderHeld(Engine& e, Wave w, float hz, int16_t* out, int n) {
+    e.reset(1);
+    e.apply(Command::noteOn(kToneVoice, w, Engine::hzToInc(hz), 0, kToneLevel, 128, kToneEnvelope));
+    e.render(out, 4410);   // settle (attack, DC blocker)
+    e.render(out, n);
+}
+
+void test_soft_square_spectrum_level_and_pin() {
+    Engine& e = g_engine;
+    // 300 Hz: harmonics 1, 3, 5, 7 present at about 1, 1/3, 1/5, 1/7; no 9th.
+    renderHeld(e, kSoftSquare, 300.0f, g_buf, 44100);
+    const double h1 = toneLevel(g_buf, 44100, 300), h3 = toneLevel(g_buf, 44100, 900);
+    const double h5 = toneLevel(g_buf, 44100, 1500), h7 = toneLevel(g_buf, 44100, 2100);
+    const double h9 = toneLevel(g_buf, 44100, 2700), h2 = toneLevel(g_buf, 44100, 600);
+    char msg[120];
+    snprintf(msg, sizeof(msg), "300 Hz: h1=%.4f h3/h1=%.3f h5/h1=%.3f h7/h1=%.3f h9=%.5f h2=%.5f",
+             h1, h3 / h1, h5 / h1, h7 / h1, h9, h2);
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_TRUE(fabs((h3 / h1) - (1.0 / 3)) < 0.02);
+    TEST_ASSERT_TRUE(fabs((h5 / h1) - (1.0 / 5)) < 0.02);
+    TEST_ASSERT_TRUE(fabs((h7 / h1) - (1.0 / 7)) < 0.02);
+    TEST_ASSERT_TRUE(h9 < h1 * 0.002);
+    TEST_ASSERT_TRUE(h2 < h1 * 0.002);
+    // The oscillator is normalised to peak like the sine. The bus's DC
+    // blocker shifts each harmonic's phase a little differently, which lifts
+    // the summed peak slightly at the output: +4.7 % (0.4 dB) at 300 Hz,
+    // +2.2 % at 1 kHz. Allow 5 %.
+    const float peakPitches[] = {300.0f, 1000.0f};
+    static int16_t sine[44100];
+    for (int k = 0; k < 2; ++k) {
+        renderHeld(e, kSoftSquare, peakPitches[k], g_buf, 44100);
+        renderHeld(e, kSine, peakPitches[k], sine, 44100);
+        int32_t peakSq = 0, peakSine = 0;
+        for (int i = 0; i < 44100; ++i) {
+            if (abs((int32_t)g_buf[i]) > peakSq) peakSq = abs((int32_t)g_buf[i]);
+            if (abs((int32_t)sine[i]) > peakSine) peakSine = abs((int32_t)sine[i]);
+        }
+        snprintf(msg, sizeof(msg), "%.0f Hz peak soft=%d sine=%d", peakPitches[k], (int)peakSq, (int)peakSine);
+        TEST_MESSAGE(msg);
+        TEST_ASSERT_TRUE(peakSq >= peakSine && peakSq <= peakSine + peakSine / 20);
+    }
+    TEST_ASSERT_EQUAL_UINT32(0, e.clipCount());
+
+    // 3 kHz: the 3rd (9 kHz) stays, the 5th (15 kHz) and 7th (21 kHz) are dropped.
+    renderHeld(e, kSoftSquare, 3000.0f, g_buf, 44100);
+    const double t1 = toneLevel(g_buf, 44100, 3000), t3 = toneLevel(g_buf, 44100, 9000);
+    const double t5 = toneLevel(g_buf, 44100, 15000), t7 = toneLevel(g_buf, 44100, 21000);
+    snprintf(msg, sizeof(msg), "3 kHz: t3/t1=%.3f t5/t1=%.5f t7/t1=%.5f", t3 / t1, t5 / t1, t7 / t1);
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_TRUE(fabs((t3 / t1) - (1.0 / 3)) < 0.03);
+    TEST_ASSERT_TRUE(t5 < t1 * 0.002);
+    TEST_ASSERT_TRUE(t7 < t1 * 0.002);
+
+    // A pitch change that drops a harmonic fades instead of jumping.
+    e.reset(1);
+    e.apply(Command::noteOn(kToneVoice, kSoftSquare, Engine::hzToInc(1400.0f), 0, kToneLevel, 128, kToneEnvelope));
+    e.render(g_buf, 4410);
+    const int32_t baseline = maxStep(g_buf, 2000, 4410);
+    e.apply(Command::noteOn(kToneVoice, kSoftSquare, Engine::hzToInc(1500.0f), 0, kToneLevel, 128, kToneEnvelope));
+    e.render(g_buf + 4410, 1000);
+    TEST_ASSERT_TRUE(maxStep(g_buf, 4405, 5410) <= baseline + 300);
+
+    // Pin the waveform bit-for-bit across 1, 2, 3 and 4 harmonics.
+    uint32_t h = 2166136261u;
+    const float pitches[] = {262.0f, 1430.0f, 2000.0f, 4000.0f, 11000.0f};
+    for (float hz : pitches) {
+        renderHeld(e, kSoftSquare, hz, g_buf, 4410);
+        h = cf_audio_golden::fnv1a(h, g_buf, 4410);
+    }
+    snprintf(msg, sizeof(msg), "soft square checksum 0x%08X", (unsigned)h);
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_EQUAL_HEX32(kSoftSquareChecksum, h);
 }
 
 // ------------------------------------------- stops, queue and sequence status
@@ -781,6 +871,7 @@ int main(int, char**) {
     RUN_TEST(test_eq_extreme_gain_never_wraps);
     RUN_TEST(test_default_speaker_eq_preset_is_valid_and_clean);
     RUN_TEST(test_eq_output_is_pinned);
+    RUN_TEST(test_soft_square_spectrum_level_and_pin);
     RUN_TEST(test_stop_overtakes_queued_play);
     RUN_TEST(test_stop_survives_a_full_queue);
     RUN_TEST(test_sequence_status_matches_the_engine);

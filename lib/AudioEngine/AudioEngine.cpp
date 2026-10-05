@@ -40,6 +40,40 @@ const int16_t kSineTable[257] = {
      -3212,  -2410,  -1608,   -804,      0,
 };
 
+// Soft-square weights (Q15) for 1..4 odd harmonics: (32768 / k) / P, where P
+// is the peak of sum(sin(k x) / k) over the kept k = 1, 3, 5, 7, so every
+// variant peaks like the sine. With one harmonic it is exactly the sine.
+const int32_t kSoftSquareWeights[4][4] = {
+    {32768, 0, 0, 0},
+    {34756, 11585, 0, 0},
+    {35109, 11703, 7022, 0},
+    {35231, 11744, 7046, 5033},
+};
+// Phase increment of kSoftSquareTopHz: harmonic k is kept while k * inc is
+// at or below it. round(10000 * 2^32 / 44100).
+constexpr uint64_t kSoftSquareTopInc = 973915487ull;
+
+#if defined(__GNUC__)
+#define CF_AUDIO_INLINE inline __attribute__((always_inline))
+#else
+#define CF_AUDIO_INLINE inline
+#endif
+
+CF_AUDIO_INLINE int32_t sineAt(uint32_t phase) {
+    const uint32_t idx = phase >> 24;
+    const int32_t frac = (int32_t)((phase >> 8) & 0xFFFFu);
+    const int32_t a = kSineTable[idx];
+    const int32_t b = kSineTable[idx + 1];
+    return a + (((b - a) * frac) >> 16);
+}
+
+// Number of odd harmonics (1, 3, 5, 7) a soft square at `inc` keeps; at least 1.
+inline uint8_t softSquareHarmonics(uint32_t inc) {
+    uint8_t n = 1;
+    while (n < 4 && (uint64_t)(2 * n + 1) * inc <= kSoftSquareTopInc) ++n;
+    return n;
+}
+
 // Oscillator peak levels (Q15 scale). Pulse, saw and noise sit below full
 // scale because their harmonics make them louder than a sine at equal peak.
 constexpr int32_t kPulseAmp = 24000;
@@ -372,13 +406,15 @@ void Engine::noteOn(uint8_t voice, Wave wave, uint32_t inc, uint32_t gateSamples
     int vi = (voice == kAnyVoice) ? pickVoice() : (int)voice;
     if (vi < 0 || vi >= kVoices) return;
     Voice& v = voices_[vi];
-    if (wave > kSine) wave = kSine;
+    if (wave > kSoftSquare) wave = kSine;
     if (level > kLevelUnity) level = kLevelUnity;
     v.startStamp = ++noteCounter_;
     const bool dutyChange = wave == kPulse && v.dutyThreshold != ((uint32_t)duty << 24);
-    if (v.stage != kIdle && (v.wave != (uint8_t)wave || v.level != level || dutyChange)) {
-        // Switching wave, level or pulse duty mid-note would jump the output:
-        // fade the old note out first; startPending() starts this one from silence.
+    const bool harmonicsChange = wave == kSoftSquare && v.harmonics != softSquareHarmonics(inc);
+    if (v.stage != kIdle && (v.wave != (uint8_t)wave || v.level != level || dutyChange || harmonicsChange)) {
+        // Switching wave, level, pulse duty or soft-square harmonics mid-note
+        // would jump the output: fade the old note out first; startPending()
+        // starts this one from silence.
         v.pending = true;
         v.pendWave = (uint8_t)wave;
         v.pendDuty = duty;
@@ -407,6 +443,7 @@ void Engine::startNote(Voice& v, Wave wave, uint32_t inc, uint32_t gateSamples,
     }
     v.wave = (uint8_t)wave;
     v.inc = inc;
+    v.harmonics = softSquareHarmonics(inc);
     v.dutyThreshold = (uint32_t)duty << 24;
     v.level = level;
     v.sustain = (int32_t)(((int64_t)(env.sustain > kSustainFull ? kSustainFull : env.sustain) * kEnvOne) >> 15);
@@ -508,7 +545,7 @@ void Engine::fireSequence() {
     seqCumMs_ += (uint32_t)s.durMs + s.gapMs;
     seqNext_ = msToSamples(seqCumMs_);
     if (s.inc > 0 && toneEnd > start) {
-        noteOn(kToneVoice, kSine, s.inc, toneEnd - start, kToneLevel, 128, kToneEnvelope);
+        noteOn(kToneVoice, kToneWave, s.inc, toneEnd - start, kToneLevel, 128, kToneEnvelope);
     } else {
         noteOff(kToneVoice);   // rest (or a zero-length step)
     }
@@ -623,12 +660,19 @@ void Engine::oscRun(Voice& v, int32_t* acc, int run, int32_t step) {
                 v.noiseOut = (v.lfsr & 1u) ? kNoiseAmp : -kNoiseAmp;
             }
             s = v.noiseOut;
+        } else if (W >= kSoftSquare) {
+            // Soft square with H = W - kSoftSquare + 1 odd harmonics (template
+            // parameter, so the sum is unrolled). Harmonic k reads the sine at
+            // k x phase, which wraps with the cycle.
+            constexpr int H = W - kSoftSquare + 1;
+            const int32_t* w = kSoftSquareWeights[H - 1];
+            int32_t sum = sineAt(phase) * w[0];
+            if (H > 1) sum += sineAt(phase * 3u) * w[1];
+            if (H > 2) sum += sineAt(phase * 5u) * w[2];
+            if (H > 3) sum += sineAt(phase * 7u) * w[3];
+            s = sum >> 15;   // |sum| < 32767 * 59054 < 2^31
         } else {
-            const uint32_t idx = phase >> 24;
-            const int32_t frac = (int32_t)((phase >> 8) & 0xFFFFu);
-            const int32_t a = kSineTable[idx];
-            const int32_t b = kSineTable[idx + 1];
-            s = a + (((b - a) * frac) >> 16);
+            s = sineAt(phase);
         }
         phase += inc;
         env += step;
@@ -651,6 +695,15 @@ void Engine::renderVoice(Voice& v, int32_t* acc, int n) {
             case kTriangle: oscRun<kTriangle>(v, acc, run, step); break;
             case kSaw:      oscRun<kSaw>(v, acc, run, step); break;
             case kNoise:    oscRun<kNoise>(v, acc, run, step); break;
+            case kSoftSquare:
+                // One instance per harmonic count (template ids kSoftSquare..+3).
+                switch (v.harmonics) {
+                    case 1:  oscRun<kSoftSquare>(v, acc, run, step); break;
+                    case 2:  oscRun<kSoftSquare + 1>(v, acc, run, step); break;
+                    case 3:  oscRun<kSoftSquare + 2>(v, acc, run, step); break;
+                    default: oscRun<kSoftSquare + 3>(v, acc, run, step); break;
+                }
+                break;
             default:        oscRun<kSine>(v, acc, run, step); break;
         }
         acc += run;
@@ -827,7 +880,7 @@ bool ToneControl::playTone(Engine* engine, float hz, int durationMs) {
         return true;
     }
     const uint32_t gate = durationMs > 0 ? Engine::msToSamples((uint32_t)durationMs) : 0;
-    Command c = Command::noteOn(kToneVoice, kSine, Engine::hzToInc(hz), gate, kToneLevel, 128, kToneEnvelope);
+    Command c = Command::noteOn(kToneVoice, kToneWave, Engine::hzToInc(hz), gate, kToneLevel, 128, kToneEnvelope);
     engine->stamp(c);
     return send_(c);
 }

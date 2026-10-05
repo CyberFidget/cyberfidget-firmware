@@ -75,7 +75,12 @@ constexpr uint16_t kSustainFull  = 32768;
 // Voice level: Q8, 256 = unity.
 constexpr uint16_t kLevelUnity   = 256;
 
-enum Wave : uint8_t { kPulse = 0, kTriangle = 1, kSaw = 2, kNoise = 3, kSine = 4 };
+// kSoftSquare: a band-limited square, the odd harmonics 1, 3, 5, 7 at 1, 1/3,
+// 1/5, 1/7, keeping only those at or below kSoftSquareTopHz (decided when the
+// note starts) and scaled so its peak equals the sine's. Unlike a sine it
+// stays audible on a small speaker that cannot reproduce its fundamental.
+enum Wave : uint8_t { kPulse = 0, kTriangle = 1, kSaw = 2, kNoise = 3, kSine = 4, kSoftSquare = 5 };
+constexpr uint32_t kSoftSquareTopHz = 10000;
 
 // ADSR, all times in samples. attack/decay/release 0 = instant.
 struct Envelope {
@@ -86,10 +91,11 @@ struct Envelope {
 };
 
 // The tone voice used by AudioManager (playTone and sequences): voice 0,
-// sine, 3 ms attack, 5 ms release, full sustain. kToneLevel (230/256 = 0.898)
-// keeps today's tone loudness (audio-tools' sine generator at 0.9 of full
-// scale).
+// soft square, 3 ms attack, 5 ms release, full sustain. kToneLevel
+// (230/256 = 0.898) keeps the earlier tone's peak level (audio-tools' sine
+// generator at 0.9 of full scale); the soft square peaks where the sine did.
 constexpr uint8_t  kToneVoice    = 0;
+constexpr Wave     kToneWave     = kSoftSquare;
 constexpr uint16_t kToneLevel    = 230;
 constexpr Envelope kToneEnvelope = {132, 0, kSustainFull, 220};
 
@@ -257,6 +263,7 @@ private:
         int16_t  noiseOut;
         uint8_t  wave;
         uint8_t  stage;
+        uint8_t  harmonics;   // kSoftSquare: odd harmonics kept (1..4), set at note start
         // A note waiting for this voice's switch fade to finish.
         bool     pending;
         uint8_t  pendWave;

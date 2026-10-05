@@ -13,8 +13,9 @@
 //       e.render(buf, kGoldenBlockFrames)
 //   checksum = FNV-1a 32 over every rendered sample as 2 little-endian bytes
 //
-// It touches every waveform, envelopes with decay and zero sustain, a tone
-// sequence with rests and gaps, voice stealing, a master-volume ramp, an
+// It touches every waveform (the tone sequences play the tone voice's soft
+// square with 2, 3 and 4 harmonics), envelopes with decay and zero sustain, a
+// tone sequence with rests and gaps, voice stealing, a master-volume ramp, an
 // 8-voice overload (limiter) and the AllOff fade.
 
 #ifndef CF_AUDIO_GOLDEN_SCRIPT_H
@@ -34,7 +35,7 @@ constexpr int kGoldenBlocks = 200;
 constexpr int kGoldenBlockFrames = 256;
 
 // Expected FNV-1a 32 checksum of the rendered script (see test_audio_engine.cpp).
-constexpr uint32_t kGoldenChecksum = 0xE9B8EC80u;
+constexpr uint32_t kGoldenChecksum = 0xF420006Fu;
 
 inline uint32_t fnv1a(uint32_t h, const int16_t* s, int n) {
     for (int i = 0; i < n; ++i) {
