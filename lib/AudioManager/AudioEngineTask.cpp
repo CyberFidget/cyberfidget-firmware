@@ -37,7 +37,7 @@ int16_t* s_buf = nullptr;          // one block, stereo (the mono mix renders in
 QueueHandle_t s_queue = nullptr;
 i2s_chan_handle_t s_tx = nullptr;
 TaskHandle_t s_task = nullptr;
-bool s_wedged = false;             // a render task that never exited still holds the port
+bool s_wedged = false;             // a render task that has not acknowledged its stop yet
 
 std::atomic<bool> s_stopReq{false};
 std::atomic<bool> s_exited{true};
@@ -133,13 +133,27 @@ void freeBuffers() {
     if (s_buf) { heap_caps_free(s_buf); s_buf = nullptr; }
 }
 
+// Only after the render task acknowledged its exit: release the port.
+void finishStop() {
+    s_task = nullptr;
+    s_wedged = false;
+    i2s_channel_disable(s_tx);
+    i2s_del_channel(s_tx);
+    s_tx = nullptr;
+    freeBuffers();
+}
+
 }  // namespace
 
 namespace AudioEngineTask {
 
 bool start() {
-    if (s_task) return true;
-    if (s_wedged) return false;
+    if (s_task) {
+        if (!s_wedged) return true;
+        // A stop that timed out: start again only once the task has left.
+        if (!s_exited.load(std::memory_order_acquire)) return false;
+        finishStop();
+    }
 
     // Every buffer and the queue exist before the port is touched.
     const uint32_t caps = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -209,33 +223,31 @@ bool start() {
 }
 
 bool stop() {
-    if (!s_task) return !s_wedged;
-    s_stopReq.store(true, std::memory_order_release);
+    if (!s_task) return true;
+    s_stopReq.store(true, std::memory_order_release);   // stays set until the task leaves
     const uint32_t t0 = millis();
     while (!s_exited.load(std::memory_order_acquire) && millis() - t0 < kStopWaitMs) vTaskDelay(pdMS_TO_TICKS(5));
     if (!s_exited.load(std::memory_order_acquire)) {
         // Deleting the channel or buffers under a live task would crash it:
-        // keep everything and report.
+        // keep everything, report, and let a later stop()/start() finish.
         s_wedged = true;
         Serial.println("[audio] err=render_task_stuck (I2S0 kept)");
         return false;
     }
-    s_task = nullptr;
-    i2s_channel_disable(s_tx);
-    i2s_del_channel(s_tx);
-    s_tx = nullptr;
-    freeBuffers();
+    finishStop();
     return true;
 }
 
-bool running() { return s_task != nullptr; }
+bool running() { return s_task != nullptr && !s_wedged; }
 
 bool send(const Command& c) {
-    if (!s_task || !s_queue || s_wedged) return false;
-    return xQueueSend(s_queue, &c, pdMS_TO_TICKS(10)) == pdTRUE;
+    if (!running() || !s_queue) return false;
+    Command stamped = c;
+    stamped.stamp = s_engine->currentStamp();   // so a later stop can overtake it
+    return xQueueSend(s_queue, &stamped, pdMS_TO_TICKS(10)) == pdTRUE;
 }
 
-Engine* engine() { return (s_task && !s_wedged) ? s_engine : nullptr; }
+Engine* engine() { return running() ? s_engine : nullptr; }
 
 void readStats(Stats& out) {
     uint32_t before;

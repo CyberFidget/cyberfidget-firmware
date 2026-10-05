@@ -43,9 +43,12 @@ public:
     void stopSequence();
     bool isSequencePlaying() const;
 
-    // I2S port sharing — music player needs I2S0 for onboard speaker output
-    void releaseI2S();   // Silence tones/sequences and free port 0 for another stream
-    void reclaimI2S();   // Take port 0 back for tones
+    // I2S port sharing — music player needs I2S0 for onboard speaker output.
+    // releaseI2S: silence tones/sequences and free port 0. Returns false if
+    // port 0 could not be freed - the caller must not open it then.
+    // reclaimI2S: take port 0 back for tones; on failure loop() keeps retrying.
+    bool releaseI2S();
+    bool reclaimI2S();
 
     // Mic control
     void enableMic(bool on);
@@ -56,17 +59,20 @@ public:
     float getMicVolumeDb() const;
 
 private:
-    // --- Tone and sequence control state (the engine task renders) ---
-    float    volume = 0.7f;            // last setVolume(), re-applied on reclaimI2S()
-    bool     i2sReleased = false;
-    uint32_t seqGen = 0;               // tag of the last sequence play/stop sent
-    bool     seqWanted = false;        // whether that command asked to play
+    // --- Tone control state (the engine task renders; tone and sequence
+    //     logic lives in AudioManager.cpp) ---
+    float    volume = 0.7f;            // last setVolume(), re-applied on every engine start
+    bool     engineWanted = false;     // set by init()/reclaimI2S(), cleared by releaseI2S()
+    bool     volumePending = false;    // a volume change still to send
+    uint32_t engineRetryAtMs = 0;
 
     // --- Mic chain (RX) ---
     I2SConfig            micCfg;             // persisted RX config
     I2SStream            i2sIn;              // RX from ICS-43434
     VolumeMeter          micMeter;           // measures amplitude
     StreamCopy           micCopy;            // convIn -> micMeter
+
+    bool startEngine();   // start the engine task and give it the volume
 
     // Mic State
     bool  micEnabled = false;

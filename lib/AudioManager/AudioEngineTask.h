@@ -36,11 +36,18 @@ constexpr int kTaskCore     = 1;
 constexpr int kTaskStack    = 4096;   // bytes
 constexpr int kQueueDepth   = 32;
 
-bool start();   // true when running (also if already running); unwinds fully on failure
-bool stop();    // true when I2S0 is released; false if the render task did not exit
-bool running();
+// True when running (also if already running); unwinds fully on failure.
+// After a timed-out stop it starts again only once the task has left.
+bool start();
+// True when I2S0 is free (also if already stopped). False if the render task
+// did not acknowledge in time: the port, task and buffers are all kept, and a
+// later stop() or start() finishes the job.
+bool stop();
+bool running();   // started and not mid-way through a timed-out stop
 
-// Queue a command for the next block. False (dropped) when stopped or full.
+// Queue a command for the next block, stamped with the engine's current stop
+// counters. False (dropped) when not running or the queue stays full.
+// Stops do not go through here: use engine()->requestStop(), which is never lost.
 bool send(const cf_audio::Command& c);
 
 // The running engine, for its thread-safe parts only (sequence mailbox,

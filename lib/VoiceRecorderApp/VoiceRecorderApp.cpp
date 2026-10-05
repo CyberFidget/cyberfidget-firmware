@@ -1035,8 +1035,12 @@ bool VoiceRecorderApp::buildPlaybackPipeline(const char* path) {
         playByteRate = srcRate * srcChannels * 2;   // 16-bit samples
     }
 
-    // Borrow I2S port 0 from AudioManager's tone chain (MusicPlayerApp pattern).
-    HAL::audioManager().releaseI2S();
+    // Borrow I2S port 0 from AudioManager's tone engine (MusicPlayerApp pattern).
+    // If the engine could not let go of it, do not open the port.
+    if (!HAL::audioManager().releaseI2S()) {
+        ESP_LOGE(TAG_VREC, "I2S port 0 still held by the tone engine");
+        return false;   // caller calls destroyPlaybackPipeline() to unwind
+    }
     port0Held = true;
 
     pI2sOut = new audio_tools::I2SStream();

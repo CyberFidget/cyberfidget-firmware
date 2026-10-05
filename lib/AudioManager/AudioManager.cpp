@@ -22,7 +22,11 @@ uint32_t masterForVolume(float v) {
     return (uint32_t)((num * 32768 + 250) / 500);
 }
 
-constexpr uint32_t kGenMask = 0x7FFFFFFFu;   // the engine publishes 31-bit tags
+// Tone voice, sequences and their status (shared engine-core logic). Stops go
+// through the engine's persistent stop counters, never the bounded queue.
+cf_audio::ToneControl s_tone(&AudioEngineTask::send);
+
+constexpr uint32_t kEngineRetryMs = 2000;
 
 }  // namespace
 
@@ -33,9 +37,8 @@ AudioManager::AudioManager()
 
 void AudioManager::init() {
     // --- TX: the audio engine's render task owns I2S0 (MAX98357A) ---
-    if (AudioEngineTask::start()) {
-        AudioEngineTask::send(Command::master(masterForVolume(volume)));
-    }
+    engineWanted = true;
+    startEngine();
 
     // --- Prepare (do NOT start) RX: ICS-43434 mic ---
     // Put mic on the *other* I2S peripheral to avoid any cross-talk.
@@ -75,7 +78,24 @@ void AudioManager::init() {
 }
 
 void AudioManager::loop() {
-    // Nothing to pump: the engine task renders tones and sequences.
+    // The engine task renders tones and sequences; this only retries what
+    // could not be done at once (an engine start, a volume change).
+    if (engineWanted && !AudioEngineTask::running() && (int32_t)(millis() - engineRetryAtMs) >= 0) {
+        startEngine();
+    }
+    if (volumePending && AudioEngineTask::running()) {
+        volumePending = !AudioEngineTask::send(Command::master(masterForVolume(volume)));
+    }
+}
+
+bool AudioManager::startEngine() {
+    if (!AudioEngineTask::start()) {
+        engineRetryAtMs = millis() + kEngineRetryMs;
+        return false;
+    }
+    // A fresh engine starts at unity: give it the current volume.
+    volumePending = !AudioEngineTask::send(Command::master(masterForVolume(volume)));
+    return true;
 }
 
 void AudioManager::setVolume(float volumeLevel) {
@@ -83,22 +103,19 @@ void AudioManager::setVolume(float volumeLevel) {
     if (!(vol >= 0.0f)) vol = 0.0f;   // NaN
     const bool changed = masterForVolume(vol) != masterForVolume(volume);
     volume = vol;
-    // The engine ramps the change over 10 ms (no zipper noise or click).
-    if (changed && !i2sReleased) AudioEngineTask::send(Command::master(masterForVolume(volume)));
+    // The engine ramps the change over 10 ms (no zipper noise or click). If it
+    // cannot be queued now, loop() sends it.
+    if (changed && AudioEngineTask::running()) {
+        volumePending = !AudioEngineTask::send(Command::master(masterForVolume(volume)));
+    }
 }
 
 void AudioManager::playTone(float frequency, int durationMs) {
-    if (!(frequency > 0.0f)) {
-        stopTone();
-        return;
-    }
-    const uint32_t gate = (durationMs > 0) ? Engine::msToSamples((uint32_t)durationMs) : 0;   // 0 = until stopTone
-    AudioEngineTask::send(Command::noteOn(cf_audio::kToneVoice, cf_audio::kSine, Engine::hzToInc(frequency),
-                                          gate, cf_audio::kToneLevel, 128, cf_audio::kToneEnvelope));
+    s_tone.playTone(AudioEngineTask::engine(), frequency, durationMs);   // durationMs <= 0: until stopTone
 }
 
 void AudioManager::stopTone() {
-    AudioEngineTask::send(Command::noteOff(cf_audio::kToneVoice));   // 5 ms fade
+    s_tone.stopTone(AudioEngineTask::engine());   // 5 ms fade; never dropped
 }
 
 void AudioManager::playSequence(const ToneStep* steps, int count) {
@@ -113,7 +130,7 @@ void AudioManager::playSequence(const ToneStep* steps, int count) {
         count = cf_audio::kMaxSeqSteps;
     }
     // Copy the steps now, so the caller's array may go away during playback.
-    cf_audio::SeqStep* buf = engine->mailbox().beginWrite();
+    cf_audio::SeqStep* buf = s_tone.beginSequence(engine);
     if (buf == nullptr) {
         Serial.println("[audio] err=sequence_busy");
         return;
@@ -123,42 +140,35 @@ void AudioManager::playSequence(const ToneStep* steps, int count) {
         buf[i].durMs = steps[i].durationMs;
         buf[i].gapMs = steps[i].gapAfterMs;
     }
-    seqGen = (seqGen + 1) & kGenMask;
-    engine->mailbox().commit(count, seqGen);
-    seqWanted = AudioEngineTask::send(Command::seqPlay(seqGen));
+    // If the play cannot be queued, the previous sequence stops instead.
+    if (!s_tone.commitSequence(engine, count)) Serial.println("[audio] err=sequence_queue_full");
 }
 
 void AudioManager::stopSequence() {
-    seqGen = (seqGen + 1) & kGenMask;
-    seqWanted = false;
-    AudioEngineTask::send(Command::seqStop(seqGen));
-    stopTone();
+    s_tone.stopSequence(AudioEngineTask::engine());   // also releases the tone voice
 }
 
 bool AudioManager::isSequencePlaying() const {
-    const Engine* engine = AudioEngineTask::engine();
-    if (engine == nullptr) return false;
-    const uint32_t status = engine->sequenceStatus();
-    // Until the render task has applied our latest play/stop, report what it asked for.
-    if ((status >> 1) != seqGen) return seqWanted;
-    return (status & 1u) != 0;
+    return s_tone.isSequencePlaying(AudioEngineTask::engine());
 }
 
-void AudioManager::releaseI2S() {
-    if (i2sReleased) return;
+bool AudioManager::releaseI2S() {
     // stop() fades every voice, stops the sequencer and lets the DMA cushion
-    // play out silence before the channel is deleted.
-    AudioEngineTask::stop();
-    seqWanted = false;
-    i2sReleased = true;
+    // play out silence; it reports success only once the render task has
+    // acknowledged its exit and the channel is deleted.
+    if (!AudioEngineTask::stop()) {
+        Serial.println("[audio] err=release_failed (I2S0 still held)");
+        return false;
+    }
+    s_tone.forget();
+    engineWanted = false;
+    return true;
 }
 
-void AudioManager::reclaimI2S() {
-    if (!i2sReleased) return;
-    i2sReleased = false;
-    if (AudioEngineTask::start()) {
-        AudioEngineTask::send(Command::master(masterForVolume(volume)));
-    }
+bool AudioManager::reclaimI2S() {
+    engineWanted = true;   // loop() keeps retrying if this start fails
+    if (AudioEngineTask::running()) return true;
+    return startEngine();
 }
 
 void AudioManager::enableMic(bool on) {

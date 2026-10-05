@@ -530,12 +530,17 @@ void MusicPlayerApp::startOnboardSpeaker() {
         disconnectBT();
     }
 
+    // Release AudioManager's I2S port 0 so we can use it. If the tone engine
+    // still holds it, opening the port here would fail or fight over it.
+    if (!HAL::audioManager().releaseI2S()) {
+        MPLAYER_LOG("startOnboardSpeaker: I2S port 0 still held by the tone engine");
+        setState(STATE_CONNECT_FAIL);
+        return;
+    }
+
     usingOnboardSpeaker = true;
     btConnected = false;
     connectedDeviceName = "Onboard Speaker";
-
-    // Release AudioManager's I2S port 0 so we can use it
-    HAL::audioManager().releaseI2S();
 
     // Create I2S output stream for MAX98357A DAC
     if (!pI2sOut) {
