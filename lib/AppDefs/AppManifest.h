@@ -79,3 +79,5 @@ APP_ENTRY(APP_FACTORY_RESET,         "Reset to factory",   "Settings",       Fac
 // manifest format "cfsprite"). Empty name = no menu leaf of its own; each
 // item's leaf points here after staging its file via DataScreensaver::setPending.
 APP_ENTRY(APP_DATA_SCREENSAVER,      "",                    "",               DataScreensaver::appBegin,                       DataScreensaver::appEnd,                       DataScreensaver::appUpdate                 )
+// Settings > Sound > Speaker EQ: a few named presets, saved across power cycles.
+APP_ENTRY(APP_SPEAKER_EQ,            "Speaker EQ",          "Settings/Sound", SpeakerEqScreen::begin,                          SpeakerEqScreen::end,                          SpeakerEqScreen::update                    )

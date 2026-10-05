@@ -6,6 +6,7 @@
 #include "AudioEngineTask.h"
 #include "SpeakerEqPresets.h"
 #include "globals.h"
+#include <Preferences.h>
 #include <math.h>
 
 using cf_audio::Command;
@@ -28,6 +29,9 @@ uint32_t masterForVolume(float v) {
 cf_audio::ToneControl s_tone(&AudioEngineTask::send);
 
 constexpr uint32_t kEngineRetryMs = 2000;
+
+constexpr const char* kEqNamespace = "audio";
+constexpr const char* kEqKey = "speq";   // u8: index into kSpeakerEqPresets
 
 // Loads a speaker EQ preset into the running engine (applied atomically at
 // its next block). An invalid preset leaves the bus flat.
@@ -104,6 +108,48 @@ void AudioManager::loop() {
     if (volumePending && AudioEngineTask::running()) {
         volumePending = !AudioEngineTask::send(Command::master(masterForVolume(volume)));
     }
+    saveEqIfQuiet();
+}
+
+void AudioManager::loadEqPreset() {
+    if (eqLoaded) return;
+    bool has = false;
+    uint8_t value = 0;
+    Preferences prefs;
+    if (prefs.begin(kEqNamespace, true)) {
+        has = prefs.isKey(kEqKey);
+        if (has) value = prefs.getUChar(kEqKey, 0);
+        prefs.end();
+    }
+    eqPreset = speakerEqPresetFromStored(has, value);
+    eqLoaded = true;
+}
+
+int AudioManager::speakerEqPreset() {
+    loadEqPreset();
+    return eqPreset;
+}
+
+void AudioManager::setSpeakerEqPreset(int id) {
+    if (id < 0 || id >= kSpeakerEqPresetCount) return;
+    loadEqPreset();
+    if (id != eqPreset) eqSavePending = true;
+    eqPreset = id;
+    if (AudioEngineTask::running()) applySpeakerEq(kSpeakerEqPresets[eqPreset]);
+}
+
+// A flash write stalls audio for ~45 ms, so it waits for a quiet moment.
+// A failed write is retried on the next quiet loop pass.
+void AudioManager::saveEqIfQuiet() {
+    if (!eqSavePending || isAudioActive()) return;
+    Preferences prefs;
+    bool ok = false;
+    if (prefs.begin(kEqNamespace, false)) {
+        ok = prefs.putUChar(kEqKey, (uint8_t)eqPreset) != 0;
+        prefs.end();
+    }
+    if (ok) eqSavePending = false;
+    Serial.printf("[audio] speaker_eq saved=%s preset=%d\n", ok ? "ok" : "error", eqPreset);
 }
 
 bool AudioManager::startEngine() {
@@ -114,7 +160,7 @@ bool AudioManager::startEngine() {
     // A fresh engine starts at unity and flat: give it the current volume
     // and the speaker EQ.
     volumePending = !AudioEngineTask::send(Command::master(masterForVolume(volume)));
-    applySpeakerEq(kSpeakerEqPresets[kSpeakerEqDefault]);
+    applySpeakerEq(kSpeakerEqPresets[speakerEqPreset()]);
     return true;
 }
 
@@ -226,7 +272,11 @@ bool AudioManager::stopForSleep(bool hardShutdown) {
         stopFn(hardShutdown);
         Serial.printf("[audio] sleep: port-0 app stopped in %u ms\n", (unsigned)(millis() - t0));
     }
-    return releaseI2S();
+    const bool released = releaseI2S();
+    // Port 0 is quiet now: the moment to save a choice still waiting. Not
+    // on a hard shutdown (low battery): no flash write then.
+    if (released && !hardShutdown) saveEqIfQuiet();
+    return released;
 }
 
 void AudioManager::enableMic(bool on) {

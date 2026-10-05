@@ -41,3 +41,4 @@
 #include "SavedWifiScreen.h"
 #include "FactoryReset.h"
 #include "DataScreensaver.h"
+#include "SpeakerEqScreen.h"
