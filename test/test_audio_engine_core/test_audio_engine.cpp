@@ -258,6 +258,13 @@ void test_quiet_tone_passes_the_limiter_untouched() {
 void test_master_volume_ramps_without_a_step() {
     Engine& e = g_engine;
     TEST_ASSERT_EQUAL_INT32(1 << 30, e.masterGainQ30());
+    // While silent a change applies at once (nothing to ramp).
+    e.apply(Command::master(16384));
+    TEST_ASSERT_EQUAL_INT32(16384 << 15, e.masterGainQ30());
+    e.apply(Command::master(32768));
+    TEST_ASSERT_EQUAL_INT32(1 << 30, e.masterGainQ30());
+    // While a voice sounds it ramps over 10 ms.
+    e.apply(Command::noteOn(0, kSine, Engine::hzToInc(1000.0f), 0, kToneLevel, 128, kToneEnvelope));
     e.apply(Command::master(8192));   // 1.0 -> 0.25
     const int32_t target = 8192 << 15;
     // Equal steps; the last one also absorbs the division remainder (< 441

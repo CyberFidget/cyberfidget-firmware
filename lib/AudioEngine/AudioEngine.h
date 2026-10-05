@@ -26,7 +26,8 @@
 //   the same render() calls, every platform renders bit-identical output.
 //
 // Signal path (per sample)
-//   voices (int32 mix) -> master gain (10 ms linear ramp on change)
+//   voices (int32 mix) -> master gain (10 ms linear ramp on change while
+//   any voice sounds; immediate when all are idle)
 //   -> DC blocker (~35 Hz) -> speaker EQ (biquads, bypassed by default)
 //   -> soft-knee peak limiter -> saturating clamp to int16 (counted)
 //

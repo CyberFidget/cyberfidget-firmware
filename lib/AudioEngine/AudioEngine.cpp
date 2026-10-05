@@ -395,7 +395,10 @@ void Engine::setMasterVolume(uint32_t q15) {
     if (q15 > 32768u) q15 = 32768u;
     masterTargetQ30_ = (int32_t)(q15 << 15);
     const int32_t diff = masterTargetQ30_ - masterQ30_;
-    if (diff == 0) {
+    if (diff == 0 || activeVoices() == 0) {
+        // Nothing is sounding, so there is nothing to ramp: the next note
+        // starts at the new volume.
+        masterQ30_ = masterTargetQ30_;
         masterRampLeft_ = 0;
         return;
     }
