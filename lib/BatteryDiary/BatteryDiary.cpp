@@ -26,7 +26,7 @@ constexpr uint32_t kFirstAwakeTicks = 30U * 5U;
 constexpr uint32_t kAwakeSampleTicks = 5U * 60U * 5U;
 // A sample held back by audio is written after 2 min at the latest (well
 // inside the 5 min sample period, so two never queue up).
-constexpr uint32_t kMaxAwakeDeferTicks = 2U * 60U * 5U;
+constexpr uint32_t kMaxAwakeDeferMs = 2U * 60U * 1000U;
 
 #pragma pack(push, 1)
 struct StoredStats {
@@ -389,9 +389,9 @@ void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr, bool audioActiv
         s_heldMv = mv;
         s_heldSoc = soc;
         s_heldCrate = crate;
-        s_sampleGate.hold(s_awakeTicks);
+        s_sampleGate.hold(s_heldTime);
     }
-    if (s_sampleGate.writeNow(s_awakeTicks, audioActive, kMaxAwakeDeferTicks)) {
+    if (s_sampleGate.writeNow(millis(), audioActive, kMaxAwakeDeferMs)) {
         s_sampleGate.pending = false;
         appendDirect(AWAKE_SAMPLE, s_heldTime, s_heldMv, s_heldSoc, s_heldCrate);
     }

@@ -223,19 +223,21 @@ inline uint32_t rotationReadOffsetBytes(uint32_t existing_records,
 
 // The periodic awake sample is a flash write, and a flash write stalls the
 // audio render task (its code runs from flash). While audio plays the sample
-// waits in RAM; it is written at the first tick without audio, or after
-// maxDeferTicks at the latest, so it is never held forever.
+// waits in RAM; it is written at the first tick without audio, or once
+// maxDeferMs of real time has passed (checked at every tick, so slow ticks
+// cannot stretch it), so it is never held forever. Times are millis();
+// unsigned differences stay correct across its wrap.
 struct AwakeWriteGate {
     bool pending = false;
-    uint32_t since = 0;      // tick the sample fell due
-    void hold(uint32_t tick) {
+    uint32_t sinceMs = 0;    // millis() when the sample fell due
+    void hold(uint32_t nowMs) {
         if (!pending) {
             pending = true;
-            since = tick;
+            sinceMs = nowMs;
         }
     }
-    bool writeNow(uint32_t tick, bool audioActive, uint32_t maxDeferTicks) const {
-        return pending && (!audioActive || tick - since >= maxDeferTicks);
+    bool writeNow(uint32_t nowMs, bool audioActive, uint32_t maxDeferMs) const {
+        return pending && (!audioActive || (uint32_t)(nowMs - sinceMs) >= maxDeferMs);
     }
 };
 
