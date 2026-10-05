@@ -336,9 +336,26 @@ namespace HAL
         ESP_LOGI(TAG_MAIN, "Setup() complete");
     }
 
+    // A normal sleep the audio engine held up: retried from loopHardware()
+    // with a growing backoff; callers check sleepPending() so the sleep
+    // screen, delay and counter saves run only once.
+    static bool s_sleepPending = false;
+    static uint32_t s_sleepRetryAtMs = 0;
+    static uint32_t s_sleepBackoffMs = 0;
+    constexpr uint32_t kSleepRetryFirstMs = 1000;
+    constexpr uint32_t kSleepRetryMaxMs = 30000;
+
+    bool sleepPending() { return s_sleepPending; }
+
     void loopHardware()
     {
         millis_NOW = millis();
+
+        if (s_sleepPending && (int32_t)(millis_NOW - s_sleepRetryAtMs) >= 0) {
+            s_sleepBackoffMs = s_sleepBackoffMs * 2 > kSleepRetryMaxMs ? kSleepRetryMaxMs : s_sleepBackoffMs * 2;
+            s_sleepRetryAtMs = millis_NOW + s_sleepBackoffMs;
+            enterDeepSleep(false);   // returns only if it has to wait again
+        }
 
         s_audioManager.loop();
         s_buttonManager.update();
@@ -400,11 +417,16 @@ namespace HAL
         // Every path to sleep ends audio here: an app streaming on port 0
         // stops through its own stop path, then the engine fades, its render
         // task acknowledges its exit and the channel is deleted.
-        if (!s_audioManager.stopForSleep()) {
+        if (!s_audioManager.stopForSleep(hardShutdown)) {
             if (!hardShutdown) {
-                // Never sleep with the renderer alive: stay awake; the next
-                // sleep attempt retries (the stop request stays set).
-                Serial.println("[audio] sleep deferred: engine did not stop");
+                // Never sleep with the renderer alive: stay awake and retry
+                // (the stop request stays set; the engine is not restarted).
+                if (!s_sleepPending) {
+                    s_sleepPending = true;
+                    s_sleepBackoffMs = kSleepRetryFirstMs;
+                    Serial.println("[audio] sleep deferred: engine did not stop; retrying");
+                }
+                s_sleepRetryAtMs = millis() + s_sleepBackoffMs;
                 return;
             }
             // Empty battery: power down anyway after the bounded (500 ms)

@@ -60,6 +60,7 @@ void PowerManager::onButtonPressCallback(const ButtonEvent &event) {
         if (event.eventType == ButtonEvent_Pressed) {
             unsigned long currentTime = millis();
             if (currentTime - instance->lastTapTime <= DOUBLE_TAP_THRESHOLD_MS) {
+                if (HAL::sleepPending()) return;   // already on its way (retrying)
                 if (!UpdateSession::prepareDeepSleep(false)) return;
                 // Detected a double-tap
                 HAL::stopAudio();   // no tone over the power-off screen
@@ -93,6 +94,7 @@ void PowerManager::onButtonBackPressed(const ButtonEvent& event)
 }
 
 void PowerManager::deepSleep(bool force) {
+    if (HAL::sleepPending()) return;   // already on its way: screen, delay and saves ran once
     if (!UpdateSession::prepareDeepSleep(false)) return;
     // Go to deep sleep
     if (!force && preventSleepWhileCharging) {
