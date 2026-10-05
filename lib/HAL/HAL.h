@@ -137,7 +137,7 @@ namespace HAL
     void setRgbLedsOff();
     void showRgbLeds();
 
-    // Silence all audio output (raw tones and tone sequences). For shutdown
+    // Silence all audio output (raw tones, tone sequences and notes). For shutdown
     // paths that must not leave a note sounding; callers stay decoupled from
     // the AudioManager type.
     void stopAudio();

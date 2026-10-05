@@ -34,7 +34,7 @@ constexpr int kBlockFrames  = cf_audio::kDefaultBlock;   // 256 = DMA frame coun
 constexpr int kTaskPriority = 5;      // above the loop task (1) and the guest task
 constexpr int kTaskCore     = 1;
 constexpr int kTaskStack    = 4096;   // bytes
-constexpr int kQueueDepth   = 28;     // x 32-byte commands: same 896 B as before the stamps grew
+constexpr int kQueueDepth   = 24;     // x 36-byte commands: 864 B, no more than before the stamps grew
 
 // True when running (also if already running); unwinds fully on failure.
 // After a timed-out stop it starts again only once the task has left.

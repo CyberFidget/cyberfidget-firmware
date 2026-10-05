@@ -555,6 +555,7 @@ namespace HAL
         // the two calls; stopTone covers a raw playTone with no sequence.
         s_audioManager.stopSequence();
         s_audioManager.stopTone();
+        s_audioManager.stopNotes();   // notes started with playNote (chords)
     }
 
     bool consumeRuntimeBatteryShutdownRequest()

@@ -65,6 +65,7 @@ constexpr int      kVoices       = 8;
 constexpr int      kDefaultBlock = 256;        // frames per render block
 constexpr int      kMaxChunk     = 256;        // render() works in chunks of at most this
 constexpr uint8_t  kAnyVoice     = 0xFF;       // noteOn: pick a voice (see stealing above)
+constexpr uint8_t  kAnyNoteVoice = 0xFE;       // noteOn: pick a voice other than the tone voice
 constexpr int      kMaxSeqSteps  = 128;        // longer sequences are clipped by the caller
 constexpr int      kEqMaxBands   = 4;
 
@@ -131,11 +132,13 @@ class Engine;
 typedef void (*BlockHook)(Engine& engine, int frames, void* ctx);
 
 enum class CmdType : uint8_t {
-    NoteOn, NoteOff, AllOff, SeqPlay, SeqStop, Master, EqBand, EqCommit, Hook
+    NoteOn, NoteOff, AllOff, SeqPlay, SeqStop, Master, EqBand, EqCommit, Hook, NoteOffId
 };
 
-// Persistent stop requests (Engine::requestStop).
-enum StopKind : uint8_t { kStopTone = 0, kStopSequence = 1, kStopAll = 2 };
+// Persistent stop requests (Engine::requestStop). kStopNotes releases every
+// note started with an id (ToneControl::playNote).
+enum StopKind : uint8_t { kStopTone = 0, kStopSequence = 1, kStopAll = 2, kStopNotes = 3 };
+constexpr int kStopKinds = 4;
 
 // A message from a control thread to the render thread. Plain data, fixed
 // size, so it can travel through any copying queue.
@@ -145,7 +148,9 @@ struct Command {
     uint8_t wave;       // NoteOn
     uint8_t duty;       // NoteOn pulse duty, /256 (128 = 50 %)
     uint32_t stampAll;  // Engine::stamp(): the stop-all counter when queued
-    uint32_t stampKind; // ... and the tone (NoteOn on the tone voice) or sequence (SeqPlay) counter
+    uint32_t stampKind; // ... and the tone (NoteOn on the tone voice), note (NoteOn on
+                        //     kAnyNoteVoice) or sequence (SeqPlay) counter
+    uint32_t noteId;    // NoteOn on kAnyNoteVoice, NoteOffId: the note's id (0 = none)
     union {
         struct { uint32_t inc; uint32_t gate; uint16_t level; Envelope env; } on;   // NoteOn
         uint32_t gen;                                                             // SeqPlay, SeqStop
@@ -159,6 +164,11 @@ struct Command {
     static Command noteOn(uint8_t voice, Wave wave, uint32_t inc, uint32_t gateSamples,
                           uint16_t level, uint8_t duty, const Envelope& env);
     static Command noteOff(uint8_t voice);
+    // A note on any voice but the tone voice, tagged with an id so it can be
+    // stopped later without touching whatever may have stolen its voice.
+    static Command noteOnId(uint32_t noteId, Wave wave, uint32_t inc, uint32_t gateSamples,
+                            uint16_t level, uint8_t duty, const Envelope& env);
+    static Command noteOffId(uint32_t noteId);   // release the note with that id, if still playing
     static Command allOff();
     static Command seqPlay(uint32_t gen);
     static Command seqStop(uint32_t gen);
@@ -201,8 +211,9 @@ public:
     void render(int16_t* out, int frames);   // mono
 
     void noteOn(uint8_t voice, Wave wave, uint32_t inc, uint32_t gateSamples,
-                uint16_t level, uint8_t duty, const Envelope& env);
+                uint16_t level, uint8_t duty, const Envelope& env, uint32_t noteId = 0);
     void noteOff(uint8_t voice);
+    void noteOffId(uint32_t noteId);
     void allOff();                    // fast fade of every voice + stop the sequencer
     void startSequence(uint32_t gen); // takes the mailbox list tagged gen
     void stopSequence(uint32_t gen);
@@ -217,12 +228,20 @@ public:
     // ---- any thread ----
     // Persistent stop: kStopTone releases the tone voice, kStopSequence stops
     // the sequencer and publishes `seqGen` as its status tag, kStopAll fades
-    // every voice. Applied before the next command or block.
+    // every voice, kStopNotes releases every id-tagged note. Applied before
+    // the next command or block.
     void requestStop(StopKind kind, uint32_t seqGen = 0);
     // Fill c's stamps when queueing it (control thread).
     void stamp(Command& c) const;
+    // Release the note with this id without the command queue (any thread):
+    // parks the id in one of kReleaseSlots slots that the render thread
+    // drains before its next command or block; a start of that note still
+    // waiting in the queue is then dropped too. False when every slot is busy.
+    bool postNoteRelease(uint32_t noteId);
+    static constexpr int kReleaseSlots = 8;
     // Tests only, before any command: start the stop counters at given values.
-    void presetStopCounters(uint32_t tone, uint32_t sequence, uint32_t all);
+    void presetStopCounters(uint32_t tone, uint32_t sequence, uint32_t all, uint32_t notes = 0);
+    uint32_t voiceNoteId(int v) const { return (v >= 0 && v < kVoices) ? voices_[v].noteId : 0; }
     SequenceMailbox& mailbox() { return mailbox_; }
     // (gen << 1) | playing, for the last SeqPlay/SeqStop applied.
     uint32_t sequenceStatus() const { return seqStatus_.load(std::memory_order_acquire); }
@@ -264,6 +283,7 @@ private:
         uint8_t  wave;
         uint8_t  stage;
         uint8_t  harmonics;   // kSoftSquare: odd harmonics kept (1..4), set at note start
+        uint32_t noteId;      // id of the note that owns the voice (0 = none)
         // A note waiting for this voice's switch fade to finish.
         bool     pending;
         uint8_t  pendWave;
@@ -289,7 +309,7 @@ private:
     struct Biquad;
     void bus(int32_t* acc, int16_t* out, int n);   // acc is used as scratch
     template <int Form> static void eqRun(Biquad& q, int32_t* buf, int n);
-    int  pickVoice() const;
+    int  pickVoice(bool skipToneVoice) const;
 
     Voice voices_[kVoices];
     uint32_t noteCounter_ = 0;
@@ -326,9 +346,15 @@ private:
     void*     hookCtx_ = nullptr;
 
     // persistent stops: written by control threads, applied by the render thread
-    std::atomic<uint32_t> stopEpoch_[3];  // per kind: how many stops were requested
+    std::atomic<uint32_t> stopEpoch_[kStopKinds];  // per kind: how many stops were requested
     std::atomic<uint32_t> stopSeqGen_{0};
-    uint32_t stopApplied_[3] = {0, 0, 0};
+    // posted id releases (postNoteRelease); 0 = free slot
+    std::atomic<uint32_t> releaseSlots_[kReleaseSlots];
+    // ids released through the slots lately (render thread): a queued start
+    // of one of them is dropped. Ids are never reused, so this is exact.
+    uint32_t releasedIds_[kReleaseSlots] = {0};
+    int      releasedNext_ = 0;
+    uint32_t stopApplied_[kStopKinds] = {0, 0, 0, 0};
 
     int32_t acc_[kMaxChunk];
 };
@@ -355,8 +381,25 @@ public:
     bool isSequencePlaying(const Engine* engine) const;
     void forget() { wanted_ = false; }   // the engine went away
 
+    // Notes for built-in apps: one voice each (never the tone voice), same
+    // timbre, level and envelope as playTone. playNote returns a handle > 0
+    // (or -1 when it could not be queued); when every voice is busy the
+    // engine's stealing policy picks one. Handles are never reused: after
+    // 2^31 - 1 notes (decades of play) playNote returns -1 for good.
+    // stopNote releases that note only: a handle whose voice was taken by a
+    // newer note does nothing. A release the command queue cannot take goes
+    // through the engine's release slots instead; only if those are all
+    // busy too is every note released (so no note is ever left stuck).
+    // stopNotes releases them all.
+    int  playNote(Engine* engine, float hz, int durationMs);
+    void stopNote(Engine* engine, int handle);
+    void stopNotes(Engine* engine);
+    static constexpr uint32_t kLastNoteId = 0x7FFFFFFFu;
+    void presetNoteSeq(uint32_t last) { noteSeq_ = last; }   // tests only
+
 private:
     SendFn send_;
+    uint32_t noteSeq_ = 0;   // last note id handed out (1..2^31-1)
     uint32_t gen_ = 0;       // tag of the last sequence play/stop issued
     bool wanted_ = false;    // whether that play/stop asked to play
 };

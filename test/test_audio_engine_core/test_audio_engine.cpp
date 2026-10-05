@@ -820,6 +820,178 @@ void test_pulse_duty_switch_fades_instead_of_jumping() {
     TEST_ASSERT_TRUE(worst < 2000);
 }
 
+// ------------------------------------------------------------------ notes
+
+// Which voice (if any) holds the note with this handle.
+int voiceOf(Engine& e, int handle) {
+    for (int v = 0; v < kVoices; ++v)
+        if (e.voiceNoteId(v) == (uint32_t)handle && e.voiceInfo(v).active) return v;
+    return -1;
+}
+
+void test_notes_get_their_own_voices_and_stop_alone() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    // A chord of three: three distinct voices, never the tone voice.
+    const int a = tc.playNote(&e, 262.0f, 0);
+    const int b = tc.playNote(&e, 330.0f, 0);
+    const int c = tc.playNote(&e, 392.0f, 0);
+    TEST_ASSERT_TRUE(a > 0 && b > 0 && c > 0 && a != b && b != c && a != c);
+    drainAndRender(e, 256);
+    const int va = voiceOf(e, a), vb = voiceOf(e, b), vc = voiceOf(e, c);
+    TEST_ASSERT_TRUE(va > 0 && vb > 0 && vc > 0 && va != vb && vb != vc && va != vc);
+    TEST_ASSERT_EQUAL_UINT32(Engine::hzToInc(330.0f), e.voiceInfo(vb).inc);
+    // A tone alongside them stays on the tone voice.
+    TEST_ASSERT_TRUE(tc.playTone(&e, 1000.0f, 0));
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_UINT32(Engine::hzToInc(1000.0f), e.voiceInfo(kToneVoice).inc);
+    // Releasing one note releases only that voice.
+    tc.stopNote(&e, b);
+    drainAndRender(e, 256);
+    TEST_ASSERT_FALSE(e.voiceInfo(vb).active);   // 5 ms release fits in the block
+    TEST_ASSERT_TRUE(e.voiceInfo(va).active && e.voiceInfo(vc).active && e.voiceInfo(kToneVoice).active);
+    // Invalid and repeated handles are harmless.
+    tc.stopNote(&e, 0);
+    tc.stopNote(&e, -1);
+    tc.stopNote(&e, b);
+    tc.stopNote(&e, 123456);
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(e.voiceInfo(va).active && e.voiceInfo(vc).active);
+    // stopNotes releases every note but not the tone.
+    tc.stopNotes(&e);
+    drainAndRender(e, 256);
+    TEST_ASSERT_FALSE(e.voiceInfo(va).active || e.voiceInfo(vc).active);
+    TEST_ASSERT_TRUE(e.voiceInfo(kToneVoice).active);
+}
+
+void test_stolen_note_handle_cannot_stop_the_new_note() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    int h[kVoices];
+    // Seven held notes fill voices 1..7.
+    for (int i = 0; i < kVoices - 1; ++i) {
+        h[i] = tc.playNote(&e, 300.0f + 50.0f * i, 0);
+        drainAndRender(e, 64);
+    }
+    for (int i = 0; i < kVoices - 1; ++i) TEST_ASSERT_TRUE(voiceOf(e, h[i]) > 0);
+    // An eighth steals the oldest note's voice (not the tone voice).
+    const int oldVoice = voiceOf(e, h[0]);
+    h[kVoices - 1] = tc.playNote(&e, 2000.0f, 0);
+    drainAndRender(e, 256);   // switch fade (2 ms) then the new note
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, h[0]));
+    TEST_ASSERT_EQUAL_INT(oldVoice, voiceOf(e, h[kVoices - 1]));
+    TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);
+    // The stale handle no longer stops anything.
+    tc.stopNote(&e, h[0]);
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(oldVoice, voiceOf(e, h[kVoices - 1]));
+    TEST_ASSERT_TRUE(e.voiceInfo(oldVoice).active);
+    // Nor does a playTone steal from notes: it always takes the tone voice.
+    tc.playTone(&e, 1000.0f, 0);
+    drainAndRender(e, 64);
+    for (int i = 1; i < kVoices; ++i) TEST_ASSERT_TRUE(voiceOf(e, h[i]) > 0);
+}
+
+void test_note_stops_survive_queue_trouble() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    // A note queued before stopNotes never starts.
+    const int a = tc.playNote(&e, 440.0f, 0);
+    tc.stopNotes(&e);
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, a));
+    TEST_ASSERT_EQUAL_INT(0, e.activeVoices());
+    // A stopNote that cannot be queued still releases only its own note.
+    const int b = tc.playNote(&e, 440.0f, 0);
+    const int c = tc.playNote(&e, 550.0f, 0);
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(voiceOf(e, b) > 0 && voiceOf(e, c) > 0);
+    const int vb = voiceOf(e, b);
+    for (int i = 0; i < 4; ++i) TEST_ASSERT_TRUE(fakeSend(Command::master(32768)));
+    tc.stopNote(&e, b);   // queue full: goes through a release slot
+    drainAndRender(e, 256);
+    TEST_ASSERT_FALSE(e.voiceInfo(vb).active);
+    TEST_ASSERT_TRUE(voiceOf(e, c) > 0);
+    tc.stopNotes(&e);
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(0, e.activeVoices());
+    // A timed note ends by itself.
+    const int d = tc.playNote(&e, 440.0f, 40);
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(voiceOf(e, d) > 0);
+    e.render(g_buf, 2100);   // 40 ms gate + 5 ms release
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, d));
+    TEST_ASSERT_EQUAL_INT(-1, tc.playNote(nullptr, 440.0f, 0));
+    TEST_ASSERT_EQUAL_INT(-1, tc.playNote(&e, 0.0f, 0));
+}
+
+void test_full_queue_release_of_stolen_handle_spares_the_new_note() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    int h[kVoices];
+    for (int i = 0; i < kVoices - 1; ++i) {
+        h[i] = tc.playNote(&e, 300.0f + 50.0f * i, 0);
+        drainAndRender(e, 64);
+    }
+    const int stolenVoice = voiceOf(e, h[0]);
+    h[kVoices - 1] = tc.playNote(&e, 2000.0f, 0);   // steals h[0]'s voice
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(stolenVoice, voiceOf(e, h[kVoices - 1]));
+    // Queue full, then the stale handle is released: nothing else may stop.
+    for (int i = 0; i < 4; ++i) TEST_ASSERT_TRUE(fakeSend(Command::master(32768)));
+    tc.stopNote(&e, h[0]);
+    drainAndRender(e, 256);
+    for (int i = 1; i < kVoices; ++i) TEST_ASSERT_TRUE(voiceOf(e, h[i]) > 0);
+
+    // A start still in the queue when its release goes through a slot never
+    // sounds: the queue is drained after the slots.
+    g_qn = 0;
+    tc.stopNotes(&e);
+    drainAndRender(e, 512);
+    const int q = tc.playNote(&e, 700.0f, 0);   // queued
+    for (int i = 0; i < 3; ++i) TEST_ASSERT_TRUE(fakeSend(Command::master(32768)));
+    tc.stopNote(&e, q);                          // queue full: slot
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, q));
+    TEST_ASSERT_EQUAL_INT(0, e.activeVoices());
+
+    // With every slot busy as well, it falls back to releasing all notes.
+    g_qn = 0;
+    const int r = tc.playNote(&e, 800.0f, 0);
+    const int s = tc.playNote(&e, 900.0f, 0);
+    drainAndRender(e, 256);
+    for (int i = 0; i < Engine::kReleaseSlots; ++i) TEST_ASSERT_TRUE(e.postNoteRelease(1000000 + i));
+    TEST_ASSERT_FALSE(e.postNoteRelease(2000000));
+    for (int i = 0; i < 4; ++i) TEST_ASSERT_TRUE(fakeSend(Command::master(32768)));
+    tc.stopNote(&e, r);
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, r));
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, s));
+}
+
+void test_note_handles_are_never_reused() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    tc.presetNoteSeq(ToneControl::kLastNoteId - 2);
+    const int a = tc.playNote(&e, 440.0f, 0);
+    const int b = tc.playNote(&e, 550.0f, 0);
+    TEST_ASSERT_EQUAL_INT((int)(ToneControl::kLastNoteId - 1), a);
+    TEST_ASSERT_EQUAL_INT((int)ToneControl::kLastNoteId, b);
+    TEST_ASSERT_EQUAL_INT(-1, tc.playNote(&e, 660.0f, 0));   // exhausted: no wrap to 1
+    TEST_ASSERT_EQUAL_INT(-1, tc.playNote(&e, 660.0f, 0));
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(voiceOf(e, a) > 0 && voiceOf(e, b) > 0);
+    tc.stopNote(&e, a);
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_INT(-1, voiceOf(e, a));
+    TEST_ASSERT_TRUE(voiceOf(e, b) > 0);
+}
+
 void test_stop_all_cancels_queued_notes() {
     Engine& e = g_engine;
     g_qn = 0;
@@ -876,6 +1048,11 @@ int main(int, char**) {
     RUN_TEST(test_stop_survives_a_full_queue);
     RUN_TEST(test_sequence_status_matches_the_engine);
     RUN_TEST(test_stop_all_cancels_queued_notes);
+    RUN_TEST(test_notes_get_their_own_voices_and_stop_alone);
+    RUN_TEST(test_stolen_note_handle_cannot_stop_the_new_note);
+    RUN_TEST(test_note_stops_survive_queue_trouble);
+    RUN_TEST(test_full_queue_release_of_stolen_handle_spares_the_new_note);
+    RUN_TEST(test_note_handles_are_never_reused);
     RUN_TEST(test_stop_stamps_do_not_alias_after_many_stops);
     RUN_TEST(test_pulse_duty_switch_fades_instead_of_jumping);
     RUN_TEST(test_stop_counters_compare_by_equality_at_half_range);
