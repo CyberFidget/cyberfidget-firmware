@@ -3,45 +3,39 @@
 
 // lib/AudioManager/AudioManager.cpp
 #include "AudioManager.h"
+#include "AudioEngineTask.h"
 #include "globals.h"
 #include <math.h>
 
+using cf_audio::Command;
+using cf_audio::Engine;
+
+namespace {
+
+// setVolume() keeps the curve the old audio-tools volume stream applied
+// (its default "simulated audio pot"): the value rounded to 0.01, then
+// 0..0.5 -> 0..0.1 and 0.5..1 -> 0.1..1, linear in each half. Same loudness
+// at every setting as before. Returns the engine's master gain, Q15.
+uint32_t masterForVolume(float v) {
+    const int32_t pct = (int32_t)(v * 100.0f + 0.5f);   // v is already 0..1
+    const int32_t num = (pct <= 50) ? pct : 9 * pct - 400;   // factor = num / 500
+    return (uint32_t)((num * 32768 + 250) / 500);
+}
+
+constexpr uint32_t kGenMask = 0x7FFFFFFFu;   // the engine publishes 31-bit tags
+
+}  // namespace
+
 AudioManager::AudioManager()
-    : currentFrequency(440.0f),
-      isPlaying(false),
-      stopAtMillis(0),
-      in(generator),
-      volume(in),
-      copier(i2s, volume),
-      micCopy(micMeter, i2sIn)
+    : micCopy(micMeter, i2sIn)
 {
 }
 
 void AudioManager::init() {
-    // --- TX: MAX98357A path ---
-    auto cfg = i2s.defaultConfig(TX_MODE);
-    cfg.port_no         = 0;
-    cfg.i2s_format      = I2S_LSB_FORMAT;   // 
-    cfg.pin_ws          = 27;               // LRCLK
-    cfg.pin_bck         = 26;               // BCLK
-    cfg.pin_data        = 14;               // DOUT
-    cfg.channels        = 2;
-    cfg.bits_per_sample = 16;
-    // cfg.sample_rate     = 44100;
-    cfg.buffer_count = 12;    // default is usually smaller
-    cfg.buffer_size  = 256;  // bytes per buffer
-
-    // Keep I2S port default here (usually 0). We’ll put mic on the other port.
-    i2s.begin(cfg);
-
-    generator.setFrequency(currentFrequency);
-
-    auto vcfg = volume.defaultConfig();
-    vcfg.copyFrom(cfg);
-    volume.begin(vcfg);
-    volume.setVolume(0.7f);
-
-    isPlaying = false;
+    // --- TX: the audio engine's render task owns I2S0 (MAX98357A) ---
+    if (AudioEngineTask::start()) {
+        AudioEngineTask::send(Command::master(masterForVolume(volume)));
+    }
 
     // --- Prepare (do NOT start) RX: ICS-43434 mic ---
     // Put mic on the *other* I2S peripheral to avoid any cross-talk.
@@ -81,59 +75,30 @@ void AudioManager::init() {
 }
 
 void AudioManager::loop() {
-    // --- Tone path ---
-    if (isPlaying) {
-      copier.copy(); // this one already pulls fast/non-blocking
-    if (stopAtMillis > 0 && millis() >= stopAtMillis) {
-      stopTone();
-      stopAtMillis = 0;
-      }
-    }
-
-    // --- Sequence advance ---
-    if (currentSequence != nullptr && millis() >= nextStepAtMs) {
-        if (currentSequenceIdx >= currentSequenceLen) {
-            // Sequence finished.
-            currentSequence    = nullptr;
-            currentSequenceLen = 0;
-            currentSequenceIdx = 0;
-        } else {
-            const ToneStep& s = currentSequence[currentSequenceIdx];
-            if (s.freq > 0.0f) {
-                playTone(s.freq, s.durationMs);
-            } else {
-                // Rest: ensure any in-flight tone is silenced for the rest interval.
-                stopTone();
-            }
-            nextStepAtMs = millis() + s.durationMs + s.gapAfterMs;
-            currentSequenceIdx++;
-        }
-    }
+    // Nothing to pump: the engine task renders tones and sequences.
 }
 
 void AudioManager::setVolume(float volumeLevel) {
     float vol = constrain(volumeLevel, 0.0f, 1.0f);
-    volume.setVolume(vol);
+    if (!(vol >= 0.0f)) vol = 0.0f;   // NaN
+    const bool changed = masterForVolume(vol) != masterForVolume(volume);
+    volume = vol;
+    // The engine ramps the change over 10 ms (no zipper noise or click).
+    if (changed && !i2sReleased) AudioEngineTask::send(Command::master(masterForVolume(volume)));
 }
 
 void AudioManager::playTone(float frequency, int durationMs) {
-    currentFrequency = frequency;
-    generator.setFrequency(currentFrequency);
-
-    if (!isPlaying) {
-        generator.begin();
-        isPlaying = true;
+    if (!(frequency > 0.0f)) {
+        stopTone();
+        return;
     }
-
-    stopAtMillis = (durationMs > 0) ? (millis() + durationMs) : 0;
+    const uint32_t gate = (durationMs > 0) ? Engine::msToSamples((uint32_t)durationMs) : 0;   // 0 = until stopTone
+    AudioEngineTask::send(Command::noteOn(cf_audio::kToneVoice, cf_audio::kSine, Engine::hzToInc(frequency),
+                                          gate, cf_audio::kToneLevel, 128, cf_audio::kToneEnvelope));
 }
 
 void AudioManager::stopTone() {
-    if (isPlaying) {
-        generator.end();
-        isPlaying = false;
-        // volume.setVolume(0.0f); // optional instant silence
-    }
+    AudioEngineTask::send(Command::noteOff(cf_audio::kToneVoice));   // 5 ms fade
 }
 
 void AudioManager::playSequence(const ToneStep* steps, int count) {
@@ -141,35 +106,59 @@ void AudioManager::playSequence(const ToneStep* steps, int count) {
         stopSequence();
         return;
     }
-    currentSequence    = steps;
-    currentSequenceLen = count;
-    currentSequenceIdx = 0;
-    nextStepAtMs       = millis(); // play first step immediately on next loop()
+    Engine* engine = AudioEngineTask::engine();
+    if (engine == nullptr) return;   // port lent out (or no engine): nothing plays
+    if (count > cf_audio::kMaxSeqSteps) {
+        Serial.printf("[audio] sequence cut to %d of %d steps\n", cf_audio::kMaxSeqSteps, count);
+        count = cf_audio::kMaxSeqSteps;
+    }
+    // Copy the steps now, so the caller's array may go away during playback.
+    cf_audio::SeqStep* buf = engine->mailbox().beginWrite();
+    if (buf == nullptr) {
+        Serial.println("[audio] err=sequence_busy");
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        buf[i].inc = Engine::hzToInc(steps[i].freq);   // 0 = rest
+        buf[i].durMs = steps[i].durationMs;
+        buf[i].gapMs = steps[i].gapAfterMs;
+    }
+    seqGen = (seqGen + 1) & kGenMask;
+    engine->mailbox().commit(count, seqGen);
+    seqWanted = AudioEngineTask::send(Command::seqPlay(seqGen));
 }
 
 void AudioManager::stopSequence() {
-    currentSequence    = nullptr;
-    currentSequenceLen = 0;
-    currentSequenceIdx = 0;
+    seqGen = (seqGen + 1) & kGenMask;
+    seqWanted = false;
+    AudioEngineTask::send(Command::seqStop(seqGen));
     stopTone();
 }
+
+bool AudioManager::isSequencePlaying() const {
+    const Engine* engine = AudioEngineTask::engine();
+    if (engine == nullptr) return false;
+    const uint32_t status = engine->sequenceStatus();
+    // Until the render task has applied our latest play/stop, report what it asked for.
+    if ((status >> 1) != seqGen) return seqWanted;
+    return (status & 1u) != 0;
+}
+
 void AudioManager::releaseI2S() {
-    stopTone();
-    i2s.end();
+    if (i2sReleased) return;
+    // stop() fades every voice, stops the sequencer and lets the DMA cushion
+    // play out silence before the channel is deleted.
+    AudioEngineTask::stop();
+    seqWanted = false;
+    i2sReleased = true;
 }
 
 void AudioManager::reclaimI2S() {
-    auto cfg = i2s.defaultConfig(TX_MODE);
-    cfg.port_no         = 0;
-    cfg.i2s_format      = I2S_LSB_FORMAT;
-    cfg.pin_ws          = 27;
-    cfg.pin_bck         = 26;
-    cfg.pin_data        = 14;
-    cfg.channels        = 2;
-    cfg.bits_per_sample = 16;
-    cfg.buffer_count    = 12;
-    cfg.buffer_size     = 256;
-    i2s.begin(cfg);
+    if (!i2sReleased) return;
+    i2sReleased = false;
+    if (AudioEngineTask::start()) {
+        AudioEngineTask::send(Command::master(masterForVolume(volume)));
+    }
 }
 
 void AudioManager::enableMic(bool on) {

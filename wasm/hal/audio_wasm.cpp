@@ -74,12 +74,17 @@ inline void js_audio_set_volume(float) {}
 
 static float s_volume = 0.3f;
 
-AudioManager::AudioManager()
-    : currentFrequency(0)
-    , isPlaying(false)
-    , stopAtMillis(0)
-    , in(generator)
-{}
+// Tone and sequence state. The device's AudioManager keeps different private
+// members (its engine task renders), so the emulator's own state lives here.
+static float              currentFrequency = 0;
+static bool               isPlaying = false;
+static unsigned long      stopAtMillis = 0;
+static const AudioManager::ToneStep* currentSequence = nullptr;
+static int                currentSequenceLen = 0;
+static int                currentSequenceIdx = 0;
+static unsigned long      nextStepAtMs = 0;
+
+AudioManager::AudioManager() {}
 
 void AudioManager::init() {}
 
@@ -148,6 +153,10 @@ void AudioManager::stopSequence() {
     currentSequenceLen = 0;
     currentSequenceIdx = 0;
     stopTone();
+}
+
+bool AudioManager::isSequencePlaying() const {
+    return currentSequence != nullptr;
 }
 
 void AudioManager::enableMic(bool) {}

@@ -16,7 +16,9 @@ class AudioManager {
 public:
     // A single step in a tone sequence.
     // freq=0 means rest (silence). gapAfterMs adds inter-step silence.
-    // Pointers passed to playSequence() must outlive playback — use static const arrays.
+    // The device copies up to 128 steps when playSequence() is called (longer
+    // lists are cut to 128). Keep arrays static const anyway: the emulator
+    // still reads them during playback.
     struct ToneStep {
         float    freq;
         uint16_t durationMs;
@@ -25,8 +27,11 @@ public:
 
     AudioManager();
 
+    // Tones and sequences are rendered by the audio engine's own task
+    // (lib/AudioEngine, AudioEngineTask), which owns I2S port 0 from init()
+    // on; their timing is sample-exact and independent of loop().
     void init();
-    void loop(); // Call this regularly to process audio
+    void loop(); // Kept for callers; the engine needs nothing from it
 
     // Tone control
     void setVolume(float volume);                       // 0.0..1.0
@@ -36,11 +41,11 @@ public:
     // Sequence control — play a series of tones with timing.
     void playSequence(const ToneStep* steps, int count);
     void stopSequence();
-    bool isSequencePlaying() const { return currentSequence != nullptr; }
-    
+    bool isSequencePlaying() const;
+
     // I2S port sharing — music player needs I2S0 for onboard speaker output
-    void releaseI2S();   // Stop I2S TX so another stream can use port 0
-    void reclaimI2S();   // Restart I2S TX for tone generation
+    void releaseI2S();   // Silence tones/sequences and free port 0 for another stream
+    void reclaimI2S();   // Take port 0 back for tones
 
     // Mic control
     void enableMic(bool on);
@@ -51,23 +56,11 @@ public:
     float getMicVolumeDb() const;
 
 private:
-    // --- Tone state ---
-    float currentFrequency;
-    bool  isPlaying;
-    unsigned long stopAtMillis;
-
-    // --- Sequence state ---
-    const ToneStep* currentSequence = nullptr;
-    int             currentSequenceLen = 0;
-    int             currentSequenceIdx = 0;
-    unsigned long   nextStepAtMs = 0;
-
-    // --- Tone chain (TX) ---
-    I2SStream i2s;                           // TX to MAX98357A
-    SineWaveGenerator<int16_t> generator;
-    GeneratedSoundStream<int16_t> in;
-    VolumeStream volume;
-    StreamCopy copier;                       // volume -> i2s
+    // --- Tone and sequence control state (the engine task renders) ---
+    float    volume = 0.7f;            // last setVolume(), re-applied on reclaimI2S()
+    bool     i2sReleased = false;
+    uint32_t seqGen = 0;               // tag of the last sequence play/stop sent
+    bool     seqWanted = false;        // whether that command asked to play
 
     // --- Mic chain (RX) ---
     I2SConfig            micCfg;             // persisted RX config
