@@ -86,9 +86,16 @@ EM_JS(void, js_audio_note_play, (int handle, float frequency, float volume, int 
         Module._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (!Module._audioNotes) Module._audioNotes = {};
+    var ctx = Module._audioCtx;
+    // A timed note that has passed its end time no longer sounds even if its
+    // onended event hasn't been delivered yet: drop it before counting, so it
+    // can't cause a held note to be replaced (the device reuses idle voices).
+    for (var k in Module._audioNotes) {
+        var e = Module._audioNotes[k];
+        if (e.endAt !== undefined && e.endAt <= ctx.currentTime) delete Module._audioNotes[k];
+    }
     var held = Object.keys(Module._audioNotes).map(Number).sort(function(a, b) { return a - b; });
     while (held.length >= 7) js_audio_note_stop(held.shift());   // handles count up: lowest = oldest
-    var ctx = Module._audioCtx;
     var osc = ctx.createOscillator();
     var gain = ctx.createGain();
     osc.type = 'square';
@@ -104,7 +111,10 @@ EM_JS(void, js_audio_note_play, (int handle, float frequency, float volume, int 
     };
     Module._audioNotes[handle] = note;
     osc.start();
-    if (duration_ms > 0) osc.stop(ctx.currentTime + duration_ms / 1000);
+    if (duration_ms > 0) {
+        note.endAt = ctx.currentTime + duration_ms / 1000;
+        osc.stop(note.endAt);
+    }
 });
 
 EM_JS(void, js_audio_notes_stop_all, (), {
