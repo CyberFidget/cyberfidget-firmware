@@ -992,7 +992,7 @@ int ToneControl::playNote(Engine* engine, float hz, int durationMs) {
     if (noteSeq_ >= kLastNoteId) return -1;   // ids are never reused
     ++noteSeq_;
     const uint32_t gate = durationMs > 0 ? Engine::msToSamples((uint32_t)durationMs) : 0;
-    Command c = Command::noteOnId(noteSeq_, kToneWave, Engine::hzToInc(hz), gate, kToneLevel, 128, kToneEnvelope);
+    Command c = Command::noteOnId(noteSeq_, kToneWave, Engine::hzToInc(hz), gate, kNoteLevel, 128, kToneEnvelope);
     engine->stamp(c);
     return send_(c) ? (int)noteSeq_ : -1;
 }
