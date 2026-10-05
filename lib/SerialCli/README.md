@@ -589,7 +589,8 @@ starts `[abench] `, errors `[abench] err=<reason>`.
 abench help                  -> [abench] verbs: ...
 abench start [...]           -> [abench] started rate=44100 block=256 dma=10x256 cushion_ms=58.0 prio=5 core=1
                                 (the engine runs all the time; arguments are ignored)
-abench stop | off            -> [abench] stopped | [abench] off   (all voices fade, stress/sweep end)
+abench stop | off            -> [abench] stopped | [abench] off   (all voices fade, stress/sweep end;
+                                a persistent stop, so a full command queue cannot lose it)
 abench stats [reset]         -> [abench] stats blocks= cpu_avg_pct= cpu_max_pct= cyc_avg= cyc_max= underruns=
                                 gap_underruns= gap_max_ms= clips= peak_voices= heap_int_free= heap_int_min= stack_hwm=
                                 | [abench] stats.reset
@@ -597,8 +598,10 @@ abench stress on|off         -> [abench] stress=<0|1>   (8-voice pattern, restar
 abench note v wave hz ms vel [duty%] -> [abench] note.ok   (wave 0 pulse 1 tri 2 saw 3 noise 4 sine)
 abench master <q8>           -> [abench] master=<q8>   (256 = unity)
 abench eq on|off|set hpf p1hz p1db p1q p2hz p2db p2q gaindb -> [abench] eq=<0|1> | [abench] eq.set ...
-abench measure tone|legacy|engine hz ms [vel] -> [abench] rec.start ..., act.fire at_sample=<n>, rec.done samples=<n>
-                                (tone/legacy play through AudioManager::playTone; engine = a raw sine note)
+                                | [abench] err=eq_range   (hz 20..20000, q 0.1..20, db -24..24, stable bands)
+abench measure tone|engine hz ms [vel] -> [abench] rec.start ..., act.fire at_sample=<n>, rec.done samples=<n>
+                                (tone = the product path, AudioManager::playTone; engine = a raw sine note at vel)
+abench measure legacy ...    -> [abench] err=legacy_unavailable   (the old tone chain no longer exists)
 abench sweep [vel] | rec <ms> -> same recording lines (on-board mic, 48 kHz, PSRAM)
 abench dump                  -> [abench] dump.begin bytes=<n> rate=48000, [abench] d=<base64 of 768 bytes> ..., [abench] dump.end
 abench nvs <n> | fs <kb>     -> [abench] nvs.writes=<n> ms=<t> | [abench] fs.kb=<kb> ms=<t>   (flash-write stall load)

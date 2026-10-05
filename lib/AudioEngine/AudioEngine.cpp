@@ -77,14 +77,22 @@ inline int32_t mulPole(int32_t v) {
                   : -(int32_t)(((int64_t)(-v) * kDcPoleQ15) >> 15);
 }
 
+// Saturating double -> int32 (NaN -> 0), so a silly design never narrows out of range.
+int32_t satRound(double v) {
+    if (!(v == v)) return 0;
+    if (v >= 2147483647.0) return INT32_MAX;
+    if (v <= -2147483648.0) return INT32_MIN;
+    return (int32_t)lround(v);
+}
+
 BiquadCoefs quantise(double b0, double b1, double b2, double a0, double a1, double a2) {
     const double s = (double)(1 << 29) / a0;
     BiquadCoefs c;
-    c.b0 = (int32_t)lround(b0 * s);
-    c.b1 = (int32_t)lround(b1 * s);
-    c.b2 = (int32_t)lround(b2 * s);
-    c.a1 = (int32_t)lround(a1 * s);
-    c.a2 = (int32_t)lround(a2 * s);
+    c.b0 = satRound(b0 * s);
+    c.b1 = satRound(b1 * s);
+    c.b2 = satRound(b2 * s);
+    c.a1 = satRound(a1 * s);
+    c.a2 = satRound(a2 * s);
     return c;
 }
 
@@ -798,7 +806,7 @@ BiquadCoefs designPeaking(double hz, double gainDb, double q) {
 }
 
 int32_t dbToGainQ8(double gainDb) {
-    return (int32_t)lround(256.0 * pow(10.0, gainDb / 20.0));
+    return satRound(256.0 * pow(10.0, gainDb / 20.0));   // validated at commit
 }
 
 }  // namespace cf_audio

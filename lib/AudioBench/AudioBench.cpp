@@ -173,7 +173,8 @@ void engineNote(int voice, int wave, float hz, uint32_t msDur, int vel, int duty
 void allOff() {
     s_stressOn.store(false);
     s_sweepOn.store(false);
-    if (AudioEngineTask::running()) send(Command::allOff());
+    Engine* e = AudioEngineTask::engine();
+    if (e) e->requestStop(cf_audio::kStopAll);   // persistent: never lost to a full queue
 }
 
 void printStats() {
@@ -193,16 +194,33 @@ void printStats() {
 }
 
 // ---- speaker EQ (bench A/B; the product bus keeps it bypassed)
+// hpf p1hz p1db p1q p2hz p2db p2q gaindb
 float s_eqParams[8] = {800, 2000, 4, 1.0f, 6400, -6, 2.0f, 6};
-bool s_eqDesigned = false;
 
-void sendEq(bool enable) {
-    const float* v = s_eqParams;
-    send(Command::eqBand(0, cf_audio::designHighpass(v[0], 0.7071)));
-    send(Command::eqBand(1, cf_audio::designPeaking(v[1], v[2], v[3])));
-    send(Command::eqBand(2, cf_audio::designPeaking(v[4], v[5], v[6])));
-    send(Command::eqCommit(3, enable, cf_audio::dbToGainQ8(v[7])));   // applied atomically
-    s_eqDesigned = true;
+bool inRange(float x, float lo, float hi) { return x >= lo && x <= hi; }   // false for NaN
+
+// Designs the three bands from p; false (nothing sent) when a parameter or
+// the resulting setting is out of range.
+bool designEq(const float* p, cf_audio::BiquadCoefs* b, int32_t* gainQ8) {
+    if (!inRange(p[0], 20, 20000) || !inRange(p[1], 20, 20000) || !inRange(p[4], 20, 20000) ||
+        !inRange(p[3], 0.1f, 20) || !inRange(p[6], 0.1f, 20) ||
+        !inRange(p[2], -24, 24) || !inRange(p[5], -24, 24) || !inRange(p[7], -24, 24)) {
+        return false;
+    }
+    b[0] = cf_audio::designHighpass(p[0], 0.7071);
+    b[1] = cf_audio::designPeaking(p[1], p[2], p[3]);
+    b[2] = cf_audio::designPeaking(p[4], p[5], p[6]);
+    *gainQ8 = cf_audio::dbToGainQ8(p[7]);
+    return Engine::eqSettingValid(b, 3, *gainQ8);
+}
+
+bool sendEq(bool enable) {
+    cf_audio::BiquadCoefs b[3];
+    int32_t gainQ8 = 256;
+    if (!designEq(s_eqParams, b, &gainQ8)) return false;
+    for (uint8_t i = 0; i < 3; ++i) send(Command::eqBand(i, b[i]));
+    send(Command::eqCommit(3, enable, gainQ8));   // applied atomically
+    return true;
 }
 
 // --------------------------------------------------------------- recorder
@@ -320,7 +338,8 @@ void help() {
     Serial.println("[abench] verbs: start [desc frames prio core] (engine always runs; reports its config) |"
                    " stop | stats [reset] | stress on|off |"
                    " note v wave hz ms vel [duty] (wave 0 pulse 1 tri 2 saw 3 noise 4 sine) | off |"
-                   " master q8 | measure tone|legacy|engine hz ms [vel] (tone/legacy = AudioManager::playTone) |"
+                   " master q8 | measure tone|engine hz ms [vel] (tone = AudioManager::playTone;"
+                   " legacy -> err=legacy_unavailable) |"
                    " sweep [vel] | rec ms | dump | eq on|off|set hpf p1hz p1db p1q p2hz p2db p2q gaindb |"
                    " nvs n | fs kb");
 }
@@ -371,8 +390,7 @@ void command(const char* arg) {
             s_stressGen.fetch_add(1);   // restart from step 0 with the fixed seed
             s_stressOn.store(true);
         } else {
-            s_stressOn.store(false);
-            send(Command::allOff());
+            allOff();
         }
         Serial.printf("[abench] stress=%d\n", on ? 1 : 0);
         return;
@@ -398,8 +416,16 @@ void command(const char* arg) {
     if (!strcmp(sub, "eq")) {
         if (!engineUp()) return;
         if (!strncmp(rest, "set", 3)) {
-            sscanf(rest + 3, "%f %f %f %f %f %f %f %f", &s_eqParams[0], &s_eqParams[1], &s_eqParams[2],
-                   &s_eqParams[3], &s_eqParams[4], &s_eqParams[5], &s_eqParams[6], &s_eqParams[7]);
+            float p[8];
+            memcpy(p, s_eqParams, sizeof(p));
+            sscanf(rest + 3, "%f %f %f %f %f %f %f %f", &p[0], &p[1], &p[2], &p[3], &p[4], &p[5], &p[6], &p[7]);
+            cf_audio::BiquadCoefs b[3];
+            int32_t gainQ8 = 256;
+            if (!designEq(p, b, &gainQ8)) {
+                Serial.println("[abench] err=eq_range (hz 20..20000, q 0.1..20, db -24..24, stable bands)");
+                return;
+            }
+            memcpy(s_eqParams, p, sizeof(p));
             sendEq(false);   // designed, left off until `eq on`
             const float* v = s_eqParams;
             Serial.printf("[abench] eq.set hpf=%.0f p1=%.0f/%.1f/%.2f p2=%.0f/%.1f/%.2f gain=%.1f\n",
@@ -407,7 +433,10 @@ void command(const char* arg) {
             return;
         }
         const bool on = !strncmp(rest, "on", 2);
-        sendEq(on);
+        if (!sendEq(on)) {
+            Serial.println("[abench] err=eq_range");
+            return;
+        }
         Serial.printf("[abench] eq=%d\n", on ? 1 : 0);
         return;
     }
@@ -426,9 +455,13 @@ void command(const char* arg) {
         int msDur = 100, vel = 160;
         if (sscanf(rest, "%9s %f %d %d", kind, &hz, &msDur, &vel) < 3) { help(); return; }
         ActKind act;
-        if (!strcmp(kind, "tone") || !strcmp(kind, "legacy")) act = A_TONE;
-        else if (!strcmp(kind, "engine")) act = A_ENGINE;
-        else { help(); return; }
+        if (!strcmp(kind, "tone")) act = A_TONE;          // product path: AudioManager::playTone
+        else if (!strcmp(kind, "engine")) act = A_ENGINE; // raw engine sine note at `vel`
+        else if (!strcmp(kind, "legacy")) {
+            // The old audio-tools tone chain is gone; nothing here plays it.
+            Serial.println("[abench] err=legacy_unavailable");
+            return;
+        } else { help(); return; }
         if (!engineUp()) return;
         s_rec.hz = hz;
         s_rec.durMs = (uint32_t)(msDur > 0 ? msDur : 0);
