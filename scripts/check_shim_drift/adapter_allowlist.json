@@ -12,6 +12,16 @@
       "rationale": "Guest-local callback dispatch receives button events forwarded by the host lifecycle glue."
     },
     {
+      "file": "wasm/device_module/shims/ButtonManager.h",
+      "symbol": "flushCallbacks",
+      "rationale": "The glue runs queued button callbacks after the frame's events, as native firmware does; the optional stop flag ends the flush once the app exits."
+    },
+    {
+      "file": "wasm/device_module/shims/ButtonManager.h",
+      "symbol": "reset",
+      "rationale": "The glue clears guest-local button state between app runs; the firmware ButtonManager is a long-lived singleton with no equivalent."
+    },
+    {
       "file": "wasm/device_module/shims/DisplayProxy.h",
       "symbol": "setOverlayMode",
       "rationale": "The device host owns overlay state, so the guest setter is intentionally a no-op."
