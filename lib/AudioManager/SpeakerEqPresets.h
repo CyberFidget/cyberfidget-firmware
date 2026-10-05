@@ -22,9 +22,10 @@ struct SpeakerEqPreset {
 constexpr SpeakerEqPreset kSpeakerEqPresets[] = {
     {"Off", false, {0, 0, 0, 0, 0, 0, 0, 0}},
     // Tuned on an enclosed unit from measurements and listening: the speaker
-    // gives almost nothing below ~750 Hz, so cut it and spend the headroom on
-    // presence (2.5 kHz) while taming the top.
-    {"Speaker", true, {750, 2500, 4, 0.7f, 9000, -3, 1.0f, 2}},
+    // gives almost nothing below ~700 Hz, so cut it (gently, at 600 Hz, so
+    // low tones keep some body) and spend the headroom on presence (2.5 kHz)
+    // while taming the top.
+    {"Speaker", true, {600, 2500, 4, 0.7f, 9000, -3, 1.0f, 2}},
 };
 constexpr int kSpeakerEqPresetCount = (int)(sizeof(kSpeakerEqPresets) / sizeof(kSpeakerEqPresets[0]));
 constexpr int kSpeakerEqDefault = 1;
