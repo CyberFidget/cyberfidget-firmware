@@ -87,13 +87,24 @@ public:
                 pressed[buttonIndex] = true;
                 pressedAt[buttonIndex] = now - (uint32_t)kHoldThresholdMs;
             }
+            if (now - pressedAt[buttonIndex] < kHoldThresholdMs) {
+                // The host only sends Held past its threshold; delivery delay
+                // made the press look shorter. Backdate it so the Released
+                // that follows keeps the hold too.
+                pressedAt[buttonIndex] = now - (uint32_t)kHoldThresholdMs;
+            }
             duration = now - pressedAt[buttonIndex];
-            if (duration < kHoldThresholdMs) duration = kHoldThresholdMs;
             break;
         default:
             return;
         }
-        if (pendingCount == kMaxPending) return;  // full: drop (matches a full native queue)
+        if (pendingCount == kMaxPending) {
+            // Full (unreachable through the device host, which drains at most
+            // 16 per frame): drop the OLDEST callback, as the host's own queue
+            // does. State above is already current either way.
+            pendingHead = (pendingHead + 1) % kMaxPending;
+            --pendingCount;
+        }
         ButtonEvent& ev = pending[(pendingHead + pendingCount) % kMaxPending];
         ev.buttonIndex = buttonIndex;
         ev.eventType   = (ButtonEventType)eventType;
@@ -102,15 +113,26 @@ public:
     }
 
     // Called by the glue at the top of app_update(): runs callbacks for the
-    // events recorded since the last call, in arrival order.
-    void flushCallbacks() {
+    // events recorded since the last call, in arrival order. If *stop becomes
+    // true (the app asked to return to the menu), the remaining callbacks are
+    // discarded: natively the app ends at that point.
+    void flushCallbacks(const bool* stop = nullptr) {
         while (pendingCount > 0) {
+            if (stop && *stop) { pendingCount = 0; return; }
             const ButtonEvent ev = pending[pendingHead];
             pendingHead = (pendingHead + 1) % kMaxPending;
             --pendingCount;
             ButtonCallback cb = callbacks[ev.buttonIndex];
             if (cb) cb(ev);
         }
+    }
+
+    // Called by the glue in app_begin(): a fresh start with nothing pending
+    // and no button considered down.
+    void reset() {
+        for (int i = 0; i < kMaxButtons; ++i) { pressed[i] = false; pressedAt[i] = 0; }
+        pendingHead = 0;
+        pendingCount = 0;
     }
 
 private:

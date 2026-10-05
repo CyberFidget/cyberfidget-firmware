@@ -166,6 +166,7 @@ extern "C" {
 
 __attribute__((export_name("app_begin"))) void app_begin() {
     g_exitRequested = false;
+    g_buttonManager.reset();
     refreshHostState();
     CF_APP_INSTANCE.begin();
 }
@@ -175,7 +176,7 @@ __attribute__((export_name("app_update"))) void app_update() {
     unsigned long lastInteractionBefore = millis_APP_LASTINTERACTION;
     // Button callbacks for this frame run first, after every event of the
     // frame has been recorded (see ButtonManager.h).
-    g_buttonManager.flushCallbacks();
+    g_buttonManager.flushCallbacks(&g_exitRequested);
     // A callback that asked to leave: like native, the app doesn't update
     // again (the host ends it after this call returns).
     if (!g_exitRequested) CF_APP_INSTANCE.update();

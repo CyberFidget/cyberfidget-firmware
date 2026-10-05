@@ -163,12 +163,54 @@ static void test_millis_wraparound_exact() {
     TEST_ASSERT_EQUAL_UINT64(0x200u, (unsigned long long)g_last.duration);  // full value, no truncation
 }
 
-static void test_full_queue_drops_extra_events_but_keeps_state() {
+static void test_full_queue_drops_oldest_and_state_stays_current() {
     ButtonManager bm; bm.registerCallback(2, record);
-    for (int i = 0; i < 40; ++i) bm.dispatch(2, (i % 2) ? ButtonEvent_Released : ButtonEvent_Pressed);
-    TEST_ASSERT_FALSE(bm.isPressed(2));  // 40th event was a Released
+    // 40 events: the first 8 callbacks are dropped (oldest first); the last
+    // event is a Pressed, so a policy that skipped state on drop would fail.
+    for (int i = 0; i < 40; ++i) { g_now += 10; bm.dispatch(2, (i % 2) ? ButtonEvent_Pressed : ButtonEvent_Released); }
+    TEST_ASSERT_TRUE(bm.isPressed(2));
     bm.flushCallbacks();
     TEST_ASSERT_EQUAL_INT(32, g_calls);
+    TEST_ASSERT_EQUAL_INT(ButtonEvent_Pressed, g_last.eventType);  // newest kept
+}
+
+static bool g_stop = false;
+static int g_sideEffects = 0;
+static void exitOnBack(const ButtonEvent& e) { ++g_calls; if (e.eventType == ButtonEvent_Released) g_stop = true; }
+static void sideEffect(const ButtonEvent&) { ++g_sideEffects; }
+
+static void test_exit_request_discards_later_callbacks() {
+    ButtonManager bm; g_stop = false; g_sideEffects = 0;
+    bm.registerCallback(4, exitOnBack); bm.registerCallback(5, sideEffect);
+    bm.dispatch(4, ButtonEvent_Released);   // Back: the app asks to leave
+    bm.dispatch(5, ButtonEvent_Pressed);    // a later event in the same frame
+    bm.flushCallbacks(&g_stop);
+    TEST_ASSERT_EQUAL_INT(1, g_calls);
+    TEST_ASSERT_EQUAL_INT(0, g_sideEffects);
+    bm.flushCallbacks(&g_stop);             // nothing resurfaces
+    TEST_ASSERT_EQUAL_INT(0, g_sideEffects);
+}
+
+static void test_batched_press_held_release_keeps_the_hold() {
+    // A delayed frame delivers Pressed and Held together; Released follows.
+    ButtonManager bm; bm.registerCallback(5, record);
+    bm.dispatch(5, ButtonEvent_Pressed);
+    bm.dispatch(5, ButtonEvent_Held);
+    bm.flushCallbacks();
+    TEST_ASSERT_EQUAL_UINT32(ButtonManager::kHoldThresholdMs, g_last.duration);
+    g_now += 100;
+    send(bm, 5, ButtonEvent_Released);
+    TEST_ASSERT_EQUAL_UINT32(ButtonManager::kHoldThresholdMs + 100, g_last.duration);
+}
+
+static void test_reset_clears_pending_and_pressed() {
+    ButtonManager bm; bm.registerCallback(1, record);
+    bm.dispatch(1, ButtonEvent_Pressed);
+    bm.reset();
+    TEST_ASSERT_FALSE(bm.isPressed(1));
+    bm.flushCallbacks();
+    TEST_ASSERT_EQUAL_INT(0, g_calls);
+    TEST_ASSERT_TRUE(bm.hasCallback(1));  // registrations belong to the app, not reset
 }
 
 int main(int, char**) {
@@ -186,6 +228,9 @@ int main(int, char**) {
     RUN_TEST(test_callbacks_keep_arrival_order);
     RUN_TEST(test_out_of_range_index_is_ignored);
     RUN_TEST(test_millis_wraparound_exact);
-    RUN_TEST(test_full_queue_drops_extra_events_but_keeps_state);
+    RUN_TEST(test_full_queue_drops_oldest_and_state_stays_current);
+    RUN_TEST(test_exit_request_discards_later_callbacks);
+    RUN_TEST(test_batched_press_held_release_keeps_the_hold);
+    RUN_TEST(test_reset_clears_pending_and_pressed);
     return UNITY_END();
 }
