@@ -13,16 +13,6 @@ using cf_audio::Engine;
 
 namespace {
 
-// setVolume() keeps the curve the old audio-tools volume stream applied
-// (its default "simulated audio pot"): the value rounded to 0.01, then
-// 0..0.5 -> 0..0.1 and 0.5..1 -> 0.1..1, linear in each half. Same loudness
-// at every setting as before. Returns the engine's master gain, Q15.
-uint32_t masterForVolume(float v) {
-    const int32_t pct = (int32_t)(v * 100.0f + 0.5f);   // v is already 0..1
-    const int32_t num = (pct <= 50) ? pct : 9 * pct - 400;   // factor = num / 500
-    return (uint32_t)((num * 32768 + 250) / 500);
-}
-
 // Tone voice, sequences and their status (shared engine-core logic). Stops go
 // through the engine's persistent stop counters, never the bounded queue.
 cf_audio::ToneControl s_tone(&AudioEngineTask::send);
@@ -102,7 +92,7 @@ void AudioManager::loop() {
         startEngine();
     }
     if (volumePending && AudioEngineTask::running()) {
-        volumePending = !AudioEngineTask::send(Command::master(masterForVolume(volume)));
+        volumePending = !AudioEngineTask::send(Command::master(cf_audio::volumeToMasterQ15(volume)));
     }
 }
 
@@ -113,7 +103,7 @@ bool AudioManager::startEngine() {
     }
     // A fresh engine starts at unity and flat: give it the current volume
     // and the speaker EQ.
-    volumePending = !AudioEngineTask::send(Command::master(masterForVolume(volume)));
+    volumePending = !AudioEngineTask::send(Command::master(cf_audio::volumeToMasterQ15(volume)));
     applySpeakerEq(kSpeakerEqPresets[kSpeakerEqDefault]);
     return true;
 }
@@ -121,12 +111,12 @@ bool AudioManager::startEngine() {
 void AudioManager::setVolume(float volumeLevel) {
     float vol = constrain(volumeLevel, 0.0f, 1.0f);
     if (!(vol >= 0.0f)) vol = 0.0f;   // NaN
-    const bool changed = masterForVolume(vol) != masterForVolume(volume);
+    const bool changed = cf_audio::volumeToMasterQ15(vol) != cf_audio::volumeToMasterQ15(volume);
     volume = vol;
     // The engine ramps the change over 10 ms (no zipper noise or click). If it
     // cannot be queued now, loop() sends it.
     if (changed && AudioEngineTask::running()) {
-        volumePending = !AudioEngineTask::send(Command::master(masterForVolume(volume)));
+        volumePending = !AudioEngineTask::send(Command::master(cf_audio::volumeToMasterQ15(volume)));
     }
 }
 

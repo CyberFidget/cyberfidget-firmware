@@ -19,6 +19,7 @@
 #include "AudioEngine.h"
 #include "SpeakerEqPresets.h"
 #include "golden_script.h"
+#include "tone_script.h"
 
 using namespace cf_audio;
 
@@ -1021,6 +1022,104 @@ void test_golden_checksum() {
     delete f;
 }
 
+// ------------------------------------------------------- AudioManager glue
+
+// setVolume's curve (cf_audio::volumeToMasterQ15), pinned at the points the
+// old audio-tools volume stream gave.
+void test_volume_curve_is_pinned() {
+    TEST_ASSERT_EQUAL_UINT32(0u, cf_audio::volumeToMasterQ15(0.0f));
+    TEST_ASSERT_EQUAL_UINT32(1311u, cf_audio::volumeToMasterQ15(0.2f));     // 0.04
+    TEST_ASSERT_EQUAL_UINT32(3277u, cf_audio::volumeToMasterQ15(0.5f));     // 0.1
+    TEST_ASSERT_EQUAL_UINT32(15073u, cf_audio::volumeToMasterQ15(0.7f));    // 0.46 (default)
+    TEST_ASSERT_EQUAL_UINT32(32768u, cf_audio::volumeToMasterQ15(1.0f));
+}
+
+namespace {
+
+// A model of the device's AudioManager glue (lib/AudioManager/AudioManager.cpp
+// over AudioEngineTask): the shared ToneControl and volume curve, commands
+// stamped when queued and applied at the start of the next block, speaker EQ
+// off (the signal before the speaker stage). The emulator runs the same
+// script through its real AudioManager (wasm/audio_parity.mjs).
+struct DeviceGlueModel {
+    struct ToneStep { float freq; uint16_t durationMs; uint16_t gapAfterMs; };
+
+    static DeviceGlueModel* self;
+    Engine engine{1};            // AudioEngineTask's kEngineSeed
+    Command q[24];               // AudioEngineTask::kQueueDepth
+    int qn = 0;
+    float volume = 0.7f;
+    ToneControl tone{&send};
+
+    DeviceGlueModel() {
+        self = this;
+        send(Command::master(cf_audio::volumeToMasterQ15(volume)));   // init()/startEngine()
+    }
+    static bool send(const Command& c) {
+        if (self->qn >= 24) return false;
+        Command s = c;
+        self->engine.stamp(s);
+        self->q[self->qn++] = s;
+        return true;
+    }
+    void render(int16_t* out, int frames) {
+        for (int i = 0; i < qn; ++i) engine.apply(q[i]);
+        qn = 0;
+        engine.render(out, frames);
+    }
+    void setVolume(float v) {
+        if (v < 0.0f) v = 0.0f;
+        if (v > 1.0f) v = 1.0f;
+        const bool changed = cf_audio::volumeToMasterQ15(v) != cf_audio::volumeToMasterQ15(volume);
+        volume = v;
+        if (changed) send(Command::master(cf_audio::volumeToMasterQ15(volume)));
+    }
+    void playTone(float hz, int ms) { tone.playTone(&engine, hz, ms); }
+    void stopTone() { tone.stopTone(&engine); }
+    void playSequence(const ToneStep* steps, int count) {
+        if (steps == nullptr || count <= 0) { stopSequence(); return; }
+        if (count > cf_audio::kMaxSeqSteps) count = cf_audio::kMaxSeqSteps;
+        SeqStep* buf = tone.beginSequence(&engine);
+        if (buf == nullptr) return;
+        for (int i = 0; i < count; ++i) {
+            buf[i].inc = Engine::hzToInc(steps[i].freq);
+            buf[i].durMs = steps[i].durationMs;
+            buf[i].gapMs = steps[i].gapAfterMs;
+        }
+        tone.commitSequence(&engine, count);
+    }
+    void stopSequence() { tone.stopSequence(&engine); }
+    bool isSequencePlaying() const { return tone.isSequencePlaying(&engine); }
+    int playNote(float hz, int ms) { return tone.playNote(&engine, hz, ms); }
+    void stopNote(int h) { tone.stopNote(&engine, h); }
+    void stopNotes() { tone.stopNotes(&engine); }
+};
+DeviceGlueModel* DeviceGlueModel::self = nullptr;
+
+}  // namespace
+
+void test_tone_script_checksum() {
+    DeviceGlueModel* m = new DeviceGlueModel();
+    int peak = 0, loudBlocks = 0;
+    const uint32_t h = cf_audio_tone_script::runToneScript(*m, [&](int16_t* out, int frames) {
+        m->render(out, frames);
+        int p = 0;
+        for (int i = 0; i < frames; ++i) p = abs(out[i]) > p ? abs(out[i]) : p;
+        if (p > 1000) ++loudBlocks;
+        if (p > peak) peak = p;
+    });
+    char msg[80];
+    snprintf(msg, sizeof(msg), "tone script checksum 0x%08X clips=%u", (unsigned)h, (unsigned)m->engine.clipCount());
+    TEST_MESSAGE(msg);
+    printf("%s\n", msg);
+    TEST_ASSERT_TRUE(peak > 8000);         // it really plays
+    TEST_ASSERT_TRUE(loudBlocks > 40);
+    TEST_ASSERT_TRUE(loudBlocks < cf_audio_tone_script::kBlocks - 20);   // and really stops
+    TEST_ASSERT_EQUAL_HEX32(cf_audio_tone_script::kToneScriptChecksum, h);
+    TEST_ASSERT_EQUAL_UINT32(0, m->engine.clipCount());
+    delete m;
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tone_envelope_and_gate_lengths_in_samples);
@@ -1057,5 +1156,7 @@ int main(int, char**) {
     RUN_TEST(test_pulse_duty_switch_fades_instead_of_jumping);
     RUN_TEST(test_stop_counters_compare_by_equality_at_half_range);
     RUN_TEST(test_golden_checksum);
+    RUN_TEST(test_volume_curve_is_pinned);
+    RUN_TEST(test_tone_script_checksum);
     return UNITY_END();
 }
