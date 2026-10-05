@@ -16,7 +16,9 @@ class AudioManager {
 public:
     // A single step in a tone sequence.
     // freq=0 means rest (silence). gapAfterMs adds inter-step silence.
-    // Pointers passed to playSequence() must outlive playback — use static const arrays.
+    // The device copies up to 128 steps when playSequence() is called (longer
+    // lists are cut to 128). Keep arrays static const anyway: the emulator
+    // still reads them during playback.
     struct ToneStep {
         float    freq;
         uint16_t durationMs;
@@ -25,8 +27,11 @@ public:
 
     AudioManager();
 
+    // Tones and sequences are rendered by the audio engine's own task
+    // (lib/AudioEngine, AudioEngineTask), which owns I2S port 0 from init()
+    // on; their timing is sample-exact and independent of loop().
     void init();
-    void loop(); // Call this regularly to process audio
+    void loop(); // Kept for callers; the engine needs nothing from it
 
     // Tone control
     void setVolume(float volume);                       // 0.0..1.0
@@ -36,11 +41,29 @@ public:
     // Sequence control — play a series of tones with timing.
     void playSequence(const ToneStep* steps, int count);
     void stopSequence();
-    bool isSequencePlaying() const { return currentSequence != nullptr; }
-    
-    // I2S port sharing — music player needs I2S0 for onboard speaker output
-    void releaseI2S();   // Stop I2S TX so another stream can use port 0
-    void reclaimI2S();   // Restart I2S TX for tone generation
+    bool isSequencePlaying() const;
+
+    // Sound is playing, played within the last second, or an app streams on
+    // port 0. Cheap; for deferring flash writes that would stall audio.
+    bool isAudioActive() const;
+
+    // I2S port sharing — music player needs I2S0 for onboard speaker output.
+    // releaseI2S: silence tones/sequences and free port 0. Returns false if
+    // port 0 could not be freed - the caller must not open it then. A caller
+    // that streams on port 0 passes its own stop function (ends its stream
+    // and calls reclaimI2S); stopForSleep() uses it. That function must
+    // return in bounded time (finite output waits); with hardShutdown true it
+    // must not wait on the output at all.
+    // reclaimI2S: take port 0 back for tones; on failure loop() keeps retrying.
+    typedef void (*BorrowerStop)(bool hardShutdown);
+    bool releaseI2S(BorrowerStop stopBorrower = nullptr);
+    bool reclaimI2S();
+
+    // Before deep sleep: stop whichever app streams on port 0 (its own stop
+    // path), then stop the engine. True when port 0 is quiet and released.
+    // From the first call on, the engine is never restarted (a deferred
+    // sleep retries this instead).
+    bool stopForSleep(bool hardShutdown = false);
 
     // Mic control
     void enableMic(bool on);
@@ -51,29 +74,22 @@ public:
     float getMicVolumeDb() const;
 
 private:
-    // --- Tone state ---
-    float currentFrequency;
-    bool  isPlaying;
-    unsigned long stopAtMillis;
-
-    // --- Sequence state ---
-    const ToneStep* currentSequence = nullptr;
-    int             currentSequenceLen = 0;
-    int             currentSequenceIdx = 0;
-    unsigned long   nextStepAtMs = 0;
-
-    // --- Tone chain (TX) ---
-    I2SStream i2s;                           // TX to MAX98357A
-    SineWaveGenerator<int16_t> generator;
-    GeneratedSoundStream<int16_t> in;
-    VolumeStream volume;
-    StreamCopy copier;                       // volume -> i2s
+    // --- Tone control state (the engine task renders; tone and sequence
+    //     logic lives in AudioManager.cpp) ---
+    float    volume = 0.7f;            // last setVolume(), re-applied on every engine start
+    bool     engineWanted = false;     // set by init()/reclaimI2S(), cleared by releaseI2S()
+    bool     volumePending = false;    // a volume change still to send
+    uint32_t engineRetryAtMs = 0;
+    BorrowerStop borrowerStop = nullptr;   // the current port-0 borrower's own stop
+    bool     sleepHold = false;        // going to sleep: no engine restarts any more
 
     // --- Mic chain (RX) ---
     I2SConfig            micCfg;             // persisted RX config
     I2SStream            i2sIn;              // RX from ICS-43434
     VolumeMeter          micMeter;           // measures amplitude
     StreamCopy           micCopy;            // convIn -> micMeter
+
+    bool startEngine();   // start the engine task and give it the volume
 
     // Mic State
     bool  micEnabled = false;

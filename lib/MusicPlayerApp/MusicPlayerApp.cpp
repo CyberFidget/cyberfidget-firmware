@@ -530,12 +530,17 @@ void MusicPlayerApp::startOnboardSpeaker() {
         disconnectBT();
     }
 
+    // Release AudioManager's I2S port 0 so we can use it. If the tone engine
+    // still holds it, opening the port here would fail or fight over it.
+    if (!HAL::audioManager().releaseI2S(&MusicPlayerApp::stopSpeakerForSleep)) {
+        MPLAYER_LOG("startOnboardSpeaker: I2S port 0 still held by the tone engine");
+        setState(STATE_CONNECT_FAIL);
+        return;
+    }
+
     usingOnboardSpeaker = true;
     btConnected = false;
     connectedDeviceName = "Onboard Speaker";
-
-    // Release AudioManager's I2S port 0 so we can use it
-    HAL::audioManager().releaseI2S();
 
     // Create I2S output stream for MAX98357A DAC
     if (!pI2sOut) {
@@ -566,6 +571,20 @@ void MusicPlayerApp::startOnboardSpeaker() {
     createAudioPipeline();
     setState(STATE_MAIN_MENU);
     MPLAYER_LOG("startOnboardSpeaker: ready");
+}
+
+// Deep sleep while the speaker plays: the same stop as leaving the app
+// (playback stops, then the I2S output is torn down and port 0 returned),
+// with every speaker write bounded so sleep cannot hang on a stalled output.
+// On an empty-battery shutdown nothing waits on the output: no fade.
+// The output is deleted without draining its DMA buffers, so whatever is
+// still queued (including the fade tail) is cut, not played out.
+void MusicPlayerApp::stopSpeakerForSleep(bool hardShutdown) {
+    if (instance == nullptr) return;
+    if (instance->pI2sOut) instance->pI2sOut->driver()->setWaitTimeWriteMs(hardShutdown ? 0 : 20);
+    if (hardShutdown && instance->pPlayer) instance->pPlayer->setAutoFade(false);   // no fade writes
+    instance->stopPlayback();
+    instance->destroyAudioPipeline();
 }
 
 void MusicPlayerApp::stopOnboardSpeaker() {

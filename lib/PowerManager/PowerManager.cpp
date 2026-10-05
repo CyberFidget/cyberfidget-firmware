@@ -60,8 +60,10 @@ void PowerManager::onButtonPressCallback(const ButtonEvent &event) {
         if (event.eventType == ButtonEvent_Pressed) {
             unsigned long currentTime = millis();
             if (currentTime - instance->lastTapTime <= DOUBLE_TAP_THRESHOLD_MS) {
+                if (HAL::sleepPending()) return;   // already on its way (retrying)
                 if (!UpdateSession::prepareDeepSleep(false)) return;
                 // Detected a double-tap
+                HAL::stopAudio();   // no tone over the power-off screen
                 instance->display.clear();
                 instance->display.setTextAlignment(TEXT_ALIGN_CENTER);
                 instance->display.setFont(ArialMT_Plain_10);
@@ -92,11 +94,13 @@ void PowerManager::onButtonBackPressed(const ButtonEvent& event)
 }
 
 void PowerManager::deepSleep(bool force) {
+    if (HAL::sleepPending()) return;   // already on its way: screen, delay and saves ran once
     if (!UpdateSession::prepareDeepSleep(false)) return;
     // Go to deep sleep
     if (!force && preventSleepWhileCharging) {
         if(batteryChangeRate < sleepChargingChangeThreshold){ // If discharging greater than 10% per hour, shut down
             instance->buttonManager.saveButtonCounters();
+            HAL::stopAudio();   // no tone over the sleep screen
 
             ESP_LOGI(TAG_MAIN, "Going to sleep now...");
 
@@ -109,6 +113,7 @@ void PowerManager::deepSleep(bool force) {
             HAL::enterDeepSleep();
         }
         } else {
+            HAL::stopAudio();   // no tone over the sleep screen
             ESP_LOGI(TAG_MAIN, "Going to sleep now...");
 
             display.clear();

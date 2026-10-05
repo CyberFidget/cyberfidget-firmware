@@ -41,6 +41,7 @@ scopes which directories run for each test environment.
 | `test_cfgraphics`    | `test/test_cfgraphics_*/`     | `pio test -e test_cfgraphics` |
 | `test_upd_policy`    | `test/test_upd_policy_*/`     | `pio test -e test_upd_policy` |
 | `test_ota_manifest`  | `test/test_ota_*/`            | `pio test -e test_ota_manifest` |
+| `test_audio_engine`  | `test/test_audio_engine_*/`   | `pio test -e test_audio_engine` |
 
 To add a new app's tests:
 
@@ -114,6 +115,14 @@ they can't run on a Windows laptop without one of the installs above.
 - `test/test_voicerecorder_naming/` — `RecNaming.h` sequential
   naming with collision skip, PCM duration math, and index.csv row
   formatting (blank timestamp when the device clock is unset).
+
+- `test/test_audio_engine_core/` — the audio engine core
+  (`lib/AudioEngine/`): envelope and gate lengths in samples, sample-exact
+  tone-sequence timing (rests, gaps), voice stealing, the limiter under an
+  8-voice overload (never wraps), the master-volume ramp, the DC blocker,
+  and the golden checksum of the command script in `golden_script.h`. Any
+  other build of the engine (the emulator's) must render that script to the
+  same checksum.
 
 - `test/test_loadout_parse/` — loadout manifest JSON parse/serialize
   (`lib/LoadoutManifest/`): schema validation, unknown-field skip,

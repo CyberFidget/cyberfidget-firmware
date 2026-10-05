@@ -49,6 +49,7 @@
 #include "StatusView.h"      // status (menu status bar bench states)
 #include "UpdatePrompt.h"    // upd (update settings read-back, stand-in offer)
 #include "AwakeMode.h"       // awake (Awake & dev mode bench verbs)
+#include "AudioBench.h"      // abench (audio engine bench verbs)
 #endif
 
 #ifdef CF_TEST_CLI
@@ -631,6 +632,7 @@ void SerialCli::poll() {
     pollScreenStream();
     pollUsbWifi();
 #ifdef CF_TEST_CLI
+    AudioBench::poll();
     pollPendingTapReleases();
     pollTlsprobeResult();
     CloudSync::Result cloudResult;
@@ -907,6 +909,8 @@ void SerialCli::dispatch(const char* line, bool retry) {
         Serial.println("[cmd] cloud.error=usage");
         return;
     }
+    if (ieq(line, "abench")) { AudioBench::command("help"); return; }
+    if (verbWithArg(line, "abench", &arg)) { AudioBench::command(arg); return; }
     if (ieq(line, "awake")) { AwakeMode::cliCommand(""); return; }
     if (verbWithArg(line, "awake", &arg)) { AwakeMode::cliCommand(arg); return; }
     if (ieq(line, "apps")) { cmdApps(); return; }

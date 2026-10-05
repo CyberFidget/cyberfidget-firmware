@@ -1,0 +1,11 @@
+{
+    "name": "AudioBench",
+    "version": "1.0.0",
+    "description": "Test-build-only audio bench verbs (abench) for the serial CLI",
+    "dependencies": [
+        { "name": "HAL" },
+        { "name": "AudioManager" },
+        { "name": "AudioEngine" },
+        { "name": "MicCapture" }
+    ]
+}
