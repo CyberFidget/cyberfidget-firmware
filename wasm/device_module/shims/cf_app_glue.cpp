@@ -92,6 +92,7 @@ void setRgbLedsOff() { cf_led_all_off(); }
 }  // namespace HAL
 
 MenuManager& MenuManager::instance() { return g_menuManager; }
+bool g_exitRequested = false;
 
 // ---- ButtonManager: implemented inline in shims/ButtonManager.h ----
 
@@ -164,6 +165,7 @@ static void refreshHostState() {
 extern "C" {
 
 __attribute__((export_name("app_begin"))) void app_begin() {
+    g_exitRequested = false;
     refreshHostState();
     CF_APP_INSTANCE.begin();
 }
@@ -171,7 +173,12 @@ __attribute__((export_name("app_begin"))) void app_begin() {
 __attribute__((export_name("app_update"))) void app_update() {
     refreshHostState();
     unsigned long lastInteractionBefore = millis_APP_LASTINTERACTION;
-    CF_APP_INSTANCE.update();
+    // Button callbacks for this frame run first, after every event of the
+    // frame has been recorded (see ButtonManager.h).
+    g_buttonManager.flushCallbacks();
+    // A callback that asked to leave: like native, the app doesn't update
+    // again (the host ends it after this call returns).
+    if (!g_exitRequested) CF_APP_INSTANCE.update();
     if (millis_APP_LASTINTERACTION != lastInteractionBefore) {
         cf_keepalive();  // forward the deep-sleep inhibit to the host
     }

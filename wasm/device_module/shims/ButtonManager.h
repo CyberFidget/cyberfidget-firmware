@@ -11,8 +11,14 @@
 // state are reconstructed here from event delivery times: Released carries
 // how long the button was down, Held how long it has been down (never below
 // the firmware's 1500 ms hold threshold), and isPressed() follows the last
-// Pressed/Released. Events are delivered at the start of the next frame, so
-// durations are accurate to about one frame.
+// Pressed/Released/Held.
+//
+// Like the native ButtonManager (scan all buttons, then dispatch), events are
+// recorded as they arrive and callbacks run afterwards from flushCallbacks()
+// at the top of app_update(), so a callback sees every state change from the
+// same frame (e.g. chords via isPressed()). The host delivers a frame's
+// events just before app_update(), so durations are best-effort: accurate to
+// the time between frames, not to the host's debounced scan.
 
 #ifndef BUTTON_MANAGER_H  // same guard as the real header — must shadow it
 #define BUTTON_MANAGER_H
@@ -58,12 +64,13 @@ public:
         return buttonIndex >= 0 && buttonIndex < kMaxButtons && pressed[buttonIndex];
     }
 
-    // Called by the exported app_handle_button() glue. Tracks state even when
-    // no callback is registered, so isPressed() works for polling apps.
+    // Called by the exported app_handle_button() glue: updates state now (even
+    // with no callback registered, so isPressed() works for polling apps) and
+    // queues the event for flushCallbacks().
     void dispatch(int buttonIndex, int eventType) {
         if (buttonIndex < 0 || buttonIndex >= kMaxButtons) return;
-        const unsigned long now = cf_millis();
-        unsigned long duration = 0;
+        const uint32_t now = cf_millis();
+        uint32_t duration = 0;
         switch (eventType) {
         case ButtonEvent_Pressed:
             pressed[buttonIndex] = true;
@@ -74,25 +81,46 @@ public:
             pressed[buttonIndex] = false;
             break;
         case ButtonEvent_Held:
-            duration = pressed[buttonIndex] ? now - pressedAt[buttonIndex] : 0;
+            if (!pressed[buttonIndex]) {
+                // Press happened before the module started: it has been down
+                // for at least the hold threshold.
+                pressed[buttonIndex] = true;
+                pressedAt[buttonIndex] = now - (uint32_t)kHoldThresholdMs;
+            }
+            duration = now - pressedAt[buttonIndex];
             if (duration < kHoldThresholdMs) duration = kHoldThresholdMs;
             break;
         default:
-            break;
+            return;
         }
-        ButtonCallback cb = callbacks[buttonIndex];
-        if (!cb) return;
-        ButtonEvent ev;
+        if (pendingCount == kMaxPending) return;  // full: drop (matches a full native queue)
+        ButtonEvent& ev = pending[(pendingHead + pendingCount) % kMaxPending];
         ev.buttonIndex = buttonIndex;
         ev.eventType   = (ButtonEventType)eventType;
         ev.duration    = duration;
-        cb(ev);
+        ++pendingCount;
+    }
+
+    // Called by the glue at the top of app_update(): runs callbacks for the
+    // events recorded since the last call, in arrival order.
+    void flushCallbacks() {
+        while (pendingCount > 0) {
+            const ButtonEvent ev = pending[pendingHead];
+            pendingHead = (pendingHead + 1) % kMaxPending;
+            --pendingCount;
+            ButtonCallback cb = callbacks[ev.buttonIndex];
+            if (cb) cb(ev);
+        }
     }
 
 private:
+    static constexpr int kMaxPending = 32;
     ButtonCallback callbacks[kMaxButtons] = {};
     bool pressed[kMaxButtons] = {};
-    unsigned long pressedAt[kMaxButtons] = {};
+    uint32_t pressedAt[kMaxButtons] = {};
+    ButtonEvent pending[kMaxPending] = {};
+    int pendingHead = 0;
+    int pendingCount = 0;
 };
 
 #endif  // BUTTON_MANAGER_H
