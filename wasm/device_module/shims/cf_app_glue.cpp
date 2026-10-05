@@ -92,33 +92,9 @@ void setRgbLedsOff() { cf_led_all_off(); }
 }  // namespace HAL
 
 MenuManager& MenuManager::instance() { return g_menuManager; }
+bool g_exitRequested = false;
 
-// ---- ButtonManager (guest-local callback table) ----
-void ButtonManager::registerCallback(int buttonIndex, ButtonCallback callback) {
-    if (buttonIndex < 0 || buttonIndex >= kMaxButtons) return;
-    callbacks[buttonIndex] = callback;
-}
-void ButtonManager::unregisterCallback(int buttonIndex) {
-    if (buttonIndex < 0 || buttonIndex >= kMaxButtons) return;
-    callbacks[buttonIndex] = nullptr;
-}
-bool ButtonManager::hasCallback(int buttonIndex) const {
-    return buttonIndex >= 0 && buttonIndex < kMaxButtons && callbacks[buttonIndex];
-}
-ButtonCallback ButtonManager::getCallback(int buttonIndex) const {
-    if (buttonIndex < 0 || buttonIndex >= kMaxButtons) return nullptr;
-    return callbacks[buttonIndex];
-}
-void ButtonManager::dispatch(int buttonIndex, int eventType) {
-    if (buttonIndex < 0 || buttonIndex >= kMaxButtons) return;
-    ButtonCallback cb = callbacks[buttonIndex];
-    if (!cb) return;
-    ButtonEvent ev;
-    ev.buttonIndex = buttonIndex;
-    ev.eventType   = (ButtonEventType)eventType;
-    ev.duration    = 0;  // The host ABI does not yet carry event duration.
-    cb(ev);
-}
+// ---- ButtonManager: implemented inline in shims/ButtonManager.h ----
 
 // ---- RGBController free functions ----
 void setRandomColors() {
@@ -189,6 +165,8 @@ static void refreshHostState() {
 extern "C" {
 
 __attribute__((export_name("app_begin"))) void app_begin() {
+    g_exitRequested = false;
+    g_buttonManager.reset();
     refreshHostState();
     CF_APP_INSTANCE.begin();
 }
@@ -196,7 +174,12 @@ __attribute__((export_name("app_begin"))) void app_begin() {
 __attribute__((export_name("app_update"))) void app_update() {
     refreshHostState();
     unsigned long lastInteractionBefore = millis_APP_LASTINTERACTION;
-    CF_APP_INSTANCE.update();
+    // Button callbacks for this frame run first, after every event of the
+    // frame has been recorded (see ButtonManager.h).
+    g_buttonManager.flushCallbacks(&g_exitRequested);
+    // A callback that asked to leave: like native, the app doesn't update
+    // again (the host ends it after this call returns).
+    if (!g_exitRequested) CF_APP_INSTANCE.update();
     if (millis_APP_LASTINTERACTION != lastInteractionBefore) {
         cf_keepalive();  // forward the deep-sleep inhibit to the host
     }
