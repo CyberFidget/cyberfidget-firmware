@@ -59,6 +59,17 @@ constexpr int32_t kLimKnee = 30000;      // -0.8 dBFS
 constexpr int32_t kLimCeiling = 32700;   // -0.02 dBFS
 constexpr int kLimReleaseShift = 10;
 
+// Bus values past the voice mix saturate here (512 x full scale) before any
+// narrowing, so EQ gain can never wrap the int32 path.
+constexpr int64_t kBusSat = 1 << 24;
+
+inline int32_t satBus(int64_t v) {
+    return (int32_t)(v > kBusSat ? kBusSat : (v < -kBusSat ? -kBusSat : v));
+}
+
+// Command stamps pack the three stop counters, 10 bits each.
+inline uint32_t stampField(uint32_t stamp, int kind) { return (stamp >> (10 * kind)) & 0x3FFu; }
+
 // Multiply by the DC-blocker pole, rounding toward zero so the filter state
 // always decays to exactly 0.
 inline int32_t mulPole(int32_t v) {
@@ -232,6 +243,51 @@ void Engine::reset(uint32_t seed) {
     peakVoices_.store(0, std::memory_order_relaxed);
     hook_ = nullptr;
     hookCtx_ = nullptr;
+    for (int k = 0; k < 3; ++k) {
+        stopEpoch_[k].store(0, std::memory_order_relaxed);
+        stopApplied_[k] = 0;
+    }
+    stopSeqGen_.store(0, std::memory_order_relaxed);
+}
+
+void Engine::requestStop(StopKind kind, uint32_t seqGen) {
+    if (kind == kStopSequence) stopSeqGen_.store(seqGen, std::memory_order_relaxed);
+    stopEpoch_[kind].fetch_add(1, std::memory_order_release);
+}
+
+uint32_t Engine::currentStamp() const {
+    uint32_t stamp = 0;
+    for (int k = 0; k < 3; ++k) stamp |= (stopEpoch_[k].load(std::memory_order_acquire) & 0x3FFu) << (10 * k);
+    return stamp;
+}
+
+void Engine::applyStops() {
+    const uint32_t all = stopEpoch_[kStopAll].load(std::memory_order_acquire);
+    if (all != stopApplied_[kStopAll]) {
+        stopApplied_[kStopAll] = all;
+        allOff();
+    }
+    const uint32_t seq = stopEpoch_[kStopSequence].load(std::memory_order_acquire);
+    if (seq != stopApplied_[kStopSequence]) {
+        stopApplied_[kStopSequence] = seq;
+        stopSequence(stopSeqGen_.load(std::memory_order_relaxed));
+    }
+    const uint32_t tone = stopEpoch_[kStopTone].load(std::memory_order_acquire);
+    if (tone != stopApplied_[kStopTone]) {
+        stopApplied_[kStopTone] = tone;
+        noteOff(kToneVoice);
+    }
+}
+
+// True for a queued command that a later stop has overtaken: a note or
+// sequence start stamped before the stop that covers it.
+bool Engine::stale(const Command& c) const {
+    auto moved = [&](int kind) { return stampField(c.stamp, kind) != (stopApplied_[kind] & 0x3FFu); };
+    switch (c.type) {
+        case CmdType::NoteOn:  return moved(kStopAll) || (c.voice == kToneVoice && moved(kStopTone));
+        case CmdType::SeqPlay: return moved(kStopAll) || moved(kStopSequence);
+        default:               return false;
+    }
 }
 
 uint32_t Engine::hzToInc(float hz) {
@@ -246,6 +302,8 @@ uint32_t Engine::msToSamples(uint32_t ms) {
 }
 
 void Engine::apply(const Command& c) {
+    applyStops();          // a stop requested before this command came first
+    if (stale(c)) return;  // sent before a stop that cancels it
     switch (c.type) {
         case CmdType::NoteOn:
             noteOn(c.voice, (Wave)c.wave, c.on.inc, c.on.gate, c.on.level, c.duty, c.on.env);
@@ -279,19 +337,46 @@ void Engine::noteOn(uint8_t voice, Wave wave, uint32_t inc, uint32_t gateSamples
     int vi = (voice == kAnyVoice) ? pickVoice() : (int)voice;
     if (vi < 0 || vi >= kVoices) return;
     Voice& v = voices_[vi];
+    if (wave > kSine) wave = kSine;
+    if (level > kLevelUnity) level = kLevelUnity;
+    v.startStamp = ++noteCounter_;
+    if (v.stage != kIdle && (v.wave != (uint8_t)wave || v.level != level)) {
+        // Switching wave or level mid-note would jump the output: fade the
+        // old note out first; startPending() starts this one from silence.
+        v.pending = true;
+        v.pendWave = (uint8_t)wave;
+        v.pendDuty = duty;
+        v.pendLevel = level;
+        v.pendInc = inc;
+        v.pendGate = gateSamples;
+        v.pendEnv = env;
+        if (!(v.stage == kRelease && v.stageLeft <= kSwitchFade)) enterRelease(v, kSwitchFade);
+        if (v.stage == kIdle) startPending(v);
+        return;
+    }
+    v.pending = false;
+    startNote(v, wave, inc, gateSamples, level, duty, env);
+}
+
+void Engine::startPending(Voice& v) {
+    v.pending = false;
+    startNote(v, (Wave)v.pendWave, v.pendInc, v.pendGate, v.pendLevel, v.pendDuty, v.pendEnv);
+}
+
+void Engine::startNote(Voice& v, Wave wave, uint32_t inc, uint32_t gateSamples,
+                       uint16_t level, uint8_t duty, const Envelope& env) {
     if (v.stage == kIdle) {
         v.phase = 0;
         v.env = 0;
     }
-    v.wave = (uint8_t)(wave <= kSine ? wave : kSine);
+    v.wave = (uint8_t)wave;
     v.inc = inc;
     v.dutyThreshold = (uint32_t)duty << 24;
-    v.level = level > kLevelUnity ? kLevelUnity : level;
+    v.level = level;
     v.sustain = (int32_t)(((int64_t)(env.sustain > kSustainFull ? kSustainFull : env.sustain) * kEnvOne) >> 15);
     v.decay = env.decay;
     v.release = env.release;
     v.gateLeft = gateSamples;
-    v.startStamp = ++noteCounter_;
     if (env.attack == 0) {
         v.env = kEnvOne;
         enterDecay(v);
@@ -333,11 +418,13 @@ void Engine::enterRelease(Voice& v, uint32_t samples) {
 void Engine::noteOff(uint8_t voice) {
     if (voice >= kVoices) return;
     Voice& v = voices_[voice];
+    v.pending = false;   // a note waiting on a switch fade never starts
     if (v.stage != kIdle && v.stage != kRelease) enterRelease(v, v.release);
 }
 
 void Engine::allOff() {
     for (auto& v : voices_) {
+        v.pending = false;
         if (v.stage == kIdle) continue;
         if (v.stage == kRelease && v.stageLeft <= kFastRelease) continue;
         enterRelease(v, kFastRelease);
@@ -410,16 +497,36 @@ void Engine::setEqBand(int band, const BiquadCoefs& c) {
     if (band >= 0 && band < kEqMaxBands) eqStaged_[band] = c;
 }
 
-void Engine::commitEq(int bands, bool enable, int32_t gainQ8) {
-    if (bands < 0) bands = 0;
-    if (bands > kEqMaxBands) bands = kEqMaxBands;
+bool Engine::eqBandValid(const BiquadCoefs& c) {
+    // Stability triangle in Q29: |a2| < 1 and |a1| < 1 + a2.
+    const int64_t one = (int64_t)1 << 29;
+    const int64_t a1 = c.a1 < 0 ? -(int64_t)c.a1 : (int64_t)c.a1;
+    const int64_t a2 = c.a2;
+    return a2 < one && a2 > -one && a1 < one + a2;
+}
+
+bool Engine::eqSettingValid(const BiquadCoefs* bands, int count, int32_t gainQ8) {
+    if (count < 0 || count > kEqMaxBands || gainQ8 < 0 || gainQ8 > kEqMaxGainQ8) return false;
+    for (int b = 0; b < count; ++b)
+        if (!eqBandValid(bands[b])) return false;
+    return true;
+}
+
+bool Engine::commitEq(int bands, bool enable, int32_t gainQ8) {
     for (int b = 0; b < kEqMaxBands; ++b) {
         eq_[b].c = eqStaged_[b];
         eq_[b].x1 = eq_[b].x2 = eq_[b].y1 = eq_[b].y2 = 0;
     }
+    if (!eqSettingValid(eqStaged_, bands, gainQ8)) {
+        eqBands_ = 0;
+        eqGainQ8_ = 256;
+        eqOn_ = false;   // out of range: stay flat rather than risk overload
+        return false;
+    }
     eqBands_ = bands;
     eqGainQ8_ = gainQ8;
     eqOn_ = enable && bands > 0;
+    return true;
 }
 
 void Engine::setBlockHook(BlockHook fn, void* ctx) {
@@ -533,6 +640,7 @@ void Engine::renderVoice(Voice& v, int32_t* acc, int n) {
             v.gateLeft -= (uint32_t)run;
             if (v.gateLeft == 0 && v.stage != kIdle && v.stage != kRelease) enterRelease(v, v.release);
         }
+        if (v.stage == kIdle && v.pending) startPending(v);   // switch fade done
     }
 }
 
@@ -561,14 +669,14 @@ void Engine::bus(const int32_t* acc, int16_t* out, int n) {
                 Biquad& q = eq_[b];
                 const int64_t a = (int64_t)q.c.b0 * y + (int64_t)q.c.b1 * q.x1 + (int64_t)q.c.b2 * q.x2
                                 - (int64_t)q.c.a1 * q.y1 - (int64_t)q.c.a2 * q.y2;
-                const int32_t r = (int32_t)(a >> 29);
+                const int32_t r = satBus(a >> 29);
                 q.x2 = q.x1; q.x1 = y; q.y2 = q.y1; q.y1 = r;
                 y = r;
             }
-            y = (int32_t)(((int64_t)y * eqGainQ8_) >> 8);
+            y = satBus(((int64_t)y * eqGainQ8_) >> 8);
         }
 
-        const int32_t ax = y < 0 ? -y : y;
+        const int32_t ax = y < 0 ? -y : y;   // |y| <= kBusSat here
         if (limGainQ30_ != kOneQ30 || ax > kLimKnee) {
             if (limGainQ30_ != kOneQ30) {
                 const int32_t gap = kOneQ30 - limGainQ30_;
@@ -594,6 +702,7 @@ void Engine::bus(const int32_t* acc, int16_t* out, int n) {
 void Engine::render(int16_t* out, int frames) {
     while (frames > 0) {
         const int n = frames < kMaxChunk ? frames : kMaxChunk;
+        applyStops();
         if (hook_) hook_(*this, n, hookCtx_);
         memset(acc_, 0, sizeof(int32_t) * (size_t)n);
         int pos = 0;
@@ -612,6 +721,66 @@ void Engine::render(int16_t* out, int frames) {
         out += n;
         frames -= n;
     }
+}
+
+// -------------------------------------------------------------- ToneControl
+
+namespace {
+constexpr uint32_t kGenMask = 0x7FFFFFFFu;   // sequence tags are published in 31 bits
+}
+
+bool ToneControl::playTone(Engine* engine, float hz, int durationMs) {
+    if (engine == nullptr) return false;
+    if (!(hz > 0.0f)) {
+        stopTone(engine);
+        return true;
+    }
+    const uint32_t gate = durationMs > 0 ? Engine::msToSamples((uint32_t)durationMs) : 0;
+    Command c = Command::noteOn(kToneVoice, kSine, Engine::hzToInc(hz), gate, kToneLevel, 128, kToneEnvelope);
+    c.stamp = engine->currentStamp();
+    return send_(c);
+}
+
+void ToneControl::stopTone(Engine* engine) {
+    if (engine) engine->requestStop(kStopTone);
+}
+
+SeqStep* ToneControl::beginSequence(Engine* engine) {
+    return engine ? engine->mailbox().beginWrite() : nullptr;
+}
+
+bool ToneControl::commitSequence(Engine* engine, int count) {
+    if (engine == nullptr) return false;
+    gen_ = (gen_ + 1) & kGenMask;
+    engine->mailbox().commit(count, gen_);
+    Command c = Command::seqPlay(gen_);
+    c.stamp = engine->currentStamp();
+    if (send_(c)) {
+        wanted_ = true;
+        return true;
+    }
+    // The newest call wins: if it cannot start, what played before stops.
+    stopSequence(engine);
+    return false;
+}
+
+void ToneControl::stopSequence(Engine* engine) {
+    gen_ = (gen_ + 1) & kGenMask;
+    wanted_ = false;
+    if (engine) {
+        engine->requestStop(kStopSequence, gen_);
+        engine->requestStop(kStopTone);
+    }
+}
+
+bool ToneControl::isSequencePlaying(const Engine* engine) const {
+    if (engine == nullptr) return false;
+    const uint32_t status = engine->sequenceStatus();
+    // Until the render thread has acknowledged the latest play/stop, report
+    // what it asked for: a stop is persistent, and a queued play always lands
+    // unless a later stop (which changes the tag again) cancels it.
+    if ((status >> 1) != gen_) return wanted_;
+    return (status & 1u) != 0;
 }
 
 // ------------------------------------------------------------- EQ design

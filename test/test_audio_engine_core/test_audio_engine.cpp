@@ -9,6 +9,8 @@
 // ramp, the DC blocker, and the golden checksum of a fixed command script.
 
 #include <unity.h>
+#include <limits.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -346,6 +348,230 @@ void test_eq_default_bypassed_and_commit_is_atomic() {
     delete other;
 }
 
+// ------------------------------------------------------ click-free switches
+
+int32_t maxStep(const int16_t* b, int from, int to) {
+    int32_t worst = 0;
+    for (int i = from + 1; i < to; ++i) {
+        const int32_t d = abs((int32_t)b[i] - (int32_t)b[i - 1]);
+        if (d > worst) worst = d;
+    }
+    return worst;
+}
+
+void test_wave_and_level_switch_fades_instead_of_jumping() {
+    Engine& e = g_engine;
+    const Envelope held = {44, 0, kSustainFull, 220};
+    // 200 Hz sine at full level; switch at a waveform peak (sample 4465 =
+    // 20.25 cycles) to a quiet triangle: an instant switch would jump ~32k.
+    e.apply(Command::noteOn(3, kSine, Engine::hzToInc(200.0f), 0, kLevelUnity, 128, held));
+    e.render(g_buf, 4465);
+    const int32_t baseline = maxStep(g_buf, 2000, 4465);   // the sine's own slope
+    e.apply(Command::noteOn(3, kTriangle, Engine::hzToInc(400.0f), 0, 64, 128, held));
+    e.render(g_buf + 4465, 1000);
+    const int32_t worst = maxStep(g_buf, 4460, 5465);
+    char msg[64];
+    snprintf(msg, sizeof(msg), "baseline=%d switch=%d", (int)baseline, (int)worst);
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_TRUE(worst < baseline + 600);
+    // The new note took over once the old one had faded.
+    TEST_ASSERT_EQUAL_UINT32(Engine::hzToInc(400.0f), e.voiceInfo(3).inc);
+
+    // Same wave, lower level: also faded, not stepped.
+    e.reset(1);
+    e.apply(Command::noteOn(0, kSine, Engine::hzToInc(200.0f), 0, kLevelUnity, 128, held));
+    e.render(g_buf, 4465);
+    e.apply(Command::noteOn(0, kSine, Engine::hzToInc(200.0f), 0, 64, 128, held));
+    e.render(g_buf + 4465, 1000);
+    TEST_ASSERT_TRUE(maxStep(g_buf, 4460, 5465) < baseline + 600);
+
+    // A pending note is dropped by noteOff during its fade.
+    e.reset(1);
+    e.apply(Command::noteOn(0, kSine, Engine::hzToInc(200.0f), 0, kLevelUnity, 128, held));
+    e.render(g_buf, 500);
+    e.apply(Command::noteOn(0, kSaw, Engine::hzToInc(900.0f), 0, kLevelUnity, 128, held));
+    e.apply(Command::noteOff(0));
+    e.render(g_buf, 2000);
+    TEST_ASSERT_FALSE(e.voiceInfo(0).active);
+}
+
+void test_voice_steal_fades_the_stolen_note() {
+    Engine& e = g_engine;
+    const Envelope held = {44, 0, kSustainFull, 220};
+    for (uint8_t v = 0; v < kVoices; ++v)
+        e.apply(Command::noteOn(v, kSine, Engine::hzToInc(200.0f), 0, 28, 128, held));
+    e.render(g_buf, 4465);
+    const int32_t baseline = maxStep(g_buf, 2000, 4465);
+    // All busy: kAnyVoice steals voice 0 (oldest), which is at its peak.
+    e.apply(Command::noteOn(kAnyVoice, kPulse, Engine::hzToInc(1000.0f), 0, 28, 128, held));
+    e.render(g_buf + 4465, 1000);
+    const int32_t worst = maxStep(g_buf, 4460, 4465 + kSwitchFade + 10);
+    TEST_ASSERT_TRUE(worst < baseline + 300);
+    TEST_ASSERT_EQUAL_UINT32(Engine::hzToInc(1000.0f), e.voiceInfo(0).inc);
+}
+
+// ------------------------------------------------------------- EQ limits
+
+void test_eq_rejects_out_of_range_settings() {
+    const BiquadCoefs flat = {1 << 29, 0, 0, 0, 0};
+    const BiquadCoefs unstable = {1 << 29, 0, 0, 0, 1 << 29};          // |a2| = 1
+    const BiquadCoefs unstable2 = {1 << 29, 0, 0, (int32_t)(3u << 28), 0};   // |a1| = 1.5
+    TEST_ASSERT_TRUE(Engine::eqSettingValid(&flat, 1, 256));
+    TEST_ASSERT_TRUE(Engine::eqSettingValid(&flat, 1, kEqMaxGainQ8));
+    TEST_ASSERT_FALSE(Engine::eqSettingValid(&flat, 1, kEqMaxGainQ8 + 1));
+    TEST_ASSERT_FALSE(Engine::eqSettingValid(&flat, 1, -1));
+    TEST_ASSERT_FALSE(Engine::eqSettingValid(&unstable, 1, 256));
+    TEST_ASSERT_FALSE(Engine::eqSettingValid(&unstable2, 1, 256));
+    BiquadCoefs minA1 = {1 << 29, 0, 0, INT32_MIN, 0};
+    TEST_ASSERT_FALSE(Engine::eqSettingValid(&minA1, 1, 256));
+    TEST_ASSERT_TRUE(Engine::eqBandValid(designHighpass(800.0, 0.7071)));
+    TEST_ASSERT_TRUE(Engine::eqBandValid(designPeaking(6400.0, -6.0, 2.0)));
+
+    // A rejected commit leaves the bus flat (bit-identical to no EQ).
+    Engine& e = g_engine;
+    e.apply(Command::noteOn(0, kSine, Engine::hzToInc(1000.0f), 0, kToneLevel, 128, kToneEnvelope));
+    static int16_t ref[3000];
+    e.render(ref, 3000);
+    e.reset(1);
+    e.apply(Command::noteOn(0, kSine, Engine::hzToInc(1000.0f), 0, kToneLevel, 128, kToneEnvelope));
+    e.apply(Command::eqBand(0, flat));
+    TEST_ASSERT_FALSE(e.commitEq(1, true, 100000));   // +52 dB make-up: refused
+    e.render(g_buf, 3000);
+    TEST_ASSERT_EQUAL_INT16_ARRAY(ref, g_buf, 3000);
+}
+
+void test_eq_extreme_gain_never_wraps() {
+    // The largest accepted setting: b0 ~ 4.0 and +24 dB make-up = x64 on a
+    // full-scale sine. The bus saturates and the limiter holds the peak; the
+    // output keeps the input's sign (a wrap would flip it).
+    Engine& e = g_engine;
+    const BiquadCoefs big = {INT32_MAX, 0, 0, 0, 0};
+    e.apply(Command::noteOn(0, kSine, Engine::hzToInc(500.0f), 0, kLevelUnity, 128, kToneEnvelope));
+    static int16_t ref[8820];
+    e.render(ref, 8820);
+    e.reset(1);
+    e.apply(Command::noteOn(0, kSine, Engine::hzToInc(500.0f), 0, kLevelUnity, 128, kToneEnvelope));
+    e.apply(Command::eqBand(0, big));
+    TEST_ASSERT_TRUE(e.commitEq(1, true, kEqMaxGainQ8));
+    e.render(g_buf, 8820);
+    int32_t peak = 0;
+    for (int i = 0; i < 8820; ++i) {
+        const int32_t a = abs((int32_t)g_buf[i]);
+        if (a > peak) peak = a;
+        if (abs((int32_t)ref[i]) > 2000) TEST_ASSERT_TRUE(((int32_t)ref[i] > 0) == ((int32_t)g_buf[i] > 0));
+    }
+    TEST_ASSERT_TRUE(peak <= 32701);
+    TEST_ASSERT_EQUAL_UINT32(0, e.clipCount());
+}
+
+// ------------------------------------------- stops, queue and sequence status
+
+// A tiny bounded queue standing in for the device's command queue.
+Command g_q[4];
+int g_qn = 0;
+bool fakeSend(const Command& c) {
+    if (g_qn >= 4) return false;
+    g_q[g_qn++] = c;
+    return true;
+}
+void drainAndRender(Engine& e, int frames) {
+    for (int i = 0; i < g_qn; ++i) e.apply(g_q[i]);
+    g_qn = 0;
+    e.render(g_buf, frames);
+}
+
+void test_stop_overtakes_queued_play() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    TEST_ASSERT_TRUE(tc.playTone(&e, 1000.0f, 0));
+    tc.stopTone(&e);                  // before the render thread ran
+    drainAndRender(e, 256);
+    TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);
+    // A play after the stop still plays.
+    tc.stopTone(&e);
+    TEST_ASSERT_TRUE(tc.playTone(&e, 1000.0f, 0));
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(e.voiceInfo(kToneVoice).active);
+}
+
+void test_stop_survives_a_full_queue() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    TEST_ASSERT_TRUE(tc.playTone(&e, 1000.0f, 0));
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(e.voiceInfo(kToneVoice).active);
+    for (int i = 0; i < 4; ++i) TEST_ASSERT_TRUE(tc.playTone(&e, 1200.0f + i, 0));
+    TEST_ASSERT_FALSE(tc.playTone(&e, 2000.0f, 0));   // queue full: dropped
+    tc.stopTone(&e);                                   // still lands
+    drainAndRender(e, 512);
+    TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);
+    TEST_ASSERT_EQUAL_UINT32(Engine::hzToInc(1000.0f), e.voiceInfo(kToneVoice).inc);   // no queued play ran
+}
+
+void test_sequence_status_matches_the_engine() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    TEST_ASSERT_FALSE(tc.isSequencePlaying(&e));
+    TEST_ASSERT_FALSE(tc.isSequencePlaying(nullptr));
+
+    SeqStep* buf = tc.beginSequence(&e);
+    TEST_ASSERT_NOT_NULL(buf);
+    buf[0] = {Engine::hzToInc(1000.0f), 200, 0};
+    TEST_ASSERT_TRUE(tc.commitSequence(&e, 1));
+    TEST_ASSERT_TRUE(tc.isSequencePlaying(&e));    // requested, not yet applied
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(tc.isSequencePlaying(&e));    // acknowledged
+    TEST_ASSERT_EQUAL_UINT32(1u, e.sequenceStatus() & 1u);
+
+    tc.stopSequence(&e);
+    TEST_ASSERT_FALSE(tc.isSequencePlaying(&e));
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_UINT32(0u, e.sequenceStatus() & 1u);
+    TEST_ASSERT_FALSE(tc.isSequencePlaying(&e));
+    TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);   // 5 ms release, inside the block
+
+    // A play that cannot be queued stops the previous sequence, so the status
+    // (false) is what the engine does.
+    buf = tc.beginSequence(&e);
+    buf[0] = {Engine::hzToInc(1000.0f), 500, 0};
+    TEST_ASSERT_TRUE(tc.commitSequence(&e, 1));
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(tc.isSequencePlaying(&e));
+    for (int i = 0; i < 4; ++i) TEST_ASSERT_TRUE(fakeSend(Command::master(32768)));
+    buf = tc.beginSequence(&e);
+    buf[0] = {Engine::hzToInc(700.0f), 500, 0};
+    TEST_ASSERT_FALSE(tc.commitSequence(&e, 1));
+    TEST_ASSERT_FALSE(tc.isSequencePlaying(&e));
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_UINT32(0u, e.sequenceStatus() & 1u);
+    TEST_ASSERT_FALSE(tc.isSequencePlaying(&e));
+    TEST_ASSERT_EQUAL_UINT32(Engine::hzToInc(1000.0f), e.voiceInfo(kToneVoice).inc);
+
+    // A play queued before a stop never starts.
+    buf = tc.beginSequence(&e);
+    buf[0] = {Engine::hzToInc(1500.0f), 500, 0};
+    TEST_ASSERT_TRUE(tc.commitSequence(&e, 1));
+    tc.stopSequence(&e);
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_UINT32(0u, e.sequenceStatus() & 1u);
+    TEST_ASSERT_FALSE(tc.isSequencePlaying(&e));
+    TEST_ASSERT_EQUAL_UINT32(Engine::hzToInc(1000.0f), e.voiceInfo(kToneVoice).inc);
+}
+
+void test_stop_all_cancels_queued_notes() {
+    Engine& e = g_engine;
+    g_qn = 0;
+    Command c = Command::noteOn(5, kSaw, Engine::hzToInc(300.0f), 0, 200, 128, kToneEnvelope);
+    c.stamp = e.currentStamp();
+    fakeSend(c);
+    e.requestStop(kStopAll);
+    drainAndRender(e, 256);
+    TEST_ASSERT_FALSE(e.voiceInfo(5).active);
+}
+
 // ------------------------------------------------------------------ golden
 
 void test_golden_checksum() {
@@ -380,6 +606,14 @@ int main(int, char**) {
     RUN_TEST(test_dc_blocker_removes_offset_and_settles_to_zero);
     RUN_TEST(test_alloff_fades_within_five_ms);
     RUN_TEST(test_eq_default_bypassed_and_commit_is_atomic);
+    RUN_TEST(test_wave_and_level_switch_fades_instead_of_jumping);
+    RUN_TEST(test_voice_steal_fades_the_stolen_note);
+    RUN_TEST(test_eq_rejects_out_of_range_settings);
+    RUN_TEST(test_eq_extreme_gain_never_wraps);
+    RUN_TEST(test_stop_overtakes_queued_play);
+    RUN_TEST(test_stop_survives_a_full_queue);
+    RUN_TEST(test_sequence_status_matches_the_engine);
+    RUN_TEST(test_stop_all_cancels_queued_notes);
     RUN_TEST(test_golden_checksum);
     return UNITY_END();
 }

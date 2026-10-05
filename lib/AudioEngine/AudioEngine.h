@@ -30,13 +30,23 @@
 //   any voice sounds; immediate when all are idle)
 //   -> DC blocker (~35 Hz) -> speaker EQ (biquads, bypassed by default)
 //   -> soft-knee peak limiter -> saturating clamp to int16 (counted)
+//   Every stage after the voice mix saturates instead of wrapping.
 //
-// Voice stealing
-//   A note sent to an explicit voice index always takes that voice (a playing
-//   voice retriggers from its current level and phase, so no click). A note
+// Voice stealing and retrigger
+//   A note sent to an explicit voice index always takes that voice. A note
 //   sent to kAnyVoice takes, in order: the lowest-numbered idle voice; else
 //   the releasing voice with the lowest level; else the voice whose note
-//   started earliest.
+//   started earliest. If the voice is sounding with the same wave and level,
+//   the new note continues from its current level and phase (legato, no
+//   click). If the wave or level differs, the old note first fades out over
+//   kSwitchFade samples and the new one then starts from silence.
+//
+// Stops never get lost
+//   requestStop() is a persistent request (an atomic counter, not a queue
+//   entry): the render thread applies it at its next command or block, and
+//   then discards every queued command that was stamped before the stop and
+//   would have restarted what it stopped. ToneControl uses it for the tone
+//   voice and the sequencer.
 
 #ifndef CF_AUDIO_ENGINE_H
 #define CF_AUDIO_ENGINE_H
@@ -82,6 +92,14 @@ constexpr Envelope kToneEnvelope = {132, 0, kSustainFull, 220};
 // AllOff fades every voice over this many samples (5 ms).
 constexpr uint16_t kFastRelease  = 220;
 
+// A note that replaces a sounding note of another wave or level waits for the
+// old one to fade out over this many samples (2 ms).
+constexpr uint16_t kSwitchFade   = 88;
+
+// Speaker-EQ limits, checked when a setting is committed: make-up gain at most
+// +24 dB (Q8), and every band stable (|a2| < 1, |a1| < 1 + a2).
+constexpr int32_t  kEqMaxGainQ8  = 16 * 256;
+
 // Master volume ramp length (10 ms).
 constexpr uint32_t kMasterRampSamples = 441;
 
@@ -106,6 +124,9 @@ enum class CmdType : uint8_t {
     NoteOn, NoteOff, AllOff, SeqPlay, SeqStop, Master, EqBand, EqCommit, Hook
 };
 
+// Persistent stop requests (Engine::requestStop).
+enum StopKind : uint8_t { kStopTone = 0, kStopSequence = 1, kStopAll = 2 };
+
 // A message from a control thread to the render thread. Plain data, fixed
 // size, so it can travel through any copying queue.
 struct Command {
@@ -113,6 +134,7 @@ struct Command {
     uint8_t voice;      // NoteOn/NoteOff voice index (or kAnyVoice); EqBand band index
     uint8_t wave;       // NoteOn
     uint8_t duty;       // NoteOn pulse duty, /256 (128 = 50 %)
+    uint32_t stamp;     // Engine::currentStamp() when queued (0 = before any stop)
     union {
         struct { uint32_t inc; uint32_t gate; uint16_t level; Envelope env; } on;   // NoteOn
         uint32_t gen;                                                             // SeqPlay, SeqStop
@@ -175,11 +197,19 @@ public:
     void stopSequence(uint32_t gen);
     void setMasterVolume(uint32_t q15);
     void setEqBand(int band, const BiquadCoefs& c);   // staged until commitEq
-    void commitEq(int bands, bool enable, int32_t gainQ8);
+    // Applies the staged bands. An out-of-range setting (see kEqMaxGainQ8)
+    // turns the EQ off instead and returns false.
+    bool commitEq(int bands, bool enable, int32_t gainQ8);
     void setBlockHook(BlockHook fn, void* ctx);
     int  activeVoices() const;
 
     // ---- any thread ----
+    // Persistent stop: kStopTone releases the tone voice, kStopSequence stops
+    // the sequencer and publishes `seqGen` as its status tag, kStopAll fades
+    // every voice. Applied before the next command or block.
+    void requestStop(StopKind kind, uint32_t seqGen = 0);
+    // The tag to put in Command::stamp when queueing (control thread).
+    uint32_t currentStamp() const;
     SequenceMailbox& mailbox() { return mailbox_; }
     // (gen << 1) | playing, for the last SeqPlay/SeqStop applied.
     uint32_t sequenceStatus() const { return seqStatus_.load(std::memory_order_acquire); }
@@ -192,6 +222,9 @@ public:
     int32_t masterGainQ30() const { return masterQ30_; }
     uint32_t noteCount() const { return noteCounter_; }
     void resetCounters();             // clips, peak voices
+
+    static bool eqBandValid(const BiquadCoefs& c);
+    static bool eqSettingValid(const BiquadCoefs* bands, int count, int32_t gainQ8);
 
     // ---- conversions (deterministic) ----
     static uint32_t hzToInc(float hz);             // 0 for hz <= 0; capped below Nyquist
@@ -217,11 +250,24 @@ private:
         int16_t  noiseOut;
         uint8_t  wave;
         uint8_t  stage;
+        // A note waiting for this voice's switch fade to finish.
+        bool     pending;
+        uint8_t  pendWave;
+        uint8_t  pendDuty;
+        uint16_t pendLevel;
+        uint32_t pendInc;
+        uint32_t pendGate;
+        Envelope pendEnv;
     };
 
     void renderVoices(int32_t* acc, int n);
     void renderVoice(Voice& v, int32_t* acc, int n);
     template <int W> void oscRun(Voice& v, int32_t* acc, int run, int32_t step);
+    void startNote(Voice& v, Wave wave, uint32_t inc, uint32_t gateSamples,
+                   uint16_t level, uint8_t duty, const Envelope& env);
+    void startPending(Voice& v);
+    bool stale(const Command& c) const;
+    void applyStops();
     void enterDecay(Voice& v);
     void enterRelease(Voice& v, uint32_t samples);
     void fireSequence();
@@ -263,7 +309,40 @@ private:
     BlockHook hook_ = nullptr;
     void*     hookCtx_ = nullptr;
 
+    // persistent stops: written by control threads, applied by the render thread
+    std::atomic<uint32_t> stopEpoch_[3];
+    std::atomic<uint32_t> stopSeqGen_{0};
+    uint32_t stopApplied_[3] = {0, 0, 0};
+
     int32_t acc_[kMaxChunk];
+};
+
+// Control-side tone logic shared by every AudioManager build: the tone voice,
+// tone sequences, and a sequence status that agrees with what the render
+// thread has acknowledged. One control thread at a time. `engine` is the
+// running engine or nullptr (then calls are dropped); `send` queues a command
+// for the render thread and returns false when it could not.
+class ToneControl {
+public:
+    typedef bool (*SendFn)(const Command& c);
+    explicit ToneControl(SendFn send) : send_(send) {}
+
+    bool playTone(Engine* engine, float hz, int durationMs);   // durationMs <= 0: until stopTone
+    void stopTone(Engine* engine);                              // never dropped
+    // Fill the returned buffer (kMaxSeqSteps entries), then commitSequence.
+    // nullptr: no engine or the hand-off is busy; the call is dropped.
+    SeqStep* beginSequence(Engine* engine);
+    // If the play cannot be queued, the previous sequence is stopped instead,
+    // so the status never claims a sequence the engine is not playing.
+    bool commitSequence(Engine* engine, int count);
+    void stopSequence(Engine* engine);                          // never dropped
+    bool isSequencePlaying(const Engine* engine) const;
+    void forget() { wanted_ = false; }   // the engine went away
+
+private:
+    SendFn send_;
+    uint32_t gen_ = 0;       // tag of the last sequence play/stop issued
+    bool wanted_ = false;    // whether that play/stop asked to play
 };
 
 // RBJ-cookbook biquad designs, quantised to Q29. Uses libm, so coefficients
