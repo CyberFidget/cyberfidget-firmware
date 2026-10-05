@@ -139,9 +139,10 @@ void AudioManager::setSpeakerEqPreset(int id) {
 }
 
 // A flash write stalls audio for ~45 ms, so it waits for a quiet moment.
-// A failed write is retried on the next quiet loop pass.
+// A failed write is retried on the next quiet loop pass. isSequencePlaying()
+// also covers a preview that is queued but not yet heard.
 void AudioManager::saveEqIfQuiet() {
-    if (!eqSavePending || isAudioActive()) return;
+    if (!eqSavePending || isAudioActive() || isSequencePlaying()) return;
     Preferences prefs;
     bool ok = false;
     if (prefs.begin(kEqNamespace, false)) {

@@ -65,6 +65,7 @@ void end() {
     buttons.unregisterCallback(button_LeftIndex);
     buttons.unregisterCallback(button_RightIndex);
     buttons.unregisterCallback(button_SelectIndex);
+    HAL::audioManager().stopSequence();
     setColorsOff();
 }
 
