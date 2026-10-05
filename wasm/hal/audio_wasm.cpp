@@ -222,7 +222,10 @@ float AudioManager::getMicVolumeDb() const {
 // rendered blocks of whatever was sounding, and a hard cut after them clicks.
 void wasmAudioEndApp() {
     s_qHead = s_qCount = 0;
-    s_volumePending = true;   // a dropped volume change still lands
+    // The current volume goes first in the emptied queue, so a change the
+    // ended app could not queue (a mute, say) lands before the next app's
+    // first sound rather than after it.
+    s_volumePending = !send(Command::master(cf_audio::volumeToMasterQ15(s_volume)));
     engine().requestStop(cf_audio::kStopAll);
     s_tone.stopSequence(&engine());   // status: no sequence wanted
 }
