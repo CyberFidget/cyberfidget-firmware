@@ -163,15 +163,33 @@ static void test_millis_wraparound_exact() {
     TEST_ASSERT_EQUAL_UINT64(0x200u, (unsigned long long)g_last.duration);  // full value, no truncation
 }
 
+static ButtonEvent g_log[64];
+static int g_logCount = 0;
+static void logAll(const ButtonEvent& e) { if (g_logCount < 64) g_log[g_logCount++] = e; }
+
 static void test_full_queue_drops_oldest_and_state_stays_current() {
-    ButtonManager bm; bm.registerCallback(2, record);
-    // 40 events: the first 8 callbacks are dropped (oldest first); the last
-    // event is a Pressed, so a policy that skipped state on drop would fail.
-    for (int i = 0; i < 40; ++i) { g_now += 10; bm.dispatch(2, (i % 2) ? ButtonEvent_Pressed : ButtonEvent_Released); }
-    TEST_ASSERT_TRUE(bm.isPressed(2));
+    // 40 distinguishable events over buttons 0..2 (alternating press/release
+    // per button), then the newest event presses button 4, which was never
+    // down before. Only the newest 32 callbacks may survive, in order, and
+    // button 4's state must be current even though the queue overflowed.
+    ButtonManager bm; g_logCount = 0;
+    for (int b = 0; b < 6; ++b) bm.registerCallback(b, logAll);
+    int idx[40], type[40];
+    bool down[3] = {false, false, false};
+    for (int i = 0; i < 39; ++i) {
+        idx[i] = i % 3;
+        type[i] = down[idx[i]] ? ButtonEvent_Released : ButtonEvent_Pressed;
+        down[idx[i]] = !down[idx[i]];
+    }
+    idx[39] = 4; type[39] = ButtonEvent_Pressed;
+    for (int i = 0; i < 40; ++i) { g_now += 10; bm.dispatch(idx[i], type[i]); }
+    TEST_ASSERT_TRUE(bm.isPressed(4));
     bm.flushCallbacks();
-    TEST_ASSERT_EQUAL_INT(32, g_calls);
-    TEST_ASSERT_EQUAL_INT(ButtonEvent_Pressed, g_last.eventType);  // newest kept
+    TEST_ASSERT_EQUAL_INT(32, g_logCount);
+    for (int k = 0; k < 32; ++k) {
+        TEST_ASSERT_EQUAL_INT(idx[8 + k], g_log[k].buttonIndex);
+        TEST_ASSERT_EQUAL_INT(type[8 + k], g_log[k].eventType);
+    }
 }
 
 static bool g_stop = false;
@@ -187,7 +205,9 @@ static void test_exit_request_discards_later_callbacks() {
     bm.flushCallbacks(&g_stop);
     TEST_ASSERT_EQUAL_INT(1, g_calls);
     TEST_ASSERT_EQUAL_INT(0, g_sideEffects);
-    bm.flushCallbacks(&g_stop);             // nothing resurfaces
+    g_stop = false;                         // even with the flag cleared...
+    bm.flushCallbacks(&g_stop);             // ...the discarded callbacks don't resurface
+    TEST_ASSERT_EQUAL_INT(1, g_calls);
     TEST_ASSERT_EQUAL_INT(0, g_sideEffects);
 }
 
