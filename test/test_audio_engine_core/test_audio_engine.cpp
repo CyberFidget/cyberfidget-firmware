@@ -590,6 +590,47 @@ void test_stop_stamps_do_not_alias_after_many_stops() {
     TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);
 }
 
+void test_stop_counters_compare_by_equality_at_half_range() {
+    // The tone counter far past half range while the stop-all and sequence
+    // counters are still 0: fresh commands must not look stale, and a first
+    // stop of a dormant kind must still apply and cancel what it covers.
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    e.presetStopCounters(0x80000000u, 0, 0);
+    tc.stopTone(&e);                               // tone counter -> 0x80000001
+    TEST_ASSERT_TRUE(tc.playTone(&e, 1000.0f, 0)); // stamped after that stop
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(e.voiceInfo(kToneVoice).active);
+    SeqStep* buf = tc.beginSequence(&e);
+    buf[0] = {Engine::hzToInc(1200.0f), 500, 0};
+    TEST_ASSERT_TRUE(tc.commitSequence(&e, 1));
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(tc.isSequencePlaying(&e));
+    // First ever stop-all: applies, and cancels a play queued before it.
+    Command c = Command::noteOn(5, kSaw, Engine::hzToInc(300.0f), 0, 200, 128, kToneEnvelope);
+    e.stamp(c);
+    fakeSend(c);
+    e.requestStop(kStopAll);
+    drainAndRender(e, 512);
+    TEST_ASSERT_FALSE(e.voiceInfo(5).active);
+    TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);
+    TEST_ASSERT_EQUAL_UINT32(0u, e.sequenceStatus() & 1u);
+
+    // Wrap of a counter (0xFFFFFFFF -> 0) behaves the same.
+    e.reset(1);
+    g_qn = 0;
+    ToneControl tc2(fakeSend);
+    e.presetStopCounters(0xFFFFFFFFu, 0x7FFFFFFFu, 0x80000001u);
+    TEST_ASSERT_TRUE(tc2.playTone(&e, 1000.0f, 0));
+    tc2.stopTone(&e);                              // wraps to 0, cancels the queued play
+    drainAndRender(e, 256);
+    TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);
+    TEST_ASSERT_TRUE(tc2.playTone(&e, 1000.0f, 0));
+    drainAndRender(e, 256);
+    TEST_ASSERT_TRUE(e.voiceInfo(kToneVoice).active);
+}
+
 void test_pulse_duty_switch_fades_instead_of_jumping() {
     // 100 Hz pulse, 50 % duty, switched at phase 0.3 of a cycle (between the
     // 25 % and 50 % thresholds) to 25 % duty: an instant switch flips
@@ -615,7 +656,7 @@ void test_stop_all_cancels_queued_notes() {
     Engine& e = g_engine;
     g_qn = 0;
     Command c = Command::noteOn(5, kSaw, Engine::hzToInc(300.0f), 0, 200, 128, kToneEnvelope);
-    c.stamp = e.currentStamp();
+    e.stamp(c);
     fakeSend(c);
     e.requestStop(kStopAll);
     drainAndRender(e, 256);
@@ -666,6 +707,7 @@ int main(int, char**) {
     RUN_TEST(test_stop_all_cancels_queued_notes);
     RUN_TEST(test_stop_stamps_do_not_alias_after_many_stops);
     RUN_TEST(test_pulse_duty_switch_fades_instead_of_jumping);
+    RUN_TEST(test_stop_counters_compare_by_equality_at_half_range);
     RUN_TEST(test_golden_checksum);
     return UNITY_END();
 }

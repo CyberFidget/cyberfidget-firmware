@@ -46,9 +46,11 @@
 //   requestStop() is a persistent request (an atomic counter, not a queue
 //   entry): the render thread applies it at its next command or block, and
 //   then discards every queued command that was stamped before the stop and
-//   would have restarted what it stopped. Stamps are a full 32-bit stop
-//   generation compared by wrapping difference, so they cannot alias before
-//   2^31 stops. ToneControl uses it for the tone voice and the sequencer.
+//   would have restarted what it stopped. Each stop kind has its own 32-bit
+//   counter; a command carries the values of the counters that cover it and
+//   is stale when any of them has changed (equality, no ordering), so neither
+//   bursts nor a long-dormant kind can make the comparison wrong. ToneControl
+//   uses it for the tone voice and the sequencer.
 
 #ifndef CF_AUDIO_ENGINE_H
 #define CF_AUDIO_ENGINE_H
@@ -136,7 +138,8 @@ struct Command {
     uint8_t voice;      // NoteOn/NoteOff voice index (or kAnyVoice); EqBand band index
     uint8_t wave;       // NoteOn
     uint8_t duty;       // NoteOn pulse duty, /256 (128 = 50 %)
-    uint32_t stamp;     // Engine::currentStamp() when queued: the stop generation (0 = before any stop)
+    uint32_t stampAll;  // Engine::stamp(): the stop-all counter when queued
+    uint32_t stampKind; // ... and the tone (NoteOn on the tone voice) or sequence (SeqPlay) counter
     union {
         struct { uint32_t inc; uint32_t gate; uint16_t level; Envelope env; } on;   // NoteOn
         uint32_t gen;                                                             // SeqPlay, SeqStop
@@ -210,8 +213,10 @@ public:
     // the sequencer and publishes `seqGen` as its status tag, kStopAll fades
     // every voice. Applied before the next command or block.
     void requestStop(StopKind kind, uint32_t seqGen = 0);
-    // The tag to put in Command::stamp when queueing (control thread).
-    uint32_t currentStamp() const;
+    // Fill c's stamps when queueing it (control thread).
+    void stamp(Command& c) const;
+    // Tests only, before any command: start the stop counters at given values.
+    void presetStopCounters(uint32_t tone, uint32_t sequence, uint32_t all);
     SequenceMailbox& mailbox() { return mailbox_; }
     // (gen << 1) | playing, for the last SeqPlay/SeqStop applied.
     uint32_t sequenceStatus() const { return seqStatus_.load(std::memory_order_acquire); }
@@ -312,8 +317,7 @@ private:
     void*     hookCtx_ = nullptr;
 
     // persistent stops: written by control threads, applied by the render thread
-    std::atomic<uint32_t> stopGen_{0};    // one generation counter for every stop
-    std::atomic<uint32_t> stopEpoch_[3];  // generation of the latest stop of each kind
+    std::atomic<uint32_t> stopEpoch_[3];  // per kind: how many stops were requested
     std::atomic<uint32_t> stopSeqGen_{0};
     uint32_t stopApplied_[3] = {0, 0, 0};
 

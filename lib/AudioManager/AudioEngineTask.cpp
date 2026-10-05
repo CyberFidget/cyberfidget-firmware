@@ -247,7 +247,7 @@ bool running() { return s_task != nullptr && !s_wedged; }
 bool send(const Command& c) {
     if (!running() || !s_queue) return false;
     Command stamped = c;
-    stamped.stamp = s_engine->currentStamp();   // so a later stop can overtake it
+    s_engine->stamp(stamped);   // so a later stop can overtake it
     return xQueueSend(s_queue, &stamped, pdMS_TO_TICKS(10)) == pdTRUE;
 }
 

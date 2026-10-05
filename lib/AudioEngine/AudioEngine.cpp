@@ -67,8 +67,6 @@ inline int32_t satBus(int64_t v) {
     return (int32_t)(v > kBusSat ? kBusSat : (v < -kBusSat ? -kBusSat : v));
 }
 
-// a is later than b in a wrapping 32-bit generation count.
-inline bool laterGen(uint32_t a, uint32_t b) { return (int32_t)(a - b) > 0; }
 
 // Multiply by the DC-blocker pole, rounding toward zero so the filter state
 // always decays to exactly 0.
@@ -251,7 +249,6 @@ void Engine::reset(uint32_t seed) {
     peakVoices_.store(0, std::memory_order_relaxed);
     hook_ = nullptr;
     hookCtx_ = nullptr;
-    stopGen_.store(0, std::memory_order_relaxed);
     for (int k = 0; k < 3; ++k) {
         stopEpoch_[k].store(0, std::memory_order_relaxed);
         stopApplied_[k] = 0;
@@ -261,16 +258,25 @@ void Engine::reset(uint32_t seed) {
 
 void Engine::requestStop(StopKind kind, uint32_t seqGen) {
     if (kind == kStopSequence) stopSeqGen_.store(seqGen, std::memory_order_relaxed);
-    const uint32_t gen = stopGen_.fetch_add(1, std::memory_order_acq_rel) + 1;
-    // Publish this kind's latest stop; never move it backwards.
-    uint32_t seen = stopEpoch_[kind].load(std::memory_order_relaxed);
-    while (laterGen(gen, seen) &&
-           !stopEpoch_[kind].compare_exchange_weak(seen, gen, std::memory_order_release)) {
+    stopEpoch_[kind].fetch_add(1, std::memory_order_acq_rel);
+}
+
+void Engine::stamp(Command& c) const {
+    c.stampAll = stopEpoch_[kStopAll].load(std::memory_order_acquire);
+    c.stampKind = 0;
+    if (c.type == CmdType::NoteOn && c.voice == kToneVoice) {
+        c.stampKind = stopEpoch_[kStopTone].load(std::memory_order_acquire);
+    } else if (c.type == CmdType::SeqPlay) {
+        c.stampKind = stopEpoch_[kStopSequence].load(std::memory_order_acquire);
     }
 }
 
-uint32_t Engine::currentStamp() const {
-    return stopGen_.load(std::memory_order_acquire);
+void Engine::presetStopCounters(uint32_t tone, uint32_t sequence, uint32_t all) {
+    const uint32_t v[3] = {tone, sequence, all};
+    for (int k = 0; k < 3; ++k) {
+        stopEpoch_[k].store(v[k], std::memory_order_relaxed);
+        stopApplied_[k] = v[k];
+    }
 }
 
 void Engine::applyStops() {
@@ -294,10 +300,12 @@ void Engine::applyStops() {
 // True for a queued command that a later stop has overtaken: a note or
 // sequence start stamped before the stop that covers it.
 bool Engine::stale(const Command& c) const {
-    auto moved = [&](int kind) { return laterGen(stopApplied_[kind], c.stamp); };
+    // applyStops() ran just before, so stopApplied_ holds every stop requested
+    // before this command was queued: any change since its stamp cancels it.
+    const bool all = c.stampAll != stopApplied_[kStopAll];
     switch (c.type) {
-        case CmdType::NoteOn:  return moved(kStopAll) || (c.voice == kToneVoice && moved(kStopTone));
-        case CmdType::SeqPlay: return moved(kStopAll) || moved(kStopSequence);
+        case CmdType::NoteOn:  return all || (c.voice == kToneVoice && c.stampKind != stopApplied_[kStopTone]);
+        case CmdType::SeqPlay: return all || c.stampKind != stopApplied_[kStopSequence];
         default:               return false;
     }
 }
@@ -750,7 +758,7 @@ bool ToneControl::playTone(Engine* engine, float hz, int durationMs) {
     }
     const uint32_t gate = durationMs > 0 ? Engine::msToSamples((uint32_t)durationMs) : 0;
     Command c = Command::noteOn(kToneVoice, kSine, Engine::hzToInc(hz), gate, kToneLevel, 128, kToneEnvelope);
-    c.stamp = engine->currentStamp();
+    engine->stamp(c);
     return send_(c);
 }
 
@@ -767,7 +775,7 @@ bool ToneControl::commitSequence(Engine* engine, int count) {
     gen_ = (gen_ + 1) & kGenMask;
     engine->mailbox().commit(count, gen_);
     Command c = Command::seqPlay(gen_);
-    c.stamp = engine->currentStamp();
+    engine->stamp(c);
     if (send_(c)) {
         wanted_ = true;
         return true;
