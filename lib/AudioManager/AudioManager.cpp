@@ -174,8 +174,7 @@ bool AudioManager::isSequencePlaying() const {
 
 bool AudioManager::isAudioActive() const {
     if (borrowerStop != nullptr) return true;   // Music Player / Voice Notes own port 0
-    const uint32_t last = AudioEngineTask::lastSoundMs();
-    return last != 0 && (uint32_t)(millis() - last) < 1000;
+    return AudioEngineTask::soundRecently();
 }
 
 bool AudioManager::releaseI2S(BorrowerStop stopBorrower) {

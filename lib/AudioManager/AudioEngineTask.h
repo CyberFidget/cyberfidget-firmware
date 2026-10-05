@@ -54,9 +54,9 @@ bool send(const cf_audio::Command& c);
 // sequenceStatus). nullptr when stopped.
 cf_audio::Engine* engine();
 
-// millis() when the engine last had a voice or sequence playing (published
-// once per block by the render task); 0 = never.
-uint32_t lastSoundMs();
+// True while a voice or sequence plays and for about a second after (the
+// render task updates it every block; false when the engine is stopped).
+bool soundRecently();
 
 // Bench statistics (render task writes, readers take a consistent snapshot).
 struct Stats {

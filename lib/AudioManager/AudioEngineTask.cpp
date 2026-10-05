@@ -54,7 +54,13 @@ volatile uint32_t s_gapMaxUs = 0;
 // Published by the render task about every 64 blocks from its own handle, so
 // no reader ever inspects a task that may have deleted itself.
 volatile uint32_t s_stackHwm = 0;
-std::atomic<uint32_t> s_lastSoundMs{0};
+// "Sound within the last second", kept by the render task as a count of
+// silent blocks since the last one with a voice or sequence playing; no
+// clock arithmetic, so nothing can wrap or run ahead of a reader.
+constexpr uint32_t kRecentSoundBlocks =   // one second, rounded up (173 blocks)
+    (cf_audio::kSampleRate + kBlockFrames - 1) / kBlockFrames;
+uint32_t s_silentBlocks = kRecentSoundBlocks;   // render task only
+std::atomic<bool> s_recentSound{false};
 int64_t s_lastWriteUs = 0;
 const uint32_t kBlockUs = (uint32_t)(1000000ull * kBlockFrames / cf_audio::kSampleRate);
 const uint32_t kCushionUs = (uint32_t)(1000000ull * kBlockFrames * kDmaDescNum / cf_audio::kSampleRate);
@@ -128,8 +134,11 @@ void renderTask(void*) {
         }
         s_lastWriteUs = nowUs;
         if (s_engine->activeVoices() > 0 || (s_engine->sequenceStatus() & 1u)) {
-            s_lastSoundMs.store((uint32_t)(nowUs / 1000) | 1u, std::memory_order_relaxed);
+            s_silentBlocks = 0;
+        } else if (s_silentBlocks < kRecentSoundBlocks) {
+            ++s_silentBlocks;
         }
+        s_recentSound.store(s_silentBlocks < kRecentSoundBlocks, std::memory_order_relaxed);
     }
     s_exited.store(true, std::memory_order_release);
     vTaskDelete(nullptr);
@@ -143,6 +152,8 @@ void freeBuffers() {
 
 // Only after the render task acknowledged its exit: release the port.
 void finishStop() {
+    s_recentSound.store(false, std::memory_order_relaxed);
+    s_silentBlocks = kRecentSoundBlocks;
     s_task = nullptr;
     s_wedged = false;
     i2s_channel_disable(s_tx);
@@ -248,7 +259,7 @@ bool stop() {
 
 bool running() { return s_task != nullptr && !s_wedged; }
 
-uint32_t lastSoundMs() { return s_lastSoundMs.load(std::memory_order_relaxed); }
+bool soundRecently() { return s_recentSound.load(std::memory_order_relaxed); }
 
 bool send(const Command& c) {
     if (!running() || !s_queue) return false;
