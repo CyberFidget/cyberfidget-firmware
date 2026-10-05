@@ -51,6 +51,9 @@ volatile uint32_t s_cycleMax = 0;
 volatile uint32_t s_qovf = 0;
 volatile uint32_t s_gapUnderruns = 0;
 volatile uint32_t s_gapMaxUs = 0;
+// Published by the render task about every 64 blocks from its own handle, so
+// no reader ever inspects a task that may have deleted itself.
+volatile uint32_t s_stackHwm = 0;
 int64_t s_lastWriteUs = 0;
 const uint32_t kBlockUs = (uint32_t)(1000000ull * kBlockFrames / cf_audio::kSampleRate);
 const uint32_t kCushionUs = (uint32_t)(1000000ull * kBlockFrames * kDmaDescNum / cf_audio::kSampleRate);
@@ -108,6 +111,7 @@ void renderTask(void*) {
         s_cycleSum = s_cycleSum + cycles;
         if (cycles > s_cycleMax) s_cycleMax = cycles;
         s_blocks = s_blocks + 1;
+        if ((s_blocks & 63u) == 1u) s_stackHwm = (uint32_t)uxTaskGetStackHighWaterMark(nullptr);
 
         size_t written = 0;
         i2s_channel_write(s_tx, s_buf, sizeof(int16_t) * 2 * kBlockFrames, &written, pdMS_TO_TICKS(100));
@@ -262,7 +266,7 @@ void readStats(Stats& out) {
     out.gapMaxUs = s_gapMaxUs;
     out.clips = s_engine ? s_engine->clipCount() : 0;
     out.peakVoices = s_engine ? s_engine->peakVoices() : 0;
-    out.stackHighWater = s_task ? (uint32_t)uxTaskGetStackHighWaterMark(s_task) : 0;
+    out.stackHighWater = s_stackHwm;   // last value the render task published (0 before it ran)
 }
 
 void requestStatsReset() { s_statsResetReq.store(true); }

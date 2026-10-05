@@ -64,7 +64,7 @@ struct Stats {
     uint32_t gapMaxUs;
     uint32_t clips;
     uint32_t peakVoices;
-    uint32_t stackHighWater;   // bytes never used
+    uint32_t stackHighWater;   // bytes never used, as the render task last measured it
 };
 void readStats(Stats& out);
 void requestStatsReset();   // applied by the render task at its next block
