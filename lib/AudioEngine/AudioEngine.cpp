@@ -67,8 +67,8 @@ inline int32_t satBus(int64_t v) {
     return (int32_t)(v > kBusSat ? kBusSat : (v < -kBusSat ? -kBusSat : v));
 }
 
-// Command stamps pack the three stop counters, 10 bits each.
-inline uint32_t stampField(uint32_t stamp, int kind) { return (stamp >> (10 * kind)) & 0x3FFu; }
+// a is later than b in a wrapping 32-bit generation count.
+inline bool laterGen(uint32_t a, uint32_t b) { return (int32_t)(a - b) > 0; }
 
 // Multiply by the DC-blocker pole, rounding toward zero so the filter state
 // always decays to exactly 0.
@@ -251,6 +251,7 @@ void Engine::reset(uint32_t seed) {
     peakVoices_.store(0, std::memory_order_relaxed);
     hook_ = nullptr;
     hookCtx_ = nullptr;
+    stopGen_.store(0, std::memory_order_relaxed);
     for (int k = 0; k < 3; ++k) {
         stopEpoch_[k].store(0, std::memory_order_relaxed);
         stopApplied_[k] = 0;
@@ -260,13 +261,16 @@ void Engine::reset(uint32_t seed) {
 
 void Engine::requestStop(StopKind kind, uint32_t seqGen) {
     if (kind == kStopSequence) stopSeqGen_.store(seqGen, std::memory_order_relaxed);
-    stopEpoch_[kind].fetch_add(1, std::memory_order_release);
+    const uint32_t gen = stopGen_.fetch_add(1, std::memory_order_acq_rel) + 1;
+    // Publish this kind's latest stop; never move it backwards.
+    uint32_t seen = stopEpoch_[kind].load(std::memory_order_relaxed);
+    while (laterGen(gen, seen) &&
+           !stopEpoch_[kind].compare_exchange_weak(seen, gen, std::memory_order_release)) {
+    }
 }
 
 uint32_t Engine::currentStamp() const {
-    uint32_t stamp = 0;
-    for (int k = 0; k < 3; ++k) stamp |= (stopEpoch_[k].load(std::memory_order_acquire) & 0x3FFu) << (10 * k);
-    return stamp;
+    return stopGen_.load(std::memory_order_acquire);
 }
 
 void Engine::applyStops() {
@@ -290,7 +294,7 @@ void Engine::applyStops() {
 // True for a queued command that a later stop has overtaken: a note or
 // sequence start stamped before the stop that covers it.
 bool Engine::stale(const Command& c) const {
-    auto moved = [&](int kind) { return stampField(c.stamp, kind) != (stopApplied_[kind] & 0x3FFu); };
+    auto moved = [&](int kind) { return laterGen(stopApplied_[kind], c.stamp); };
     switch (c.type) {
         case CmdType::NoteOn:  return moved(kStopAll) || (c.voice == kToneVoice && moved(kStopTone));
         case CmdType::SeqPlay: return moved(kStopAll) || moved(kStopSequence);
@@ -348,9 +352,10 @@ void Engine::noteOn(uint8_t voice, Wave wave, uint32_t inc, uint32_t gateSamples
     if (wave > kSine) wave = kSine;
     if (level > kLevelUnity) level = kLevelUnity;
     v.startStamp = ++noteCounter_;
-    if (v.stage != kIdle && (v.wave != (uint8_t)wave || v.level != level)) {
-        // Switching wave or level mid-note would jump the output: fade the
-        // old note out first; startPending() starts this one from silence.
+    const bool dutyChange = wave == kPulse && v.dutyThreshold != ((uint32_t)duty << 24);
+    if (v.stage != kIdle && (v.wave != (uint8_t)wave || v.level != level || dutyChange)) {
+        // Switching wave, level or pulse duty mid-note would jump the output:
+        // fade the old note out first; startPending() starts this one from silence.
         v.pending = true;
         v.pendWave = (uint8_t)wave;
         v.pendDuty = duty;

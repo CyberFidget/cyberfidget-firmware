@@ -561,6 +561,56 @@ void test_sequence_status_matches_the_engine() {
     TEST_ASSERT_EQUAL_UINT32(Engine::hzToInc(1000.0f), e.voiceInfo(kToneVoice).inc);
 }
 
+void test_stop_stamps_do_not_alias_after_many_stops() {
+    // A held tone is queued, then thousands of stops arrive before the render
+    // thread drains it (a burst while it waits on the output): the old play
+    // must stay cancelled, however many stops came in between.
+    Engine& e = g_engine;
+    g_qn = 0;
+    ToneControl tc(fakeSend);
+    TEST_ASSERT_TRUE(tc.playTone(&e, 1000.0f, 0));
+    for (int i = 0; i < 4096 + 7; ++i) tc.stopTone(&e);
+    drainAndRender(e, 256);
+    TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);
+    // Exactly 1024 and 2048 more (the old 10-bit field width) as well.
+    const int bursts[] = {1024, 2048};
+    for (int n : bursts) {
+        TEST_ASSERT_TRUE(tc.playTone(&e, 1000.0f, 0));
+        for (int i = 0; i < n; ++i) tc.stopTone(&e);
+        drainAndRender(e, 256);
+        TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);
+    }
+    // Sequence plays too.
+    SeqStep* buf = tc.beginSequence(&e);
+    buf[0] = {Engine::hzToInc(1000.0f), 500, 0};
+    TEST_ASSERT_TRUE(tc.commitSequence(&e, 1));
+    for (int i = 0; i < 1024; ++i) e.requestStop(kStopSequence, 0);
+    drainAndRender(e, 256);
+    TEST_ASSERT_EQUAL_UINT32(0u, e.sequenceStatus() & 1u);
+    TEST_ASSERT_FALSE(e.voiceInfo(kToneVoice).active);
+}
+
+void test_pulse_duty_switch_fades_instead_of_jumping() {
+    // 100 Hz pulse, 50 % duty, switched at phase 0.3 of a cycle (between the
+    // 25 % and 50 % thresholds) to 25 % duty: an instant switch flips
+    // +24000 to -24000.
+    Engine& e = g_engine;
+    const Envelope held = {44, 0, kSustainFull, 220};
+    e.apply(Command::noteOn(2, kPulse, Engine::hzToInc(100.0f), 0, kLevelUnity, 128, held));
+    const int at = 4410 + 132;   // 10.3 cycles
+    e.render(g_buf, at);
+    TEST_ASSERT_TRUE(g_buf[at - 1] > 15000);
+    e.apply(Command::noteOn(2, kPulse, Engine::hzToInc(100.0f), 0, kLevelUnity, 64, held));
+    e.render(g_buf + at, 400);
+    // Up to the new pulse's first own edge (25 % of 441 samples after the
+    // fade) no step may come near the 48000 an instant switch makes.
+    const int32_t worst = maxStep(g_buf, at - 5, at + kSwitchFade + 100);
+    char msg[48];
+    snprintf(msg, sizeof(msg), "duty switch max step=%d", (int)worst);
+    TEST_MESSAGE(msg);
+    TEST_ASSERT_TRUE(worst < 2000);
+}
+
 void test_stop_all_cancels_queued_notes() {
     Engine& e = g_engine;
     g_qn = 0;
@@ -614,6 +664,8 @@ int main(int, char**) {
     RUN_TEST(test_stop_survives_a_full_queue);
     RUN_TEST(test_sequence_status_matches_the_engine);
     RUN_TEST(test_stop_all_cancels_queued_notes);
+    RUN_TEST(test_stop_stamps_do_not_alias_after_many_stops);
+    RUN_TEST(test_pulse_duty_switch_fades_instead_of_jumping);
     RUN_TEST(test_golden_checksum);
     return UNITY_END();
 }

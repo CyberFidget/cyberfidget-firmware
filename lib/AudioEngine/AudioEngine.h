@@ -36,17 +36,19 @@
 //   A note sent to an explicit voice index always takes that voice. A note
 //   sent to kAnyVoice takes, in order: the lowest-numbered idle voice; else
 //   the releasing voice with the lowest level; else the voice whose note
-//   started earliest. If the voice is sounding with the same wave and level,
-//   the new note continues from its current level and phase (legato, no
-//   click). If the wave or level differs, the old note first fades out over
-//   kSwitchFade samples and the new one then starts from silence.
+//   started earliest. If the voice is sounding with the same wave and level
+//   (and, for a pulse, the same duty), the new note continues from its
+//   current level and phase (legato, no click). Otherwise the old note first
+//   fades out over kSwitchFade samples and the new one then starts from
+//   silence.
 //
 // Stops never get lost
 //   requestStop() is a persistent request (an atomic counter, not a queue
 //   entry): the render thread applies it at its next command or block, and
 //   then discards every queued command that was stamped before the stop and
-//   would have restarted what it stopped. ToneControl uses it for the tone
-//   voice and the sequencer.
+//   would have restarted what it stopped. Stamps are a full 32-bit stop
+//   generation compared by wrapping difference, so they cannot alias before
+//   2^31 stops. ToneControl uses it for the tone voice and the sequencer.
 
 #ifndef CF_AUDIO_ENGINE_H
 #define CF_AUDIO_ENGINE_H
@@ -134,7 +136,7 @@ struct Command {
     uint8_t voice;      // NoteOn/NoteOff voice index (or kAnyVoice); EqBand band index
     uint8_t wave;       // NoteOn
     uint8_t duty;       // NoteOn pulse duty, /256 (128 = 50 %)
-    uint32_t stamp;     // Engine::currentStamp() when queued (0 = before any stop)
+    uint32_t stamp;     // Engine::currentStamp() when queued: the stop generation (0 = before any stop)
     union {
         struct { uint32_t inc; uint32_t gate; uint16_t level; Envelope env; } on;   // NoteOn
         uint32_t gen;                                                             // SeqPlay, SeqStop
@@ -310,7 +312,8 @@ private:
     void*     hookCtx_ = nullptr;
 
     // persistent stops: written by control threads, applied by the render thread
-    std::atomic<uint32_t> stopEpoch_[3];
+    std::atomic<uint32_t> stopGen_{0};    // one generation counter for every stop
+    std::atomic<uint32_t> stopEpoch_[3];  // generation of the latest stop of each kind
     std::atomic<uint32_t> stopSeqGen_{0};
     uint32_t stopApplied_[3] = {0, 0, 0};
 
