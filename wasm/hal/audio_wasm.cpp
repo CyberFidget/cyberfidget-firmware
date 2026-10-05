@@ -71,12 +71,13 @@ EM_JS(void, js_audio_set_volume, (float volume), {
     }
 });
 
-// Notes (playNote): one oscillator per handle, alongside the tone.
+// Notes (playNote): one oscillator per handle, alongside the tone, at most
+// seven at once like the device (the oldest is replaced). Timed notes stop on
+// the audio clock; every note is removed when its oscillator ends.
 EM_JS(void, js_audio_note_stop, (int handle), {
     var n = Module._audioNotes && Module._audioNotes[handle];
     if (!n) return;
     delete Module._audioNotes[handle];
-    if (n.timeout) clearTimeout(n.timeout);
     try { n.osc.stop(); } catch(e) {}
 });
 
@@ -85,6 +86,8 @@ EM_JS(void, js_audio_note_play, (int handle, float frequency, float volume, int 
         Module._audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     }
     if (!Module._audioNotes) Module._audioNotes = {};
+    var held = Object.keys(Module._audioNotes).map(Number).sort(function(a, b) { return a - b; });
+    while (held.length >= 7) js_audio_note_stop(held.shift());   // handles count up: lowest = oldest
     var ctx = Module._audioCtx;
     var osc = ctx.createOscillator();
     var gain = ctx.createGain();
@@ -94,12 +97,14 @@ EM_JS(void, js_audio_note_play, (int handle, float frequency, float volume, int 
     gain.gain.setValueAtTime(Math.max(0, Math.min(1, volume)) * master, ctx.currentTime);
     osc.connect(gain);
     gain.connect(ctx.destination);
-    osc.start();
-    var note = { osc: osc, gain: gain, timeout: null };
+    var note = { osc: osc, gain: gain };
+    osc.onended = function() {
+        if (Module._audioNotes && Module._audioNotes[handle] === note) delete Module._audioNotes[handle];
+        try { osc.disconnect(); gain.disconnect(); } catch(e) {}
+    };
     Module._audioNotes[handle] = note;
-    if (duration_ms > 0) {
-        note.timeout = setTimeout(function() { js_audio_note_stop(handle); }, duration_ms);
-    }
+    osc.start();
+    if (duration_ms > 0) osc.stop(ctx.currentTime + duration_ms / 1000);
 });
 
 EM_JS(void, js_audio_notes_stop_all, (), {
@@ -203,13 +208,15 @@ bool AudioManager::isSequencePlaying() const {
     return currentSequence != nullptr;
 }
 
-// Notes: one browser oscillator per handle. Handles count up from 1, so a
-// stale handle never matches a newer note.
+// Notes: one browser oscillator per handle. Handles count up from 1 and are
+// never reused (after 2^31 - 1 notes playNote returns -1), so a stale handle
+// never matches a newer note.
 static int s_lastNoteHandle = 0;
 
 int AudioManager::playNote(float frequency, int durationMs) {
     if (!(frequency > 0.0f)) return -1;
-    s_lastNoteHandle = (s_lastNoteHandle % 0x7FFFFFFF) + 1;
+    if (s_lastNoteHandle >= 0x7FFFFFFF) return -1;
+    ++s_lastNoteHandle;
     js_audio_note_play(s_lastNoteHandle, frequency, s_volume, durationMs);
     return s_lastNoteHandle;
 }
