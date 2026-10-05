@@ -21,6 +21,12 @@ Booper::Booper(ButtonManager& btnMgr, AudioManager& audioMgr) :
 {
     ESP_LOGI(TAG_MAIN, "Booper constructor! volume=%.2f, &this=%p", volume, this);
     instance = this;
+    for (int i = 0; i < kButtonCount; ++i) noteHandle[i] = -1;
+}
+
+void Booper::stopAllNotes() {
+    audioManager.stopNotes();
+    for (int i = 0; i < kButtonCount; ++i) noteHandle[i] = -1;
 }
 
 void Booper::begin() {
@@ -33,8 +39,8 @@ void Booper::end() {
     ESP_LOGI(TAG_MAIN, "end() => unregistering booper callbacks...");
     
     unregisterButtonCallbacks();
-    // Stop any playing tones
-    audioManager.stopTone();
+    // Stop any playing notes
+    stopAllNotes();
     audioManager.enableMic(false); // Disable mic input
     // Turn off LEDs when leaving the app
     setColorsOff();
@@ -126,16 +132,21 @@ void Booper::buttonPressedCallback(const ButtonEvent& event) {
 
 void Booper::handleButtonEvent(const ButtonEvent& event) {
     // Handle button events
+    // Each held button plays its own note, so pressing several makes a chord.
+    const int b = event.buttonIndex;
+    if (b < 0 || b >= kButtonCount) return;
     if (event.eventType == ButtonEvent_Pressed) {
-        float freq = getFrequencyForButton(event.buttonIndex);
-        audioManager.playTone(freq);
+        if (noteHandle[b] > 0) audioManager.stopNote(noteHandle[b]);
+        float freq = getFrequencyForButton(b);
+        noteHandle[b] = audioManager.playNote(freq);
     } else if (event.eventType == ButtonEvent_Released) {
-        // Stop tone when button is released
-        if (event.buttonIndex == button_TopLeftIndex ||
-            event.buttonIndex == button_TopRightIndex ||
-            event.buttonIndex == button_MiddleLeftIndex ||
-            event.buttonIndex == button_MiddleRightIndex) {
-            audioManager.stopTone();
+        // Stop this button's note when it is released
+        if (b == button_TopLeftIndex ||
+            b == button_TopRightIndex ||
+            b == button_MiddleLeftIndex ||
+            b == button_MiddleRightIndex) {
+            if (noteHandle[b] > 0) audioManager.stopNote(noteHandle[b]);
+            noteHandle[b] = -1;
         }
     }
 }

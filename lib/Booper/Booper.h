@@ -43,6 +43,12 @@ private:
 
     // Time to stop tone after button release
     unsigned long toneStopTime;
+
+    // The note each held button is playing (AudioManager::playNote handle,
+    // -1 = none), indexed by button index, so chords work.
+    static constexpr int kButtonCount = 6;
+    int noteHandle[kButtonCount];
+    void stopAllNotes();
     static const unsigned long TONE_DURATION_MS = 0; // 0 for continuous tone while button is held
 
     // We will have one callback function for each button
