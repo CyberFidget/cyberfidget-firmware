@@ -40,6 +40,7 @@ Command  s_queue[kQueueDepth];
 int      s_qHead = 0;
 int      s_qCount = 0;
 float    s_volume = 0.7f;          // the device's default
+bool     s_volumePending = false;  // a volume change the queue could not take yet
 bool     s_speakerEq = false;      // desktop speakers: EQ bypassed
 bool     s_autoClock = true;       // until the page pulls samples itself
 bool     s_clockStarted = false;
@@ -97,11 +98,19 @@ void renderNow(int16_t* out, int frames) {
         s_qHead = (s_qHead + 1) % kQueueDepth;
         --s_qCount;
     }
+    // A volume change the full queue refused lands now, after everything
+    // queued before it (the device's AudioManager::loop() retries it the same
+    // way, landing at its next block).
+    if (s_volumePending) {
+        e.apply(Command::master(cf_audio::volumeToMasterQ15(s_volume)));
+        s_volumePending = false;
+    }
     e.render(out, frames);
 }
 
 void resetAudio() {
     s_qHead = s_qCount = 0;
+    s_volumePending = false;   // primeEngine applies the current volume
     primeEngine(engine());
     s_tone.forget();
 }
@@ -149,7 +158,9 @@ void AudioManager::setVolume(float volumeLevel) {
     const bool changed = cf_audio::volumeToMasterQ15(vol) != cf_audio::volumeToMasterQ15(s_volume);
     s_volume = vol;
     // Ramped over 10 ms by the engine, as on the device.
-    if (changed) send(Command::master(cf_audio::volumeToMasterQ15(s_volume)));
+    // If the queue is full, the latest volume is kept and lands at the next
+    // render (as the device's volumePending retry).
+    if (changed) s_volumePending = !send(Command::master(cf_audio::volumeToMasterQ15(s_volume)));
 }
 
 void AudioManager::playTone(float frequency, int durationMs) {
@@ -202,6 +213,18 @@ void AudioManager::enableMic(bool) {}
 
 float AudioManager::getMicVolumeDb() const {
     return -60.0f;
+}
+
+// The app ended (module host: before the next app begins). Commands it left
+// queued are dropped, so none can leak into the next app or fill the queue
+// against it, and every voice and the sequencer fade out over 5 ms at the
+// next render. A fade, not wasm_audio_reset(): the page already holds
+// rendered blocks of whatever was sounding, and a hard cut after them clicks.
+void wasmAudioEndApp() {
+    s_qHead = s_qCount = 0;
+    s_volumePending = true;   // a dropped volume change still lands
+    engine().requestStop(cf_audio::kStopAll);
+    s_tone.stopSequence(&engine());   // status: no sequence wanted
 }
 
 // ------------------------------------------------------------- render exports

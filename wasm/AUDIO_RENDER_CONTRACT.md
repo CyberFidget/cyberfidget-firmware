@@ -19,9 +19,9 @@ Implementation: `hal/audio_wasm.cpp`. Local example player: `preview.html`.
 |---|---|
 | `int16_t* wasm_audio_buffer(void)` | Core-owned buffer the render call writes. Read it as `new Int16Array(HEAP16.buffer, ptr, frames)` right after each render (re-create the view every time: memory can grow). |
 | `int wasm_audio_buffer_frames(void)` | Buffer size in frames (2048). |
-| `int wasm_audio_sample_rate(void)` | 44100. Create the `AudioContext` at this rate (`new AudioContext({sampleRate: 44100})`), or resample on the page. |
+| `int wasm_audio_sample_rate(void)` | 44100, fixed (see Sample rate below). |
 | `int wasm_audio_render(int frames)` | Applies every command the app queued since the last call, then renders `min(frames, 2048)` mono int16 frames into the buffer. Returns the frames rendered (0 for `frames <= 0`). The first call hands the clock to the caller (auto clock off). |
-| `void wasm_audio_reset(void)` | Silences at once and clears all engine state and queued commands (tones, notes, sequence; the volume and speaker-EQ setting are kept). Call on app restart/unload, before the next app starts. |
+| `void wasm_audio_reset(void)` | Cuts all sound instantly (no fade) and clears all engine state and queued commands (tones, notes, sequence; the volume and speaker-EQ setting are kept). Safe before the first render and safe to call repeatedly. For a page-level restart (new emulator session); the module host already cleans up between apps (see App switching). |
 | `void wasm_audio_set_speaker_eq(int on)` | 0 (default): EQ bypassed, for desktop speakers. 1: the device's default speaker EQ (`SpeakerEqPresets.h`), for a future "device speaker preview". Applied before the next rendered sample. |
 | `void wasm_audio_set_autoclock(int on)` | 1: the core keeps the engine's time itself from the app loop (`millis()`) and drops the samples. Default on until the first render; turn it back on whenever the page stops pulling (muted, `AudioContext` suspended or not yet allowed). |
 | `int wasm_audio_active(void)` | 1 while anything sounds, is queued, or a sequence plays. Optional (indicators, idling). |
@@ -32,7 +32,9 @@ Implementation: `hal/audio_wasm.cpp`. Local example player: `preview.html`.
 
 - Commands from the app (`playTone`, `setVolume`, ...) are queued (64 deep)
   and applied at the start of the next `wasm_audio_render` call, as the device
-  applies them at the start of its next block. Stops are never dropped.
+  applies them at the start of its next block. Stops are never dropped. A
+  volume change the full queue refuses is kept and lands at the next render
+  (the device's AudioManager retries it the same way).
 - Sound advances only as samples are rendered: tone lengths, sequence steps
   and `isSequencePlaying()` follow the rendered sample count, not wall time.
 - If the tab is throttled or the context is suspended, rendering stops and
@@ -42,11 +44,38 @@ Implementation: `hal/audio_wasm.cpp`. Local example player: `preview.html`.
 - Before the first render (no sound yet, autoplay policy) the auto clock
   keeps time, so apps that wait for a sequence never hang.
 
+## Sample rate
+
+The engine runs at 44.1 kHz only; there is no output-rate setter, because
+the device-parity checksums depend on that rate. Request
+`new AudioContext({sampleRate: 44100})`. If `ctx.sampleRate` still differs
+(Safari has ignored the option), resample in the worklet (linear
+interpolation is fine; `preview.html` does this) and pace requests in
+44.1 kHz frames: for `N_out` output frames ask for
+`N_core = N_out * 44100 / ctx.sampleRate`, carrying the fractional remainder
+to the next request.
+
+## App switching
+
+`wasm_module_end()` (and `wasm_module_start()`, which ends the previous app
+first) stops the app's tone, sequence and notes with the device's 5 ms fade
+and drops every command the app left queued, so nothing it queued reaches
+the next app and a full queue cannot swallow the next app's first sound. It
+fades instead of cutting because the page already holds rendered blocks of
+what was sounding. The full emulator and single-app builds run one app per
+module instance; switching apps there means a new instance (fresh state).
+
 ## Recommended use
 
 - Block sizes 128 to 1024 frames per call. Keep about 50 to 100 ms queued in
   the page's player (`preview.html` keeps 80 ms) and refill when the player
-  reports its fill level.
+  reports its fill level. Count blocks already posted but not yet received
+  by the player as queued too, or a stale report after a main-thread stall
+  over-fills the queue. Bound the player's queue (`preview.html` drops the
+  oldest beyond 150 ms).
+- Pump only while `ctx.state === 'running'`. Create/resume the context
+  inside the user gesture, and on `ctx.onstatechange` to anything else call
+  `wasm_audio_set_autoclock(1)`.
 - Threading: call `wasm_audio_render` from the thread that runs the app loop
   (the main thread for the full emulator, the worker for the module host).
   No concurrent calls; nothing here is thread-safe. Move blocks to the

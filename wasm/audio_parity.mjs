@@ -86,6 +86,33 @@ for (const corePath of cores) {
             assert.ok(renderMs(core, 20) > 8000, 'held tone sounds');
             core._wasm_audio_reset();
             assert.equal(peak(core, 1024), 0, 'reset silences a held tone');
+            // An app that ends with a full command queue: its sound fades out
+            // (no hard cut), nothing it queued leaks, and the next app's first
+            // tone - queued before any render, as a begin() would - plays.
+            const absMax = a => a.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+            const block = n => Array.from(new Int16Array(core.HEAP16.buffer, core._wasm_audio_buffer(), core._wasm_audio_render(n)));
+            core._wasm_module_start();
+            core._cf_tone_play(440, 0);
+            assert.ok(renderMs(core, 20) > 8000, 'app tone sounds');
+            for (let i = 0; i < 80; ++i) core._cf_tone_play(500 + i, 0);   // > 64: the queue is full
+            core._wasm_module_end();
+            let tail = block(256);
+            assert.ok(absMax(tail.slice(0, 32)) > 1000, 'ending is a fade, not a hard cut');
+            assert.ok(absMax(tail.slice(230)) < 200, 'fade done in about 5 ms');
+            renderMs(core, 10);
+            assert.equal(core._wasm_audio_active(), 0, 'nothing the ended app queued plays');
+            core._wasm_module_start();
+            core._cf_tone_play(440, 0);
+            assert.ok(renderMs(core, 20) > 8000, 'second app tone sounds');
+            for (let i = 0; i < 80; ++i) core._cf_tone_play(500 + i, 0);
+            core._wasm_module_end();
+            core._wasm_module_start();
+            core._cf_tone_play(1000, 50);   // the next app's begin()
+            tail = block(256);
+            assert.ok(absMax(tail.slice(0, 32)) > 1000, 'switching apps fades, no hard cut');
+            assert.ok(renderMs(core, 40) > 8000, "next app's first tone plays");
+            renderMs(core, 30);
+            core._wasm_module_end();
             // Auto clock: with nothing pulling samples, frames keep time.
             core._wasm_audio_set_autoclock(1);
             core._wasm_module_frame();   // starts the clock
@@ -95,7 +122,7 @@ for (const corePath of cores) {
             await sleep(80);
             core._wasm_module_frame();
             assert.equal(core._wasm_audio_active(), 0, 'auto clock ended the tone');
-            result.renderContract = 'tone, auto-stop, reset, auto clock';
+            result.renderContract = 'tone, auto-stop, reset, app switch with full queue, auto clock';
         } else {
             result.renderContract = 'rate, buffer, reset';
         }

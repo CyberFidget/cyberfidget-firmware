@@ -49,18 +49,32 @@ assert.doesNotThrow(() => guest.imports.cf.display_string_width(end - 96, 96));
 const stepsPtr = end - 512;
 const steps = new DataView(memory.buffer);
 new Uint8Array(memory.buffer, stepsPtr, 512).fill(0);
-steps.setFloat32(stepsPtr, 440, true); steps.setUint16(stepsPtr + 4, 1, true);
-steps.setFloat32(stepsPtr + 8, 660, true); steps.setUint16(stepsPtr + 12, 1, true);
+steps.setFloat32(stepsPtr, 440, true); steps.setUint16(stepsPtr + 4, 30, true);
+steps.setFloat32(stepsPtr + 8, 660, true); steps.setUint16(stepsPtr + 12, 30, true);
 guest.imports.cf.seq_play(stepsPtr, 1000); // Validate/copy only the clamped 64 steps.
 new Uint8Array(memory.buffer, stepsPtr, 512).fill(0);
 core.HEAPU8.fill(0, core._wasm_module_buffer(), core._wasm_module_buffer() + 512);
-// Steps 440 Hz and 660 Hz, 1 ms each: a zeroed copy would be two silent rests.
-let seqPeak = 0;
-for (let i = 0; i < 4; ++i) {
+// Steps 440 Hz then 660 Hz, 30 ms (1323 samples) each, from the first
+// rendered sample. Each must sound at its own pitch in its own window: a
+// zeroed or partly zeroed copy renders rests there. Zero crossings over 1000
+// samples: 440 Hz ~ 20, 660 Hz ~ 30.
+const seq = new Int16Array(3072);
+for (let off = 0; off < seq.length; off += 256) {
     const n = core._wasm_audio_render(256);
-    for (const v of new Int16Array(core.HEAP16.buffer, core._wasm_audio_buffer(), n)) seqPeak = Math.max(seqPeak, Math.abs(v));
+    seq.set(new Int16Array(core.HEAP16.buffer, core._wasm_audio_buffer(), n), off);
 }
-assert.ok(seqPeak > 500, 'Audio engine must play the persistent sequence copy');
+function stepWindow(from) {
+    const w = seq.subarray(from, from + 1000);
+    let peak = 0, crossings = 0;
+    for (let i = 0; i < w.length; ++i) {
+        peak = Math.max(peak, Math.abs(w[i]));
+        if (i && (w[i - 1] < 0) !== (w[i] < 0)) ++crossings;
+    }
+    return { peak, crossings };
+}
+const seqSteps = [stepWindow(250), stepWindow(1323 + 250)];
+assert.ok(seqSteps[0].peak > 2000 && Math.abs(seqSteps[0].crossings - 20) <= 2, 'Sequence step 1 (440 Hz) must play: ' + JSON.stringify(seqSteps[0]));
+assert.ok(seqSteps[1].peak > 2000 && Math.abs(seqSteps[1].crossings - 30) <= 2, 'Sequence step 2 (660 Hz) must play: ' + JSON.stringify(seqSteps[1]));
 core._wasm_audio_set_autoclock(1);   // nothing pulls samples from here on
 core._cf_seq_stop();
 core._wasm_module_start();
@@ -98,5 +112,5 @@ core._wasm_module_frame();
 assert.equal(endCalls, 1);
 assert.equal(exits, 2);
 console.log(JSON.stringify({ frames: 300, nonBlank, distinctFramebuffers: hashes.size, flushes,
-    ledUpdates, seqPeak, importCounts: guest.importCounts, deferredExit: 'passed' }, null, 2));
+    ledUpdates, seqSteps, importCounts: guest.importCounts, deferredExit: 'passed' }, null, 2));
 core._wasm_stop();

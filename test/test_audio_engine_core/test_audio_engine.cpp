@@ -1049,6 +1049,7 @@ struct DeviceGlueModel {
     Command q[24];               // AudioEngineTask::kQueueDepth
     int qn = 0;
     float volume = 0.7f;
+    bool volumePending = false;  // AudioManager::volumePending
     ToneControl tone{&send};
 
     DeviceGlueModel() {
@@ -1065,14 +1066,20 @@ struct DeviceGlueModel {
     void render(int16_t* out, int frames) {
         for (int i = 0; i < qn; ++i) engine.apply(q[i]);
         qn = 0;
+        // AudioManager::loop() re-sends a volume the full queue refused; it
+        // lands after what was queued before it, at the next block.
+        if (volumePending) {
+            engine.apply(Command::master(cf_audio::volumeToMasterQ15(volume)));
+            volumePending = false;
+        }
         engine.render(out, frames);
     }
     void setVolume(float v) {
-        if (v < 0.0f) v = 0.0f;
+        if (!(v >= 0.0f)) v = 0.0f;   // also NaN
         if (v > 1.0f) v = 1.0f;
         const bool changed = cf_audio::volumeToMasterQ15(v) != cf_audio::volumeToMasterQ15(volume);
         volume = v;
-        if (changed) send(Command::master(cf_audio::volumeToMasterQ15(volume)));
+        if (changed) volumePending = !send(Command::master(cf_audio::volumeToMasterQ15(volume)));
     }
     void playTone(float hz, int ms) { tone.playTone(&engine, hz, ms); }
     void stopTone() { tone.stopTone(&engine); }
@@ -1120,6 +1127,24 @@ void test_tone_script_checksum() {
     delete m;
 }
 
+// A volume change the full queue refuses is kept and lands at the next block
+// (AudioManager's volumePending retry; the emulator's glue does the same).
+void test_volume_change_survives_a_full_queue() {
+    DeviceGlueModel* m = new DeviceGlueModel();
+    int16_t buf[1024];
+    m->render(buf, 256);
+    TEST_ASSERT_EQUAL_INT32((int32_t)(cf_audio::volumeToMasterQ15(0.7f) << 15), m->engine.masterGainQ30());
+    while (m->qn < 24) m->playTone(1000.0f, 0);   // fill the queue
+    m->setVolume(0.2f);
+    TEST_ASSERT_TRUE(m->volumePending);
+    m->setVolume(0.2f);                           // same value again: still pending, not lost
+    TEST_ASSERT_TRUE(m->volumePending);
+    m->render(buf, 1024);                         // drain; the 10 ms ramp completes
+    TEST_ASSERT_FALSE(m->volumePending);
+    TEST_ASSERT_EQUAL_INT32((int32_t)(cf_audio::volumeToMasterQ15(0.2f) << 15), m->engine.masterGainQ30());
+    delete m;
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_tone_envelope_and_gate_lengths_in_samples);
@@ -1158,5 +1183,6 @@ int main(int, char**) {
     RUN_TEST(test_golden_checksum);
     RUN_TEST(test_volume_curve_is_pinned);
     RUN_TEST(test_tone_script_checksum);
+    RUN_TEST(test_volume_change_survives_a_full_queue);
     return UNITY_END();
 }
