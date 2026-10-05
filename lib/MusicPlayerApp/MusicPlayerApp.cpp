@@ -532,7 +532,7 @@ void MusicPlayerApp::startOnboardSpeaker() {
 
     // Release AudioManager's I2S port 0 so we can use it. If the tone engine
     // still holds it, opening the port here would fail or fight over it.
-    if (!HAL::audioManager().releaseI2S()) {
+    if (!HAL::audioManager().releaseI2S(&MusicPlayerApp::stopSpeakerForSleep)) {
         MPLAYER_LOG("startOnboardSpeaker: I2S port 0 still held by the tone engine");
         setState(STATE_CONNECT_FAIL);
         return;
@@ -571,6 +571,15 @@ void MusicPlayerApp::startOnboardSpeaker() {
     createAudioPipeline();
     setState(STATE_MAIN_MENU);
     MPLAYER_LOG("startOnboardSpeaker: ready");
+}
+
+// Deep sleep while the speaker plays: the same stop as leaving the app
+// (playback stops with its fade, then the I2S output is torn down and port 0
+// returned).
+void MusicPlayerApp::stopSpeakerForSleep() {
+    if (instance == nullptr) return;
+    instance->stopPlayback();
+    instance->destroyAudioPipeline();
 }
 
 void MusicPlayerApp::stopOnboardSpeaker() {

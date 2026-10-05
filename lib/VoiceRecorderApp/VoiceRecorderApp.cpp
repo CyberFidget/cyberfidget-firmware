@@ -1037,7 +1037,7 @@ bool VoiceRecorderApp::buildPlaybackPipeline(const char* path) {
 
     // Borrow I2S port 0 from AudioManager's tone engine (MusicPlayerApp pattern).
     // If the engine could not let go of it, do not open the port.
-    if (!HAL::audioManager().releaseI2S()) {
+    if (!HAL::audioManager().releaseI2S(&VoiceRecorderApp::stopPlaybackForSleep)) {
         ESP_LOGE(TAG_VREC, "I2S port 0 still held by the tone engine");
         return false;   // caller calls destroyPlaybackPipeline() to unwind
     }
@@ -1092,6 +1092,12 @@ bool VoiceRecorderApp::buildPlaybackPipeline(const char* path) {
         pCopier = new audio_tools::StreamCopy(*pDecode, playFile);
     }
     return true;
+}
+
+// Deep sleep during playback: the app's own teardown (closes the stream and
+// returns port 0).
+void VoiceRecorderApp::stopPlaybackForSleep() {
+    if (instance != nullptr) instance->destroyPlaybackPipeline();
 }
 
 void VoiceRecorderApp::destroyPlaybackPipeline() {

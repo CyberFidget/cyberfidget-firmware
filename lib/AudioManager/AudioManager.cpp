@@ -152,7 +152,7 @@ bool AudioManager::isSequencePlaying() const {
     return s_tone.isSequencePlaying(AudioEngineTask::engine());
 }
 
-bool AudioManager::releaseI2S() {
+bool AudioManager::releaseI2S(void (*stopBorrower)()) {
     // stop() fades every voice, stops the sequencer and lets the DMA cushion
     // play out silence; it reports success only once the render task has
     // acknowledged its exit and the channel is deleted.
@@ -161,14 +161,30 @@ bool AudioManager::releaseI2S() {
         return false;
     }
     s_tone.forget();
-    engineWanted = false;
+    engineWanted = false;   // loop() leaves the port alone until reclaimI2S()
+    borrowerStop = stopBorrower;
     return true;
 }
 
 bool AudioManager::reclaimI2S() {
+    borrowerStop = nullptr;
+    if (quiescing) return true;   // going to sleep: the port stays released
     engineWanted = true;   // loop() keeps retrying if this start fails
     if (AudioEngineTask::running()) return true;
     return startEngine();
+}
+
+bool AudioManager::stopForSleep() {
+    if (borrowerStop != nullptr) {
+        // The app streaming on port 0 ends its stream through its own stop
+        // path, which hands the port back with reclaimI2S().
+        void (*stopFn)() = borrowerStop;
+        borrowerStop = nullptr;
+        quiescing = true;
+        stopFn();
+        quiescing = false;
+    }
+    return releaseI2S();
 }
 
 void AudioManager::enableMic(bool on) {

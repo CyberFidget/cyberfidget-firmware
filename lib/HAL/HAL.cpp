@@ -397,10 +397,20 @@ namespace HAL
     void enterDeepSleep(bool hardShutdown)
     {
         if (!UpdateSession::prepareDeepSleep(hardShutdown)) return;
-        // Every path to sleep ends audio here: fade, let the render task
-        // acknowledge its exit, delete the channel (no cut-off tone at sleep
-        // entry). A port lent to an app's own stream is left to that app.
-        s_audioManager.releaseI2S();
+        // Every path to sleep ends audio here: an app streaming on port 0
+        // stops through its own stop path, then the engine fades, its render
+        // task acknowledges its exit and the channel is deleted.
+        if (!s_audioManager.stopForSleep()) {
+            if (!hardShutdown) {
+                // Never sleep with the renderer alive: stay awake; the next
+                // sleep attempt retries (the stop request stays set).
+                Serial.println("[audio] sleep deferred: engine did not stop");
+                return;
+            }
+            // Empty battery: power down anyway after the bounded (500 ms)
+            // wait. Deep sleep halts the CPU and the I2S clock with it.
+            Serial.println("[audio] engine did not stop; shutting down anyway");
+        }
         // Arms the next background check-in (only a timer wake can run one).
         if (!hardShutdown && s_beforeSleep) s_beforeSleep();
         if (!hardShutdown) {

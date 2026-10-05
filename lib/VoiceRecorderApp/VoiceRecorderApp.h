@@ -224,6 +224,7 @@ private:
     void restartPlaybackStream();     // replay from the top (after EOF)
     bool buildPlaybackPipeline(const char* path);
     void destroyPlaybackPipeline();
+    static void stopPlaybackForSleep();   // port-0 borrower stop (AudioManager::stopForSleep)
     void updatePlaybackVolume();
 
     // --- Delete (REC_STATE_CONFIRM_DELETE) ---

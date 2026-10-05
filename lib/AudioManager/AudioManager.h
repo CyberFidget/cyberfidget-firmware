@@ -45,10 +45,16 @@ public:
 
     // I2S port sharing — music player needs I2S0 for onboard speaker output.
     // releaseI2S: silence tones/sequences and free port 0. Returns false if
-    // port 0 could not be freed - the caller must not open it then.
+    // port 0 could not be freed - the caller must not open it then. A caller
+    // that streams on port 0 passes its own stop function (ends its stream
+    // and calls reclaimI2S); stopForSleep() uses it.
     // reclaimI2S: take port 0 back for tones; on failure loop() keeps retrying.
-    bool releaseI2S();
+    bool releaseI2S(void (*stopBorrower)() = nullptr);
     bool reclaimI2S();
+
+    // Before deep sleep: stop whichever app streams on port 0 (its own stop
+    // path), then stop the engine. True when port 0 is quiet and released.
+    bool stopForSleep();
 
     // Mic control
     void enableMic(bool on);
@@ -65,6 +71,8 @@ private:
     bool     engineWanted = false;     // set by init()/reclaimI2S(), cleared by releaseI2S()
     bool     volumePending = false;    // a volume change still to send
     uint32_t engineRetryAtMs = 0;
+    void   (*borrowerStop)() = nullptr;  // the current port-0 borrower's own stop
+    bool     quiescing = false;        // stopForSleep(): a returned port stays released
 
     // --- Mic chain (RX) ---
     I2SConfig            micCfg;             // persisted RX config
