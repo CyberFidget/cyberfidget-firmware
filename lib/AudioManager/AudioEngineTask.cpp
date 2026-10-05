@@ -54,6 +54,7 @@ volatile uint32_t s_gapMaxUs = 0;
 // Published by the render task about every 64 blocks from its own handle, so
 // no reader ever inspects a task that may have deleted itself.
 volatile uint32_t s_stackHwm = 0;
+std::atomic<uint32_t> s_lastSoundMs{0};
 int64_t s_lastWriteUs = 0;
 const uint32_t kBlockUs = (uint32_t)(1000000ull * kBlockFrames / cf_audio::kSampleRate);
 const uint32_t kCushionUs = (uint32_t)(1000000ull * kBlockFrames * kDmaDescNum / cf_audio::kSampleRate);
@@ -126,6 +127,9 @@ void renderTask(void*) {
             if (gap > kCushionUs + kBlockUs) s_gapUnderruns = s_gapUnderruns + 1;
         }
         s_lastWriteUs = nowUs;
+        if (s_engine->activeVoices() > 0 || (s_engine->sequenceStatus() & 1u)) {
+            s_lastSoundMs.store((uint32_t)(nowUs / 1000) | 1u, std::memory_order_relaxed);
+        }
     }
     s_exited.store(true, std::memory_order_release);
     vTaskDelete(nullptr);
@@ -243,6 +247,8 @@ bool stop() {
 }
 
 bool running() { return s_task != nullptr && !s_wedged; }
+
+uint32_t lastSoundMs() { return s_lastSoundMs.load(std::memory_order_relaxed); }
 
 bool send(const Command& c) {
     if (!running() || !s_queue) return false;

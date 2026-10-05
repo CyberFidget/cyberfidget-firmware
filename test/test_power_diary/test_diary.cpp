@@ -174,6 +174,32 @@ static void test_upload_window_normal_run_stays_complete() {
         TEST_ASSERT_EQUAL_UINT32(20 + i, records[w.first + i].seq);
 }
 
+static void test_awake_sample_waits_for_silence_but_not_forever() {
+    AwakeWriteGate gate;
+    const uint32_t maxDefer = 600;
+    TEST_ASSERT_FALSE(gate.writeNow(10, false, maxDefer));   // nothing held
+    // No audio: written at once.
+    gate.hold(100);
+    TEST_ASSERT_TRUE(gate.writeNow(100, false, maxDefer));
+    gate.pending = false;
+    // Audio playing: held...
+    gate.hold(1600);
+    TEST_ASSERT_FALSE(gate.writeNow(1600, true, maxDefer));
+    TEST_ASSERT_FALSE(gate.writeNow(2199, true, maxDefer));
+    // ...a second hold while pending keeps the original due tick...
+    gate.hold(1900);
+    TEST_ASSERT_EQUAL_UINT32(1600, gate.since);
+    // ...written as soon as audio stops,
+    TEST_ASSERT_TRUE(gate.writeNow(1700, false, maxDefer));
+    // or after the bound even if audio never stops.
+    TEST_ASSERT_TRUE(gate.writeNow(2200, true, maxDefer));
+    // Tick counter wrap.
+    AwakeWriteGate w;
+    w.hold(0xFFFFFF00u);
+    TEST_ASSERT_FALSE(w.writeNow(0x00000100u, true, maxDefer));   // 512 ticks
+    TEST_ASSERT_TRUE(w.writeNow(0x00000158u, true, maxDefer));    // 600 ticks
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_codec_round_trip_all_events_and_clamps);
@@ -188,5 +214,6 @@ int main(int, char**) {
     RUN_TEST(test_upload_window_drops_decreasing_sequence);
     RUN_TEST(test_upload_window_normal_run_stays_complete);
     RUN_TEST(test_an_answered_upload_waits_a_day);
+    RUN_TEST(test_awake_sample_waits_for_silence_but_not_forever);
     return UNITY_END();
 }

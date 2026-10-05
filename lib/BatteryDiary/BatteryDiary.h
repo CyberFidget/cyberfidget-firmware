@@ -221,6 +221,24 @@ inline uint32_t rotationReadOffsetBytes(uint32_t existing_records,
     return rotationDropCount(existing_records, incoming_records) * (uint32_t)kRecordSize;
 }
 
+// The periodic awake sample is a flash write, and a flash write stalls the
+// audio render task (its code runs from flash). While audio plays the sample
+// waits in RAM; it is written at the first tick without audio, or after
+// maxDeferTicks at the latest, so it is never held forever.
+struct AwakeWriteGate {
+    bool pending = false;
+    uint32_t since = 0;      // tick the sample fell due
+    void hold(uint32_t tick) {
+        if (!pending) {
+            pending = true;
+            since = tick;
+        }
+    }
+    bool writeNow(uint32_t tick, bool audioActive, uint32_t maxDeferTicks) const {
+        return pending && (!audioActive || tick - since >= maxDeferTicks);
+    }
+};
+
 #ifndef HOST_TEST
 
 struct Stats {
@@ -236,7 +254,9 @@ struct Stats {
 };
 
 bool begin(const char* wake_cause_name);
-void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr);
+// audioActive: sound is playing now; the periodic flash write then waits
+// (see AwakeWriteGate). Sleep, shutdown and check-in writes never wait.
+void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr, bool audioActive = false);
 void onTimerCheckin(int32_t vcell_mv);
 bool timerFlushDue();
 bool flushTimerCheckins();

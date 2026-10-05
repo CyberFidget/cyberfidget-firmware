@@ -43,6 +43,10 @@ public:
     void stopSequence();
     bool isSequencePlaying() const;
 
+    // Sound is playing, played within the last second, or an app streams on
+    // port 0. Cheap; for deferring flash writes that would stall audio.
+    bool isAudioActive() const;
+
     // I2S port sharing — music player needs I2S0 for onboard speaker output.
     // releaseI2S: silence tones/sequences and free port 0. Returns false if
     // port 0 could not be freed - the caller must not open it then. A caller

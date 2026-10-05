@@ -172,6 +172,12 @@ bool AudioManager::isSequencePlaying() const {
     return s_tone.isSequencePlaying(AudioEngineTask::engine());
 }
 
+bool AudioManager::isAudioActive() const {
+    if (borrowerStop != nullptr) return true;   // Music Player / Voice Notes own port 0
+    const uint32_t last = AudioEngineTask::lastSoundMs();
+    return last != 0 && (uint32_t)(millis() - last) < 1000;
+}
+
 bool AudioManager::releaseI2S(BorrowerStop stopBorrower) {
     // stop() fades every voice, stops the sequencer and lets the DMA cushion
     // play out silence; it reports success only once the render task has

@@ -24,6 +24,9 @@ constexpr uint32_t kStatsSchema = 1;
 constexpr uint32_t kRtcMagic = 0x42445231U;
 constexpr uint32_t kFirstAwakeTicks = 30U * 5U;
 constexpr uint32_t kAwakeSampleTicks = 5U * 60U * 5U;
+// A sample held back by audio is written after 2 min at the latest (well
+// inside the 5 min sample period, so two never queue up).
+constexpr uint32_t kMaxAwakeDeferTicks = 2U * 60U * 5U;
 
 #pragma pack(push, 1)
 struct StoredStats {
@@ -60,6 +63,12 @@ static Stats s_stats;
 static bool s_ready = false;
 static uint32_t s_awakeTicks = 0;
 static uint32_t s_nextSampleTick = kFirstAwakeTicks;
+// The awake sample waiting for silence (see AwakeWriteGate).
+static AwakeWriteGate s_sampleGate;
+static uint32_t s_heldTime = 0;
+static int16_t s_heldMv = 0;
+static int32_t s_heldSoc = 0;
+static int32_t s_heldCrate = 0;
 static uint8_t s_onTimeSubticks = 0;
 static bool s_firstAwakeSample = true;
 static ChargeCycleDetector s_cycleDetector;
@@ -354,7 +363,7 @@ bool begin(const char* wake_cause_name) {
     return appendDirect(BOOT, wakeCauseCode(wake_cause_name), -1, 0, 0);
 }
 
-void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr) {
+void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr, bool audioActive) {
     Guard guard;
     if (!s_ready) return;
     ++s_awakeTicks;
@@ -364,18 +373,36 @@ void onAwakeTick(float vcell, float soc_pct, float crate_pct_hr) {
     }
     int16_t mv = millivolts(vcell);
     updateVoltageStats(mv);
-    if (s_awakeTicks < s_nextSampleTick) return;
-    s_nextSampleTick += kAwakeSampleTicks;
-    int32_t soc = hundredths(soc_pct);
-    int32_t crate = hundredths(crate_pct_hr);
-    int8_t crate_qtr = clampCrateQuarterPctHr(crate);
-    if (s_firstAwakeSample) {
-        resetChargeCycleDetector(&s_cycleDetector, crate_qtr > 0);
-        s_firstAwakeSample = false;
+    if (s_awakeTicks >= s_nextSampleTick) {
+        s_nextSampleTick += kAwakeSampleTicks;
+        int32_t soc = hundredths(soc_pct);
+        int32_t crate = hundredths(crate_pct_hr);
+        int8_t crate_qtr = clampCrateQuarterPctHr(crate);
+        if (s_firstAwakeSample) {
+            resetChargeCycleDetector(&s_cycleDetector, crate_qtr > 0);
+            s_firstAwakeSample = false;
+        }
+        if (feedChargeCycle(&s_cycleDetector, crate_qtr, 5U * 60U))
+            ++s_stats.charge_cycle_count;
+        // Taken now (values and time); written when no audio plays.
+        s_heldTime = millis();
+        s_heldMv = mv;
+        s_heldSoc = soc;
+        s_heldCrate = crate;
+        s_sampleGate.hold(s_awakeTicks);
     }
-    if (feedChargeCycle(&s_cycleDetector, crate_qtr, 5U * 60U))
-        ++s_stats.charge_cycle_count;
-    appendDirect(AWAKE_SAMPLE, millis(), mv, soc, crate);
+    if (s_sampleGate.writeNow(s_awakeTicks, audioActive, kMaxAwakeDeferTicks)) {
+        s_sampleGate.pending = false;
+        appendDirect(AWAKE_SAMPLE, s_heldTime, s_heldMv, s_heldSoc, s_heldCrate);
+    }
+}
+
+// A held awake sample goes into the RTC ring (no flash write) ahead of a
+// sleep or shutdown record, so it is not lost.
+static void keepHeldSample() {
+    if (!s_sampleGate.pending) return;
+    s_sampleGate.pending = false;
+    appendRtc(makeNextRecord(AWAKE_SAMPLE, s_heldTime, s_heldMv, s_heldSoc, s_heldCrate));
 }
 
 void onTimerCheckin(int32_t vcell_mv) {
@@ -414,6 +441,7 @@ void onTimerShutdown(int32_t vcell_mv) {
 void onSleepEnter(float vcell, float soc_pct, float crate_pct_hr) {
     Guard guard;
     if (!s_ready) return;
+    keepHeldSample();
     appendRtc(makeNextRecord(SLEEP_ENTER, millis(), millivolts(vcell),
                              hundredths(soc_pct), hundredths(crate_pct_hr)));
     writeStats();
@@ -422,6 +450,7 @@ void onSleepEnter(float vcell, float soc_pct, float crate_pct_hr) {
 void onRuntimeShutdown(float vcell, float soc_pct, float crate_pct_hr) {
     Guard guard;
     if (!s_ready) return;
+    keepHeldSample();
     appendRtc(makeNextRecord(SHUTDOWN_RUNTIME, millis(), millivolts(vcell),
                              hundredths(soc_pct), hundredths(crate_pct_hr)));
     flushRtcInternal();
@@ -515,6 +544,7 @@ bool clear() {
     resetRtc(nextSeq, 0, (uint8_t)(lifetime_boots & 0xFFU));
     s_awakeTicks = 0;
     s_nextSampleTick = kFirstAwakeTicks;
+    s_sampleGate.pending = false;
     s_onTimeSubticks = 0;
     s_firstAwakeSample = true;
     resetChargeCycleDetector(&s_cycleDetector, false);
