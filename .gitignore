@@ -27,3 +27,6 @@ PLAN.md
 CLAUDE.md
 __pycache__/
 wasm/device_module/*.wat
+
+# App kit builder dependencies (wasm/app_kit/package-lock.json pins them)
+node_modules/

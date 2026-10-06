@@ -60,6 +60,11 @@ pack can be dropped in without reflashing.
 `companion-pack.zip` (the full pack) and `companion-index.html` (the shell
 alone) as downloads. Build from source only when you're changing the companion.
 
+Releases also attach `cf-app-kit.zip` (app compilation and emulation inputs)
+and `cf-app-kit.manifest.json` (their file hashes). See the
+[app kit README](wasm/app_kit/README.md). A manual release may explicitly skip
+these assets; the website will not follow that release.
+
 Three equivalent ways to build it:
 
 ```bash
@@ -178,6 +183,7 @@ does and how to invoke it.
 
 | Tool | What it does |
 |---|---|
+| [`wasm/app_kit/`](wasm/app_kit/README.md) | Builds and verifies the app compilation and emulation kit attached to each firmware release. |
 | [`tools/portal-preview/`](tools/portal-preview/README.md) | Serves the device's web-portal pages in a desktop browser with fixture API data, so portal UI changes can be reviewed and screenshotted without a device. Rendering harness only - not a device simulator. |
 | [`tools/trusted-roots/`](tools/trusted-roots/README.md) | Generates the device's short trusted root certificate table from `lib/TrustedRoots/roots/`, and checks that each protected host's live chain still ends in that list (also run, non-blocking, by the release workflow). |
 
