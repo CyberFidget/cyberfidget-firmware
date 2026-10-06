@@ -59,6 +59,15 @@ public:
     // port 0. Cheap; for deferring flash writes that would stall audio.
     bool isAudioActive() const;
 
+    // Speaker EQ preset (index into kSpeakerEqPresets, SpeakerEqPresets.h).
+    // setSpeakerEqPreset applies it to the running engine at once and saves
+    // it later: the flash write is held back while sound plays (it would
+    // stall the audio) and done from loop() once it is quiet, or before sleep.
+    // An out-of-range id is ignored. The saved choice is applied on every
+    // engine start; a missing or unknown stored id means the default.
+    int  speakerEqPreset();
+    void setSpeakerEqPreset(int id);
+
     // I2S port sharing — music player needs I2S0 for onboard speaker output.
     // releaseI2S: silence tones/sequences and free port 0. Returns false if
     // port 0 could not be freed - the caller must not open it then. A caller
@@ -100,6 +109,12 @@ private:
     I2SStream            i2sIn;              // RX from ICS-43434
     VolumeMeter          micMeter;           // measures amplitude
     StreamCopy           micCopy;            // convIn -> micMeter
+
+    int      eqPreset = 0;             // selected preset; valid once eqLoaded
+    bool     eqLoaded = false;         // eqPreset read from settings
+    bool     eqSavePending = false;    // eqPreset changed, not yet written
+    void loadEqPreset();
+    void saveEqIfQuiet();
 
     bool startEngine();   // start the engine task and give it the volume
 

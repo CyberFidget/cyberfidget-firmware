@@ -514,27 +514,46 @@ void test_eq_output_is_pinned() {
 }
 
 void test_default_speaker_eq_preset_is_valid_and_clean() {
-    TEST_ASSERT_TRUE(kSpeakerEqDefault > 0 && kSpeakerEqDefault < kSpeakerEqPresetCount);
-    TEST_ASSERT_FALSE(kSpeakerEqPresets[0].enabled);   // index 0 = off
+    TEST_ASSERT_TRUE(kSpeakerEqPresetCount >= 3);
+    TEST_ASSERT_EQUAL_INT(0, kSpeakerEqDefault);
+    TEST_ASSERT_EQUAL_STRING("Balanced", kSpeakerEqPresets[kSpeakerEqDefault].name);
+    // Every preset passes the engine's validation and is clip-free on a
+    // full-volume tone at the peaks and on an 8-voice overload.
     for (int i = 0; i < kSpeakerEqPresetCount; ++i) {
+        TEST_ASSERT_NOT_NULL(kSpeakerEqPresets[i].name);
+        TEST_ASSERT_NOT_NULL(kSpeakerEqPresets[i].hint);
         if (!kSpeakerEqPresets[i].enabled) continue;
-        BiquadCoefs b[3];
-        int32_t gain = 0;
-        TEST_ASSERT_TRUE(designSpeakerEq(kSpeakerEqPresets[i].eq, b, &gain));
+        BiquadCoefs pb[3];
+        int32_t pg = 0;
+        TEST_ASSERT_TRUE(designSpeakerEq(kSpeakerEqPresets[i].eq, pb, &pg));
+        Engine& pe = g_engine;
+        pe.reset(1);
+        for (uint8_t k = 0; k < 3; ++k) pe.apply(Command::eqBand(k, pb[k]));
+        TEST_ASSERT_TRUE(pe.commitEq(3, true, pg));
+        pe.apply(Command::noteOn(kToneVoice, kSine, Engine::hzToInc(2500.0f), 0, kLevelUnity, 128, kToneEnvelope));
+        pe.render(g_buf, 44100);
+        for (uint8_t v = 1; v < kVoices; ++v)
+            pe.apply(Command::noteOn(v, kPulse, Engine::hzToInc(500.0f * v), 0, kLevelUnity, 128, kToneEnvelope));
+        pe.render(g_buf, 44100);
+        TEST_ASSERT_EQUAL_UINT32(0, pe.clipCount());
     }
-    // The default on a full-volume tone and on an 8-voice overload: no clips.
+    // "Off" is flat apart from the protective high-pass: no peaks, no gain.
+    const SpeakerEqPreset& off = kSpeakerEqPresets[2];
+    TEST_ASSERT_EQUAL_STRING("Off", off.name);
+    TEST_ASSERT_TRUE(off.eq.hpfHz >= 20);
+    TEST_ASSERT_EQUAL_FLOAT(0, off.eq.p1Db);
+    TEST_ASSERT_EQUAL_FLOAT(0, off.eq.p2Db);
+    TEST_ASSERT_EQUAL_FLOAT(0, off.eq.gainDb);
+    // Stored ids: every preset's index round-trips; missing or unknown ids
+    // fall back to the default.
+    for (int i = 0; i < kSpeakerEqPresetCount; ++i)
+        TEST_ASSERT_EQUAL_INT(i, speakerEqPresetFromStored(true, (uint8_t)i));
+    TEST_ASSERT_EQUAL_INT(kSpeakerEqDefault, speakerEqPresetFromStored(false, 1));
+    TEST_ASSERT_EQUAL_INT(kSpeakerEqDefault, speakerEqPresetFromStored(true, (uint8_t)kSpeakerEqPresetCount));
+    TEST_ASSERT_EQUAL_INT(kSpeakerEqDefault, speakerEqPresetFromStored(true, 255));
     BiquadCoefs b[3];
     int32_t gain = 0;
     TEST_ASSERT_TRUE(designSpeakerEq(kSpeakerEqPresets[kSpeakerEqDefault].eq, b, &gain));
-    Engine& e = g_engine;
-    for (uint8_t i = 0; i < 3; ++i) e.apply(Command::eqBand(i, b[i]));
-    TEST_ASSERT_TRUE(e.commitEq(3, true, gain));
-    e.apply(Command::noteOn(kToneVoice, kSine, Engine::hzToInc(2500.0f), 0, kLevelUnity, 128, kToneEnvelope));
-    e.render(g_buf, 44100);
-    for (uint8_t v = 1; v < kVoices; ++v)
-        e.apply(Command::noteOn(v, kPulse, Engine::hzToInc(500.0f * v), 0, kLevelUnity, 128, kToneEnvelope));
-    e.render(g_buf, 44100);
-    TEST_ASSERT_EQUAL_UINT32(0, e.clipCount());
     // Out-of-range settings are refused.
     SpeakerEq bad = kSpeakerEqPresets[kSpeakerEqDefault].eq;
     bad.gainDb = 30;
