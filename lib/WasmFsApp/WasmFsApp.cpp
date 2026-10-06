@@ -21,6 +21,8 @@
 #include "MenuManager.h"
 #include "WasmAppShell.h"
 #include "WasmHostImports.h"
+#include "LoadoutManifest.h"
+#include "LoadoutStore.h"
 
 namespace WasmFsApp {
 namespace {
@@ -158,15 +160,51 @@ void drawLoadError(const char* line1, const char* line2) {
     d.display();
 }
 
+// The firmware release the website stamped for this app ("1.5.0"), or ""
+// when the entry has none or it isn't a plain x.y.z. People are told a
+// release number, never the HAL level.
+std::string minFirmwareFor(const std::string& id) {
+    if (id.empty()) return "";
+    std::string json;
+    LoadoutManifest::Loadout lo;
+    {
+        LoadoutStore::Guard guard;
+        if (!LoadoutStore::load(json)) return "";
+    }
+    if (!LoadoutManifest::parseManifest(json.c_str(), lo)) return "";
+    for (const auto& e : lo.entries) {
+        if (e.id != id) continue;
+        const std::string& v = e.minFirmware;
+        int dots = 0;
+        bool ok = !v.empty() && v.size() <= 11 && isdigit((unsigned char)v.front()) &&
+                  isdigit((unsigned char)v.back());
+        for (char ch : v) {
+            if (ch == '.') ++dots;
+            else if (!isdigit((unsigned char)ch)) ok = false;
+        }
+        return ok && dots == 2 ? v : "";
+    }
+    return "";
+}
+
+// Looked up once per launch: the refusal screen is redrawn every frame.
+std::string s_minFw;
+bool        s_minFwLoaded = false;
+
 void drawAbiUnsupported() {
-    char firmwareLine[32];
-    snprintf(firmwareLine, sizeof(firmwareLine), "firmware (ABI %d)", kDeviceHalAbi);
+    if (!s_minFwLoaded) {
+        s_minFw = minFirmwareFor(s_lastId);
+        s_minFwLoaded = true;
+    }
+    const std::string& minFw = s_minFw;
+    char line2[32];
+    if (!minFw.empty()) snprintf(line2, sizeof(line2), "%s or newer", minFw.c_str());
     auto& d = HAL::displayProxy();
     d.clear();
     d.setTextAlignment(TEXT_ALIGN_CENTER);
     d.setFont(ArialMT_Plain_10);
-    d.drawString(64, 18, "App needs newer");
-    d.drawString(64, 32, firmwareLine);
+    d.drawString(64, 18, minFw.empty() ? "This app needs" : "App needs firmware");
+    d.drawString(64, 32, minFw.empty() ? "newer firmware" : line2);
     d.drawString(64, 52, "press any button");
     d.display();
 }
@@ -269,6 +307,7 @@ bool guestRestartHelps() {
 void wasmFsAppBegin() {
     s_loadErr[0] = '\0';
     s_failedAbi = 0;
+    s_minFwLoaded = false;
     std::string path  = s_pendingPath;
     std::string label = s_pendingLabel;
     int abi = s_pendingAbi;

@@ -62,7 +62,8 @@ void test_reserved_fields_roundtrip(void) {
       "entries": [
         { "id": "APP_X", "name": "X", "category": "Games", "position": 0,
           "hidden": false, "format": "blob", "blobPath": "/apps/x.bin",
-          "version": "1.2.3", "abi": "hal-2", "signature": "deadbeef" }
+          "version": "1.2.3", "abi": "hal-2", "minFirmware": "1.5.0",
+          "signature": "deadbeef" }
       ]
     })JSON";
     Loadout l;
@@ -71,12 +72,14 @@ void test_reserved_fields_roundtrip(void) {
     TEST_ASSERT_EQUAL_STRING("/apps/x.bin", l.entries[0].blobPath.c_str());
     TEST_ASSERT_EQUAL_STRING("1.2.3",       l.entries[0].version.c_str());
     TEST_ASSERT_EQUAL_STRING("hal-2",       l.entries[0].abi.c_str());
+    TEST_ASSERT_EQUAL_STRING("1.5.0",       l.entries[0].minFirmware.c_str());
     TEST_ASSERT_EQUAL_STRING("deadbeef",    l.entries[0].signature.c_str());
 
     // Reserved fields survive a serialize -> parse round trip.
     Loadout l2;
     TEST_ASSERT_TRUE(parseManifest(serializeManifest(l).c_str(), l2));
     TEST_ASSERT_EQUAL_STRING("blob",     l2.entries[0].format.c_str());
+    TEST_ASSERT_EQUAL_STRING("1.5.0",    l2.entries[0].minFirmware.c_str());
     TEST_ASSERT_EQUAL_STRING("deadbeef", l2.entries[0].signature.c_str());
 }
 

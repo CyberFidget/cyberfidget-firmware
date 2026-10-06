@@ -76,6 +76,7 @@ struct LoadoutEntry {
     std::string blobPath;  ///< reserved: filesystem path to an app blob
     std::string version;   ///< reserved: app version string
     std::string abi;       ///< required ABI/HAL version for a blob
+    std::string minFirmware; ///< first firmware release (x.y.z) that runs the blob; shown to people
     std::string signature; ///< reserved: blob signature
 };
 

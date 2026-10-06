@@ -197,6 +197,7 @@ bool parseEntry(Cursor& c, LoadoutEntry& entry, bool& positionSeen) {
         else if (key == "blobPath")  { if (!parseString(c, entry.blobPath))  return false; }
         else if (key == "version")   { if (!parseString(c, entry.version))   return false; }
         else if (key == "abi")       { if (!parseString(c, entry.abi))       return false; }
+        else if (key == "minFirmware") { if (!parseString(c, entry.minFirmware)) return false; }
         else if (key == "signature") { if (!parseString(c, entry.signature)) return false; }
         else                         { if (!skipValue(c, 0))                 return false; }
 
@@ -581,6 +582,7 @@ std::string serializeManifest(const Loadout& loadout) {
         if (!e.blobPath.empty())  { out += ",\n"; appendStringField(out, "blobPath",  e.blobPath);  }
         if (!e.version.empty())   { out += ",\n"; appendStringField(out, "version",   e.version);   }
         if (!e.abi.empty())       { out += ",\n"; appendStringField(out, "abi",       e.abi);       }
+        if (!e.minFirmware.empty()) { out += ",\n"; appendStringField(out, "minFirmware", e.minFirmware); }
         if (!e.signature.empty()) { out += ",\n"; appendStringField(out, "signature", e.signature); }
         out += "\n    }";
     }
@@ -1091,6 +1093,7 @@ bool applyReplace(Loadout& loadout, const LoadoutEntry& entry) {
     e.blobPath = entry.blobPath;
     e.version  = entry.version;
     e.abi      = entry.abi;
+    e.minFirmware = entry.minFirmware;
     e.name     = entry.name;
     // A signature belongs to the blob it signed: the new blob's (or none).
     e.signature = entry.signature;
