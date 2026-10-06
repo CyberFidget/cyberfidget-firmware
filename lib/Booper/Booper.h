@@ -7,6 +7,7 @@
 #include "ButtonManager.h"
 #include "AudioManager.h"
 #include "DisplayProxy.h"
+#include "BooperChords.h"
 
 class Booper {
 public:
@@ -23,6 +24,8 @@ private:
 
     float volume; // Volume level (0.0 to 1.0)
     int octave;   // Octave shift for tones
+    int chordSet = 0; // Index into kBooperChordSets; RAM only, resets on reboot
+    void cycleChordSet();
 
     void registerButtonCallbacks();
     void unregisterButtonCallbacks();

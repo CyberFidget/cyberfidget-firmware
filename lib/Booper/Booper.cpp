@@ -29,6 +29,12 @@ void Booper::stopAllNotes() {
     for (int i = 0; i < kButtonCount; ++i) noteHandle[i] = -1;
 }
 
+void Booper::cycleChordSet() {
+    // Stop held notes first so none is left sounding at the old pitch.
+    stopAllNotes();
+    chordSet = (chordSet + 1) % kBooperChordSetCount;
+}
+
 void Booper::begin() {
     ESP_LOGI(TAG_MAIN, "begin() => registering booper callbacks...");
     registerButtonCallbacks();
@@ -95,7 +101,7 @@ void Booper::update() {
     display.clear();
     display.setTextAlignment(TEXT_ALIGN_CENTER);
     display.setFont(ArialMT_Plain_10);
-    display.drawString(64, 10, "Booper");
+    display.drawString(64, 10, String("Booper - ") + kBooperChordSets[chordSet].name);
     display.drawString(64, 22, "Volume: " + String((int)(volume * 100)) + "%");
     display.drawString(64, 34, "Octave: " + String(octave));
     display.drawString(64, 46, "Mic: " + String(micLin, 3) + " | " + String(micDb, 1) + " dBFS");
@@ -153,8 +159,8 @@ void Booper::handleButtonEvent(const ButtonEvent& event) {
 
 float Booper::getFrequencyForButton(int buttonIndex) {
     // Base frequencies for buttons
-    // A C major chord (C4, E4, G4, C5): any buttons held together sound consonant.
-    float baseFrequencies[] = { 261.63f, 329.63f, 392.00f, 523.25f };
+    // From the selected chord set (Major by default): buttons held together sound consonant.
+    const float* baseFrequencies = kBooperChordSets[chordSet].freq;
 
     int buttonOrder[] = {
         button_TopLeftIndex,
@@ -208,7 +214,8 @@ void Booper::onButtonBackPressed(const ButtonEvent& event)
 void Booper::onButtonSelectPressed(const ButtonEvent& event)
 {    
     // Press
-    if (event.eventType == ButtonEvent_Pressed){
-        //instance().selectCurrentItem();
+    // Select (bottom right) cycles the chord set
+    if (event.eventType == ButtonEvent_Pressed && instance){
+        instance->cycleChordSet();
     }
 }
