@@ -59,8 +59,8 @@ private:
     WasmAppRuntime(const WasmAppRuntime&) = delete;
     WasmAppRuntime& operator=(const WasmAppRuntime&) = delete;
 
-    // Links every "cf" host function into the loaded module (missing imports
-    // are tolerated). Returns false + lastError on a real link failure.
+    // Offers every host function; unused host entries are tolerated.
+    // Unresolved guest imports fail with lastError() = "abi_unsupported".
     bool linkHostFunctions();
 
     IM3Environment env     = nullptr;

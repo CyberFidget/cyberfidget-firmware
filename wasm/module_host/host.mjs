@@ -3,6 +3,17 @@
 // Browser-compatible adapter. Pass the preprocessed cf-imports.json table.
 export async function attachGuest(core, bytes, manifest) {
     const rows = manifest.filter(Boolean);
+    const module = await WebAssembly.compile(bytes);
+    const allowed = new Set(rows.map(row => `${row.module}.${row.name}`));
+    const missing = WebAssembly.Module.imports(module)
+        .filter(row => ['cf', 'wasi_snapshot_preview1', 'env'].includes(row.module))
+        .map(row => `${row.module}.${row.name}`).filter(key => !allowed.has(key));
+    if (missing.length) {
+        const error = new Error(`Unsupported app imports: ${missing.join(', ')}`);
+        error.name = 'CfImportUnsupported';
+        error.missing = missing;
+        throw error;
+    }
     let memory;
     const importCounts = {};
     const range = (ptr, len) => {
@@ -73,7 +84,7 @@ export async function attachGuest(core, bytes, manifest) {
             return fn(...args);
         };
     }
-    const { instance } = await WebAssembly.instantiate(bytes, imports);
+    const instance = await WebAssembly.instantiate(module, imports);
     memory = instance.exports.memory;
     if (!(memory instanceof WebAssembly.Memory)) throw new Error('Guest must export memory');
     const ex = instance.exports;

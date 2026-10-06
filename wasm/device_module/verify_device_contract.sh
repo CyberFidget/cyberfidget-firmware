@@ -57,11 +57,8 @@ if [ "$exports_ok" != true ] || [ "$imports_ok" != true ] || [ "$initial_mem_ok"
   exit 1
 fi
 
-hal_abi="$(grep -E '^[[:space:]]*#define[[:space:]]+CF_HAL_ABI[[:space:]]+[0-9]+' "$REPO_ROOT/wasm/device_module/cf_hal_abi.h" | awk '{print $3}' || true)"
-if ! [[ "$hal_abi" =~ ^[0-9]+$ ]]; then
-  echo "::error::Unable to determine CF_HAL_ABI from cf_hal_abi.h"
-  exit 1
-fi
+hal_abi="$("${CF_CPP:-emcc}" -E -P -x c "$REPO_ROOT/wasm/device_module/import_manifest.c" | \
+  node "$REPO_ROOT/wasm/device_module/verify_imports.mjs" "$DEVICE_WASM" --hal-abi)"
 
 device_wasm_basename="$(basename "$DEVICE_WASM")"
 device_wasm_dir="$(dirname "$DEVICE_WASM")"

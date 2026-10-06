@@ -14,6 +14,7 @@
 #include "cf_hal_abi.h"
 
 #include <stdint.h>
+#include "cf_hal_abi.h"
 
 #define CF_IMPORT(NAME) \
     __attribute__((import_module("cf"), import_name(NAME)))
@@ -24,8 +25,8 @@ extern "C" {
 
 // Declarations are expanded directly from the shared device interface table.
 #include "cf_params.h"
-#define CF_ROW(name, ret, sig, policy, args) CF_IMPORT(#name) ret cf_##name(CF_PARAMS(DECL, args));
-#define CF_STUB(module, name, ret, sig, fn, policy, args)
+#define CF_ROW(since, name, ret, sig, policy, args) CF_IMPORT(#name) ret cf_##name(CF_PARAMS(DECL, args));
+#define CF_STUB(since, module, name, ret, sig, fn, policy, args)
 #include "cf_imports.def"
 #undef CF_STUB
 #undef CF_ROW

@@ -98,9 +98,7 @@ static void moduleEnd() {
     moduleActive = false;
     moduleGuestCall(2, 0, 0);
     // Whatever the guest left playing stops with it, as on the device.
-    HAL::audioManager().stopSequence();
-    HAL::audioManager().stopTone();
-    HAL::audioManager().stopNotes();
+    wasmHostEndAudio();
     wasmHostClearExitRequest();
     EM_ASM({ if (Module.onAppExit) Module.onAppExit(); });
 }

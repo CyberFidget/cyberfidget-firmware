@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Dismo Industries LLC
-"""Check that the HAL import surface stays additive within an ABI major."""
+"""Check that the HAL import surface stays additive forever."""
 
 import argparse
 import re
@@ -12,7 +12,9 @@ from pathlib import Path
 from typing import Dict, Iterable, Optional
 
 
-IMPORT_START_RE = re.compile(r'\bCF_IMPORT\s*\(\s*"([^"]+)"\s*\)')
+IMPORT_START_RE = re.compile(
+    r'\bCF_IMPORT\s*\(\s*((?:"[^"]*"\s*)+)'
+    r'(?:,\s*(\d+)\s*,\s*"([^"]+)"\s*)?\)')
 DECLARATION_RE = re.compile(
     r'^\s*(?P<return_type>.+?)\s+(?P<symbol>[A-Za-z_]\w*)\s*'
     r'\((?P<parameters>.*)\)\s*;\s*$',
@@ -32,6 +34,8 @@ class Import:
     symbol: str
     return_type: str
     parameters: str
+    since: int = 1
+    wasm_signature: str = ''
 
     @property
     def signature(self) -> str:
@@ -46,13 +50,16 @@ def _normalize(fragment: str) -> str:
 
 
 def parse_imports(text: str, source: str) -> Dict[str, Import]:
+    text = COMMENT_RE.sub(' ', text)
     imports: Dict[str, Import] = {}
     starts = list(IMPORT_START_RE.finditer(text))
+    if len(starts) != len(re.findall(r'\bCF_IMPORT\s*\(\s*"', text)):
+        raise CheckError(f'{source}: malformed CF_IMPORT name, since level, or signature')
     if not starts:
         raise CheckError(f"{source}: no CF_IMPORT declarations found")
 
     for match in starts:
-        name = match.group(1)
+        name = ''.join(re.findall(r'"([^"]*)"', match.group(1)))
         semicolon = text.find(';', match.end())
         next_start = IMPORT_START_RE.search(text, match.end())
         if semicolon < 0 or (next_start and next_start.start() < semicolon):
@@ -68,6 +75,8 @@ def parse_imports(text: str, source: str) -> Dict[str, Import]:
             symbol=parsed.group('symbol'),
             return_type=_normalize(parsed.group('return_type')),
             parameters=_normalize(parsed.group('parameters')),
+            since=int(match.group(2) or 1),
+            wasm_signature=match.group(3) or '',
         )
     return imports
 
@@ -79,7 +88,7 @@ def parse_abi(text: str, source: str) -> int:
     return int(matches[0])
 
 
-def check(base_imports: Dict[str, Import], head_imports: Dict[str, Import]) -> Iterable[str]:
+def check(base_imports: Dict[str, Import], head_imports: Dict[str, Import], head_abi: int = 1) -> Iterable[str]:
     for name, base in base_imports.items():
         head = head_imports.get(name)
         if head is None:
@@ -88,6 +97,17 @@ def check(base_imports: Dict[str, Import], head_imports: Dict[str, Import]) -> I
             yield f'{name}: C symbol changed from {base.symbol} to {head.symbol}'
         elif (head.return_type, head.parameters) != (base.return_type, base.parameters):
             yield f'{name}: signature changed from "{base.signature}" to "{head.signature}"'
+        elif base.wasm_signature and head.wasm_signature != base.wasm_signature:
+            yield f'{name}: wasm signature changed'
+        if head and head.since != base.since:
+            yield f'{name}: since changed from {base.since} to {head.since}'
+    for name, head in head_imports.items():
+        if head.since < 1:
+            yield f'{name}: since must be positive'
+        if name not in base_imports and head.since != head_abi:
+            yield f'{name}: new import since {head.since} must equal CF_HAL_ABI {head_abi}'
+    if max(row.since for row in head_imports.values()) != head_abi:
+        yield 'CF_HAL_ABI must equal max(since)'
 
 
 def _git_show(ref: str, path: str) -> str:
@@ -120,6 +140,11 @@ def make_parser() -> argparse.ArgumentParser:
 
 def main(argv: Optional[Iterable[str]] = None) -> int:
     args = make_parser().parse_args(argv)
+    if (args.base_ref and not args.base_abi and args.head == 'wasm/device_module/cf_hal_imports.h'
+            and args.head_abi == 'wasm/device_module/cf_hal_abi.h'):
+        return subprocess.call([sys.executable, str(Path(__file__).resolve().parents[2] /
+                                'wasm/device_module/check_interface_additive.py'),
+                                '--base-ref', args.base_ref])
     try:
         if args.base_ref:
             if args.base_abi:
@@ -141,21 +166,18 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         head_imports = parse_imports(head_imports_text, args.head)
         base_abi = parse_abi(base_abi_text, base_abi_source)
         head_abi = parse_abi(head_abi_text, args.head_abi)
-        if head_abi > base_abi:
-            print(f'PASS: CF_HAL_ABI major changed from {base_abi} to {head_abi}')
-            return 0
         if head_abi < base_abi:
             raise CheckError(
-                f'CF_HAL_ABI major decreased from {base_abi} to {head_abi}; '
-                'the ABI major must not move backwards'
+                f'CF_HAL_ABI decreased from {base_abi} to {head_abi}; '
+                'the ABI level must not move backwards'
             )
 
-        problems = list(check(base_imports, head_imports))
+        problems = list(check(base_imports, head_imports, head_abi))
         if problems:
             for problem in problems:
-                print(f'ERROR: {problem}; bump CF_HAL_ABI (major) or restore the import', file=sys.stderr)
+                print(f'ERROR: {problem}; restore the import or add a new import name', file=sys.stderr)
             return 1
-        print(f'PASS: HAL imports are additive within CF_HAL_ABI major {head_abi}')
+        print(f'PASS: HAL imports are additive at CF_HAL_ABI level {head_abi}')
         return 0
     except CheckError as exc:
         print(f'ERROR: {exc}', file=sys.stderr)

@@ -257,7 +257,7 @@ if(CF_WASM_MODULE_HOST)
         COMMAND ${CMAKE_C_COMPILER} -E -P -x c
             "${CMAKE_CURRENT_SOURCE_DIR}/device_module/import_manifest.c"
             -o "${CMAKE_CURRENT_BINARY_DIR}/cf-imports.json"
-        DEPENDS device_module/import_manifest.c device_module/cf_imports.def device_module/cf_params.h
+        DEPENDS device_module/import_manifest.c device_module/cf_imports.def device_module/cf_params.h device_module/cf_hal_abi.h
         VERBATIM
     )
     add_custom_target(device-interface-manifest ALL

@@ -12,6 +12,7 @@
 #include "HAL.h"
 #include "WasmAppRuntime.h"
 #include "WasmHostImports.h"
+#include "WasmHostFunctions.h"
 
 WasmAppShell* WasmAppShell::s_running     = nullptr;
 WasmAppShell* WasmAppShell::s_statsSource = nullptr;
@@ -127,6 +128,7 @@ void WasmAppShell::end() {
         inGuestCall = false;
     }
     rt.unload();
+    wasmHostEndAudio();
     fnBegin = fnUpdate = fnEnd = fnButton = nullptr;
     pendingHead  = 0;
     pendingCount = 0;

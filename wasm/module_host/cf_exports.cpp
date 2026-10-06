@@ -38,11 +38,11 @@ static void checkCoreRange(const void* ptr, uint32_t bytes) {
 #define CF_PASS_SEQUENCE
 #define CF_PASS_XBM , byteLen
 extern "C" {
-#define CF_ROW(name, ret, sig, policy, args) \
+#define CF_ROW(since, name, ret, sig, policy, args) \
     EMSCRIPTEN_KEEPALIVE ret cf_##name(CF_PARAMS(DECL, args) CF_EXTRA_##policy) { \
         CF_POLICY_##policy CF_PARAMS(CHECK, args) \
         return cf_host::name(CF_PARAMS(CALL, args) CF_PASS_##policy); \
     }
-#define CF_STUB(module, name, ret, sig, fn, policy, args)
+#define CF_STUB(since, module, name, ret, sig, fn, policy, args)
 #include "../device_module/cf_imports.def"
 }

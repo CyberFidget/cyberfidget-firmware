@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { attachGuest, framebuffer } from './host.mjs';
-import { readManifest, verifyImports } from '../device_module/verify_imports.mjs';
+import { readManifest, verifyImports, requiredHalAbi } from '../device_module/verify_imports.mjs';
+import { fileURLToPath } from 'node:url';
 
 const [corePath, guestPath, manifestPath] = process.argv.slice(2);
 if (!manifestPath) throw new Error('Usage: node smoke_core.mjs <core.js> <guest.wasm> <cf-imports.json>');
@@ -17,10 +18,11 @@ verifyImports(bytes, manifest);
 // it does not establish audible/browser parity.
 const parameter = () => ({ setValueAtTime() {} });
 let toneStarts = 0;
+let oscillatorStops = 0;
 const frequencies = [];
 class AudioContext {
     currentTime = 0; destination = {};
-    createOscillator() { return { frequency: { setValueAtTime(value) { frequencies.push(value); } }, connect() {}, start() { ++toneStarts; }, stop() {} }; }
+    createOscillator() { return { frequency: { setValueAtTime(value) { frequencies.push(value); } }, connect() {}, start() { ++toneStarts; }, stop() { ++oscillatorStops; } }; }
     createGain() { return { gain: parameter(), connect() {} }; }
 }
 globalThis.window = { AudioContext };
@@ -102,6 +104,34 @@ core._wasm_module_frame();
 core._wasm_module_frame();
 assert.equal(endCalls, 1);
 assert.equal(exits, 2);
+const fixture = name => fs.readFileSync(fileURLToPath(new URL(`../../test/bench/fixtures/${name}.wasm`, import.meta.url)));
+const audioBytes = fixture('audio_levels');
+assert.equal(requiredHalAbi(bytes, manifest), 1, 'Existing fixture needs only level 1');
+assert.equal(requiredHalAbi(audioBytes, manifest), 2, 'Note/mic fixture needs level 2');
+const audioGuest = await attachGuest(core, audioBytes, manifest);
+const startsBefore = toneStarts;
+core._wasm_module_start();
+assert.ok(audioGuest.instance.exports.test_note_handle() > 0);
+assert.equal(audioGuest.instance.exports.test_mic_level(), 0, 'Emulator mic is an honest stub');
+assert.equal(audioGuest.instance.exports.test_mic_db(), -60);
+assert.equal(toneStarts - startsBefore, 2, 'Guest note calls start oscillators');
+assert.equal(audioGuest.importCounts.note_play, 2);
+assert.equal(audioGuest.importCounts.note_stop, 1);
+assert.equal(audioGuest.importCounts.note_all_off, 1);
+assert.equal(audioGuest.importCounts.mic_enable, 1);
+assert.equal(audioGuest.importCounts.mic_level, 1);
+assert.equal(audioGuest.importCounts.mic_level_db, 1);
+assert.equal(Object.keys(core._audioNotes).length, 1, 'Guest leaves a held note playing');
+const stopsBefore = oscillatorStops;
+core._wasm_module_end();
+assert.equal(Object.keys(core._audioNotes).length, 0, 'App end silences held notes');
+assert.ok(oscillatorStops > stopsBefore, 'Cleanup must stop the oscillator');
+await assert.rejects(attachGuest(core, fixture('unknown_import'), manifest), error => {
+    assert.equal(error.name, 'CfImportUnsupported');
+    assert.deepEqual(error.missing, ['cf.made_up']);
+    return true;
+});
 console.log(JSON.stringify({ frames: 300, nonBlank, distinctFramebuffers: hashes.size, flushes,
-    ledUpdates, toneStarts, importCounts: guest.importCounts, deferredExit: 'passed' }, null, 2));
+    ledUpdates, toneStarts, importCounts: guest.importCounts, deferredExit: 'passed',
+    audioLevel: 2, noteCleanup: 'passed', unknownImport: 'passed' }, null, 2));
 core._wasm_stop();

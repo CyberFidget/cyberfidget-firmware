@@ -25,6 +25,12 @@ public:
     void setVolume(float) {}  // volume stays host-controlled
     void playTone(float frequency, int durationMs = 0) { cf_tone_play(frequency, durationMs); }
     void stopTone() { cf_tone_stop(); }
+    int playNote(float frequency, int durationMs = 0) { return cf_note_play(frequency, durationMs); }
+    void stopNote(int handle) { cf_note_stop(handle); }
+    void stopNotes() { cf_note_all_off(); }
+    void enableMic(bool on) { cf_mic_enable(on); }
+    float getMicVolumeLinear() const { return cf_mic_level(); }
+    float getMicVolumeDb() const { return cf_mic_level_db(); }
     void playSequence(const ToneStep* steps, int count) { cf_seq_play(steps, count); }
     void stopSequence() { cf_seq_stop(); }
     bool isSequencePlaying() const { return false; }  // not tracked guest-side

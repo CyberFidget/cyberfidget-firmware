@@ -359,6 +359,15 @@ void wasmFsAppBegin() {
         return;
     }
     xSemaphoreTake(s_cmdDone, portMAX_DELAY);         // wait for shell->begin() (deep app_begin)
+    if (s_shell->hasError() && strcmp(s_shell->errorText(), "abi_unsupported") == 0) {
+        // Reuse the pre-shell refusal outcome, including CLI reporting and
+        // button handling, after safely joining the failed guest task.
+        wasmFsAppEnd();
+        snprintf(s_loadErr, sizeof(s_loadErr), "abi_unsupported");
+        s_failedAbi = abi;
+        drawAbiUnsupported();
+        registerPreShellErrorCallbacks();
+    }
 }
 
 void wasmFsAppRun() {
@@ -383,6 +392,8 @@ void wasmFsAppRun() {
     }
     drawLoadError(s_loadErr[0] ? s_loadErr : "load failed", nullptr);
 }
+
+bool abiUnsupported() { return strcmp(s_loadErr, "abi_unsupported") == 0; }
 
 void wasmFsAppEnd() {
     unregisterPreShellErrorCallbacks();

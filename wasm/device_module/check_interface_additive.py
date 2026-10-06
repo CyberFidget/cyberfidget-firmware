@@ -4,6 +4,7 @@
 """Preprocess table declarations for the existing additive-ABI guard."""
 import argparse
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -39,6 +40,8 @@ def main():
         if table is None:
             base = git_file(args.base_ref, 'cf_hal_imports.h')
         else:
+            # Tables predating levels provided every existing row at level 1.
+            table = re.sub(r'^(CF_ROW|CF_STUB)\((?!\d+\s*,)', r'\1(1, ', table, flags=re.MULTILINE)
             (folder / 'cf_imports.def').write_text(table)
             (folder / 'cf_params.h').write_text(git_file(args.base_ref, 'cf_params.h'))
             base = preprocess(folder, args.cpp)

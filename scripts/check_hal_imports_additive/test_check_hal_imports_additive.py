@@ -65,18 +65,61 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(0, result)
         self.assertIn('PASS', output)
 
-    def test_removal_with_abi_bump_passes(self):
-        result, output, _ = self.run_check(
+    def test_removal_with_abi_bump_fails(self):
+        result, _, error = self.run_check(
             head_imports='CF_IMPORT("alpha") int32_t cf_alpha(int32_t value);\n',
             head_abi=2,
         )
+        self.assertEqual(1, result)
+        self.assertIn('beta: import is missing', error)
+
+    def test_wrong_since_on_new_row_fails(self):
+        result, _, error = self.run_check(
+            head_imports=IMPORTS + 'CF_IMPORT("gamma", 1, "v()") void cf_gamma(void);', head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('new import since 1 must equal CF_HAL_ABI 2', error)
+
+    def test_changed_since_on_existing_row_fails(self):
+        result, _, error = self.run_check(
+            head_imports=IMPORTS.replace('CF_IMPORT("alpha")', 'CF_IMPORT("alpha", 2, "i(i)")'), head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('since changed', error)
+
+    def test_correct_new_level_passes(self):
+        result, output, _ = self.run_check(
+            head_imports=IMPORTS + 'CF_IMPORT("gamma", 2, "v()") void cf_gamma(void);', head_abi=2)
         self.assertEqual(0, result)
-        self.assertIn('major changed from 1 to 2', output)
+        self.assertIn('PASS', output)
+
+    def test_signature_change_with_abi_bump_fails(self):
+        head = IMPORTS.replace('int32_t value', 'float value')
+        head += 'CF_IMPORT("gamma", 2, "v()") void cf_gamma(void);'
+        result, _, error = self.run_check(head_imports=head, head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('signature changed', error)
+
+    def test_stub_removal_with_abi_bump_fails(self):
+        stub = 'CF_IMPORT("env." "notify", 1, "v(i)") void cf_stub_notify(int32_t index);'
+        head = IMPORTS + 'CF_IMPORT("gamma", 2, "v()") void cf_gamma(void);'
+        result, _, error = self.run_check(base_imports=IMPORTS + stub, head_imports=head, head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('env.notify: import is missing', error)
+
+    def test_highest_level_must_match_abi(self):
+        result, _, error = self.run_check(head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('CF_HAL_ABI must equal max(since)', error)
+
+    def test_malformed_since_cannot_be_skipped(self):
+        head = IMPORTS + 'CF_IMPORT("gamma", -1, "v()") void cf_gamma(void);'
+        result, _, error = self.run_check(head_imports=head)
+        self.assertEqual(1, result)
+        self.assertIn('malformed CF_IMPORT', error)
 
     def test_abi_decrease_fails(self):
         result, _, error = self.run_check(base_abi=2, head_abi=1)
         self.assertEqual(1, result)
-        self.assertIn('ABI major must not move backwards', error)
+        self.assertIn('ABI level must not move backwards', error)
 
     def test_unparseable_file_fails_loudly(self):
         result, _, error = self.run_check(head_imports='CF_IMPORT("alpha") this is not a declaration;')
