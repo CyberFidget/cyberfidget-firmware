@@ -51,7 +51,8 @@ def main():
         return subprocess.call([
             sys.executable, str(ROOT / 'scripts/check_hal_imports_additive/check_hal_imports_additive.py'),
             '--base', str(folder / 'base.h'), '--head', str(folder / 'head.h'),
-            '--base-abi', str(folder / 'base-abi.h'), '--head-abi', str(HERE / 'cf_hal_abi.h')])
+            '--base-abi', str(folder / 'base-abi.h'), '--head-abi', str(HERE / 'cf_hal_abi.h')]
+            + (['--legacy-base'] if table is None else []))
 
 
 if __name__ == '__main__':

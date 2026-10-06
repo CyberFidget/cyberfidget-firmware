@@ -60,6 +60,8 @@ def parse_imports(text: str, source: str) -> Dict[str, Import]:
 
     for match in starts:
         name = ''.join(re.findall(r'"([^"]*)"', match.group(1)))
+        if '.' not in name:
+            name = 'cf.' + name   # headers predating the table named cf imports bare
         semicolon = text.find(';', match.end())
         next_start = IMPORT_START_RE.search(text, match.end())
         if semicolon < 0 or (next_start and next_start.start() < semicolon):
@@ -89,7 +91,7 @@ def parse_abi(text: str, source: str) -> int:
 
 
 def check(base_imports: Dict[str, Import], head_imports: Dict[str, Import], head_abi: int = 1,
-          base_abi: int = 0) -> Iterable[str]:
+          base_abi: int = 0, legacy_base: bool = False) -> Iterable[str]:
     for name, base in base_imports.items():
         head = head_imports.get(name)
         if head is None:
@@ -105,6 +107,11 @@ def check(base_imports: Dict[str, Import], head_imports: Dict[str, Import], head
     for name, head in head_imports.items():
         if head.since < 1:
             yield f'{name}: since must be positive'
+        # A base header from before the import table listed only cf.* calls,
+        # and not nop or the WASI/env stubs, which the device host already
+        # provided. Level-1 rows it lacks predate the table; they are not new.
+        if legacy_base and name not in base_imports and head.since == 1:
+            continue
         if name not in base_imports and head.since != head_abi:
             yield f'{name}: new import since {head.since} must equal CF_HAL_ABI {head_abi}'
         # A level the base already provides may be in released firmware, whose
@@ -140,6 +147,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument('--head', default='wasm/device_module/cf_hal_imports.h')
     parser.add_argument('--base-abi', help='base cf_hal_abi.h file (required with --base)')
     parser.add_argument('--head-abi', default='wasm/device_module/cf_hal_abi.h')
+    parser.add_argument('--legacy-base', action='store_true',
+                        help='the base is a header from before the import table')
     return parser
 
 
@@ -177,7 +186,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 'the ABI level must not move backwards'
             )
 
-        problems = list(check(base_imports, head_imports, head_abi, base_abi))
+        problems = list(check(base_imports, head_imports, head_abi, base_abi, args.legacy_base))
         if problems:
             for problem in problems:
                 print(f'ERROR: {problem}; restore the import or add a new import name', file=sys.stderr)

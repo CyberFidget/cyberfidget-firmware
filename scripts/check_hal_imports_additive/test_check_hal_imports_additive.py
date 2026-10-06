@@ -19,7 +19,7 @@ ABI = '#define CF_HAL_ABI {major}\n'
 
 
 class CheckerTests(unittest.TestCase):
-    def run_check(self, base_imports=IMPORTS, head_imports=IMPORTS, base_abi=1, head_abi=1):
+    def run_check(self, base_imports=IMPORTS, head_imports=IMPORTS, base_abi=1, head_abi=1, legacy=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             files = {
@@ -37,8 +37,41 @@ class CheckerTests(unittest.TestCase):
                     '--base', str(root / 'base.h'), '--head', str(root / 'head.h'),
                     '--base-abi', str(root / 'base_abi.h'),
                     '--head-abi', str(root / 'head_abi.h'),
-                ])
+                ] + (['--legacy-base'] if legacy else []))
             return result, stdout.getvalue(), stderr.getvalue()
+
+    # A base header from before the import table: bare cf names, no nop or stubs.
+    def test_legacy_base_names_match_module_qualified_head(self):
+        head = IMPORTS.replace('"alpha"', '"cf.alpha", 1, "i(i)"').replace('"beta"', '"cf.beta", 1, "v(ii)"')
+        result, output, error = self.run_check(head_imports=head, legacy=True)
+        self.assertEqual(0, result, error)
+        self.assertIn('PASS', output)
+
+    def test_legacy_base_accepts_level_one_rows_it_never_listed(self):
+        head = IMPORTS + 'CF_IMPORT("cf.nop", 1, "i(i)") int32_t cf_nop(int32_t x);\n'
+        result, _, error = self.run_check(head_imports=head, legacy=True)
+        self.assertEqual(0, result, error)
+
+    def test_legacy_base_still_catches_a_removal(self):
+        result, _, error = self.run_check(
+            head_imports='CF_IMPORT("alpha") int32_t cf_alpha(int32_t value);\n', legacy=True)
+        self.assertEqual(1, result)
+        self.assertIn('cf.beta: import is missing', error)
+
+    def test_legacy_base_still_requires_new_levels_above_one(self):
+        head = IMPORTS + 'CF_IMPORT("cf.gamma", 2, "v()") void cf_gamma(void);\n'
+        result, _, error = self.run_check(head_imports=head, head_abi=2, legacy=True)
+        self.assertEqual(0, result, error)
+        result, _, error = self.run_check(
+            head_imports=IMPORTS + 'CF_IMPORT("cf.gamma", 3, "v()") void cf_gamma(void);\n',
+            head_abi=2, legacy=True)
+        self.assertEqual(1, result)
+
+    def test_level_one_rows_are_new_without_the_legacy_flag(self):
+        head = IMPORTS + 'CF_IMPORT("cf.nop", 1, "i(i)") int32_t cf_nop(int32_t x);\n'
+        result, _, error = self.run_check(head_imports=head)
+        self.assertEqual(1, result)
+        self.assertIn('must be above the base CF_HAL_ABI 1', error)
 
     def test_removal_is_caught(self):
         result, _, error = self.run_check(head_imports=IMPORTS.split('CF_IMPORT("beta")')[0])
@@ -132,7 +165,7 @@ class CheckerTests(unittest.TestCase):
     def test_unparseable_file_fails_loudly(self):
         result, _, error = self.run_check(head_imports='CF_IMPORT("alpha") this is not a declaration;')
         self.assertEqual(1, result)
-        self.assertIn('could not parse declaration for import "alpha"', error)
+        self.assertIn('could not parse declaration for import "cf.alpha"', error)
 
 
 if __name__ == '__main__':
