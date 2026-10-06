@@ -697,6 +697,23 @@ int parseAbiVersion(const std::string& abi) {
     return (int)value;
 }
 
+bool isReleaseVersion(const std::string& v) {
+    if (v.empty() || v.size() > 11) return false;
+    int parts = 1, digits = 0;
+    for (char ch : v) {
+        if (ch == '.') {
+            if (digits == 0) return false;
+            ++parts;
+            digits = 0;
+        } else if (ch >= '0' && ch <= '9') {
+            ++digits;
+        } else {
+            return false;
+        }
+    }
+    return parts == 3 && digits > 0;
+}
+
 bool isDataScreensaverPath(const std::string& path) {
     static const char kDir[] = "/assets/ss/";
     static const char kExt[] = ".cfs";

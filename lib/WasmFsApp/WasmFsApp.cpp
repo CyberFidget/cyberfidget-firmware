@@ -174,15 +174,7 @@ std::string minFirmwareFor(const std::string& id) {
     if (!LoadoutManifest::parseManifest(json.c_str(), lo)) return "";
     for (const auto& e : lo.entries) {
         if (e.id != id) continue;
-        const std::string& v = e.minFirmware;
-        int dots = 0;
-        bool ok = !v.empty() && v.size() <= 11 && isdigit((unsigned char)v.front()) &&
-                  isdigit((unsigned char)v.back());
-        for (char ch : v) {
-            if (ch == '.') ++dots;
-            else if (!isdigit((unsigned char)ch)) ok = false;
-        }
-        return ok && dots == 2 ? v : "";
+        return LoadoutManifest::isReleaseVersion(e.minFirmware) ? e.minFirmware : "";
     }
     return "";
 }

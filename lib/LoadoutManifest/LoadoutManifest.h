@@ -125,6 +125,10 @@ struct MergedApp {
 /// Parse a manifest ABI string. Empty or invalid values are unversioned (0).
 int parseAbiVersion(const std::string& abi);
 
+/// True for a plain firmware release "x.y.z": three non-empty digit runs,
+/// at most 11 characters (fits the refusal screen).
+bool isReleaseVersion(const std::string& v);
+
 /// One item of the declarative `arrange` op: the full display order,
 /// id-anchored. `category` optionally re-categorizes the entry.
 struct ArrangeItem {

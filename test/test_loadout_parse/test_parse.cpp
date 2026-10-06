@@ -83,6 +83,19 @@ void test_reserved_fields_roundtrip(void) {
     TEST_ASSERT_EQUAL_STRING("deadbeef", l2.entries[0].signature.c_str());
 }
 
+void test_release_version_shape(void) {
+    TEST_ASSERT_TRUE(isReleaseVersion("1.3.0"));
+    TEST_ASSERT_TRUE(isReleaseVersion("10.20.300"));
+    TEST_ASSERT_FALSE(isReleaseVersion(""));
+    TEST_ASSERT_FALSE(isReleaseVersion("1..2"));
+    TEST_ASSERT_FALSE(isReleaseVersion(".1.2"));
+    TEST_ASSERT_FALSE(isReleaseVersion("1.2."));
+    TEST_ASSERT_FALSE(isReleaseVersion("1.2"));
+    TEST_ASSERT_FALSE(isReleaseVersion("1.2.3.4"));
+    TEST_ASSERT_FALSE(isReleaseVersion("1.5.0-rc1"));
+    TEST_ASSERT_FALSE(isReleaseVersion("123.456.7890"));   // longer than the screen allows
+}
+
 void test_malformed_json_rejected(void) {
     Loadout l;
     TEST_ASSERT_FALSE(parseManifest("", l));
@@ -229,6 +242,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_valid_manifest_parses);
     RUN_TEST(test_unknown_fields_skipped);
     RUN_TEST(test_reserved_fields_roundtrip);
+    RUN_TEST(test_release_version_shape);
     RUN_TEST(test_malformed_json_rejected);
     RUN_TEST(test_missing_schema_version_rejected);
     RUN_TEST(test_wrong_schema_version_rejected);
