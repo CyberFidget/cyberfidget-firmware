@@ -88,7 +88,8 @@ def parse_abi(text: str, source: str) -> int:
     return int(matches[0])
 
 
-def check(base_imports: Dict[str, Import], head_imports: Dict[str, Import], head_abi: int = 1) -> Iterable[str]:
+def check(base_imports: Dict[str, Import], head_imports: Dict[str, Import], head_abi: int = 1,
+          base_abi: int = 0) -> Iterable[str]:
     for name, base in base_imports.items():
         head = head_imports.get(name)
         if head is None:
@@ -106,6 +107,10 @@ def check(base_imports: Dict[str, Import], head_imports: Dict[str, Import], head
             yield f'{name}: since must be positive'
         if name not in base_imports and head.since != head_abi:
             yield f'{name}: new import since {head.since} must equal CF_HAL_ABI {head_abi}'
+        # A level the base already provides may be in released firmware, whose
+        # devices accept that level's stamp: a new import needs a new level.
+        if name not in base_imports and head.since <= base_abi:
+            yield f'{name}: new import since {head.since} must be above the base CF_HAL_ABI {base_abi}'
     if max(row.since for row in head_imports.values()) != head_abi:
         yield 'CF_HAL_ABI must equal max(since)'
 
@@ -172,7 +177,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 'the ABI level must not move backwards'
             )
 
-        problems = list(check(base_imports, head_imports, head_abi))
+        problems = list(check(base_imports, head_imports, head_abi, base_abi))
         if problems:
             for problem in problems:
                 print(f'ERROR: {problem}; restore the import or add a new import name', file=sys.stderr)

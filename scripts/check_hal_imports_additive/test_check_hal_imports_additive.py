@@ -60,10 +60,18 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(1, result)
         self.assertIn('signature changed', error)
 
-    def test_addition_passes(self):
-        result, output, _ = self.run_check(head_imports=IMPORTS + 'CF_IMPORT("gamma") void cf_gamma(void);\n')
-        self.assertEqual(0, result)
-        self.assertIn('PASS', output)
+    def test_addition_at_the_base_level_fails(self):
+        result, _, error = self.run_check(head_imports=IMPORTS + 'CF_IMPORT("gamma") void cf_gamma(void);\n')
+        self.assertEqual(1, result)
+        self.assertIn('must be above the base CF_HAL_ABI 1', error)
+
+    def test_addition_to_a_level_the_base_has_fails(self):
+        base = IMPORTS + 'CF_IMPORT("gamma", 2, "v()") void cf_gamma(void);'
+        result, _, error = self.run_check(
+            base_imports=base, base_abi=2, head_abi=2,
+            head_imports=base + 'CF_IMPORT("delta", 2, "v()") void cf_delta(void);')
+        self.assertEqual(1, result)
+        self.assertIn('delta: new import since 2 must be above the base CF_HAL_ABI 2', error)
 
     def test_removal_with_abi_bump_fails(self):
         result, _, error = self.run_check(

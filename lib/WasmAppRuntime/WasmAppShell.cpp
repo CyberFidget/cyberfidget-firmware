@@ -27,6 +27,7 @@ void WasmAppShell::fail(const char* what) {
     errored = true;
     snprintf(errBuf, sizeof(errBuf), "%s", what ? what : "unknown");
     Serial.printf("[err] wasmapp %s: %s\n", appName, errBuf);
+    wasmHostEndAudio();   // a held note or the mic must not outlive the app
 }
 
 void WasmAppShell::begin() {

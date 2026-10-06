@@ -1,6 +1,6 @@
 # HAL import additivity checker
 
-This tool enforces that the HAL import table stays additive forever, including WASI/env stubs. Removal, rename, C symbol or signature changes fail even when `CF_HAL_ABI` increases. Existing `since` levels cannot change. New rows must use `since` equal to head `CF_HAL_ABI`, which cannot decrease and must equal the highest `since` in the table. Breaking changes require a new import name.
+This tool enforces that the HAL import table stays additive forever, including WASI/env stubs. Removal, rename, C symbol or signature changes fail even when `CF_HAL_ABI` increases. Existing `since` levels cannot change. New rows must use `since` equal to head `CF_HAL_ABI` and above the base `CF_HAL_ABI` (a level the base already provides may be in released firmware, whose devices accept that level's stamp, so new imports always open a new level). Head `CF_HAL_ABI` cannot decrease and must equal the highest `since` in the table. Breaking changes require a new import name.
 
 The table forms are `CF_ROW(since, name, ret, sig, policy, args)` and `CF_STUB(since, module, name, ret, sig, fn, policy, args)`. Tables predating levels are treated as level 1. The wrapper preprocesses the table into declarations for all modules; explicit declaration inputs may include `CF_IMPORT("module.name", since, "signature")`.
 
