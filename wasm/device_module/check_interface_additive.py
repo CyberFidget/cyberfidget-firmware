@@ -39,6 +39,10 @@ def main():
         table = git_file(args.base_ref, 'cf_imports.def', optional=True)
         if table is None:
             base = git_file(args.base_ref, 'cf_hal_imports.h')
+            # What that base's device linked: its header omits nop and the stubs.
+            (folder / 'base-host.cpp').write_text(subprocess.run(
+                ['git', 'show', f'{args.base_ref}:lib/WasmAppRuntime/WasmHostImports.cpp'],
+                capture_output=True, text=True, check=True).stdout)
         else:
             # Tables predating levels provided every existing row at level 1.
             table = re.sub(r'^(CF_ROW|CF_STUB)\((?!\d+\s*,)', r'\1(1, ', table, flags=re.MULTILINE)
@@ -52,7 +56,7 @@ def main():
             sys.executable, str(ROOT / 'scripts/check_hal_imports_additive/check_hal_imports_additive.py'),
             '--base', str(folder / 'base.h'), '--head', str(folder / 'head.h'),
             '--base-abi', str(folder / 'base-abi.h'), '--head-abi', str(HERE / 'cf_hal_abi.h')]
-            + (['--legacy-base'] if table is None else []))
+            + (['--base-host', str(folder / 'base-host.cpp')] if table is None else []))
 
 
 if __name__ == '__main__':

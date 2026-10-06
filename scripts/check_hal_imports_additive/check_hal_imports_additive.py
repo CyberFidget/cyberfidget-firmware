@@ -21,6 +21,7 @@ DECLARATION_RE = re.compile(
     re.DOTALL,
 )
 ABI_RE = re.compile(r'^\s*#\s*define\s+CF_HAL_ABI\s+(\d+)\s*(?://.*)?$', re.MULTILINE)
+HOST_ROW_RE = re.compile(r'\{\s*"([A-Za-z0-9_]+)"\s*,\s*"([A-Za-z0-9_]+)"\s*,\s*"([^"]*)"\s*,')
 COMMENT_RE = re.compile(r'/\*.*?\*/|//[^\r\n]*', re.DOTALL)
 
 
@@ -90,28 +91,49 @@ def parse_abi(text: str, source: str) -> int:
     return int(matches[0])
 
 
+def parse_host_table(text: str) -> Dict[str, str]:
+    """module.name -> wasm signature, from a device host link table
+    ({ "module", "name", "sig", &fn } rows in WasmHostImports.cpp)."""
+    rows = {f'{m}.{n}': sig for m, n, sig in HOST_ROW_RE.findall(COMMENT_RE.sub(' ', text))}
+    if not rows:
+        raise CheckError('base host table: no { "module", "name", "sig" } rows found')
+    return rows
+
+
 def check(base_imports: Dict[str, Import], head_imports: Dict[str, Import], head_abi: int = 1,
-          base_abi: int = 0, legacy_base: bool = False) -> Iterable[str]:
+          base_abi: int = 0, base_host: Optional[Dict[str, str]] = None) -> Iterable[str]:
+    # base_host: for a base from before the import table, what its device
+    # actually linked. Its header listed only the cf.* calls, without wasm
+    # signatures, and not nop or the WASI/env stubs.
+    host = base_host or {}
     for name, base in base_imports.items():
         head = head_imports.get(name)
+        base_wasm = base.wasm_signature or host.get(name, '')
         if head is None:
             yield f'{name}: import is missing or renamed'
         elif head.symbol != base.symbol:
             yield f'{name}: C symbol changed from {base.symbol} to {head.symbol}'
         elif (head.return_type, head.parameters) != (base.return_type, base.parameters):
             yield f'{name}: signature changed from "{base.signature}" to "{head.signature}"'
-        elif base.wasm_signature and head.wasm_signature != base.wasm_signature:
-            yield f'{name}: wasm signature changed'
+        elif base_wasm and head.wasm_signature != base_wasm:
+            yield f'{name}: wasm signature changed from "{base_wasm}" to "{head.wasm_signature}"'
         if head and head.since != base.since:
             yield f'{name}: since changed from {base.since} to {head.since}'
+    for name, sig in host.items():
+        if name in base_imports:
+            continue
+        head = head_imports.get(name)
+        if head is None:
+            yield f'{name}: import the base device provided is missing or renamed'
+        elif head.wasm_signature != sig:
+            yield f'{name}: wasm signature changed from "{sig}" to "{head.wasm_signature}"'
+        elif head.since != 1:
+            yield f'{name}: the base device provided it, so since must be 1, not {head.since}'
     for name, head in head_imports.items():
         if head.since < 1:
             yield f'{name}: since must be positive'
-        # A base header from before the import table listed only cf.* calls,
-        # and not nop or the WASI/env stubs, which the device host already
-        # provided. Level-1 rows it lacks predate the table; they are not new.
-        if legacy_base and name not in base_imports and head.since == 1:
-            continue
+        if name in host:
+            continue   # existed on the base device: checked above
         if name not in base_imports and head.since != head_abi:
             yield f'{name}: new import since {head.since} must equal CF_HAL_ABI {head_abi}'
         # A level the base already provides may be in released firmware, whose
@@ -147,8 +169,8 @@ def make_parser() -> argparse.ArgumentParser:
     parser.add_argument('--head', default='wasm/device_module/cf_hal_imports.h')
     parser.add_argument('--base-abi', help='base cf_hal_abi.h file (required with --base)')
     parser.add_argument('--head-abi', default='wasm/device_module/cf_hal_abi.h')
-    parser.add_argument('--legacy-base', action='store_true',
-                        help='the base is a header from before the import table')
+    parser.add_argument('--base-host', help='for a base from before the import table: '
+                        'its WasmHostImports.cpp (what the device linked)')
     return parser
 
 
@@ -186,7 +208,8 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
                 'the ABI level must not move backwards'
             )
 
-        problems = list(check(base_imports, head_imports, head_abi, base_abi, args.legacy_base))
+        base_host = parse_host_table(_read(args.base_host)) if args.base_host else None
+        problems = list(check(base_imports, head_imports, head_abi, base_abi, base_host))
         if problems:
             for problem in problems:
                 print(f'ERROR: {problem}; restore the import or add a new import name', file=sys.stderr)
