@@ -1,0 +1,10 @@
+{
+  "name": "cf-app-kit-builder",
+  "private": true,
+  "description": "Builds the Cyber Fidget app kit attached to firmware releases.",
+  "license": "GPL-3.0-or-later WITH Cyberfidget-HAL-exception",
+  "type": "module",
+  "dependencies": {
+    "@yowasp/clang": "22.0.0-git20542-10"
+  }
+}
