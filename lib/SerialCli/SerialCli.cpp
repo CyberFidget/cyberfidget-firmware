@@ -2075,7 +2075,7 @@ bool SerialCli::launchResolved(const char* arg, const char* replyVerb,
                                           e.id.c_str());
                     bool abiSupported = WasmFsApp::pendingAbiSupported();
                     AppManager::instance().switchToApp(APP_WASM_HOST);
-                    if (!abiSupported) {
+                    if (!abiSupported || WasmFsApp::abiUnsupported()) {
                         if (ieq(replyVerb, "launch")) {
                             Serial.printf("[cmd] launch.error=abi_unsupported abi=%d abimax=%d\n",
                                           abi, kDeviceHalAbi);

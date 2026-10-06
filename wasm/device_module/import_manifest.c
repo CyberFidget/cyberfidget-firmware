@@ -8,7 +8,7 @@
 #define CF_META_PB(type, name, bytes) , CF_META_PA(type, name, bytes)
 [
 null
-#define CF_ROW(name, ret, sig, policy, args) , {"module": "cf", "name": #name, "signature": sig, "returnType": #ret, "policy": #policy, "parameters": [CF_PARAMS(META, args)]}
-#define CF_STUB(module, name, ret, sig, fn, policy, args) , {"module": module, "name": #name, "signature": sig, "returnType": #ret, "policy": #policy, "parameters": [CF_PARAMS(META, args)]}
+#define CF_ROW(since, name, ret, sig, policy, args) , {"module": "cf", "name": #name, "signature": sig, "since": since, "returnType": #ret, "policy": #policy, "parameters": [CF_PARAMS(META, args)]}
+#define CF_STUB(since, module, name, ret, sig, fn, policy, args) , {"module": module, "name": #name, "signature": sig, "since": since, "returnType": #ret, "policy": #policy, "parameters": [CF_PARAMS(META, args)]}
 #include "cf_imports.def"
 ]

@@ -76,6 +76,7 @@ struct LoadoutEntry {
     std::string blobPath;  ///< reserved: filesystem path to an app blob
     std::string version;   ///< reserved: app version string
     std::string abi;       ///< required ABI/HAL version for a blob
+    std::string minFirmware; ///< first firmware release (x.y.z) that runs the blob; shown to people
     std::string signature; ///< reserved: blob signature
 };
 
@@ -123,6 +124,10 @@ struct MergedApp {
 
 /// Parse a manifest ABI string. Empty or invalid values are unversioned (0).
 int parseAbiVersion(const std::string& abi);
+
+/// True for a plain firmware release "x.y.z": three non-empty digit runs,
+/// at most 11 characters (fits the refusal screen).
+bool isReleaseVersion(const std::string& v);
 
 /// One item of the declarative `arrange` op: the full display order,
 /// id-anchored. `category` optionally re-categorizes the entry.

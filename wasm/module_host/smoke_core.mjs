@@ -6,7 +6,8 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { createHash } from 'node:crypto';
 import { attachGuest, framebuffer } from './host.mjs';
-import { readManifest, verifyImports } from '../device_module/verify_imports.mjs';
+import { readManifest, verifyImports, requiredHalAbi } from '../device_module/verify_imports.mjs';
+import { fileURLToPath } from 'node:url';
 
 const [corePath, guestPath, manifestPath] = process.argv.slice(2);
 if (!manifestPath) throw new Error('Usage: node smoke_core.mjs <core.js> <guest.wasm> <cf-imports.json>');
@@ -111,6 +112,44 @@ core._wasm_module_frame();
 core._wasm_module_frame();
 assert.equal(endCalls, 1);
 assert.equal(exits, 2);
+const fixture = name => fs.readFileSync(fileURLToPath(new URL(`../../test/bench/fixtures/${name}.wasm`, import.meta.url)));
+const audioBytes = fixture('audio_levels');
+assert.equal(requiredHalAbi(bytes, manifest), 1, 'Existing fixture needs only level 1');
+assert.equal(requiredHalAbi(audioBytes, manifest), 2, 'Note/mic fixture needs level 2');
+const audioGuest = await attachGuest(core, audioBytes, manifest);
+// Peak of `ms` of rendered audio (rendering also hands the clock back to us).
+const renderPeak = ms => {
+    let peak = 0;
+    for (let left = Math.round(ms * 44.1); left > 0; left -= 256) {
+        const n = core._wasm_audio_render(Math.min(256, left));
+        for (const v of new Int16Array(core.HEAP16.buffer, core._wasm_audio_buffer(), n)) peak = Math.max(peak, Math.abs(v));
+    }
+    return peak;
+};
+core._wasm_audio_reset();
+core._wasm_module_start();
+assert.ok(audioGuest.instance.exports.test_note_handle() > 0);
+assert.equal(audioGuest.instance.exports.test_mic_level(), 0, 'Emulator mic is an honest stub');
+assert.equal(audioGuest.instance.exports.test_mic_db(), -60);
+const notePeak = renderPeak(30);
+assert.ok(notePeak > 2000, 'Guest note sounds: peak ' + notePeak);
+assert.equal(audioGuest.importCounts.note_play, 2);
+assert.equal(audioGuest.importCounts.note_stop, 1);
+assert.equal(audioGuest.importCounts.note_all_off, 1);
+assert.equal(audioGuest.importCounts.mic_enable, 1);
+assert.equal(audioGuest.importCounts.mic_level, 1);
+assert.equal(audioGuest.importCounts.mic_level_db, 1);
+assert.ok(renderPeak(20) > 2000, 'Guest leaves a held note playing');
+core._wasm_module_end();
+renderPeak(10);   // the 5 ms end-of-app fade
+assert.equal(renderPeak(20), 0, 'App end silences held notes');
+assert.equal(core._wasm_audio_active(), 0, 'Nothing left sounding or queued');
+await assert.rejects(attachGuest(core, fixture('unknown_import'), manifest), error => {
+    assert.equal(error.name, 'CfImportUnsupported');
+    assert.deepEqual(error.missing, ['cf.made_up']);
+    return true;
+});
 console.log(JSON.stringify({ frames: 300, nonBlank, distinctFramebuffers: hashes.size, flushes,
-    ledUpdates, seqSteps, importCounts: guest.importCounts, deferredExit: 'passed' }, null, 2));
+    ledUpdates, seqSteps, importCounts: guest.importCounts, deferredExit: 'passed',
+    notePeak, audioLevel: 2, noteCleanup: 'passed', unknownImport: 'passed' }, null, 2));
 core._wasm_stop();

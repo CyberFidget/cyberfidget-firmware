@@ -15,7 +15,7 @@ template<class T> static char wasmType() {
 template<> char wasmType<void>() { return 'v'; }
 
 static void test_table_signatures_match_c_types() {
-#define CF_ROW(name, ret, sig, policy, args) { \
+#define CF_ROW(since, name, ret, sig, policy, args) { \
     const auto params = std::string() CF_PARAMS(TYPES_TAIL, args); \
     const auto actual = std::string(1, wasmType<ret>()) + "(" + params + ")"; \
     TEST_ASSERT_EQUAL_STRING_MESSAGE(sig, actual.c_str(), #name); }
@@ -24,7 +24,7 @@ static void test_table_signatures_match_c_types() {
 #define CF_TYPES_TAIL_B(type, name, bytes) CF_TYPES_TAIL_A(type, name, bytes)
 #define CF_TYPES_TAIL_PA(type, name, bytes) CF_TYPES_TAIL_A(type, name, bytes)
 #define CF_TYPES_TAIL_PB(type, name, bytes) CF_TYPES_TAIL_A(type, name, bytes)
-#define CF_STUB(module, name, ret, sig, fn, policy, args) CF_ROW(name, ret, sig, policy, args)
+#define CF_STUB(since, module, name, ret, sig, fn, policy, args) CF_ROW(since, name, ret, sig, policy, args)
 #include "../../wasm/device_module/cf_imports.def"
 #undef CF_STUB
 #undef CF_ROW

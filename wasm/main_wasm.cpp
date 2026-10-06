@@ -99,10 +99,9 @@ static void moduleEnd() {
     moduleActive = false;
     moduleGuestCall(2, 0, 0);
     // Whatever the guest left playing stops with it, as on the device (5 ms
-    // fade), and nothing it left queued reaches the next app.
-    HAL::audioManager().stopSequence();
-    HAL::audioManager().stopTone();
-    HAL::audioManager().stopNotes();
+    // fade), the mic it turned on goes off, and nothing it left queued
+    // reaches the next app.
+    wasmHostEndAudio();
     wasmAudioEndApp();
     wasmHostClearExitRequest();
     EM_ASM({ if (Module.onAppExit) Module.onAppExit(); });

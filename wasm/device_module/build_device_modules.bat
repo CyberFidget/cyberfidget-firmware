@@ -29,7 +29,9 @@ if not defined CF_EMSDK (
     exit /b 1
 )
 
-call "%CF_EMSDK%\emsdk_env.bat" >nul 2>&1
+REM A preconfigured Windows tool environment also keeps worktree-local caches.
+where emcc >nul 2>nul
+if errorlevel 1 call "%CF_EMSDK%\emsdk_env.bat" >nul 2>&1
 
 cd /d "%SCRIPT_DIR%"
 
@@ -88,6 +90,19 @@ call em++ %APPFLAGS% -I ..\..\lib\Splooty -DCF_WASM_APP_SPLOOTY ^
 if errorlevel 1 exit /b 1
 
 echo.
+echo === audio_levels.wasm and unknown_import.wasm (host contract fixtures) ===
+"%CF_EMSDK%\upstream\bin\clang.exe" --target=wasm32 -O2 -nostdlib -fno-exceptions -fno-rtti ^
+ -I shims -I . -Wl,--no-entry -Wl,--strip-all ^
+ -Wl,--export=app_begin -Wl,--export=app_update -Wl,--export=app_end -Wl,--export=app_handle_button ^
+ -Wl,--export=test_note_handle -Wl,--export=test_mic_level -Wl,--export=test_mic_db ^
+ -o ..\..\test\bench\fixtures\audio_levels.wasm test_fixtures\audio_levels.cpp
+if errorlevel 1 exit /b 1
+"%CF_EMSDK%\upstream\bin\clang.exe" --target=wasm32 -O2 -nostdlib ^
+ -Wl,--no-entry -Wl,--strip-all ^
+ -Wl,--export=app_begin -Wl,--export=app_update -Wl,--export=app_end -Wl,--export=app_handle_button ^
+ -o ..\..\test\bench\fixtures\unknown_import.wasm test_fixtures\unknown_import.c
+if errorlevel 1 exit /b 1
+
 echo All device modules built and headers regenerated.
 endlocal
 

@@ -14,6 +14,14 @@
 #include "globals.h"
 
 static volatile bool s_exitRequested = false;
+static bool s_appMicEnabled = false;
+void wasmHostEndAudio() {
+    HAL::audioManager().stopSequence();
+    HAL::audioManager().stopTone();
+    HAL::audioManager().stopNotes();
+    if (s_appMicEnabled) HAL::audioManager().enableMic(false);
+    s_appMicEnabled = false;
+}
 bool wasmHostConsumeExitRequest() {
     bool requested = s_exitRequested;
     s_exitRequested = false;
@@ -138,6 +146,18 @@ void tone_stop() {
     HAL::audioManager().stopTone();
 }
 
+int32_t note_play(float frequency, int32_t durationMs) {
+    return HAL::audioManager().playNote(frequency, durationMs);
+}
+void note_stop(int32_t handle) { HAL::audioManager().stopNote(handle); }
+void note_all_off() { HAL::audioManager().stopNotes(); }
+void mic_enable(int32_t on) {
+    HAL::audioManager().enableMic(on != 0);
+    s_appMicEnabled = on != 0;
+}
+float mic_level() { return HAL::audioManager().getMicVolumeLinear(); }
+float mic_level_db() { return HAL::audioManager().getMicVolumeDb(); }
+
 void seq_play(const void* steps, int32_t count) {
     if (count < 0) count = 0;
     if (count > (int32_t)(sizeof(s_seqBuf) / sizeof(s_seqBuf[0]))) {
@@ -229,13 +249,13 @@ void log(const char* msg, int32_t len) {
 #define CF_EXTRA_STRING127
 #define CF_EXTRA_SEQUENCE
 #define CF_EXTRA_XBM , cf_host::xbmByteLength(w, h)
-#define CF_ROW(name, ret, sig, policy, args) \
+#define CF_ROW(since, name, ret, sig, policy, args) \
     static m3ApiRawFunction(cfRaw_##name) { \
         CF_RET_##ret CF_PARAMS(UNPACK, args) CF_POLICY_##policy \
         CF_PARAMS(CHECK, args) \
         CF_RETURN_##ret(cf_host::name(CF_PARAMS(CALL, args) CF_EXTRA_##policy)) \
     }
-#define CF_STUB(module, name, ret, sig, fn, policy, args)
+#define CF_STUB(since, module, name, ret, sig, fn, policy, args)
 #include "../../wasm/device_module/cf_imports.def"
 #undef CF_ROW
 #undef CF_STUB
@@ -289,8 +309,8 @@ static void envNotifyMemoryGrowth(int32_t memIndex) {
 
 #define CF_STUB_RETURN_PLAIN(ret, expr) CF_RETURN_##ret(expr)
 #define CF_STUB_RETURN_EXIT_TRAP(ret, expr) m3ApiTrap(expr)
-#define CF_ROW(name, ret, sig, policy, args)
-#define CF_STUB(module, name, ret, sig, fn, policy, args) \
+#define CF_ROW(since, name, ret, sig, policy, args)
+#define CF_STUB(since, module, name, ret, sig, fn, policy, args) \
     static m3ApiRawFunction(cfStubRaw_##name) { \
         CF_RET_##ret CF_PARAMS(UNPACK, args) CF_PARAMS(CHECK, args) \
         CF_STUB_RETURN_##policy(ret, fn(CF_PARAMS(CALL, args))) \
@@ -300,8 +320,8 @@ static void envNotifyMemoryGrowth(int32_t memIndex) {
 #undef CF_ROW
 
 static const WasmHostImport kImports[] = {
-#define CF_ROW(name, ret, sig, policy, args) { "cf", #name, sig, &cfRaw_##name },
-#define CF_STUB(module, name, ret, sig, fn, policy, args) { module, #name, sig, &cfStubRaw_##name },
+#define CF_ROW(since, name, ret, sig, policy, args) { "cf", #name, sig, &cfRaw_##name },
+#define CF_STUB(since, module, name, ret, sig, fn, policy, args) { module, #name, sig, &cfStubRaw_##name },
 #include "../../wasm/device_module/cf_imports.def"
 #undef CF_STUB
 #undef CF_ROW

@@ -11,6 +11,7 @@ export function readManifest(text) {
         const key = `${row.module}.${row.name}`;
         if (keys.has(key)) throw new Error(`Duplicate interface entry: ${key}`);
         keys.add(key);
+        if (!Number.isInteger(row.since) || row.since < 1) throw new Error(`Invalid since level: ${key}`);
         if (row.parameters) {
             const sig = `${type(row.returnType)}(${row.parameters.map(p => p.pointer ? 'i' : type(p.type)).join('')})`;
             if (sig !== row.signature) throw new Error(`Interface C/wasm signature mismatch: ${key}`);
@@ -82,11 +83,17 @@ export function verifyImports(bytes, rows) {
     }
 }
 
+export function requiredHalAbi(bytes, rows) {
+    verifyImports(bytes, rows);
+    const levels = new Map(rows.map(r => [`${r.module}.${r.name}`, r.since]));
+    return Math.max(1, ...moduleImports(bytes).map(r => levels.get(`${r.module}.${r.name}`)));
+}
+
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
     try {
         const rows = readManifest(fs.readFileSync(0, 'utf8'));
-        verifyImports(fs.readFileSync(process.argv[2]), rows);
-        console.log('Device WASM import names and signatures: allowed');
+        const level = requiredHalAbi(fs.readFileSync(process.argv[2]), rows);
+        console.log(process.argv.includes('--hal-abi') ? level : 'Device WASM import names and signatures: allowed');
     } catch (error) {
         console.error(`::error::${error.message}`);
         process.exitCode = 1;

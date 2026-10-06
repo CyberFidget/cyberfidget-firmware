@@ -12,6 +12,7 @@
 #include <freertos/task.h>
 
 #include "WasmHostImports.h"
+#include "m3_env.h"
 
 // ---------------------------------------------------------------------------
 // d_m3CustomAllocator implementation (see the spike patch in
@@ -196,6 +197,14 @@ bool WasmAppRuntime::linkHostFunctions() {
         M3Result res = m3_LinkRawFunction(module, h.module, h.name, h.sig, h.fn);
         if (res && res != m3Err_functionLookupFailed) {
             errorMsg = res;
+            return false;
+        }
+    }
+    // Raw linking compiles every matching import. Unused host entries are
+    // tolerated above; imported guest functions must all have been provided.
+    for (uint32_t i = 0; i < module->numFuncImports; ++i) {
+        if (!module->functions[i].compiled) {
+            errorMsg = "abi_unsupported";
             return false;
         }
     }

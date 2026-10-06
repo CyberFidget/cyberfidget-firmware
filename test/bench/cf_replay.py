@@ -423,7 +423,7 @@ def run_case(case, port, outdir):
                 ok, detail = t.ferry(st["path"], data)
                 res.step("ferry", ok, detail)
             elif do == "lapply_add":
-                entry = {k: st[k] for k in ("id", "name", "category", "format", "version", "abi") if k in st}
+                entry = {k: st[k] for k in ("id", "name", "category", "format", "version", "abi", "minFirmware") if k in st}
                 entry.setdefault("category", "Tools")
                 entry.setdefault("format", "wasm")
                 if "path" in st:

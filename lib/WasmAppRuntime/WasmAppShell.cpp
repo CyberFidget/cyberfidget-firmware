@@ -12,6 +12,7 @@
 #include "HAL.h"
 #include "WasmAppRuntime.h"
 #include "WasmHostImports.h"
+#include "WasmHostFunctions.h"
 
 WasmAppShell* WasmAppShell::s_running     = nullptr;
 WasmAppShell* WasmAppShell::s_statsSource = nullptr;
@@ -26,6 +27,7 @@ void WasmAppShell::fail(const char* what) {
     errored = true;
     snprintf(errBuf, sizeof(errBuf), "%s", what ? what : "unknown");
     Serial.printf("[err] wasmapp %s: %s\n", appName, errBuf);
+    wasmHostEndAudio();   // a held note or the mic must not outlive the app
 }
 
 void WasmAppShell::begin() {
@@ -127,6 +129,7 @@ void WasmAppShell::end() {
         inGuestCall = false;
     }
     rt.unload();
+    wasmHostEndAudio();
     fnBegin = fnUpdate = fnEnd = fnButton = nullptr;
     pendingHead  = 0;
     pendingCount = 0;
