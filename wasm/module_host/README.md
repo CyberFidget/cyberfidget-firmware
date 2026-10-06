@@ -33,8 +33,11 @@ and transfers through a 2048-byte aligned core buffer. Sequences then copy to
 a separate persistent 64-step host buffer. No guest pointer is retained.
 
 The smoke check runs 300 real-time frames, scripted inputs, pointer boundary
-and memory-growth checks, persistent sequence-copy and deferred/idempotent exit checks. Node mocks the
-Web Audio device; audible output still requires browser/manual testing.
+and memory-growth checks, persistent sequence-copy and deferred/idempotent exit checks. Audio is the device's
+engine (`lib/AudioEngine`); the page pulls its samples with
+`wasm_audio_render` (see `../AUDIO_RENDER_CONTRACT.md`), and the smoke check
+reads rendered samples. `../audio_parity.mjs` proves sample parity with the
+device engine; audible output still requires browser/manual testing.
 The manifest includes the allowed WASI and env stubs. Contract verification
 compares binary function types with each allowed (module, name, signature).
 No fixed clock or prototype tracing is part of this target.

@@ -408,6 +408,14 @@ private:
     bool wanted_ = false;    // whether that play/stop asked to play
 };
 
+// AudioManager::setVolume's curve, shared by every AudioManager build so the
+// device and the emulator give the same loudness for the same setting. It
+// keeps the curve the old audio-tools volume stream applied (its default
+// "simulated audio pot"): the value rounded to 0.01, then 0..0.5 -> 0..0.1
+// and 0.5..1 -> 0.1..1, linear in each half. `volume` must already be in
+// 0..1. Returns the engine's master gain, Q15 (32768 = unity).
+uint32_t volumeToMasterQ15(float volume);
+
 // RBJ-cookbook biquad designs, quantised to Q29. Uses libm, so coefficients
 // may differ by an LSB between platforms; the default (bypassed) bus never
 // uses them.

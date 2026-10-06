@@ -6,6 +6,7 @@ on:
       - 'lib/**'
       - 'wasm/**'
       - 'test/test_emu_device_interface/**'
+      - 'test/test_audio_engine_core/**'
       - 'scripts/check_hal_imports_additive/**'
       - 'scripts/check_shim_drift/**'
       - 'scripts/generate_version.py'
@@ -127,6 +128,11 @@ jobs:
             wasm/build/module-host/cyberfidget-core.js \
             wasm/build/cyberfidget.device.wasm \
             wasm/build/module-host/cf-imports.json
+
+      - name: Audio parity (emulator renders the device engine's samples)
+        run: |
+          source emsdk/emsdk_env.sh
+          node wasm/audio_parity.mjs wasm/build/cyberfidget.js wasm/build/module-host/cyberfidget-core.js
 
   core-app-list:
     runs-on: ubuntu-latest

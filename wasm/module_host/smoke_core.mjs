@@ -13,17 +13,8 @@ if (!manifestPath) throw new Error('Usage: node smoke_core.mjs <core.js> <guest.
 const manifest = readManifest(fs.readFileSync(manifestPath, 'utf8'));
 const bytes = fs.readFileSync(guestPath);
 verifyImports(bytes, manifest);
-// Node has no audio device. This mock lets the existing Web Audio bridge run;
-// it does not establish audible/browser parity.
-const parameter = () => ({ setValueAtTime() {} });
-let toneStarts = 0;
-const frequencies = [];
-class AudioContext {
-    currentTime = 0; destination = {};
-    createOscillator() { return { frequency: { setValueAtTime(value) { frequencies.push(value); } }, connect() {}, start() { ++toneStarts; }, stop() {} }; }
-    createGain() { return { gain: parameter(), connect() {} }; }
-}
-globalThis.window = { AudioContext };
+// Node has no audio device: audio is checked as rendered samples
+// (wasm_audio_render), not as browser playback. See wasm/audio_parity.mjs.
 const factory = createRequire(import.meta.url)(path.resolve(corePath));
 let flushes = 0, ledUpdates = 0, exits = 0;
 const core = await factory({
@@ -58,15 +49,33 @@ assert.doesNotThrow(() => guest.imports.cf.display_string_width(end - 96, 96));
 const stepsPtr = end - 512;
 const steps = new DataView(memory.buffer);
 new Uint8Array(memory.buffer, stepsPtr, 512).fill(0);
-steps.setFloat32(stepsPtr, 440, true); steps.setUint16(stepsPtr + 4, 1, true);
-steps.setFloat32(stepsPtr + 8, 660, true); steps.setUint16(stepsPtr + 12, 1, true);
+steps.setFloat32(stepsPtr, 440, true); steps.setUint16(stepsPtr + 4, 30, true);
+steps.setFloat32(stepsPtr + 8, 660, true); steps.setUint16(stepsPtr + 12, 30, true);
 guest.imports.cf.seq_play(stepsPtr, 1000); // Validate/copy only the clamped 64 steps.
 new Uint8Array(memory.buffer, stepsPtr, 512).fill(0);
 core.HEAPU8.fill(0, core._wasm_module_buffer(), core._wasm_module_buffer() + 512);
-core._wasm_module_frame();
-await new Promise(resolve => setTimeout(resolve, 20));
-core._wasm_module_frame();
-assert.deepEqual(frequencies.slice(0, 2), [440, 660], 'Audio loop must play the persistent sequence copy');
+// Steps 440 Hz then 660 Hz, 30 ms (1323 samples) each, from the first
+// rendered sample. Each must sound at its own pitch in its own window: a
+// zeroed or partly zeroed copy renders rests there. Zero crossings over 1000
+// samples: 440 Hz ~ 20, 660 Hz ~ 30.
+const seq = new Int16Array(3072);
+for (let off = 0; off < seq.length; off += 256) {
+    const n = core._wasm_audio_render(256);
+    seq.set(new Int16Array(core.HEAP16.buffer, core._wasm_audio_buffer(), n), off);
+}
+function stepWindow(from) {
+    const w = seq.subarray(from, from + 1000);
+    let peak = 0, crossings = 0;
+    for (let i = 0; i < w.length; ++i) {
+        peak = Math.max(peak, Math.abs(w[i]));
+        if (i && (w[i - 1] < 0) !== (w[i] < 0)) ++crossings;
+    }
+    return { peak, crossings };
+}
+const seqSteps = [stepWindow(250), stepWindow(1323 + 250)];
+assert.ok(seqSteps[0].peak > 2000 && Math.abs(seqSteps[0].crossings - 20) <= 2, 'Sequence step 1 (440 Hz) must play: ' + JSON.stringify(seqSteps[0]));
+assert.ok(seqSteps[1].peak > 2000 && Math.abs(seqSteps[1].crossings - 30) <= 2, 'Sequence step 2 (660 Hz) must play: ' + JSON.stringify(seqSteps[1]));
+core._wasm_audio_set_autoclock(1);   // nothing pulls samples from here on
 core._cf_seq_stop();
 core._wasm_module_start();
 const hashes = new Set();
@@ -103,5 +112,5 @@ core._wasm_module_frame();
 assert.equal(endCalls, 1);
 assert.equal(exits, 2);
 console.log(JSON.stringify({ frames: 300, nonBlank, distinctFramebuffers: hashes.size, flushes,
-    ledUpdates, toneStarts, importCounts: guest.importCounts, deferredExit: 'passed' }, null, 2));
+    ledUpdates, seqSteps, importCounts: guest.importCounts, deferredExit: 'passed' }, null, 2));
 core._wasm_stop();

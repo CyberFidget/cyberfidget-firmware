@@ -17,12 +17,15 @@
 
   It loads ./build/cyberfidget.js, paints the 128x64 framebuffer to a canvas,
   shows the 4 RGBW LEDs, and feeds buttons / slider / accelerometer to the app.
+  "Enable sound" streams the emulator's audio engine through a small
+  AudioWorklet player (see AUDIO_RENDER_CONTRACT.md); localhost counts as a
+  secure context, which AudioWorklet needs.
 -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CyberFidget &mdash; Local WASM Preview</title>
+<title>CyberFidget - Local WASM Preview</title>
 <style>
   :root { --bg:#0a0e14; --panel:#121823; --line:#223; --ink:#cfe8ff; --accent:#56e1ff; }
   * { box-sizing:border-box; }
@@ -67,8 +70,8 @@
 </head>
 <body>
 <header>
-  <b>CYBER FIDGET</b><span class="app">local WASM preview &mdash; <span id="appname">build/cyberfidget.js</span></span>
-  <span id="status">loading&hellip;</span>
+  <b>CYBER FIDGET</b><span class="app">local WASM preview - <span id="appname">build/cyberfidget.js</span></span>
+  <span id="status">loading...</span>
   <span id="fps" style="margin-left:auto;opacity:.6"></span>
 </header>
 
@@ -101,6 +104,13 @@
       <button class="btn" id="putdown">Put down (still)</button>
     </div>
     <div class="hint" id="accelReadout" style="margin-top:.6rem">accel: 0, 0, 1000</div>
+    <h3 style="margin-top:1rem">Sound</h3>
+    <div class="row">
+      <button class="btn" id="soundBtn">Enable sound</button>
+      <label class="hint"><input type="checkbox" id="speakerEq"> device speaker EQ</label>
+    </div>
+    <div class="row"><label class="hint">page volume <input id="pageVol" type="range" min="0" max="100" value="80"></label></div>
+    <div class="hint" id="soundStatus">off (the engine keeps time on its own clock)</div>
     <h3 style="margin-top:1rem">Serial</h3>
     <div id="serial"></div>
   </div>
@@ -227,6 +237,121 @@
     el.style.background = 'rgb(' + rr + ',' + gg + ',' + bb + ')';
     el.style.boxShadow = (rr+gg+bb > 30) ? '0 0 10px rgb(' + rr + ',' + gg + ',' + bb + ')' : '0 0 2px #000 inset';
   }
+
+  // ---- Sound: pull engine blocks into an AudioWorklet (AUDIO_RENDER_CONTRACT.md) ----
+  // The worklet plays queued mono 44.1 kHz blocks (resampling linearly if the
+  // context runs at another rate) and reports how much it holds and how much
+  // it has received. On each report this (the app loop's) thread renders
+  // enough to keep ~80 ms queued, counting blocks still in flight. Pumping
+  // happens only while the context runs; whenever it does not (not yet
+  // allowed, muted, suspended), the engine goes back to its own clock.
+  var WORKLET = [
+    'var CAP_S = 0.15;',
+    'class CfPlayer extends AudioWorkletProcessor {',
+    '  constructor() {',
+    '    super();',
+    '    this.q = []; this.off = 0; this.fill = 0; this.received = 0; this.dropped = 0;',
+    '    this.under = 0; this.started = false; this.n = 0;',
+    '    this.ratio = 44100 / sampleRate; this.phase = 0; this.prev = 0; this.cur = 0;',
+    '    this.cap = Math.round(44100 * CAP_S);',
+    '    this.port.onmessage = function (e) {',
+    '      var b = e.data; this.q.push(b); this.fill += b.length; this.received += b.length;',
+    '      while (this.fill > this.cap && this.q.length > 1) {',   // too much queued: drop the oldest
+    '        var old = this.q.shift(), left = old.length - this.off;',
+    '        this.fill -= left; this.dropped += left; this.off = 0;',
+    '      }',
+    '    }.bind(this);',
+    '  }',
+    '  next() {',   // one 44.1 kHz sample, or null when empty
+    '    if (!this.q.length) return null;',
+    '    var b = this.q[0], s = b[this.off++]; this.fill--;',
+    '    if (this.off >= b.length) { this.q.shift(); this.off = 0; }',
+    '    return s;',
+    '  }',
+    '  process(inputs, outputs) {',
+    '    var out = outputs[0][0], starved = false;',
+    '    for (var i = 0; i < out.length; i++) {',
+    '      this.phase += this.ratio;',
+    '      while (this.phase >= 1) {',
+    '        var s = this.next();',
+    '        if (s === null) { starved = true; s = 0; }',
+    '        this.prev = this.cur; this.cur = s; this.phase -= 1;',
+    '      }',
+    '      out[i] = this.prev + (this.cur - this.prev) * this.phase;',
+    '    }',
+    '    if (starved && this.started) this.under++;',
+    '    if (this.fill > 0) this.started = true;',
+    '    if (++this.n % 4 === 0) this.port.postMessage({ fill: this.fill, received: this.received,',
+    '      under: this.under, dropped: this.dropped });',
+    '    return true;',
+    '  }',
+    '}',
+    "registerProcessor('cf-player', CfPlayer);"
+  ].join('\n');
+  var sound = null;   // { ac, node, gain, target, sent }
+  var soundBtn = document.getElementById('soundBtn');
+  var soundStatus = document.getElementById('soundStatus');
+  var pageVol = document.getElementById('pageVol');
+  var speakerEq = document.getElementById('speakerEq');
+
+  // fill and received are the worklet's last report, in 44.1 kHz frames.
+  function pump(fill, received) {
+    if (!sound || sound.ac.state !== 'running') return;
+    var have = fill + (sound.sent - received);   // queued there + still in flight
+    while (have < sound.target) {
+      var n = mod._wasm_audio_render(Math.min(1024, sound.target - have));
+      var src = new Int16Array(mod.HEAP16.buffer, mod._wasm_audio_buffer(), n);
+      var f = new Float32Array(n);
+      for (var i = 0; i < n; i++) f[i] = src[i] / 32768;
+      sound.node.port.postMessage(f, [f.buffer]);
+      sound.sent += n;
+      have += n;
+    }
+  }
+  function onState() {
+    if (sound.ac.state !== 'running') {
+      mod._wasm_audio_set_autoclock(1);   // nobody pulls samples: the engine keeps its own time
+      soundStatus.textContent = 'paused (' + sound.ac.state + '), engine on its own clock';
+    }
+    soundBtn.textContent = sound.ac.state === 'running' ? 'Mute' : 'Unmute';
+  }
+  function startSound() {
+    var ac = new AudioContext({ sampleRate: mod._wasm_audio_sample_rate() });
+    ac.resume();   // inside the click, so the autoplay policy allows it
+    var url = URL.createObjectURL(new Blob([WORKLET], { type: 'application/javascript' }));
+    return ac.audioWorklet.addModule(url).then(function () {
+      var node = new AudioWorkletNode(ac, 'cf-player', { outputChannelCount: [1] });
+      var gain = ac.createGain();
+      gain.gain.value = pageVol.value / 100;
+      node.connect(gain).connect(ac.destination);
+      sound = { ac: ac, node: node, gain: gain, target: Math.round(44100 * 0.08), sent: 0 };
+      ac.onstatechange = onState;
+      node.port.onmessage = function (e) {
+        var d = e.data;
+        pump(d.fill, d.received);
+        if (ac.state === 'running') {
+          soundStatus.textContent = 'on, ' + ac.sampleRate + ' Hz, queued ' + Math.round(d.fill / 44.1) +
+            ' ms, underruns ' + d.under + ', dropped ' + Math.round(d.dropped / 44.1) + ' ms';
+        }
+      };
+      onState();
+      pump(0, 0);
+    });
+  }
+  soundBtn.addEventListener('click', function () {
+    if (!mod) return;
+    if (!sound) {
+      soundBtn.disabled = true;
+      startSound().then(function () { soundBtn.disabled = false; })
+        .catch(function (e) { soundStatus.textContent = 'sound failed: ' + e; soundBtn.disabled = false; });
+    } else if (sound.ac.state === 'running') {
+      sound.ac.suspend();   // onstatechange hands the clock back to the engine
+    } else {
+      sound.ac.resume();    // the next worklet report pulls again (and takes the clock back)
+    }
+  });
+  pageVol.addEventListener('input', function () { if (sound) sound.gain.gain.value = pageVol.value / 100; });
+  speakerEq.addEventListener('change', function () { if (mod) mod._wasm_audio_set_speaker_eq(speakerEq.checked ? 1 : 0); });
 
   // ---- Load the module ----
   var s = document.createElement('script');

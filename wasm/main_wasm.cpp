@@ -5,8 +5,8 @@
 #include "globals.h"
 #include "DisplayProxy.h"
 #include "ButtonManager.h"
-#ifdef CF_WASM_MODULE_HOST
 #include "AudioManager.h"
+#ifdef CF_WASM_MODULE_HOST
 #include "WasmHostFunctions.h"
 #endif
 #include "RGBController.h"
@@ -90,6 +90,7 @@ extern "C" void wasm_parity_advance_millis(uint32_t delta);
 static void mainLoop();
 #ifdef CF_WASM_MODULE_HOST
 static bool moduleActive = false;
+void wasmAudioEndApp();   // hal/audio_wasm.cpp
 EM_JS(void, moduleGuestCall, (int kind, int index, int event), {
     if (Module.guestCall) Module.guestCall(kind, index, event);
 });
@@ -97,10 +98,12 @@ static void moduleEnd() {
     if (!moduleActive) return;
     moduleActive = false;
     moduleGuestCall(2, 0, 0);
-    // Whatever the guest left playing stops with it, as on the device.
+    // Whatever the guest left playing stops with it, as on the device (5 ms
+    // fade), and nothing it left queued reaches the next app.
     HAL::audioManager().stopSequence();
     HAL::audioManager().stopTone();
     HAL::audioManager().stopNotes();
+    wasmAudioEndApp();
     wasmHostClearExitRequest();
     EM_ASM({ if (Module.onAppExit) Module.onAppExit(); });
 }
@@ -217,9 +220,9 @@ static void demoUpdate() {
 static void mainLoop() {
     HAL::loopHardware();
     updateStrip();
-#ifdef CF_WASM_MODULE_HOST
+    // Keeps the audio engine's clock running until the page pulls samples
+    // itself (wasm_audio_render); see AUDIO_RENDER_CONTRACT.md.
     HAL::audioManager().loop();
-#endif
 
     ButtonEvent ev;
     while (HAL::buttonManager().getNextEvent(ev)) {

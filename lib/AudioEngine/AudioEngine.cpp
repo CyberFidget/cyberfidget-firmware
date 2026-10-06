@@ -1011,6 +1011,12 @@ void ToneControl::stopNotes(Engine* engine) {
     if (engine) engine->requestStop(kStopNotes);
 }
 
+uint32_t volumeToMasterQ15(float volume) {
+    const int32_t pct = (int32_t)(volume * 100.0f + 0.5f);
+    const int32_t num = (pct <= 50) ? pct : 9 * pct - 400;   // factor = num / 500
+    return (uint32_t)((num * 32768 + 250) / 500);
+}
+
 // ------------------------------------------------------------- EQ design
 
 BiquadCoefs designHighpass(double hz, double q) {
