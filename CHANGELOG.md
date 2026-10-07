@@ -20,6 +20,16 @@ with the version and date automatically.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+## [1.5.0] - 2026-10-07
+
+### Added
+
 - Several sounds can now play at once. Booper plays one note per held button,
   tuned so any buttons held together make a chord.
 - Booper's bottom-right button switches between chord sets: Major, Minor,
@@ -154,6 +164,7 @@ with the version and date automatically.
 
 - Dead header generation left over in the app module build.
 
-[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.5.0...HEAD
+[1.5.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.3.3-rc2...v1.4.0
