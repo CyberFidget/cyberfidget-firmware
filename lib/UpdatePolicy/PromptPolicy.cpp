@@ -11,6 +11,78 @@ namespace PromptPolicy {
 using CheckinPolicy::Policy;
 using CheckinPolicy::Verdict;
 
+const char* sessionFailureCopy(const char* error) {
+    if (!error) return "Could not check";
+    if (strcmp(error, "join") == 0 || strcmp(error, "no-network") == 0 ||
+        strcmp(error, "sta-mode") == 0) return "Couldn't join WiFi";
+    if (strcmp(error, "no-wifi") == 0) return "No saved WiFi yet";
+    if (strcmp(error, "deadline") == 0) return "Check timed out";
+    if (strcmp(error, "not-linked") == 0) return "Not linked yet";
+    if (strcmp(error, "cancelled") == 0) return "Check stopped";
+    if (strcmp(error, "rate-limited") == 0 || strcmp(error, "backoff") == 0)
+        return "Try again later";
+    if (strstr(error, "transport") || strcmp(error, "roots-parse") == 0)
+        return "No answer from server";
+    if (strstr(error, "-body") || strstr(error, "-http")) return "Couldn't read reply";
+    if (strncmp(error, "blob-", 5) == 0 || strncmp(error, "rejected:", 9) == 0)
+        return "Couldn't get apps";
+    return "Could not check";
+}
+
+void formatSessionStatus(const CloudSync::SessionSnapshot& status, CheckLines& out,
+                         const char* network) {
+    using CloudSync::SessionPhase;
+    using CloudSync::SessionOutcome;
+    out = CheckLines();
+    const char* line = "Ready to check";
+    switch (status.phase) {
+        case SessionPhase::Idle: break;
+        case SessionPhase::JoiningWifi:
+            line = "Joining WiFi";
+            if (network && network[0]) {
+                snprintf(out.lines[1], kCheckLineLen, "%s", network);
+                out.count = 2;
+            }
+            if (status.total) {
+                const int row = out.count ? 2 : 1;
+                snprintf(out.lines[row], kCheckLineLen, "Try %lu of %lu",
+                         (unsigned long)status.current, (unsigned long)status.total);
+                out.count = row + 1;
+            }
+            break;
+        case SessionPhase::CheckingIn: line = "Checking in"; break;
+        case SessionPhase::LookingForUpdate: line = "Looking for updates"; break;
+        case SessionPhase::GettingApps:
+            if (status.total) {
+                snprintf(out.lines[0], kCheckLineLen, "Getting apps %lu of %lu",
+                         (unsigned long)status.current, (unsigned long)status.total);
+                out.count = 1;
+                return;
+            }
+            line = "Getting apps";
+            break;
+        case SessionPhase::Waiting:
+            snprintf(out.lines[0], kCheckLineLen, "Waiting %lu s",
+                     (unsigned long)status.secondsLeft);
+            snprintf(out.lines[1], kCheckLineLen, "%s",
+                     status.serverWait ? "(server asks us to)" : "Next check soon");
+            out.count = 2;
+            return;
+        case SessionPhase::Done:
+            switch (status.outcome) {
+                case SessionOutcome::Complete: line = "Check complete"; break;
+                case SessionOutcome::NoChanges: line = "No changes found"; break;
+                case SessionOutcome::AppsApplied: line = "App changes applied"; break;
+                case SessionOutcome::AppsWaiting: line = "App changes waiting"; break;
+                case SessionOutcome::UpdateFound: line = "Update available"; break;
+            }
+            break;
+        case SessionPhase::Failed: line = sessionFailureCopy(status.error); break;
+    }
+    snprintf(out.lines[0], kCheckLineLen, "%s", line);
+    if (!out.count) out.count = 1;
+}
+
 namespace {
 const char* orDefault(const char* text, const char* fallback) {
     return text && text[0] ? text : fallback;
@@ -242,10 +314,35 @@ void appsTitle(char* out, size_t len, uint32_t count) {
                   count == 1 ? "" : "s");
 }
 
+void formatAboutLines(const char* fullVersion, const char* type, const char* built,
+                      AboutLines* out) {
+    if (!out) return;
+    *out = AboutLines();
+    const char* version = fullVersion ? fullVersion : "";
+    const char* build = strchr(version, '+');
+    const size_t versionLen = build ? (size_t)(build - version) : strlen(version);
+    const int shown = (int)(versionLen < kAboutLineLen ? versionLen : kAboutLineLen - 1);
+    snprintf(out->lines[out->count++], kAboutLineLen, "Version %.*s", shown, version);
+    if (build && build[1])
+        snprintf(out->lines[out->count++], kAboutLineLen, "Build %s", build + 1);
+    snprintf(out->lines[out->count++], kAboutLineLen, "Type %s", type ? type : "");
+    snprintf(out->lines[out->count++], kAboutLineLen, "Built %s", built ? built : "");
+}
+
+void formatStatusVersion(const char* fullVersion, const char* type, char* out, size_t len) {
+    if (!out || !len) return;
+    const char* version = fullVersion ? fullVersion : "";
+    const size_t versionLen = strcspn(version, "+");
+    const int shown = (int)(versionLen < kAboutLineLen ? versionLen : kAboutLineLen - 1);
+    const bool showType = type && type[0] && strcmp(type, "release") != 0;
+    snprintf(out, len < kAboutLineLen ? len : kAboutLineLen, "fw %.*s%s%s", shown, version,
+             showType ? " " : "", showType ? type : "");
+}
+
 Row settingsRow(int index) {
     static const Row order[kSettingsRows] = {
         Row::CheckNow, Row::AutoCheck, Row::BootCheck, Row::ShareBattery, Row::AutoApply, Row::Channel, Row::Source,
-        Row::Skip, Row::Link, Row::Awake, Row::Status,
+        Row::Skip, Row::Link, Row::Awake, Row::About, Row::Status,
     };
     return index >= 0 && index < kSettingsRows ? order[index] : Row::Status;
 }
@@ -298,6 +395,9 @@ void settingsLabel(Row row, const SettingsState& s, char* out, size_t len) {
             break;
         case Row::Awake:
             snprintf(out, len, "Awake & dev mode: %s", AwakePolicy::modeName(s.awake.mode));
+            break;
+        case Row::About:
+            snprintf(out, len, "About this Fidget");
             break;
         case Row::Status:
             if (!s.hasUpdateSlot && offerEligible(s.avail, s.rej, s.running))

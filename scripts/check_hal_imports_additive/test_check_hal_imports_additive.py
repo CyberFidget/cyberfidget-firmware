@@ -13,13 +13,12 @@ import check_hal_imports_additive as checker
 IMPORTS = '''
 #define CF_IMPORT(NAME) ignored
 CF_IMPORT("alpha") int32_t cf_alpha(int32_t value);
-CF_IMPORT("beta") void cf_beta(const char * message, int32_t length);
-'''
+CF_IMPORT("beta") void cf_beta(const char * message, int32_t length);\n'''
 ABI = '#define CF_HAL_ABI {major}\n'
 
 
 class CheckerTests(unittest.TestCase):
-    def run_check(self, base_imports=IMPORTS, head_imports=IMPORTS, base_abi=1, head_abi=1):
+    def run_check(self, base_imports=IMPORTS, head_imports=IMPORTS, base_abi=1, head_abi=1, host=None):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             files = {
@@ -28,6 +27,8 @@ class CheckerTests(unittest.TestCase):
                 'base_abi.h': ABI.format(major=base_abi),
                 'head_abi.h': ABI.format(major=head_abi),
             }
+            if host is not None:
+                files['host.cpp'] = host
             for name, content in files.items():
                 (root / name).write_text(content, encoding='utf-8')
             stderr = io.StringIO()
@@ -37,8 +38,66 @@ class CheckerTests(unittest.TestCase):
                     '--base', str(root / 'base.h'), '--head', str(root / 'head.h'),
                     '--base-abi', str(root / 'base_abi.h'),
                     '--head-abi', str(root / 'head_abi.h'),
-                ])
+                ] + (['--base-host', str(root / 'host.cpp')] if host is not None else []))
             return result, stdout.getvalue(), stderr.getvalue()
+
+    # A base from before the import table: its header names cf imports bare
+    # and omits nop and the stubs; its device host table lists what it linked.
+    HOST = """static const WasmHostImport kImports[] = {
+    { "cf", "nop", "i(i)", &cfNop },
+    { "cf", "alpha", "i(i)", &cfAlpha },
+    { "cf", "beta", "v(ii)", &cfBeta },
+    { "wasi_snapshot_preview1", "fd_close", "i(i)", &stubFdClose },
+};"""
+    HEAD = (IMPORTS.replace('"alpha"', '"cf.alpha", 1, "i(i)"').replace('"beta"', '"cf.beta", 1, "v(ii)"')
+            + 'CF_IMPORT("cf.nop", 1, "i(i)") int32_t cf_nop(int32_t x);\n'
+            + 'CF_IMPORT("wasi_snapshot_preview1.fd_close", 1, "i(i)") int32_t fd_close(int32_t fd);\n')
+
+    def test_legacy_base_matches_the_table_it_became(self):
+        result, output, error = self.run_check(head_imports=self.HEAD, host=self.HOST)
+        self.assertEqual(0, result, error)
+        self.assertIn('PASS', output)
+
+    def test_legacy_base_catches_a_removed_host_only_import(self):
+        head = self.HEAD.replace('CF_IMPORT("wasi_snapshot_preview1.fd_close", 1, "i(i)") int32_t fd_close(int32_t fd);\n', '')
+        result, _, error = self.run_check(head_imports=head, host=self.HOST)
+        self.assertEqual(1, result)
+        self.assertIn('wasi_snapshot_preview1.fd_close: import the base device provided is missing', error)
+
+    def test_legacy_base_catches_a_host_only_signature_change(self):
+        head = self.HEAD.replace('"cf.nop", 1, "i(i)"', '"cf.nop", 1, "i(ii)"')
+        result, _, error = self.run_check(head_imports=head, host=self.HOST)
+        self.assertEqual(1, result)
+        self.assertIn('cf.nop: wasm signature changed', error)
+
+    def test_legacy_base_catches_a_wasm_signature_change_on_a_header_import(self):
+        head = self.HEAD.replace('"cf.alpha", 1, "i(i)"', '"cf.alpha", 1, "i(f)"')
+        result, _, error = self.run_check(head_imports=head, host=self.HOST)
+        self.assertEqual(1, result)
+        self.assertIn('cf.alpha: wasm signature changed from "i(i)" to "i(f)"', error)
+
+    def test_legacy_base_catches_a_header_removal(self):
+        head = self.HEAD.replace('CF_IMPORT("cf.beta", 1, "v(ii)") void cf_beta(const char * message, int32_t length);', '')
+        result, _, error = self.run_check(head_imports=head, host=self.HOST)
+        self.assertEqual(1, result)
+        self.assertIn('cf.beta: import is missing', error)
+
+    def test_legacy_base_rejects_a_new_level_one_row(self):
+        head = self.HEAD + 'CF_IMPORT("cf.gamma", 1, "v()") void cf_gamma(void);\n'
+        result, _, error = self.run_check(head_imports=head, host=self.HOST)
+        self.assertEqual(1, result)
+        self.assertIn('cf.gamma: new import since 1 must be above the base CF_HAL_ABI 1', error)
+
+    def test_legacy_base_accepts_a_new_level(self):
+        head = self.HEAD + 'CF_IMPORT("cf.gamma", 2, "v()") void cf_gamma(void);\n'
+        result, _, error = self.run_check(head_imports=head, head_abi=2, host=self.HOST)
+        self.assertEqual(0, result, error)
+
+    def test_level_one_rows_are_new_without_a_base_host(self):
+        head = IMPORTS + 'CF_IMPORT("cf.nop", 1, "i(i)") int32_t cf_nop(int32_t x);\n'
+        result, _, error = self.run_check(head_imports=head)
+        self.assertEqual(1, result)
+        self.assertIn('must be above the base CF_HAL_ABI 1', error)
 
     def test_removal_is_caught(self):
         result, _, error = self.run_check(head_imports=IMPORTS.split('CF_IMPORT("beta")')[0])
@@ -60,28 +119,79 @@ class CheckerTests(unittest.TestCase):
         self.assertEqual(1, result)
         self.assertIn('signature changed', error)
 
-    def test_addition_passes(self):
-        result, output, _ = self.run_check(head_imports=IMPORTS + 'CF_IMPORT("gamma") void cf_gamma(void);\n')
-        self.assertEqual(0, result)
-        self.assertIn('PASS', output)
+    def test_addition_at_the_base_level_fails(self):
+        result, _, error = self.run_check(head_imports=IMPORTS + 'CF_IMPORT("gamma") void cf_gamma(void);\n')
+        self.assertEqual(1, result)
+        self.assertIn('must be above the base CF_HAL_ABI 1', error)
 
-    def test_removal_with_abi_bump_passes(self):
-        result, output, _ = self.run_check(
+    def test_addition_to_a_level_the_base_has_fails(self):
+        base = IMPORTS + 'CF_IMPORT("gamma", 2, "v()") void cf_gamma(void);'
+        result, _, error = self.run_check(
+            base_imports=base, base_abi=2, head_abi=2,
+            head_imports=base + 'CF_IMPORT("delta", 2, "v()") void cf_delta(void);')
+        self.assertEqual(1, result)
+        self.assertIn('delta: new import since 2 must be above the base CF_HAL_ABI 2', error)
+
+    def test_removal_with_abi_bump_fails(self):
+        result, _, error = self.run_check(
             head_imports='CF_IMPORT("alpha") int32_t cf_alpha(int32_t value);\n',
             head_abi=2,
         )
+        self.assertEqual(1, result)
+        self.assertIn('beta: import is missing', error)
+
+    def test_wrong_since_on_new_row_fails(self):
+        result, _, error = self.run_check(
+            head_imports=IMPORTS + 'CF_IMPORT("gamma", 1, "v()") void cf_gamma(void);', head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('new import since 1 must equal CF_HAL_ABI 2', error)
+
+    def test_changed_since_on_existing_row_fails(self):
+        result, _, error = self.run_check(
+            head_imports=IMPORTS.replace('CF_IMPORT("alpha")', 'CF_IMPORT("alpha", 2, "i(i)")'), head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('since changed', error)
+
+    def test_correct_new_level_passes(self):
+        result, output, _ = self.run_check(
+            head_imports=IMPORTS + 'CF_IMPORT("gamma", 2, "v()") void cf_gamma(void);', head_abi=2)
         self.assertEqual(0, result)
-        self.assertIn('major changed from 1 to 2', output)
+        self.assertIn('PASS', output)
+
+    def test_signature_change_with_abi_bump_fails(self):
+        head = IMPORTS.replace('int32_t value', 'float value')
+        head += 'CF_IMPORT("gamma", 2, "v()") void cf_gamma(void);'
+        result, _, error = self.run_check(head_imports=head, head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('signature changed', error)
+
+    def test_stub_removal_with_abi_bump_fails(self):
+        stub = 'CF_IMPORT("env." "notify", 1, "v(i)") void cf_stub_notify(int32_t index);'
+        head = IMPORTS + 'CF_IMPORT("gamma", 2, "v()") void cf_gamma(void);'
+        result, _, error = self.run_check(base_imports=IMPORTS + stub, head_imports=head, head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('env.notify: import is missing', error)
+
+    def test_highest_level_must_match_abi(self):
+        result, _, error = self.run_check(head_abi=2)
+        self.assertEqual(1, result)
+        self.assertIn('CF_HAL_ABI must equal max(since)', error)
+
+    def test_malformed_since_cannot_be_skipped(self):
+        head = IMPORTS + 'CF_IMPORT("gamma", -1, "v()") void cf_gamma(void);'
+        result, _, error = self.run_check(head_imports=head)
+        self.assertEqual(1, result)
+        self.assertIn('malformed CF_IMPORT', error)
 
     def test_abi_decrease_fails(self):
         result, _, error = self.run_check(base_abi=2, head_abi=1)
         self.assertEqual(1, result)
-        self.assertIn('ABI major must not move backwards', error)
+        self.assertIn('ABI level must not move backwards', error)
 
     def test_unparseable_file_fails_loudly(self):
         result, _, error = self.run_check(head_imports='CF_IMPORT("alpha") this is not a declaration;')
         self.assertEqual(1, result)
-        self.assertIn('could not parse declaration for import "alpha"', error)
+        self.assertIn('could not parse declaration for import "cf.alpha"', error)
 
 
 if __name__ == '__main__':

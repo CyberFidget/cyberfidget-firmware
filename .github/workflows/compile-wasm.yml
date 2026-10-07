@@ -168,17 +168,8 @@ jobs:
           done
 
           imports_ok=true
-          invalid_import_count=0
-          while IFS= read -r import_module; do
-            case "$import_module" in
-              cf|wasi_snapshot_preview1|env) ;;
-              *) invalid_import_count=$((invalid_import_count + 1)) ;;
-            esac
-          done < <(sed -nE 's/^[[:space:]]*\(import "([^"]+)".*/\1/p' "$DEVICE_WAT")
-          if [ "$invalid_import_count" -eq 0 ]; then
-            echo "Device WASM import modules: allowed"
-          else
-            echo "::error::Device WASM imports use ${invalid_import_count} unsupported module(s)"
+          if ! emcc -E -P -x c wasm/device_module/import_manifest.c | \
+              node wasm/device_module/verify_imports.mjs wasm/build/cyberfidget.device.wasm; then
             imports_ok=false
           fi
 
@@ -196,11 +187,8 @@ jobs:
             exit 1
           fi
 
-          hal_abi="$(grep -E '^[[:space:]]*#define[[:space:]]+CF_HAL_ABI[[:space:]]+[0-9]+' wasm/device_module/cf_hal_abi.h | awk '{print $3}')"
-          if ! [[ "$hal_abi" =~ ^[0-9]+$ ]]; then
-            echo "::error::Unable to determine CF_HAL_ABI from cf_hal_abi.h"
-            exit 1
-          fi
+          hal_abi="$(emcc -E -P -x c wasm/device_module/import_manifest.c | \
+            node wasm/device_module/verify_imports.mjs wasm/build/cyberfidget.device.wasm --hal-abi)"
           printf '{ "hal_abi": %s, "exports_ok": true, "imports_ok": true, "initial_mem_ok": true, "device_wasm": "cyberfidget.device.wasm" }\n' "$hal_abi" > wasm/build/device-build-meta.json
           echo "Device WASM contract: passed"
 

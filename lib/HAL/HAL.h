@@ -101,6 +101,9 @@ namespace HAL
     // If you want to set wake pins, deep sleep, etc. directly from AppManager
     void configureWakeupPins();
     void enterDeepSleep(bool hardShutdown = false);
+    // A normal sleep is waiting for audio to stop and will retry by itself
+    // (from loopHardware); do not start another sleep sequence meanwhile.
+    bool sleepPending();
     // Called at the start of every enterDeepSleep() that keeps the timer
     // wake (the check-in scheduler arms its next due time there).
     void setBeforeSleep(void (*hook)());
@@ -134,7 +137,7 @@ namespace HAL
     void setRgbLedsOff();
     void showRgbLeds();
 
-    // Silence all audio output (raw tones and tone sequences). For shutdown
+    // Silence all audio output (raw tones, tone sequences and notes). For shutdown
     // paths that must not leave a note sounding; callers stay decoupled from
     // the AudioManager type.
     void stopAudio();

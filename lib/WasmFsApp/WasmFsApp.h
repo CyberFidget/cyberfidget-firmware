@@ -35,6 +35,8 @@ bool hasPending();
 
 // Whether the currently staged blob ABI is provided by this firmware.
 bool pendingAbiSupported();
+// Includes unsupported imports discovered while linking the last launch.
+bool abiUnsupported();
 
 // The staged launch's manifest id and label (false when nothing is staged).
 bool pendingLaunch(std::string& id, std::string& label);

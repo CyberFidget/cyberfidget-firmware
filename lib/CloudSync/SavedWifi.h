@@ -46,6 +46,8 @@ struct JoinOptions {
     void* ctx = nullptr;
     /// Also polled every 100 ms (the update session feeds its watchdog).
     void (*tick)(void*) = nullptr;
+    /// Called before each join attempt (first, then fallback if needed).
+    void (*attempt)(void*, uint32_t, uint32_t) = nullptr;
     /// Only the first saved network, by a plain join (no remembered place,
     /// no scan for the others): `wifi try` reports on exactly that one.
     /// Ends early when it is not found or its password is refused twice.

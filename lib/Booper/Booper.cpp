@@ -21,6 +21,18 @@ Booper::Booper(ButtonManager& btnMgr, AudioManager& audioMgr) :
 {
     ESP_LOGI(TAG_MAIN, "Booper constructor! volume=%.2f, &this=%p", volume, this);
     instance = this;
+    for (int i = 0; i < kButtonCount; ++i) noteHandle[i] = -1;
+}
+
+void Booper::stopAllNotes() {
+    audioManager.stopNotes();
+    for (int i = 0; i < kButtonCount; ++i) noteHandle[i] = -1;
+}
+
+void Booper::cycleChordSet() {
+    // Stop held notes first so none is left sounding at the old pitch.
+    stopAllNotes();
+    chordSet = (chordSet + 1) % kBooperChordSetCount;
 }
 
 void Booper::begin() {
@@ -33,8 +45,8 @@ void Booper::end() {
     ESP_LOGI(TAG_MAIN, "end() => unregistering booper callbacks...");
     
     unregisterButtonCallbacks();
-    // Stop any playing tones
-    audioManager.stopTone();
+    // Stop any playing notes
+    stopAllNotes();
     audioManager.enableMic(false); // Disable mic input
     // Turn off LEDs when leaving the app
     setColorsOff();
@@ -89,7 +101,7 @@ void Booper::update() {
     display.clear();
     display.setTextAlignment(TEXT_ALIGN_CENTER);
     display.setFont(ArialMT_Plain_10);
-    display.drawString(64, 10, "Booper");
+    display.drawString(64, 10, String("Booper - ") + kBooperChordSets[chordSet].name);
     display.drawString(64, 22, "Volume: " + String((int)(volume * 100)) + "%");
     display.drawString(64, 34, "Octave: " + String(octave));
     display.drawString(64, 46, "Mic: " + String(micLin, 3) + " | " + String(micDb, 1) + " dBFS");
@@ -126,23 +138,29 @@ void Booper::buttonPressedCallback(const ButtonEvent& event) {
 
 void Booper::handleButtonEvent(const ButtonEvent& event) {
     // Handle button events
+    // Each held button plays its own note, so pressing several makes a chord.
+    const int b = event.buttonIndex;
+    if (b < 0 || b >= kButtonCount) return;
     if (event.eventType == ButtonEvent_Pressed) {
-        float freq = getFrequencyForButton(event.buttonIndex);
-        audioManager.playTone(freq);
+        if (noteHandle[b] > 0) audioManager.stopNote(noteHandle[b]);
+        float freq = getFrequencyForButton(b);
+        noteHandle[b] = audioManager.playNote(freq);
     } else if (event.eventType == ButtonEvent_Released) {
-        // Stop tone when button is released
-        if (event.buttonIndex == button_TopLeftIndex ||
-            event.buttonIndex == button_TopRightIndex ||
-            event.buttonIndex == button_MiddleLeftIndex ||
-            event.buttonIndex == button_MiddleRightIndex) {
-            audioManager.stopTone();
+        // Stop this button's note when it is released
+        if (b == button_TopLeftIndex ||
+            b == button_TopRightIndex ||
+            b == button_MiddleLeftIndex ||
+            b == button_MiddleRightIndex) {
+            if (noteHandle[b] > 0) audioManager.stopNote(noteHandle[b]);
+            noteHandle[b] = -1;
         }
     }
 }
 
 float Booper::getFrequencyForButton(int buttonIndex) {
     // Base frequencies for buttons
-    float baseFrequencies[] = { 261.63f, 293.66f, 329.63f, 349.23f }; // C4, D4, E4, F4
+    // From the selected chord set (Major by default): buttons held together sound consonant.
+    const float* baseFrequencies = kBooperChordSets[chordSet].freq;
 
     int buttonOrder[] = {
         button_TopLeftIndex,
@@ -196,7 +214,8 @@ void Booper::onButtonBackPressed(const ButtonEvent& event)
 void Booper::onButtonSelectPressed(const ButtonEvent& event)
 {    
     // Press
-    if (event.eventType == ButtonEvent_Pressed){
-        //instance().selectCurrentItem();
+    // Select (bottom right) cycles the chord set
+    if (event.eventType == ButtonEvent_Pressed && instance){
+        instance->cycleChordSet();
     }
 }

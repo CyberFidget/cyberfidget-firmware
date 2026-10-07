@@ -5,6 +5,10 @@
 #include "globals.h"
 #include "DisplayProxy.h"
 #include "ButtonManager.h"
+#include "AudioManager.h"
+#ifdef CF_WASM_MODULE_HOST
+#include "WasmHostFunctions.h"
+#endif
 #include "RGBController.h"
 #include "version.h"  // FW_* macros, exposed to JS via ccall (see exports below)
 
@@ -84,6 +88,30 @@ extern "C" void wasm_parity_advance_millis(uint32_t delta);
 #endif
 
 static void mainLoop();
+#ifdef CF_WASM_MODULE_HOST
+static bool moduleActive = false;
+void wasmAudioEndApp();   // hal/audio_wasm.cpp
+EM_JS(void, moduleGuestCall, (int kind, int index, int event), {
+    if (Module.guestCall) Module.guestCall(kind, index, event);
+});
+static void moduleEnd() {
+    if (!moduleActive) return;
+    moduleActive = false;
+    moduleGuestCall(2, 0, 0);
+    // Whatever the guest left playing stops with it, as on the device (5 ms
+    // fade), the mic it turned on goes off, and nothing it left queued
+    // reaches the next app.
+    wasmHostEndAudio();
+    wasmAudioEndApp();
+    wasmHostClearExitRequest();
+    EM_ASM({ if (Module.onAppExit) Module.onAppExit(); });
+}
+static void moduleCall(int kind, int index = 0, int event = 0) {
+    moduleGuestCall(kind, index, event);
+    // Guest calls must return before end/unload can run.
+    if (wasmHostConsumeExitRequest()) moduleEnd();
+}
+#endif
 
 // ---- Exported C functions for JS bridge ----
 extern "C" {
@@ -118,6 +146,17 @@ void wasm_stop() {
 #endif
 }
 
+#ifdef CF_WASM_MODULE_HOST
+KEEPALIVE void wasm_module_start() {
+    moduleEnd();
+    wasmHostClearExitRequest();
+    moduleActive = true;
+    moduleCall(0);
+}
+KEEPALIVE void wasm_module_end() { moduleEnd(); }
+KEEPALIVE void wasm_module_frame() { mainLoop(); }
+#endif
+
 #if defined(CF_DINO_PARITY) && defined(WASM_APP_DINOGAME)
 // Test-only migration parity surface. Each step advances the synthetic clock
 // by one 50 FPS frame and reports whether that frame caused game over.
@@ -148,7 +187,7 @@ KEEPALIVE const char* cyberfidget_build_type()      { return FW_BUILD_TYPE; }
 } // extern "C"
 
 // ---- Default demo (used when no app is selected) ----
-#ifndef APP_INSTANCE
+#if !defined(APP_INSTANCE) && !defined(CF_WASM_MODULE_HOST)
 
 static int demoFrame = 0;
 
@@ -180,16 +219,26 @@ static void demoUpdate() {
 static void mainLoop() {
     HAL::loopHardware();
     updateStrip();
+    // Keeps the audio engine's clock running until the page pulls samples
+    // itself (wasm_audio_render); see AUDIO_RENDER_CONTRACT.md.
+    HAL::audioManager().loop();
 
     ButtonEvent ev;
     while (HAL::buttonManager().getNextEvent(ev)) {
+#ifdef CF_WASM_MODULE_HOST
+        if (moduleActive) moduleCall(3, ev.buttonIndex, ev.eventType);
+#else
         if (HAL::buttonManager().hasCallback(ev.buttonIndex)) {
             auto cb = HAL::buttonManager().getCallback(ev.buttonIndex);
             if (cb) cb(ev);
         }
+#endif
     }
 
-#ifdef APP_INSTANCE
+#ifdef CF_WASM_MODULE_HOST
+    if (moduleActive) moduleCall(1);
+    HAL::displayProxy().display();
+#elif defined(APP_INSTANCE)
     APP_INSTANCE.update();
 #else
     demoUpdate();
@@ -199,14 +248,16 @@ static void mainLoop() {
 int main() {
     HAL::initEasyEverything();
 
-#ifdef APP_INSTANCE
+#ifdef CF_WASM_MODULE_HOST
+    // JS starts the guest explicitly, after installing Module.guestCall.
+#elif defined(APP_INSTANCE)
     APP_INSTANCE.begin();
 #else
     demoBegin();
 #endif
 
 #ifdef __EMSCRIPTEN__
-#ifndef CF_DINO_PARITY
+#if !defined(CF_DINO_PARITY) && !defined(CF_WASM_MODULE_HOST)
     emscripten_set_main_loop(mainLoop, 50, 1);
 #endif
 #else

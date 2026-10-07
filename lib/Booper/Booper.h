@@ -7,6 +7,7 @@
 #include "ButtonManager.h"
 #include "AudioManager.h"
 #include "DisplayProxy.h"
+#include "BooperChords.h"
 
 class Booper {
 public:
@@ -23,6 +24,8 @@ private:
 
     float volume; // Volume level (0.0 to 1.0)
     int octave;   // Octave shift for tones
+    int chordSet = 0; // Index into kBooperChordSets; RAM only, resets on reboot
+    void cycleChordSet();
 
     void registerButtonCallbacks();
     void unregisterButtonCallbacks();
@@ -43,6 +46,12 @@ private:
 
     // Time to stop tone after button release
     unsigned long toneStopTime;
+
+    // The note each held button is playing (AudioManager::playNote handle,
+    // -1 = none), indexed by button index, so chords work.
+    static constexpr int kButtonCount = 6;
+    int noteHandle[kButtonCount];
+    void stopAllNotes();
     static const unsigned long TONE_DURATION_MS = 0; // 0 for continuous tone while button is held
 
     // We will have one callback function for each button

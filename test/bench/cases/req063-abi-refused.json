@@ -6,8 +6,8 @@
     {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
     {"do": "ferry", "path": "/apps/stopwatch.wasm", "fixture": "stopwatch.wasm"},
 
-    {"_comment": "PHASE 1 - a valid device blob but declaring abi=2, above what this firmware provides (abimax=1). Must be REFUSED, contained, no reboot.",
-     "do": "lapply_add", "id": "abi-future", "name": "FutureApp", "category": "Tools", "format": "wasm", "path": "/apps/stopwatch.wasm", "version": "1.0.0", "abi": "2"},
+    {"_comment": "PHASE 1 - a valid device blob but declaring abi=3, above what this firmware provides (abimax=2). Must be REFUSED, contained, no reboot.",
+     "do": "lapply_add", "id": "abi-future", "name": "FutureApp", "category": "Tools", "format": "wasm", "path": "/apps/stopwatch.wasm", "version": "1.0.0", "abi": "3", "minFirmware": "9.8.7"},
     {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
     {"_comment": "the gate is at launch, not menu-build: the entry still appears on the menu",
      "do": "assert_menutree", "has": "FutureApp"},

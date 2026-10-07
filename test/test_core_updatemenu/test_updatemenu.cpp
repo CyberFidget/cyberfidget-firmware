@@ -99,6 +99,9 @@ void test_settings_rows_fresh_device(void) {
     s.running = "1.2.2+8d08668";
     std::vector<std::string> l;
     labels(s, l);
+    TEST_ASSERT_EQUAL_INT(12, kSettingsRows);
+    TEST_ASSERT_EQUAL_INT((int)Row::About, (int)settingsRow(kSettingsRows - 2));
+    TEST_ASSERT_EQUAL_INT((int)Row::Status, (int)settingsRow(kSettingsRows - 1));
     const char* want[kSettingsRows] = {
         "Check now",
         "Auto-check: On",
@@ -110,6 +113,7 @@ void test_settings_rows_fresh_device(void) {
         "Skip: no update waiting",
         "Link this Fidget",
         "Awake & dev mode: Off",
+        "About this Fidget",
         "Status: nothing waiting",
     };
     for (int i = 0; i < kSettingsRows; i++) TEST_ASSERT_EQUAL_STRING(want[i], l[i].c_str());
@@ -127,6 +131,9 @@ void test_settings_rows_follow_state(void) {
     s.shareBattery = true;
     std::vector<std::string> l;
     labels(s, l);
+    TEST_ASSERT_EQUAL_STRING("About this Fidget", l[10].c_str());
+    // Preserve the existing positional checks after checking the inserted row.
+    l.erase(l.begin() + 10);
     TEST_ASSERT_EQUAL_STRING("Share battery data: On", l[3].c_str());
     TEST_ASSERT_EQUAL_STRING("Apply app changes automatically: Off", l[4].c_str());
     TEST_ASSERT_EQUAL_STRING("Skip 1.4.0", l[7].c_str());
@@ -154,6 +161,8 @@ void test_settings_rows_follow_state(void) {
 
     s.policy = CheckinPolicy::Policy::Never;
     labels(s, l);
+    TEST_ASSERT_EQUAL_STRING("About this Fidget", l[10].c_str());
+    l.erase(l.begin() + 10);
     TEST_ASSERT_EQUAL_STRING("Auto-check: Off", l[1].c_str());
     TEST_ASSERT_EQUAL_STRING(kOffExplanation, l[10].c_str());
     s.bootCheck = false;

@@ -1,0 +1,6 @@
+{
+    "name": "AudioEngine",
+    "version": "1.0.0",
+    "description": "Platform-independent fixed-point audio engine core (voices, tone sequencer, mix bus)",
+    "dependencies": []
+}

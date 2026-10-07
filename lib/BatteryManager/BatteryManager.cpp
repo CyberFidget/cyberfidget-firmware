@@ -5,6 +5,7 @@
 #include "BatteryDiary.h"
 #include "globals.h"
 #include "HAL.h"
+#include "AudioManager.h"
 
 BatteryManager::BatteryManager() : lipo(MAX1704X_MAX17048) {}
 
@@ -66,7 +67,7 @@ void BatteryManager::update() {
     batteryVoltage = lipo.getVoltage();
     batteryChangeRate = lipo.getChangeRate();
     BatteryDiary::onAwakeTick(batteryVoltage, batteryVoltagePercentage,
-                              batteryChangeRate);
+                              batteryChangeRate, HAL::audioManager().isAudioActive());
 
     const bool voltagePlausible =
         batteryVoltage >= 2.0f && batteryVoltage <= 4.6f;

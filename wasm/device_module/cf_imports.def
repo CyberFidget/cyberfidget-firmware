@@ -1,0 +1,60 @@
+// SPDX-License-Identifier: GPL-3.0-or-later WITH Cyberfidget-HAL-exception
+// Copyright (c) 2023-2026 Dismo Industries LLC
+// Intentionally no include guard: consumers define CF_ROW and CF_STUB.
+// CF_ROW(since, name, C return, wasm3 signature, pointer policy, parameter list).
+// Parameters: (arity, (A/B, C type, name, 0), (PA/PB, pointer type, name, checked bytes), ...).
+// A/PA are first arguments; B/PB are subsequent arguments.
+// STRING95/127 validate the full guest range before truncation. SEQUENCE
+// clamps count before validation. XBM rejects dimensions outside 1..128/1..64.
+// CF_STUB(since, module, name, C return, signature, behavior, return policy, parameters)
+// describes the same unpacking and memory checks for WASI/env stubs.
+// The surface is add-only forever. New rows take since = the new CF_HAL_ABI.
+// Breaking changes add a new import name; never change or remove an import.
+CF_ROW(1, nop, int32_t, "i(i)", PLAIN, (1, (A, int32_t, x, 0)))
+CF_ROW(1, display_clear, void, "v()", PLAIN, (0))
+CF_ROW(1, display_show, void, "v()", PLAIN, (0))
+CF_ROW(1, display_set_color, void, "v(i)", PLAIN, (1, (A, int32_t, color, 0)))
+CF_ROW(1, display_set_pixel, void, "v(ii)", PLAIN, (2, (A, int32_t, x, 0), (B, int32_t, y, 0)))
+CF_ROW(1, display_draw_line, void, "v(iiii)", PLAIN, (4, (A, int32_t, x0, 0), (B, int32_t, y0, 0), (B, int32_t, x1, 0), (B, int32_t, y1, 0)))
+CF_ROW(1, display_draw_rect, void, "v(iiii)", PLAIN, (4, (A, int32_t, x, 0), (B, int32_t, y, 0), (B, int32_t, w, 0), (B, int32_t, h, 0)))
+CF_ROW(1, display_fill_rect, void, "v(iiii)", PLAIN, (4, (A, int32_t, x, 0), (B, int32_t, y, 0), (B, int32_t, w, 0), (B, int32_t, h, 0)))
+CF_ROW(1, display_draw_circle, void, "v(iii)", PLAIN, (3, (A, int32_t, x, 0), (B, int32_t, y, 0), (B, int32_t, r, 0)))
+CF_ROW(1, display_fill_circle, void, "v(iii)", PLAIN, (3, (A, int32_t, x, 0), (B, int32_t, y, 0), (B, int32_t, r, 0)))
+CF_ROW(1, display_draw_hline, void, "v(iii)", PLAIN, (3, (A, int32_t, x, 0), (B, int32_t, y, 0), (B, int32_t, len, 0)))
+CF_ROW(1, display_draw_vline, void, "v(iii)", PLAIN, (3, (A, int32_t, x, 0), (B, int32_t, y, 0), (B, int32_t, len, 0)))
+CF_ROW(1, display_draw_triangle, void, "v(iiiiii)", PLAIN, (6, (A, int32_t, x0, 0), (B, int32_t, y0, 0), (B, int32_t, x1, 0), (B, int32_t, y1, 0), (B, int32_t, x2, 0), (B, int32_t, y2, 0)))
+CF_ROW(1, display_set_align, void, "v(i)", PLAIN, (1, (A, int32_t, align, 0)))
+CF_ROW(1, display_set_font, void, "v(i)", PLAIN, (1, (A, int32_t, fontId, 0)))
+CF_ROW(1, display_draw_string, void, "v(iiii)", STRING95, (4, (A, int32_t, x, 0), (B, int32_t, y, 0), (PB, const char*, str, (uint32_t)len), (B, int32_t, len, 0)))
+CF_ROW(1, display_string_width, int32_t, "i(ii)", STRING95, (2, (PA, const char*, str, (uint32_t)len), (B, int32_t, len, 0)))
+CF_ROW(1, display_draw_xbm, void, "v(iiiii)", XBM, (5, (A, int32_t, x, 0), (B, int32_t, y, 0), (B, int32_t, w, 0), (B, int32_t, h, 0), (PB, const void*, bits, cf_host::xbmByteLength(w, h))))
+CF_ROW(1, led_set, void, "v(iiiii)", PLAIN, (5, (A, int32_t, index, 0), (B, int32_t, r, 0), (B, int32_t, g, 0), (B, int32_t, b, 0), (B, int32_t, w, 0)))
+CF_ROW(1, led_all_off, void, "v()", PLAIN, (0))
+CF_ROW(1, tone_play, void, "v(fi)", PLAIN, (2, (A, float, frequency, 0), (B, int32_t, durationMs, 0)))
+CF_ROW(1, tone_stop, void, "v()", PLAIN, (0))
+CF_ROW(1, seq_play, void, "v(ii)", SEQUENCE, (2, (PA, const void*, steps, count * sizeof(AudioManager::ToneStep)), (B, int32_t, count, 0)))
+CF_ROW(1, seq_stop, void, "v()", PLAIN, (0))
+CF_ROW(1, millis, uint32_t, "i()", PLAIN, (0))
+CF_ROW(1, random, int32_t, "i(ii)", PLAIN, (2, (A, int32_t, minInclusive, 0), (B, int32_t, maxExclusive, 0)))
+CF_ROW(1, slider_pct, float, "f()", PLAIN, (0))
+CF_ROW(1, accel_x, float, "f()", PLAIN, (0))
+CF_ROW(1, accel_y, float, "f()", PLAIN, (0))
+CF_ROW(1, accel_z, float, "f()", PLAIN, (0))
+CF_ROW(1, exit_to_menu, void, "v()", PLAIN, (0))
+CF_ROW(1, keepalive, void, "v()", PLAIN, (0))
+CF_ROW(1, log, void, "v(ii)", STRING127, (2, (PA, const char*, msg, (uint32_t)len), (B, int32_t, len, 0)))
+CF_STUB(1, "wasi_snapshot_preview1", proc_exit, void, "v(i)", wasiProcExit, EXIT_TRAP, (1, (A, int32_t, code, 0)))
+CF_STUB(1, "wasi_snapshot_preview1", fd_write, int32_t, "i(iiii)", wasiFdWrite, PLAIN, (4, (A, int32_t, fd, 0), (B, int32_t, iovs, 0), (B, int32_t, iovsLen, 0), (B, int32_t, nwrittenPtr, 0)))
+CF_STUB(1, "wasi_snapshot_preview1", fd_close, int32_t, "i(i)", wasiFdClose, PLAIN, (1, (A, int32_t, fd, 0)))
+CF_STUB(1, "wasi_snapshot_preview1", fd_seek, int32_t, "i(iIii)", wasiFdSeek, PLAIN, (4, (A, int32_t, fd, 0), (B, int64_t, offset, 0), (B, int32_t, whence, 0), (B, int32_t, newOffsetPtr, 0)))
+CF_STUB(1, "wasi_snapshot_preview1", environ_sizes_get, int32_t, "i(ii)", wasiEnvironSizesGet, PLAIN, (2, (PA, uint32_t*, countPtr, sizeof(uint32_t)), (PB, uint32_t*, bufSizePtr, sizeof(uint32_t))))
+CF_STUB(1, "wasi_snapshot_preview1", environ_get, int32_t, "i(ii)", wasiEnvironGet, PLAIN, (2, (A, int32_t, environPtr, 0), (B, int32_t, bufPtr, 0)))
+CF_STUB(1, "wasi_snapshot_preview1", clock_time_get, int32_t, "i(iIi)", wasiClockTimeGet, PLAIN, (3, (A, int32_t, clockId, 0), (B, int64_t, precision, 0), (PB, uint64_t*, timePtr, sizeof(uint64_t))))
+CF_STUB(1, "wasi_snapshot_preview1", random_get, int32_t, "i(ii)", wasiRandomGet, PLAIN, (2, (PA, uint8_t*, buf, (uint32_t)bufLen), (B, int32_t, bufLen, 0)))
+CF_STUB(1, "env", emscripten_notify_memory_growth, void, "v(i)", envNotifyMemoryGrowth, PLAIN, (1, (A, int32_t, memIndex, 0)))
+CF_ROW(2, note_play, int32_t, "i(fi)", PLAIN, (2, (A, float, frequency, 0), (B, int32_t, durationMs, 0)))
+CF_ROW(2, note_stop, void, "v(i)", PLAIN, (1, (A, int32_t, handle, 0)))
+CF_ROW(2, note_all_off, void, "v()", PLAIN, (0))
+CF_ROW(2, mic_enable, void, "v(i)", PLAIN, (1, (A, int32_t, on, 0)))
+CF_ROW(2, mic_level, float, "f()", PLAIN, (0))
+CF_ROW(2, mic_level_db, float, "f()", PLAIN, (0))

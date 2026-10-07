@@ -6,8 +6,13 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#ifndef HOST_TEST
+#include "SessionStatus.h"
+#endif
 
 namespace CloudSync {
+
+struct SessionSnapshot;
 
 // Boot, Daily and Awake are the scheduled sessions: they never hold WiFi on
 // to wait out the server's spacing (the report is deferred to the next
@@ -44,6 +49,9 @@ struct Result {
     uint32_t totalMs = 0;
     Reason reason = Reason::Manual;
 };
+
+// A coherent copy, shared between the worker and the display task.
+SessionSnapshot sessionSnapshot();
 
 // Starts one plain FreeRTOS worker or sets a boot one-shot and restarts if
 // Bluetooth has already initialized. Completion is consumed from loop().

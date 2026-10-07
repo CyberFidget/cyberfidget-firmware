@@ -11,10 +11,13 @@
 #include "cf_hal_imports.h"
 #include "globals.h"  // apps reach millis_NOW / TAG_MAIN through this header
 
+// Set when the app asks to leave, so the glue stops calling its update().
+extern bool g_exitRequested;
+
 class MenuManager {
 public:
     static MenuManager& instance();
-    void returnToMenu() { cf_exit_to_menu(); }
+    void returnToMenu() { g_exitRequested = true; cf_exit_to_menu(); }
 };
 
 #endif  // MENU_MANAGER_H

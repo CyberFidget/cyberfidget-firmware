@@ -3,45 +3,54 @@
 
 // lib/AudioManager/AudioManager.cpp
 #include "AudioManager.h"
+#include "AudioEngineTask.h"
+#include "SpeakerEqPresets.h"
 #include "globals.h"
+#include <Preferences.h>
 #include <math.h>
 
+using cf_audio::Command;
+using cf_audio::Engine;
+
+namespace {
+
+// Tone voice, sequences and their status (shared engine-core logic). Stops go
+// through the engine's persistent stop counters, never the bounded queue.
+cf_audio::ToneControl s_tone(&AudioEngineTask::send);
+
+constexpr uint32_t kEngineRetryMs = 2000;
+
+constexpr const char* kEqNamespace = "audio";
+constexpr const char* kEqKey = "speq";   // u8: index into kSpeakerEqPresets
+
+// Loads a speaker EQ preset into the running engine (applied atomically at
+// its next block). An invalid preset leaves the bus flat.
+void applySpeakerEq(const SpeakerEqPreset& preset) {
+    if (!preset.enabled) {
+        AudioEngineTask::send(Command::eqCommit(0, false, 256));
+        return;
+    }
+    cf_audio::BiquadCoefs bands[3];
+    int32_t gainQ8 = 256;
+    if (!cf_audio::designSpeakerEq(preset.eq, bands, &gainQ8)) {
+        Serial.printf("[audio] err=speaker_eq_invalid preset=%s\n", preset.name);
+        return;
+    }
+    for (uint8_t b = 0; b < 3; ++b) AudioEngineTask::send(Command::eqBand(b, bands[b]));
+    AudioEngineTask::send(Command::eqCommit(3, true, gainQ8));
+}
+
+}  // namespace
+
 AudioManager::AudioManager()
-    : currentFrequency(440.0f),
-      isPlaying(false),
-      stopAtMillis(0),
-      in(generator),
-      volume(in),
-      copier(i2s, volume),
-      micCopy(micMeter, i2sIn)
+    : micCopy(micMeter, i2sIn)
 {
 }
 
 void AudioManager::init() {
-    // --- TX: MAX98357A path ---
-    auto cfg = i2s.defaultConfig(TX_MODE);
-    cfg.port_no         = 0;
-    cfg.i2s_format      = I2S_LSB_FORMAT;   // 
-    cfg.pin_ws          = 27;               // LRCLK
-    cfg.pin_bck         = 26;               // BCLK
-    cfg.pin_data        = 14;               // DOUT
-    cfg.channels        = 2;
-    cfg.bits_per_sample = 16;
-    // cfg.sample_rate     = 44100;
-    cfg.buffer_count = 12;    // default is usually smaller
-    cfg.buffer_size  = 256;  // bytes per buffer
-
-    // Keep I2S port default here (usually 0). We’ll put mic on the other port.
-    i2s.begin(cfg);
-
-    generator.setFrequency(currentFrequency);
-
-    auto vcfg = volume.defaultConfig();
-    vcfg.copyFrom(cfg);
-    volume.begin(vcfg);
-    volume.setVolume(0.7f);
-
-    isPlaying = false;
+    // --- TX: the audio engine's render task owns I2S0 (MAX98357A) ---
+    engineWanted = true;
+    startEngine();
 
     // --- Prepare (do NOT start) RX: ICS-43434 mic ---
     // Put mic on the *other* I2S peripheral to avoid any cross-talk.
@@ -81,59 +90,89 @@ void AudioManager::init() {
 }
 
 void AudioManager::loop() {
-    // --- Tone path ---
-    if (isPlaying) {
-      copier.copy(); // this one already pulls fast/non-blocking
-    if (stopAtMillis > 0 && millis() >= stopAtMillis) {
-      stopTone();
-      stopAtMillis = 0;
-      }
+    // The engine task renders tones and sequences; this only retries what
+    // could not be done at once (an engine start, a volume change).
+    if (engineWanted && !AudioEngineTask::running() && (int32_t)(millis() - engineRetryAtMs) >= 0) {
+        startEngine();
     }
+    if (volumePending && AudioEngineTask::running()) {
+        volumePending = !AudioEngineTask::send(Command::master(cf_audio::volumeToMasterQ15(volume)));
+    }
+    saveEqIfQuiet();
+}
 
-    // --- Sequence advance ---
-    if (currentSequence != nullptr && millis() >= nextStepAtMs) {
-        if (currentSequenceIdx >= currentSequenceLen) {
-            // Sequence finished.
-            currentSequence    = nullptr;
-            currentSequenceLen = 0;
-            currentSequenceIdx = 0;
-        } else {
-            const ToneStep& s = currentSequence[currentSequenceIdx];
-            if (s.freq > 0.0f) {
-                playTone(s.freq, s.durationMs);
-            } else {
-                // Rest: ensure any in-flight tone is silenced for the rest interval.
-                stopTone();
-            }
-            nextStepAtMs = millis() + s.durationMs + s.gapAfterMs;
-            currentSequenceIdx++;
-        }
+void AudioManager::loadEqPreset() {
+    if (eqLoaded) return;
+    bool has = false;
+    uint8_t value = 0;
+    Preferences prefs;
+    if (prefs.begin(kEqNamespace, true)) {
+        has = prefs.isKey(kEqKey);
+        if (has) value = prefs.getUChar(kEqKey, 0);
+        prefs.end();
     }
+    eqPreset = speakerEqPresetFromStored(has, value);
+    eqLoaded = true;
+}
+
+int AudioManager::speakerEqPreset() {
+    loadEqPreset();
+    return eqPreset;
+}
+
+void AudioManager::setSpeakerEqPreset(int id) {
+    if (id < 0 || id >= kSpeakerEqPresetCount) return;
+    loadEqPreset();
+    if (id != eqPreset) eqSavePending = true;
+    eqPreset = id;
+    if (AudioEngineTask::running()) applySpeakerEq(kSpeakerEqPresets[eqPreset]);
+}
+
+// A flash write stalls audio for ~45 ms, so it waits for a quiet moment.
+// A failed write is retried on the next quiet loop pass. isSequencePlaying()
+// also covers a preview that is queued but not yet heard.
+void AudioManager::saveEqIfQuiet() {
+    if (!eqSavePending || isAudioActive() || isSequencePlaying()) return;
+    Preferences prefs;
+    bool ok = false;
+    if (prefs.begin(kEqNamespace, false)) {
+        ok = prefs.putUChar(kEqKey, (uint8_t)eqPreset) != 0;
+        prefs.end();
+    }
+    if (ok) eqSavePending = false;
+    Serial.printf("[audio] speaker_eq saved=%s preset=%d\n", ok ? "ok" : "error", eqPreset);
+}
+
+bool AudioManager::startEngine() {
+    if (!AudioEngineTask::start()) {
+        engineRetryAtMs = millis() + kEngineRetryMs;
+        return false;
+    }
+    // A fresh engine starts at unity and flat: give it the current volume
+    // and the speaker EQ.
+    volumePending = !AudioEngineTask::send(Command::master(cf_audio::volumeToMasterQ15(volume)));
+    applySpeakerEq(kSpeakerEqPresets[speakerEqPreset()]);
+    return true;
 }
 
 void AudioManager::setVolume(float volumeLevel) {
     float vol = constrain(volumeLevel, 0.0f, 1.0f);
-    volume.setVolume(vol);
+    if (!(vol >= 0.0f)) vol = 0.0f;   // NaN
+    const bool changed = cf_audio::volumeToMasterQ15(vol) != cf_audio::volumeToMasterQ15(volume);
+    volume = vol;
+    // The engine ramps the change over 10 ms (no zipper noise or click). If it
+    // cannot be queued now, loop() sends it.
+    if (changed && AudioEngineTask::running()) {
+        volumePending = !AudioEngineTask::send(Command::master(cf_audio::volumeToMasterQ15(volume)));
+    }
 }
 
 void AudioManager::playTone(float frequency, int durationMs) {
-    currentFrequency = frequency;
-    generator.setFrequency(currentFrequency);
-
-    if (!isPlaying) {
-        generator.begin();
-        isPlaying = true;
-    }
-
-    stopAtMillis = (durationMs > 0) ? (millis() + durationMs) : 0;
+    s_tone.playTone(AudioEngineTask::engine(), frequency, durationMs);   // durationMs <= 0: until stopTone
 }
 
 void AudioManager::stopTone() {
-    if (isPlaying) {
-        generator.end();
-        isPlaying = false;
-        // volume.setVolume(0.0f); // optional instant silence
-    }
+    s_tone.stopTone(AudioEngineTask::engine());   // 5 ms fade; never dropped
 }
 
 void AudioManager::playSequence(const ToneStep* steps, int count) {
@@ -141,35 +180,94 @@ void AudioManager::playSequence(const ToneStep* steps, int count) {
         stopSequence();
         return;
     }
-    currentSequence    = steps;
-    currentSequenceLen = count;
-    currentSequenceIdx = 0;
-    nextStepAtMs       = millis(); // play first step immediately on next loop()
+    Engine* engine = AudioEngineTask::engine();
+    if (engine == nullptr) return;   // port lent out (or no engine): nothing plays
+    if (count > cf_audio::kMaxSeqSteps) {
+        Serial.printf("[audio] sequence cut to %d of %d steps\n", cf_audio::kMaxSeqSteps, count);
+        count = cf_audio::kMaxSeqSteps;
+    }
+    // Copy the steps now, so the caller's array may go away during playback.
+    cf_audio::SeqStep* buf = s_tone.beginSequence(engine);
+    if (buf == nullptr) {
+        Serial.println("[audio] err=sequence_busy");
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        buf[i].inc = Engine::hzToInc(steps[i].freq);   // 0 = rest
+        buf[i].durMs = steps[i].durationMs;
+        buf[i].gapMs = steps[i].gapAfterMs;
+    }
+    // If the play cannot be queued, the previous sequence stops instead.
+    if (!s_tone.commitSequence(engine, count)) Serial.println("[audio] err=sequence_queue_full");
 }
 
 void AudioManager::stopSequence() {
-    currentSequence    = nullptr;
-    currentSequenceLen = 0;
-    currentSequenceIdx = 0;
-    stopTone();
-}
-void AudioManager::releaseI2S() {
-    stopTone();
-    i2s.end();
+    s_tone.stopSequence(AudioEngineTask::engine());   // also releases the tone voice
 }
 
-void AudioManager::reclaimI2S() {
-    auto cfg = i2s.defaultConfig(TX_MODE);
-    cfg.port_no         = 0;
-    cfg.i2s_format      = I2S_LSB_FORMAT;
-    cfg.pin_ws          = 27;
-    cfg.pin_bck         = 26;
-    cfg.pin_data        = 14;
-    cfg.channels        = 2;
-    cfg.bits_per_sample = 16;
-    cfg.buffer_count    = 12;
-    cfg.buffer_size     = 256;
-    i2s.begin(cfg);
+int AudioManager::playNote(float frequency, int durationMs) {
+    return s_tone.playNote(AudioEngineTask::engine(), frequency, durationMs);
+}
+
+void AudioManager::stopNote(int handle) {
+    s_tone.stopNote(AudioEngineTask::engine(), handle);   // 5 ms fade; never left stuck
+}
+
+void AudioManager::stopNotes() {
+    s_tone.stopNotes(AudioEngineTask::engine());
+}
+
+bool AudioManager::isSequencePlaying() const {
+    return s_tone.isSequencePlaying(AudioEngineTask::engine());
+}
+
+bool AudioManager::isAudioActive() const {
+    if (borrowerStop != nullptr) return true;   // Music Player / Voice Notes own port 0
+    return AudioEngineTask::soundRecently();
+}
+
+bool AudioManager::releaseI2S(BorrowerStop stopBorrower) {
+    // stop() fades every voice, stops the sequencer and lets the DMA cushion
+    // play out silence; it reports success only once the render task has
+    // acknowledged its exit and the channel is deleted.
+    if (!AudioEngineTask::stop()) {
+        Serial.println("[audio] err=release_failed (I2S0 still held)");
+        return false;
+    }
+    s_tone.forget();
+    engineWanted = false;   // loop() leaves the port alone until reclaimI2S()
+    borrowerStop = stopBorrower;
+    return true;
+}
+
+bool AudioManager::reclaimI2S() {
+    borrowerStop = nullptr;
+    if (sleepHold) return true;   // going to sleep: the port stays released
+    engineWanted = true;   // loop() keeps retrying if this start fails
+    if (AudioEngineTask::running()) return true;
+    return startEngine();
+}
+
+bool AudioManager::stopForSleep(bool hardShutdown) {
+    // From here on nothing restarts the engine: not loop(), not a borrower's
+    // reclaimI2S(). A sleep that has to wait retries this call instead.
+    sleepHold = true;
+    engineWanted = false;
+    if (borrowerStop != nullptr) {
+        // The app streaming on port 0 ends its stream through its own stop
+        // path (bounded output waits; none at all on hardShutdown), which
+        // hands the port back with reclaimI2S().
+        BorrowerStop stopFn = borrowerStop;
+        borrowerStop = nullptr;
+        const uint32_t t0 = millis();
+        stopFn(hardShutdown);
+        Serial.printf("[audio] sleep: port-0 app stopped in %u ms\n", (unsigned)(millis() - t0));
+    }
+    const bool released = releaseI2S();
+    // Port 0 is quiet now: the moment to save a choice still waiting. Not
+    // on a hard shutdown (low battery): no flash write then.
+    if (released && !hardShutdown) saveEqIfQuiet();
+    return released;
 }
 
 void AudioManager::enableMic(bool on) {

@@ -24,6 +24,7 @@
 
 #include "AwakePolicy.h"
 #include "CheckinPolicy.h"
+#include "SessionStatus.h"
 
 namespace PromptPolicy {
 
@@ -64,6 +65,15 @@ constexpr const char* kBootCheckExplanation =
 constexpr const char* kRestartingToCheck = "Restarting to check...";
 constexpr const char* kChecking = "Checking for updates...";
 constexpr const char* kAlreadyChecking = "A check is already running";
+
+constexpr size_t kCheckLineLen = 22;
+struct CheckLines {
+    char lines[3][kCheckLineLen] = {};
+    int count = 0;
+};
+const char* sessionFailureCopy(const char* error);
+void formatSessionStatus(const CloudSync::SessionSnapshot& status, CheckLines& out,
+                         const char* network = nullptr);
 /// Install now for an offer this Fidget will not install over WiFi (not
 /// signed with a key it knows, and not opted in over USB).
 constexpr const char* kInstallComingSoon =
@@ -224,8 +234,17 @@ void appsTitle(char* out, size_t len, uint32_t count);
 
 // ---- Settings > Updates ---------------------------------------------------------
 
+constexpr size_t kAboutLineLen = 22;
+struct AboutLines {
+    char lines[5][kAboutLineLen] = {};
+    int count = 0;
+};
+void formatAboutLines(const char* fullVersion, const char* type, const char* built,
+                      AboutLines* out);
+void formatStatusVersion(const char* fullVersion, const char* type, char* out, size_t len);
+
 enum class Row : uint8_t {
-    CheckNow, AutoCheck, BootCheck, ShareBattery, AutoApply, Channel, Source, Skip, Link, Awake, Status,
+    CheckNow, AutoCheck, BootCheck, ShareBattery, AutoApply, Channel, Source, Skip, Link, Awake, About, Status,
 };
 
 struct SettingsState {
@@ -244,7 +263,7 @@ struct SettingsState {
     const char* status = "";    ///< the status bar's current line, "" = none
 };
 
-constexpr int kSettingsRows = 11;
+constexpr int kSettingsRows = 12;
 constexpr int kRowText = 96;
 
 /// Row kinds in screen order (always kSettingsRows of them).

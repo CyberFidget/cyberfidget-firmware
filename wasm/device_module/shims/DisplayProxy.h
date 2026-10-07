@@ -11,6 +11,40 @@
 #define DISPLAY_PROXY_H
 
 #include <stdint.h>
+#include <utility>
+
+/**
+ * The MIT License (MIT)
+ *
+ * Copyright (c) 2018 by ThingPulse, Daniel Eichhorn
+ * Copyright (c) 2018 by Fabrice Weinberg
+ * Copyright (c) 2019 by Helmut Tschemernjak - www.radioshuttle.de
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ *
+ * ThingPulse invests considerable time and money to develop these open source libraries.
+ * Please support us by buying our products (and not the clones) from
+ * https://thingpulse.com
+ *
+ */
+
+
 
 #include "Arduino.h"
 #include "cf_hal_imports.h"
@@ -66,19 +100,82 @@ public:
                       int16_t x2, int16_t y2) {
         cf_display_draw_triangle(x0, y0, x1, y1, x2, y2);
     }
-    // Guest-side scanline fill from the hline import; matches the firmware's
-    // filled-triangle raster without needing a new host hook.
+    // ThingPulse scanline fill using the existing horizontal-line import.
     void fillTriangle(int16_t x0, int16_t y0, int16_t x1, int16_t y1,
-                      int16_t x2, int16_t y2) {
-        int16_t minY = y0 < y1 ? (y0 < y2 ? y0 : y2) : (y1 < y2 ? y1 : y2);
-        int16_t maxY = y0 > y1 ? (y0 > y2 ? y0 : y2) : (y1 > y2 ? y1 : y2);
-        for (int16_t y = minY; y <= maxY; y++) {
-            int16_t xmin = INT16_MAX, xmax = INT16_MIN;
-            scanEdge(x0, y0, x1, y1, y, xmin, xmax);
-            scanEdge(x1, y1, x2, y2, y, xmin, xmax);
-            scanEdge(x2, y2, x0, y0, y, xmin, xmax);
-            if (xmin <= xmax) cf_display_draw_hline(xmin, y, (int16_t)(xmax - xmin + 1));
+                                   int16_t x2, int16_t y2) {
+      int16_t a, b, y, last;
+
+      if (y0 > y1) {
+        std::swap(y0, y1);
+        std::swap(x0, x1);
+      }
+      if (y1 > y2) {
+        std::swap(y2, y1);
+        std::swap(x2, x1);
+      }
+      if (y0 > y1) {
+        std::swap(y0, y1);
+        std::swap(x0, x1);
+      }
+
+      if (y0 == y2) {
+        a = b = x0;
+        if (x1 < a) {
+          a = x1;
+        } else if (x1 > b) {
+          b = x1;
         }
+        if (x2 < a) {
+          a = x2;
+        } else if (x2 > b) {
+          b = x2;
+        }
+        drawHorizontalLine(a, y0, b - a + 1);
+        return;
+      }
+
+      int16_t
+        dx01 = x1 - x0,
+        dy01 = y1 - y0,
+        dx02 = x2 - x0,
+        dy02 = y2 - y0,
+        dx12 = x2 - x1,
+        dy12 = y2 - y1;
+      int32_t
+        sa   = 0,
+        sb   = 0;
+
+      if (y1 == y2) {
+        last = y1; // Include y1 scanline
+      } else {
+        last = y1 - 1; // Skip it
+      }
+
+      for (y = y0; y <= last; y++) {
+        a = x0 + sa / dy01;
+        b = x0 + sb / dy02;
+        sa += dx01;
+        sb += dx02;
+
+        if (a > b) {
+          std::swap(a, b);
+        }
+        drawHorizontalLine(a, y, b - a + 1);
+      }
+
+      sa = dx12 * (y - y1);
+      sb = dx02 * (y - y0);
+      for (; y <= y2; y++) {
+        a = x1 + sa / dy12;
+        b = x0 + sb / dy02;
+        sa += dx12;
+        sb += dx02;
+
+        if (a > b) {
+          std::swap(a, b);
+        }
+        drawHorizontalLine(a, y, b - a + 1);
+      }
     }
     void drawXbm(int16_t x, int16_t y, int16_t w, int16_t h, const unsigned char* data) {
         cf_display_draw_xbm(x, y, w, h, data);
@@ -117,21 +214,6 @@ public:
     void setOverlayMode(OverlayMode) {}
     OverlayMode getOverlayMode() const { return OverlayMode::OVERLAY_OFF; }
 
-private:
-    static void scanEdge(int16_t ax, int16_t ay, int16_t bx, int16_t by,
-                         int16_t y, int16_t& xmin, int16_t& xmax) {
-        if (!((ay <= y && by >= y) || (by <= y && ay >= y))) return;
-        if (ay == by) {
-            if (ax < xmin) xmin = ax;
-            if (bx < xmin) xmin = bx;
-            if (ax > xmax) xmax = ax;
-            if (bx > xmax) xmax = bx;
-            return;
-        }
-        int16_t xi = (int16_t)(ax + (long)(y - ay) * (bx - ax) / (by - ay));
-        if (xi < xmin) xmin = xi;
-        if (xi > xmax) xmax = xi;
-    }
 };
 
 #endif  // DISPLAY_PROXY_H

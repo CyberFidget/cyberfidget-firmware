@@ -1,0 +1,18 @@
+{
+  "name": "Device refuses an unknown app import without restarting",
+  "fw_min": "1.2.2",
+  "fixtures": ["unknown_import.wasm"],
+  "steps": [
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "ferry", "path": "/apps/unknown_import.wasm", "fixture": "unknown_import.wasm"},
+    {"do": "lapply_add", "id": "future-app", "name": "FutureApp", "category": "Tools", "format": "wasm", "path": "/apps/unknown_import.wasm", "version": "1.0.0", "abi": "1"},
+    {"do": "reset"}, {"do": "wait_cli"}, {"do": "nav_to_menu"},
+    {"do": "launch", "id": "future-app", "expect_error": "abi_unsupported"},
+    {"do": "wait", "ms": 1200},
+    {"do": "screencap", "save": "unknown-import-refused-screen", "review": "human"},
+    {"do": "assert_wasmstat", "error": "abi_unsupported"},
+    {"do": "launch", "id": "menu"},
+    {"do": "lapply_remove", "id": "future-app"},
+    {"do": "fdelete", "path": "/apps/unknown_import.wasm"}
+  ]
+}

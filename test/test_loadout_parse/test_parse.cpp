@@ -62,7 +62,8 @@ void test_reserved_fields_roundtrip(void) {
       "entries": [
         { "id": "APP_X", "name": "X", "category": "Games", "position": 0,
           "hidden": false, "format": "blob", "blobPath": "/apps/x.bin",
-          "version": "1.2.3", "abi": "hal-2", "signature": "deadbeef" }
+          "version": "1.2.3", "abi": "hal-2", "minFirmware": "1.5.0",
+          "signature": "deadbeef" }
       ]
     })JSON";
     Loadout l;
@@ -71,13 +72,28 @@ void test_reserved_fields_roundtrip(void) {
     TEST_ASSERT_EQUAL_STRING("/apps/x.bin", l.entries[0].blobPath.c_str());
     TEST_ASSERT_EQUAL_STRING("1.2.3",       l.entries[0].version.c_str());
     TEST_ASSERT_EQUAL_STRING("hal-2",       l.entries[0].abi.c_str());
+    TEST_ASSERT_EQUAL_STRING("1.5.0",       l.entries[0].minFirmware.c_str());
     TEST_ASSERT_EQUAL_STRING("deadbeef",    l.entries[0].signature.c_str());
 
     // Reserved fields survive a serialize -> parse round trip.
     Loadout l2;
     TEST_ASSERT_TRUE(parseManifest(serializeManifest(l).c_str(), l2));
     TEST_ASSERT_EQUAL_STRING("blob",     l2.entries[0].format.c_str());
+    TEST_ASSERT_EQUAL_STRING("1.5.0",    l2.entries[0].minFirmware.c_str());
     TEST_ASSERT_EQUAL_STRING("deadbeef", l2.entries[0].signature.c_str());
+}
+
+void test_release_version_shape(void) {
+    TEST_ASSERT_TRUE(isReleaseVersion("1.3.0"));
+    TEST_ASSERT_TRUE(isReleaseVersion("10.20.300"));
+    TEST_ASSERT_FALSE(isReleaseVersion(""));
+    TEST_ASSERT_FALSE(isReleaseVersion("1..2"));
+    TEST_ASSERT_FALSE(isReleaseVersion(".1.2"));
+    TEST_ASSERT_FALSE(isReleaseVersion("1.2."));
+    TEST_ASSERT_FALSE(isReleaseVersion("1.2"));
+    TEST_ASSERT_FALSE(isReleaseVersion("1.2.3.4"));
+    TEST_ASSERT_FALSE(isReleaseVersion("1.5.0-rc1"));
+    TEST_ASSERT_FALSE(isReleaseVersion("123.456.7890"));   // longer than the screen allows
 }
 
 void test_malformed_json_rejected(void) {
@@ -226,6 +242,7 @@ int main(int /*argc*/, char** /*argv*/) {
     RUN_TEST(test_valid_manifest_parses);
     RUN_TEST(test_unknown_fields_skipped);
     RUN_TEST(test_reserved_fields_roundtrip);
+    RUN_TEST(test_release_version_shape);
     RUN_TEST(test_malformed_json_rejected);
     RUN_TEST(test_missing_schema_version_rejected);
     RUN_TEST(test_wrong_schema_version_rejected);

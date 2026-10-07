@@ -464,7 +464,16 @@ void WebPortalApp::begin() {
 
     // The portal does not play tones. Release I2S0 before WiFi claims its
     // DMA-capable internal heap; MicCapture uses the independent I2S1 port.
-    HAL::audioManager().releaseI2S();
+    // If the tone engine could not let go, do not start WiFi on top of its
+    // memory: show the existing "Could not start WiFi" screen instead.
+    if (!HAL::audioManager().releaseI2S()) {
+        ESP_LOGE(TAG_MAIN, "[WebPortal] begin: audio engine still holds its memory; WiFi not started");
+        apReady = false;
+        staConnected = false;
+        staSSID = "";
+        millis_APP_LASTINTERACTION = millis_NOW;
+        return;
+    }
 
     // Stop Bluetooth to free the radio for WiFi
     WP_LOG("begin: stopping BT controller");
@@ -938,6 +947,9 @@ void WebPortalApp::startCaptiveDns() {
 }
 
 void WebPortalApp::stopCaptiveDns() {
+    // Never started (no AP, or WiFi never brought up): no call into the
+    // network stack, which may not even be running.
+    if (s_dnsPcb == nullptr) return;
     DnsCall c;
     tcpip_api_call(captiveDnsStopApi, &c.call);
 }
