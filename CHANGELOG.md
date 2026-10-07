@@ -20,9 +20,45 @@ with the version and date automatically.
 
 ### Added
 
+- Several sounds can now play at once. Booper plays one note per held button,
+  tuned so any buttons held together make a chord.
+- Booper's bottom-right button switches between chord sets: Major, Minor,
+  Power, Sus4 and Pentatonic.
+- Settings > Sound > Speaker EQ lets you choose how the speaker sounds:
+  Balanced, Loud or Off. Your choice is kept through sleep and power-off.
+- Apps you make in the App Builder can now play several notes at once and read
+  how loud the microphone hears.
+- Apps you make can now tell how long a button was held and whether a button
+  is down right now.
+- Apps you make can use more of standard C++: `<functional>`, `<vector>` and
+  `<algorithm>`.
+- Settings > Updates has an "About this Fidget" page showing the firmware
+  version, build, type, build date and board revision. The Status screen shows
+  the firmware version too.
+- Check for updates now shows each step as it happens (joining Wi-Fi, checking
+  in, looking for updates, getting apps), with a timer and a plain reason if
+  something fails.
+
 ### Changed
 
+- All sounds now come from a new audio engine. Tones are cleaner, low notes
+  are easier to hear on the small speaker, and sounds start and stop without
+  clicks.
+- The speaker is tuned for how the Cyber Fidget's case shapes its sound, so
+  everyday sounds come through louder and clearer.
+- An app that needs newer firmware now says so on screen and returns to the
+  menu, instead of stopping partway through when it reaches something your
+  Fidget can't do yet.
+- In the App Builder's emulator, sounds now play exactly as they do on the
+  device.
+
 ### Fixed
+
+- Short beeps now last as long as asked. They used to run two to three times
+  longer.
+- Saving the battery history no longer interrupts a sound that is playing.
+- The App Builder's emulator now draws exactly like the device, and adding a
+  number to text works as it does on the device.
 
 ### Removed
 
