@@ -100,13 +100,13 @@ const char* busyReason(const RadioOwners& owners);
 
 // ---- unknown commands ----------------------------------------------------------------
 
-constexpr size_t kVerbEchoMax = 16;
-/// The part of an unknown line that `[err] unknown command: <verb>` may
-/// echo: its first word (after leading spaces/tabs, up to the next space or
-/// tab), only when it is 1..kVerbEchoMax printable ASCII characters and does
-/// not start with "hr" (a mistyped `hr token<key>` glued into one word).
-/// False: echo nothing. Nothing after the first word is ever echoed.
-bool echoableVerb(const char* line, char* out, size_t cap);
+/// What `[err] unknown command: <verb>` may echo for an unknown line: the
+/// fixed, lowercase name of a SerialCli verb when the line's first word
+/// (after leading spaces/tabs, up to the next space or tab) is exactly that
+/// name in any case - typically a test-build verb sent to a release build
+/// (`btn`). nullptr for anything else: then nothing is echoed. The text
+/// echoed always comes from the fixed list, never from the line.
+const char* knownVerb(const char* line);
 
 // ---- wifi try ----------------------------------------------------------------------
 

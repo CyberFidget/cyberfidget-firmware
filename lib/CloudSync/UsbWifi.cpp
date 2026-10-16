@@ -167,23 +167,33 @@ void scanSort(ScanList& list) {
     }
 }
 
-bool echoableVerb(const char* line, char* out, size_t cap) {
-    if (!out || cap == 0) return false;
-    out[0] = '\0';
-    if (!line) return false;
+const char* knownVerb(const char* line) {
+    // Every first word SerialCli::dispatch answers, in any build (`hr` is
+    // left out: its lines are always taken by the hr handler).
+    static const char* const kVerbs[] = {
+        "abench", "app", "apps", "awake", "battery", "btn", "btstat", "cloud", "diary",
+        "fdelete", "flist", "fread", "fstat", "fwabort", "fwcommit", "fwdata", "fwrite",
+        "gauge", "heapmap", "heapstat", "help", "info", "lapply", "launch", "lbuiltin",
+        "lget", "link", "mark", "menutree", "mic", "net", "prompt", "rail", "reboot",
+        "reset", "screencap", "screenstream", "sleep", "soak", "status", "syncinfo",
+        "tlsalloc", "tlsprobe", "upd", "uvlo", "version", "wasm", "wasmstat", "wifi",
+    };
+    if (!line) return nullptr;
     while (*line == ' ' || *line == '\t') line++;
     size_t n = 0;
-    while (line[n] && line[n] != ' ' && line[n] != '\t') {
-        const unsigned char c = static_cast<unsigned char>(line[n]);
-        if (c < 0x21 || c > 0x7e) return false;
-        if (++n > kVerbEchoMax) return false;
+    while (line[n] && line[n] != ' ' && line[n] != '\t') n++;
+    if (n == 0) return nullptr;
+    for (const char* v : kVerbs) {
+        if (strlen(v) != n) continue;
+        size_t i = 0;
+        for (; i < n; i++) {
+            char c = line[i];
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (c != v[i]) break;
+        }
+        if (i == n) return v;
     }
-    if (n == 0 || n + 1 > cap) return false;
-    const char h = line[0] | 0x20, r = n > 1 ? (line[1] | 0x20) : 0;
-    if (h == 'h' && r == 'r') return false;
-    memcpy(out, line, n);
-    out[n] = '\0';
-    return true;
+    return nullptr;
 }
 
 const char* busyReason(const RadioOwners& o) {

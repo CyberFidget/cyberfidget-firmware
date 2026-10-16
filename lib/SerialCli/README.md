@@ -15,12 +15,12 @@ file/loadout synchronization, and a gated set of bench-only device controls.
   `.done` line or have a fixed set of tagged lines.
 * The `[boot]` and `[uvlo]` prefixes belong to startup and autonomous UVLO
   reporting. CLI verbs never emit `[uvlo]`.
-* An unknown command is answered `[err] unknown command: <verb>`, echoing
-  only its first word (clients tell a release build by
-  `[err] unknown command: btn`). The rest of the line is never echoed, and
-  the verb is left out (`[err] unknown command`) when it is over 16
-  characters, not printable ASCII, or starts with `hr` - a mistyped line can
-  carry a secret (`UsbWifi::echoableVerb`). A line longer than 159
+* An unknown command whose first word is the name of a CLI verb (typically
+  a test-build verb sent to a release build) is answered
+  `[err] unknown command: <verb>`, the name taken from a fixed list; clients
+  tell a release build by `[err] unknown command: btn`. Any other line is
+  answered `[err] unknown command`: nothing typed is ever echoed, since a
+  mistyped line can carry a secret (`UsbWifi::knownVerb`). A line longer than 159
   bytes is answered `[err] line too long`, and one holding a NUL byte
   `[err] line invalid`; neither runs. The input buffer is zeroed after every
   line, handled or dropped.

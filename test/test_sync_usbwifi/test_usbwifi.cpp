@@ -962,33 +962,53 @@ void test_driver_never_keeps_or_echoes_a_line() {
     TEST_ASSERT_TRUE(echo != std::string::npos);
     TEST_ASSERT_TRUE(cli.find("\"[err] unknown command: %s", echo + 1) == std::string::npos);
     TEST_ASSERT_TRUE(cli.find("verb);", echo) == cli.find(");", echo) - 4);   // prints `verb` only
-    TEST_ASSERT_TRUE(cli.find("UsbWifi::echoableVerb(line, verb, sizeof(verb))") != std::string::npos);
+    TEST_ASSERT_TRUE(cli.find("UsbWifi::knownVerb(line)") != std::string::npos);
     const std::vector<SourceLine> lines = classify(cli);
     TEST_ASSERT_TRUE(countWhere(lines, "HomeRemote::Config::cliCommand(args)", false) >= 1);
 }
 
 // `[err] unknown command: <verb>` keeps clients that test for a missing verb
-// (`unknown command: btn` on a release build) working, and never carries
-// more than a short first word.
-void test_unknown_command_echoes_only_a_safe_verb() {
-    char v[kVerbEchoMax + 1];
-    TEST_ASSERT_TRUE(echoableVerb("btn 5 tap", v, sizeof(v)));
-    TEST_ASSERT_EQUAL_STRING("btn", v);
-    TEST_ASSERT_TRUE(echoableVerb("  launch\tHome Remote", v, sizeof(v)));
-    TEST_ASSERT_EQUAL_STRING("launch", v);
-    TEST_ASSERT_TRUE(echoableVerb("btn", v, sizeof(v)));
-    TEST_ASSERT_EQUAL_STRING("btn", v);
-    TEST_ASSERT_TRUE(echoableVerb("abcdefghijklmnop rest", v, sizeof(v)));   // exactly 16
-    TEST_ASSERT_FALSE(echoableVerb("abcdefghijklmnopq", v, sizeof(v)));      // 17: nothing
-    TEST_ASSERT_EQUAL_STRING("", v);
-    TEST_ASSERT_FALSE(echoableVerb("eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ4In0 x", v, sizeof(v)));
-    TEST_ASSERT_FALSE(echoableVerb("hrtokenabc", v, sizeof(v)));             // glued hr token
-    TEST_ASSERT_FALSE(echoableVerb("HRtoken", v, sizeof(v)));
-    TEST_ASSERT_FALSE(echoableVerb("caf\xc3\xa9", v, sizeof(v)));            // not ASCII
-    TEST_ASSERT_FALSE(echoableVerb("   ", v, sizeof(v)));
-    TEST_ASSERT_FALSE(echoableVerb("", v, sizeof(v)));
-    TEST_ASSERT_FALSE(echoableVerb("btn 5", v, 3));                          // no room
-    TEST_ASSERT_TRUE(echoableVerb("h", v, sizeof(v)));
+// (`unknown command: btn` on a release build) working; what it echoes comes
+// from a fixed list, so a pasted key or a fragment of one never comes back.
+void test_unknown_command_echoes_only_a_known_verb() {
+    TEST_ASSERT_EQUAL_STRING("btn", knownVerb("btn 5 tap"));       // the website's release check
+    TEST_ASSERT_EQUAL_STRING("btn", knownVerb("btn"));
+    TEST_ASSERT_EQUAL_STRING("btn", knownVerb("BTN 5 tap"));       // echoed from the list, not the line
+    TEST_ASSERT_EQUAL_STRING("launch", knownVerb("  launch\tHome Remote"));
+    TEST_ASSERT_EQUAL_STRING("screencap", knownVerb("screencap"));
+    TEST_ASSERT_NULL(knownVerb("frobnicate"));
+    TEST_ASSERT_NULL(knownVerb("shortKey123"));                    // a short pasted key
+    TEST_ASSERT_NULL(knownVerb("  shortKey123"));                  // ... after leading spaces
+    TEST_ASSERT_NULL(knownVerb(" abcdefghijklmnop remainder-of-key"));   // a key fragment
+    TEST_ASSERT_NULL(knownVerb("eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ4In0"));
+    TEST_ASSERT_NULL(knownVerb("hrtokenabc"));
+    TEST_ASSERT_NULL(knownVerb("hr"));
+    TEST_ASSERT_NULL(knownVerb("btnx"));                           // a verb only as a prefix
+    TEST_ASSERT_NULL(knownVerb("bt"));
+    TEST_ASSERT_NULL(knownVerb("   "));
+    TEST_ASSERT_NULL(knownVerb(""));
+    TEST_ASSERT_NULL(knownVerb(nullptr));
+}
+
+// Every first word the driver answers is on the list, so a release build
+// names any test-build verb it was sent.
+void test_known_verbs_cover_the_driver() {
+    const std::string cli = readSource("lib/SerialCli/SerialCli.cpp");
+    const std::string body = functionBody(cli, "void SerialCli::dispatch(");
+    TEST_ASSERT_TRUE(body.size() > 1000);
+    int seen = 0;
+    for (const char* pat : {"ieq(line, \"", "verbWithArg(line, \""}) {
+        size_t at = 0;
+        while ((at = body.find(pat, at)) != std::string::npos) {
+            at += strlen(pat);
+            const size_t end = body.find_first_of("\" ", at);
+            const std::string verb = body.substr(at, end - at);
+            if (verb == "hr") continue;
+            TEST_ASSERT_NOT_NULL_MESSAGE(knownVerb(verb.c_str()), verb.c_str());
+            seen++;
+        }
+    }
+    TEST_ASSERT_TRUE(seen > 40);
 }
 
 // The driver's `wifi add` is this handler, and the join never logs a key.
@@ -1176,7 +1196,8 @@ int main(int, char**) {
     RUN_TEST(test_line_buffer_wiped_after_every_line);
     RUN_TEST(test_line_with_nul_is_refused);
     RUN_TEST(test_driver_never_keeps_or_echoes_a_line);
-    RUN_TEST(test_unknown_command_echoes_only_a_safe_verb);
+    RUN_TEST(test_unknown_command_echoes_only_a_known_verb);
+    RUN_TEST(test_known_verbs_cover_the_driver);
     RUN_TEST(test_syncinfo_setup_before_fw_terminator);
     return UNITY_END();
 }
