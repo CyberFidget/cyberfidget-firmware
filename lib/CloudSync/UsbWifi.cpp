@@ -275,9 +275,15 @@ void LineInput::quarantine(uint32_t nowMs) {
     inLine_ = false;
     mismatch_ = false;
     matched_ = 0;
-    wipe(buf_, sizeof(buf_));
+    UsbWifi::wipe(buf_, sizeof(buf_));
     len_ = 0;
     overflow_ = false;
+    nul_ = false;
+}
+
+void LineInput::wipe() {
+    UsbWifi::wipe(buf_, sizeof(buf_));
+    len_ = 0;
 }
 
 namespace {
@@ -335,8 +341,15 @@ LineInput::Next LineInput::next(Port& port) {
         if (c == '\n' || c == '\r') {
             if (overflow_) {
                 overflow_ = false;
-                len_ = 0;
+                nul_ = false;
+                wipe();
                 return Next::TooLong;
+            }
+            if (nul_) {
+                nul_ = false;
+                wipe();
+                if (c == '\r') takePairedLf(port);
+                return Next::Invalid;
             }
             if (len_ == 0) continue;   // empty line, or the LF of a CRLF
             buf_[len_] = '\0';
@@ -345,8 +358,11 @@ LineInput::Next LineInput::next(Port& port) {
             if (c == '\r') takePairedLf(port);
             return Next::Line;
         }
+        if (overflow_) continue;    // dropped up to the end of the line
+        if (c == '\0') nul_ = true;
         if (len_ + 1 >= kCap) {
-            overflow_ = true;   // dropped up to the end of the line
+            overflow_ = true;
+            wipe();             // nothing of a dropped line stays in memory
             continue;
         }
         buf_[len_++] = c;

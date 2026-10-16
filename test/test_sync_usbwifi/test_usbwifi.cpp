@@ -574,10 +574,15 @@ struct Loop {
                 port.out += "[err] line too long\n";
                 continue;
             }
+            if (next == LineInput::Next::Invalid) {
+                port.out += "[err] line invalid\n";
+                continue;
+            }
             const char* line = input.line();
             if (strcmp(line, "wifi add") == 0) handleAdd("", port, input, recordSave, refuse);
             else if (strncmp(line, "wifi add ", 9) == 0) handleAdd(line + 9, port, input, recordSave, refuse);
             else commands.push_back(line);
+            input.wipe();   // as the driver does after every line
         }
     }
     // Polls every 10 ms (a loop pass) until `untilMs`.
@@ -902,6 +907,62 @@ void test_stream_lines_crlf_empty_and_too_long() {
     TEST_ASSERT_EQUAL_STRING("[err] line too long\n", loop.port.out.c_str());
 }
 
+static bool bufferZero(const LineInput& in) {
+    for (size_t i = 0; i < LineInput::kCap; i++)
+        if (in.line()[i] != 0) return false;
+    return true;
+}
+
+// Nothing of a handled, over-long or NUL-holding line stays in the buffer
+// (a line can carry a secret such as `hr token <key>`).
+void test_line_buffer_wiped_after_every_line() {
+    Loop loop;
+    loop.port.send(0, std::string("hr token abcdefghijklmnopqrstuvwxyz\n"));
+    loop.run(50);
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_TRUE(bufferZero(loop.input));
+
+    Loop over;
+    over.port.send(0, std::string("hr token ") + std::string(300, 'k') + "\n");
+    over.run(50);
+    TEST_ASSERT_EQUAL(0, (int)over.commands.size());
+    TEST_ASSERT_EQUAL_STRING("[err] line too long\n", over.port.out.c_str());
+    TEST_ASSERT_TRUE(bufferZero(over.input));
+
+    // An over-long line still arriving is already gone from memory.
+    Loop partial;
+    partial.port.send(0, std::string("hr token ") + std::string(200, 'k'));
+    partial.run(50);
+    TEST_ASSERT_TRUE(bufferZero(partial.input));
+}
+
+void test_line_with_nul_is_refused() {
+    Loop loop;
+    std::string line = "hr token abc";
+    line.push_back('\0');
+    line += "secret\nversion\n";
+    loop.port.send(0, line);
+    loop.run(50);
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("version", loop.commands[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("[err] line invalid\n", loop.port.out.c_str());
+    TEST_ASSERT_TRUE(bufferZero(loop.input));
+}
+
+// The driver wipes the input after every dispatched line, never echoes an
+// unknown line, and handles `hr` in every build.
+void test_driver_never_keeps_or_echoes_a_line() {
+    const std::string cli = readSource("lib/SerialCli/SerialCli.cpp");
+    const std::string poll = functionBody(cli, "void SerialCli::poll(");
+    const size_t dispatchAt = poll.find("dispatch(g_input.line());");
+    TEST_ASSERT_TRUE(dispatchAt != std::string::npos);
+    TEST_ASSERT_TRUE(poll.find("g_input.wipe();", dispatchAt) != std::string::npos);
+    TEST_ASSERT_TRUE(poll.find("Next::Invalid") != std::string::npos);
+    TEST_ASSERT_TRUE(cli.find("unknown command: %s") == std::string::npos);
+    const std::vector<SourceLine> lines = classify(cli);
+    TEST_ASSERT_TRUE(countWhere(lines, "HomeRemote::Config::cliCommand(args)", false) >= 1);
+}
+
 // The driver's `wifi add` is this handler, and the join never logs a key.
 void test_driver_uses_the_tested_add_path() {
     const std::string cli = readSource("lib/SerialCli/SerialCli.cpp");
@@ -1084,6 +1145,9 @@ int main(int, char**) {
     RUN_TEST(test_try_replies);
     RUN_TEST(test_lines_never_cut);
     RUN_TEST(test_release_build_verb_allowlist);
+    RUN_TEST(test_line_buffer_wiped_after_every_line);
+    RUN_TEST(test_line_with_nul_is_refused);
+    RUN_TEST(test_driver_never_keeps_or_echoes_a_line);
     RUN_TEST(test_syncinfo_setup_before_fw_terminator);
     return UNITY_END();
 }

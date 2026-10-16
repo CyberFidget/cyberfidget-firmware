@@ -15,6 +15,11 @@ file/loadout synchronization, and a gated set of bench-only device controls.
   `.done` line or have a fixed set of tagged lines.
 * The `[boot]` and `[uvlo]` prefixes belong to startup and autonomous UVLO
   reporting. CLI verbs never emit `[uvlo]`.
+* An unknown command is answered `[err] unknown command` with nothing of the
+  line echoed (a mistyped line can carry a secret). A line longer than 159
+  bytes is answered `[err] line too long`, and one holding a NUL byte
+  `[err] line invalid`; neither runs. The input buffer is zeroed after every
+  line, handled or dropped.
 * Sync payloads are length-framed raw bytes with CRC-32. See
   `lib/SyncProtocol/README.md` for the full transport and confinement contract.
 

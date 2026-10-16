@@ -30,6 +30,7 @@
 #include "SavedWifi.h"        // wifi add / try / saved (every build)
 #include "UsbWifi.h"          // pure framing, scan list, replies for the wifi setup verbs
 #include "HomeRemoteConfig.h" // hr url / token / show / clear (every build)
+#include "HomeRemoteLogic.h"  // secureWipe
 #include <WiFi.h>
 #include <esp_bt.h>           // Bluetooth started: WiFi waits for a restart
 #include <esp_wifi.h>
@@ -677,7 +678,13 @@ void SerialCli::poll() {
             Serial.println("[err] line too long");
             continue;
         }
+        if (next == UsbWifi::LineInput::Next::Invalid) {
+            Serial.println("[err] line invalid");
+            continue;
+        }
         dispatch(g_input.line());
+        // A line can carry a secret (`hr token`): nothing of it is kept.
+        g_input.wipe();
         // A deferred verb stops reading here (see pollDeferred).
         if (deferredPending) return;
     }
@@ -811,12 +818,24 @@ void SerialCli::dispatch(const char* line, bool retry) {
     if (ieq(line, "wifi add"))   { cmdWifiAdd(""); return; }
     if (verbWithArg(line, "wifi add", &arg)) { cmdWifiAdd(arg); return; }
     // Home Remote's Home Assistant address and access key (every build).
-    // The line may hold the key: it is never echoed, and it is wiped here
-    // once handled.
-    if (ieq(line, "hr") || verbWithArg(line, "hr", &arg)) {
-        HomeRemote::Config::cliCommand(ieq(line, "hr") ? "" : arg);
-        memset(const_cast<char*>(line), 0, strlen(line));
-        return;
+    // The line may hold the key: it is never echoed, and poll() wipes the
+    // whole input buffer after every line. Leading spaces/tabs and tabs
+    // between words are accepted, so a pasted line still lands here.
+    {
+        const char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if ((p[0] == 'h' || p[0] == 'H') && (p[1] == 'r' || p[1] == 'R') &&
+            (p[2] == '\0' || p[2] == ' ' || p[2] == '\t')) {
+            p += 2;
+            while (*p == ' ' || *p == '\t') p++;
+            char args[UsbWifi::LineInput::kCap];
+            size_t n = 0;
+            for (; *p && n + 1 < sizeof(args); p++) args[n++] = (*p == '\t') ? ' ' : *p;
+            args[n] = '\0';
+            HomeRemote::Config::cliCommand(args);
+            HomeRemote::secureWipe(args, sizeof(args));
+            return;
+        }
     }
 #ifdef CF_TEST_CLI
     if (ieq(line, "link start")) {
@@ -1013,7 +1032,8 @@ void SerialCli::dispatch(const char* line, bool retry) {
         return;
     }
 #endif
-    Serial.printf("[err] unknown command: %s\n", line);
+    // Nothing of the line is echoed: a mistyped command can carry a secret.
+    Serial.println("[err] unknown command");
 }
 
 #ifdef CF_TEST_CLI
