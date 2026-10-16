@@ -19,6 +19,22 @@ Steps (each prints PASS/FAIL; the exit code is 0 only when all pass):
      is restored.
   8. Every serial byte received is searched for the key: 0 hits.
 
+A long hold is `btn <i> press`, `btn <i> held`, `btn <i> release` (the pin
+scan does not time an injected press). Row lookups first Back up to the
+app's top list.
+
+Manual checks this script cannot make (LEDs and sleep):
+  - With "Mirror on LEDs" on, open a lit colour light: LEDs 1-3 (front)
+    show its colour, dimmed; LED 0 (back) stays dark. Turn the light off:
+    dark. Back to a list: dark.
+  - Leave a lit light screen untouched with Stay awake off: at 5 minutes
+    the LEDs go dark, and about a minute later the device sleeps with the
+    LEDs still dark.
+
+The exact template text sent to Home Assistant can be written out without
+a device: HR_DUMP_TEMPLATES=<dir> pio test -e test_home_remote (raw Jinja
+.j2 and the request body .json, ready to POST to /api/template).
+
 Screen captures (PNG) and a transcript (the key masked, should it ever
 appear) go to --out. Lights the run changed are put back through the REST
 API at the end. `awake set off` is always sent before closing.
@@ -69,6 +85,7 @@ class Dev:
     def __init__(self, port, secret):
         self.s = serial.Serial(port, BAUD, timeout=0.1)
         self.rxbuf = b""
+        self.queue = []          # received lines not yet taken by wait_for
         self.received = bytearray()
         self.log = []
         self.secret = secret
@@ -97,38 +114,45 @@ class Dev:
             if self._read_some():
                 end = time.time() + 0.1
         self._take_lines()
+        self.queue.clear()
 
     def _take_lines(self):
-        out = []
+        """Moves every whole received line into the queue (and the log)."""
         while b"\n" in self.rxbuf:
             line, self.rxbuf = self.rxbuf.split(b"\n", 1)
             t = line.decode("utf-8", "replace").strip()
             if t:
                 self.log.append("< " + t)
-                out.append(t)
-        return out
+                self.queue.append(t)
 
     def send(self, line, shown=None):
         self.log.append("> " + (shown if shown is not None else line))
         self.s.write(line.encode() + b"\n")
 
-    def wait_for(self, prefixes, timeout=4.0):
-        """First received line starting with any prefix (or None)."""
-        if isinstance(prefixes, str):
-            prefixes = (prefixes,)
-        end = time.time() + timeout
-        while time.time() < end:
-            for t in self._take_lines():
-                if any(t.startswith(p) for p in prefixes):
-                    return t
-            self._read_some()
-        for t in self._take_lines():
+    def _pop_match(self, prefixes):
+        for i, t in enumerate(self.queue):
             if any(t.startswith(p) for p in prefixes):
+                del self.queue[i]
                 return t
         return None
 
+    def wait_for(self, prefixes, timeout=4.0):
+        """The first queued (or arriving) line starting with any prefix, or
+        None. Other lines stay queued for a later wait_for."""
+        if isinstance(prefixes, str):
+            prefixes = (prefixes,)
+        end = time.time() + timeout
+        while True:
+            self._take_lines()
+            t = self._pop_match(prefixes)
+            if t is not None or time.time() >= end:
+                return t
+            self._read_some()
+
     def cmd(self, line, prefixes, timeout=4.0, shown=None):
+        # Earlier lines (late tap releases, log lines) are not this reply.
         self._take_lines()
+        self.queue.clear()
         self.send(line, shown)
         return self.wait_for(tuple(prefixes) + ("[err]",), timeout)
 
@@ -145,11 +169,16 @@ class Dev:
         time.sleep(0.25)   # the release comes 120 ms later
         return r
 
-    def hold(self, idx, secs):
+    def hold(self, idx, secs=0.3):
+        """A long hold: an injected press is not timed by the pin scan, so
+        the Held event is injected (`btn <i> held`) before the release."""
         self.cmd("btn %d press" % idx, ["[cmd] btn.press="])
         time.sleep(secs)
+        r = self.cmd("btn %d held" % idx, ["[cmd] btn.held="])
+        time.sleep(0.2)
         self.cmd("btn %d release" % idx, ["[cmd] btn.release="])
         time.sleep(0.2)
+        return r is not None and r.startswith("[cmd] btn.held=")
 
     def state(self):
         """`hr state` as dicts: (state, light-or-None)."""
@@ -295,6 +324,19 @@ def wait_state(dev, pred, timeout):
     return st, light
 
 
+def go_top(dev, tries=6):
+    """Back up to the app's top list (never Back from it: that leaves)."""
+    for _ in range(tries):
+        st, _ = dev.state()
+        if st and st.get("screen") == "top":
+            return True
+        if not st or st.get("screen") == "message":
+            return False
+        dev.tap(BTN_BACK)
+        time.sleep(0.4)
+    return False
+
+
 def select_row(dev, matches, max_steps=40):
     for _ in range(max_steps):
         st, light = dev.state()
@@ -308,9 +350,7 @@ def leave_app(dev, timeout=10.0):
     """Back until the menu is in front."""
     end = time.time() + timeout
     while time.time() < end:
-        dev._take_lines()
-        dev.send("app")
-        name = dev.wait_for("[cmd] app.name=", 1.5)
+        name = dev.cmd("app", ["[cmd] app.name="], timeout=1.5)
         if name and name != "[cmd] app.name=Home Remote":
             return True
         dev.tap(BTN_BACK)
@@ -369,7 +409,9 @@ def main():
         ok, r = set_token(dev, token)
         report("hr.token", ok, (r or "").replace(token, "<KEY>"))
         r = dev.cmd("hr show", ["[cmd] hr.url="])
-        report("hr.show", r is not None and r.endswith("token=set"), r or "")
+        report("hr.show", r is not None and " token=set" in r, r or "")
+        fields = parse_fields((r or "")[len("[cmd] hr.url="):], first="url")
+        report("hr.mirror_default_on", fields.get("mirror") == "on", r or "")
 
         # ---- 3. favorites ---------------------------------------------------
         r = dev.cmd("launch Home Remote", ["[cmd] launch.ok="])
@@ -382,11 +424,12 @@ def main():
 
         # ---- 4. long-hold toggles ------------------------------------------
         name = (saved[args.toggle_entity].get("attributes", {}).get("friendly_name") or "").strip()
+        go_top(dev)
         st, _ = select_row(dev, lambda label: name and label.startswith(name[:20]))
         report("toggle.row_found", st is not None, "label=%s" % name)
         if st:
             before = ha.state(args.toggle_entity)["state"]
-            dev.hold(BTN_ENTER, 1.4)
+            report("toggle.held_injected", dev.hold(BTN_ENTER))
             time.sleep(0.5)
             after = None
             end = time.time() + 6
@@ -402,6 +445,7 @@ def main():
 
         # ---- 5. R change ----------------------------------------------------
         cname = (saved[args.color_entity].get("attributes", {}).get("friendly_name") or "").strip()
+        report("light.back_to_top", go_top(dev))
         st, _ = select_row(dev, lambda label: cname and label.startswith(cname[:20]))
         if st:
             dev.tap(BTN_ENTER)
