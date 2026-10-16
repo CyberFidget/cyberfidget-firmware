@@ -1524,7 +1524,7 @@ void SerialCli::cmdHelp() {
                    "fstat,fread,lget,lbuiltin,lapply,syncinfo");
     Serial.println("[cmd] help.update=upd slot,upd allow-unsigned <on|off>");
     Serial.println("[cmd] help.wifi=wifi scan,wifi add <len> <crc32>,wifi try,wifi saved");
-    Serial.println("[cmd] help.hr=hr url <url>,hr token <key>,hr token+ <more>,hr show,hr clear");
+    Serial.println("[cmd] help.hr=hr url <url>,hr token <key>,hr token+ <more>,hr mirror <on|off>,hr show,hr clear");
 #ifdef CF_TEST_CLI
     Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,heapstat,"
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"

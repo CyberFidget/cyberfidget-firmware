@@ -482,6 +482,26 @@ int brightnessPercent(uint8_t level) {
     return ((int)level * 100 + 127) / 255;
 }
 
+LedColor mirrorColor(bool on, bool hasRgb, uint8_t r, uint8_t g, uint8_t b, uint8_t brightness) {
+    LedColor out;
+    if (!on || brightness == 0) return out;
+    if (!hasRgb) {
+        r = preset(0).r;   // warm white
+        g = preset(0).g;
+        b = preset(0).b;
+    }
+    const uint32_t scale = (uint32_t)brightness * kLedCap;   // up to 255 * 255
+    auto ch = [scale](uint8_t c) -> uint8_t {
+        if (c == 0) return 0;
+        const uint32_t v = ((uint32_t)c * scale + 255u * 255u / 2) / (255u * 255u);
+        return (uint8_t)(v == 0 ? 1 : v);
+    };
+    out.r = ch(r);
+    out.g = ch(g);
+    out.b = ch(b);
+    return out;
+}
+
 const Preset& preset(int index) {
     static const Preset kPresets[kPresetCount] = {
         {"Warm white", 255, 180, 107},

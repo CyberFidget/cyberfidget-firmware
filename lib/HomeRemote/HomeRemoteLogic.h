@@ -139,6 +139,23 @@ struct Preset {
 constexpr int kPresetCount = 8;
 const Preset& preset(int index);
 
+// ---- mirroring the colour on the Fidget's own LEDs --------------------------
+
+struct LedColor {
+    uint8_t r = 0, g = 0, b = 0;
+    bool operator==(const LedColor& o) const { return r == o.r && g == o.g && b == o.b; }
+    bool operator!=(const LedColor& o) const { return !(*this == o); }
+};
+
+/// The brightest the mirror ever drives a channel (of 255): enough to see,
+/// not blinding, light on the battery.
+constexpr uint8_t kLedCap = 48;
+
+/// The colour the front LEDs show for a light: off when the light is off;
+/// its colour (warm white when it reports none) scaled by its brightness
+/// and by kLedCap. A channel that is on never rounds down to dark.
+LedColor mirrorColor(bool on, bool hasRgb, uint8_t r, uint8_t g, uint8_t b, uint8_t brightness);
+
 // ---- list cursor ------------------------------------------------------------
 
 /// Selection and scroll window for a list. Up/Down wrap. setCount keeps the

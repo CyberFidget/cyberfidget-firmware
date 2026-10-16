@@ -19,6 +19,10 @@ namespace {
 constexpr const char* kNamespace = "homeremote";
 constexpr const char* kUrlKey = "url";
 constexpr const char* kTokenKey = "tok";
+constexpr const char* kMirrorKey = "mirror";
+
+bool g_mirrorLoaded = false;
+bool g_mirror = true;
 
 bool ieqWord(const char* a, const char* b) {
     for (; *a && *b; a++, b++) {
@@ -126,6 +130,29 @@ bool url(char* out, size_t cap) {
     return true;
 }
 
+bool mirror() {
+    if (!g_mirrorLoaded) {
+        Preferences prefs;
+        g_mirror = true;
+        if (prefs.begin(kNamespace, true)) {
+            g_mirror = prefs.getBool(kMirrorKey, true);
+            prefs.end();
+        }
+        g_mirrorLoaded = true;
+    }
+    return g_mirror;
+}
+
+bool setMirror(bool on) {
+    g_mirror = on;
+    g_mirrorLoaded = true;
+    Preferences prefs;
+    if (!prefs.begin(kNamespace, false)) return false;
+    const bool ok = prefs.putBool(kMirrorKey, on) == 1;
+    prefs.end();
+    return ok;
+}
+
 bool hasToken() {
     char buf[kTokenMax + 1];
     const bool have = token(buf, sizeof(buf));
@@ -156,8 +183,14 @@ void cliCommand(const char* args) {
     if (ieqWord(args, "show")) {
         char u[kUrlMax + 1];
         const bool haveUrl = url(u, sizeof(u));
-        Serial.printf("[cmd] hr.url=%s token=%s\n", haveUrl ? u : "unset",
-                      hasToken() ? "set" : "unset");
+        Serial.printf("[cmd] hr.url=%s token=%s mirror=%s\n", haveUrl ? u : "unset",
+                      hasToken() ? "set" : "unset", mirror() ? "on" : "off");
+        return;
+    }
+    if (takeVerb(args, "mirror", &rest) && (ieqWord(rest, "on") || ieqWord(rest, "off"))) {
+        const bool on = ieqWord(rest, "on");
+        if (setMirror(on)) Serial.printf("[cmd] hr.mirror=%s\n", on ? "on" : "off");
+        else Serial.println("[err] hr.mirror=storage");
         return;
     }
     if (ieqWord(args, "clear")) {
@@ -175,7 +208,7 @@ void cliCommand(const char* args) {
     if (ieqWord(args, "state")) { HomeRemoteApp::printState(); return; }
 #endif
     // Never echoes what was sent: it may hold the key.
-    Serial.println("[err] hr.usage=hr url <url>|token <key>|token+ <more>|show|clear");
+    Serial.println("[err] hr.usage=hr url <url>|token <key>|token+ <more>|mirror on|off|show|clear");
 }
 
 } // namespace Config

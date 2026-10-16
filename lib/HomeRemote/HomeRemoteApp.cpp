@@ -46,6 +46,9 @@ constexpr uint32_t kToastMs = 2000;
 constexpr uint32_t kAwakeCapMs = 5UL * 60 * 1000;   // a light screen keeps the device awake this long after use
 constexpr uint32_t kFlushWaitMs = 4500;       // end(): the last change still goes out
 constexpr uint32_t kStopWaitMs = 5000;
+// Status rows: the connection (Enter checks again), the LED mirror setting
+// (Enter turns it on or off), the address, the WiFi network.
+constexpr int kStatusRows = 4;
 
 enum class Screen : uint8_t { Message, Top, Areas, AreaList, Detail, Effects, Status };
 enum class Msg : uint8_t {
@@ -83,7 +86,9 @@ bool refreshAfterAction = false;
 bool everAnswered = false;
 Outcome lastOutcome = Outcome::Ok;
 
-ListCursor topCur, areaCur, roomCur, detailCur, fxCur;
+ListCursor topCur, areaCur, roomCur, detailCur, fxCur, statusCur;
+bool ledsLit = false;
+LedColor ledShown;
 ScrollLabel focusLabel;
 ScrollLabel titleLabel;
 int focusFor = -1;
@@ -336,8 +341,33 @@ void openDetail(const Entity& e, Screen parent) {
     lastUseMs = now();
 }
 
+// The front LEDs (1-3) mirror the open light's colour; everything else
+// keeps them off. Only a change is written.
+void updateLeds() {
+    const bool lightScreen = screen == Screen::Detail || screen == Screen::Effects;
+    LedColor want;
+    if (lightScreen && HomeRemote::Config::mirror() && d.available)
+        want = mirrorColor(d.on, d.hasRgb, d.r, d.g, d.b, d.brightness);
+    const bool lit = want != LedColor();
+    if (!lit) {
+        if (ledsLit) setColorsOff();
+        ledsLit = false;
+        return;
+    }
+    if (ledsLit && want == ledShown) return;
+    setDeterminedColorsFront(want.r, want.g, want.b, 0);
+    ledShown = want;
+    ledsLit = true;
+}
+
+void ledsOff() {
+    setColorsOff();
+    ledsLit = false;
+}
+
 void leaveDetail() {
     accel.release();
+    ledsOff();
     if (gate.dirty()) sendNow();   // the last change still goes out
     screen = detailParent;
     // The list behind shows on/off: read it again.
@@ -523,6 +553,7 @@ ListCursor* activeCursor() {
         case Screen::AreaList: return &roomCur;
         case Screen::Detail:   return &detailCur;
         case Screen::Effects:  return &fxCur;
+        case Screen::Status:   return &statusCur;
         default:               return nullptr;
     }
 }
@@ -567,7 +598,7 @@ void activate() {
         case Screen::Top: {
             const int i = topCur.selected();
             if (topIsRooms(i)) openRooms();
-            else if (topIsStatus(i)) screen = Screen::Status;
+            else if (topIsStatus(i)) { screen = Screen::Status; statusCur.reset(kStatusRows, kRows); }
             else if (topIsFav(i)) openEntity(L->fav[i], Screen::Top);
             break;
         }
@@ -590,7 +621,8 @@ void activate() {
             screen = Screen::Detail;
             break;
         case Screen::Status:
-            request(Fetch::Favorites, nullptr);
+            if (statusCur.selected() == 0) request(Fetch::Favorites, nullptr);
+            else if (statusCur.selected() == 1) HomeRemote::Config::setMirror(!HomeRemote::Config::mirror());
             break;
     }
 }
@@ -884,13 +916,8 @@ void drawMessage() {
     }
 }
 
-void drawStatus() {
-    char net[WifiList::kNameMax + 1];
-    char line[kUrlMax + 16];
-    char cut[kUrlMax + 16];
-    drawTitle("Status");
-    const char* shown = host[0] ? host + 7 : "Not set";   // after "http://"
-    Client::networkName(net, sizeof(net));
+
+const char* connectionState() {
     const char* state = "Not checked";
     if (Client::fetchBusy() && lastReqKind == Fetch::Favorites) state = "Checking...";
     else if (Client::link() == Client::Link::JoinFailed) state = "WiFi not joined";
@@ -902,17 +929,36 @@ void drawStatus() {
             default:                   state = "Unexpected answer"; break;
         }
     }
-    display.setColor(WHITE);
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
-    fitText(shown, cut, sizeof(cut), kScreenW - 4);
-    display.drawString(2, 15, cut);
-    snprintf(line, sizeof(line), "WiFi: %s", net[0] ? net : "-");
-    fitText(line, cut, sizeof(cut), kScreenW - 4);
-    display.drawString(2, 27, cut);
-    display.drawString(2, 39, state);
-    display.setTextAlignment(TEXT_ALIGN_CENTER);
-    display.drawString(kScreenW / 2, 52, "Enter: check again");
-    display.setTextAlignment(TEXT_ALIGN_LEFT);
+    return state;
+}
+
+void statusLabel(int i, char* out, size_t cap, const char** right) {
+    *right = nullptr;
+    switch (i) {
+        case 0:
+            snprintf(out, cap, "%s", connectionState());
+            *right = "Check";
+            break;
+        case 1:
+            snprintf(out, cap, "Mirror on LEDs");
+            *right = HomeRemote::Config::mirror() ? "On" : "Off";
+            break;
+        case 2:
+            snprintf(out, cap, "%s", host[0] ? host + 7 : "Not set");   // after "http://"
+            break;
+        default: {
+            char net[WifiList::kNameMax + 1];
+            Client::networkName(net, sizeof(net));
+            snprintf(out, cap, "WiFi: %s", net[0] ? net : "-");
+            break;
+        }
+    }
+}
+
+void drawStatus() {
+    drawTitle("Status");
+    statusCur.setCount(kStatusRows);
+    drawList(statusCur, statusLabel);
 }
 
 void drawToast() {
@@ -978,6 +1024,7 @@ void begin() {
     buttons.registerCallback(button_EnterIndex, onEnter);
     buttons.registerCallback(button_SelectIndex, onBack);
     setColorsOff();
+    ledsLit = false;
 
     enterArmed = heldFired = false;
     favLoaded = areasLoaded = roomLoaded = effectsLoaded = false;
@@ -1031,7 +1078,7 @@ void end() {
     }
     screen = Screen::Message;
     msg = Msg::None;
-    setColorsOff();
+    ledsOff();
 }
 
 void update() {
@@ -1105,6 +1152,7 @@ void update() {
             break;
     }
     drawToast();
+    updateLeds();
     display.display();
 }
 
@@ -1118,6 +1166,7 @@ void printState() {
         case Screen::Areas:    sel = areaCur.selected(); rows = areaRows(); areaLabel(sel, label, sizeof(label), &right); break;
         case Screen::AreaList: sel = roomCur.selected(); rows = roomRows(); roomLabel(sel, label, sizeof(label), &right); break;
         case Screen::Effects:  sel = fxCur.selected(); rows = fxRows(); fxLabel(sel, label, sizeof(label), &right); break;
+        case Screen::Status:   sel = statusCur.selected(); rows = kStatusRows; statusLabel(sel, label, sizeof(label), &right); break;
         case Screen::Detail:
             sel = detailCur.selected();
             rows = detailRowCount;

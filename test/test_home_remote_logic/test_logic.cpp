@@ -320,6 +320,26 @@ void test_presets(void) {
     TEST_ASSERT_EQUAL_STRING("Magenta", preset(99).name);   // clamped
 }
 
+// ---- LED mirror -------------------------------------------------------------
+
+void test_mirror_color(void) {
+    LedColor off = mirrorColor(false, true, 255, 0, 0, 255);
+    TEST_ASSERT_TRUE(off == LedColor());
+    TEST_ASSERT_TRUE(mirrorColor(true, true, 255, 0, 0, 0) == LedColor());   // brightness 0
+    LedColor full = mirrorColor(true, true, 255, 128, 0, 255);
+    TEST_ASSERT_EQUAL_UINT8(kLedCap, full.r);                 // capped
+    TEST_ASSERT_EQUAL_UINT8(kLedCap / 2, full.g);
+    TEST_ASSERT_EQUAL_UINT8(0, full.b);                       // an off channel stays off
+    LedColor half = mirrorColor(true, true, 255, 0, 0, 128);
+    TEST_ASSERT_EQUAL_UINT8(24, half.r);
+    LedColor dim = mirrorColor(true, true, 255, 10, 0, 3);
+    TEST_ASSERT_EQUAL_UINT8(1, dim.r);                        // never rounds to dark
+    TEST_ASSERT_EQUAL_UINT8(1, dim.g);
+    LedColor white = mirrorColor(true, false, 0, 0, 0, 255);  // no colour reported: warm white
+    TEST_ASSERT_EQUAL_UINT8(kLedCap, white.r);
+    TEST_ASSERT_TRUE(white.b > 0 && white.b < white.g && white.g < white.r);
+}
+
 // ---- list cursor ------------------------------------------------------------
 
 void test_list_cursor(void) {
@@ -510,6 +530,7 @@ int main(int, char**) {
     RUN_TEST(test_classify);
     RUN_TEST(test_hex_and_percent);
     RUN_TEST(test_presets);
+    RUN_TEST(test_mirror_color);
     RUN_TEST(test_list_cursor);
     RUN_TEST(test_takeover_no_change_on_open);
     RUN_TEST(test_takeover_picks_up_at_level_then_drives);

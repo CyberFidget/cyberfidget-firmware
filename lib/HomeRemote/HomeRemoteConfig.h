@@ -21,6 +21,11 @@ bool hasToken();
 /// The saved key. The caller wipes `out` when done with it.
 bool token(char* out, size_t cap);
 
+/// "Mirror colour on LEDs" (key "mirror", on unless turned off). Read from
+/// NVS once, then kept in RAM; setMirror() saves it.
+bool mirror();
+bool setMirror(bool on);
+
 /// `hr <args>` from the serial console. `args` is the text after "hr ";
 /// the caller wipes the line afterwards (it may hold the key).
 void cliCommand(const char* args);

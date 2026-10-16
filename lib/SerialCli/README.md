@@ -27,7 +27,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
 | `lget`, `lbuiltin`, `lapply`, `syncinfo` | `prompt`, `status`, `upd` |
 | `wifi scan`, `wifi add`, `wifi try`, `wifi saved` | `wifi <ssid>\|<pass>`, `wifi list\|first\|forget\|hint-bad\|hint-clear`, `cloud ...`, `link ...` |
-| `hr url`, `hr token`, `hr token+`, `hr show`, `hr clear` | `hr state` |
+| `hr url`, `hr token`, `hr token+`, `hr mirror`, `hr show`, `hr clear` | `hr state` |
 
 The `local_test` PlatformIO environment defines `CF_TEST_CLI`. A normal
 `local` build does not compile the gated dispatch arms or implementations.
@@ -266,7 +266,8 @@ join actually used.
 hr url <http://host[:port]> -> [cmd] hr.url=<address>          ([err] hr.url=invalid)
 hr token <key>              -> [cmd] hr.token=saved chars=<n>   ([err] hr.token=invalid | too-long)
 hr token+ <more>            -> [cmd] hr.token=saved chars=<n>   (adds to the end of the saved key)
-hr show                     -> [cmd] hr.url=<address|unset> token=<set|unset>
+hr mirror on|off            -> [cmd] hr.mirror=<on|off>        (front LEDs show the open light's colour; default on)
+hr show                     -> [cmd] hr.url=<address|unset> token=<set|unset> mirror=<on|off>
 hr clear                    -> [cmd] hr.clear=ok
 hr state  (test builds)     -> [cmd] hr.state=<screen> msg=<..> link=<..> sel=<n> rows=<n> fav=<n> right=<..> label=<row>
                                [cmd] hr.light=<entity> on=<0|1> bri=<0-255> rgb=<r,g,b> hex=#RRGGBB effect=<..> takeover=<0|1>
