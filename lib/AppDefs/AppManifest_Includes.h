@@ -42,3 +42,4 @@
 #include "FactoryReset.h"
 #include "DataScreensaver.h"
 #include "SpeakerEqScreen.h"
+#include "HomeRemoteApp.h"

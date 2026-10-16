@@ -547,11 +547,11 @@ void AppManager::switchToApp(AppIndex newApp)
         std::string id, label;
         if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
     }
-    if (newApp == APP_MUSIC_PLAYER || newApp == APP_WEB_PORTAL) {
+    if (newApp == APP_MUSIC_PLAYER || newApp == APP_WEB_PORTAL || newApp == APP_HOME_REMOTE) {
         // Radio apps: a network check must be over (WiFi off) before they
         // start. Bluetooth after any WiFi use this power cycle, or a check
         // that would not stop in time, goes through a reboot that
-        // relaunches the app.
+        // relaunches the app (Home Remote has no relaunch: it waits).
         const bool checking = CloudSync::busy();
         if (checking) showRadioNotice("Finishing check...");
         const bool stopped = CloudSync::cancelPending();
@@ -564,6 +564,13 @@ void AppManager::switchToApp(AppIndex newApp)
         }
 #endif
         if (checking) Serial.printf("[checkin] cancel-for-radio-app stopped=%d\n", stopped ? 1 : 0);
+        if (!stopped && newApp == APP_HOME_REMOTE) {
+            // Still inside a long network call: the menu stays, try again.
+            if (appActive == APP_MENU) MenuManager::instance().begin();
+            StatusService::instance().post(StatusKind::Info, "Checking for updates. Try again in a moment.",
+                                           StatusPriority::Normal, false, millis());
+            return;
+        }
         if (!stopped || btAfterWifi) {
             Preferences boot;
             if (boot.begin("bootcfg", false)) {

@@ -13,18 +13,21 @@ same result to one other reader (the test CLI). The same entry point serves
 the boot-window, daily, awake, manual and development-mode schedulers; when
 each may start is decided in `lib/UpdatePolicy`. A Bluetooth-tainted entry writes the `bootcfg.bootcloud`
 one-shot and restarts; `AppManager` consumes it at boot. A session never
-starts while the Music Player or the portal is the active app.
+starts while the Music Player, the portal or Home Remote is the active app.
 
 ## Radio apps
 
-`AppManager::switchToApp` treats the Music Player and the portal as radio
-apps. Before either starts it shows "Finishing check..." if a session is
-running, cancels it and waits for WiFi to be off. When the session does not
+`AppManager::switchToApp` treats the Music Player, the portal and Home
+Remote as radio apps. Before any of them starts it shows "Finishing
+check..." if a session is running, cancels it and waits for WiFi to be off. When the session does not
 stop in time, or when the Music Player is launched after a session has used
 WiFi in this power cycle, the device restarts with a one-shot
 (`bootcfg.bootmusic` or the portal's `bootcfg.bootapp`, plus `skipanim`) that
-relaunches the app in a clean power cycle. The session only switches WiFi off
-if it switched it on.
+relaunches the app in a clean power cycle. Home Remote has no relaunch: when
+the session does not stop in time the menu stays and says to try again.
+Home Remote holds the radio through `claimRadio()` for as long as it is open
+(so it counts as WiFi use this power cycle), and no session starts while it
+is the active app. The session only switches WiFi off if it switched it on.
 
 ## Credentials and endpoints
 
