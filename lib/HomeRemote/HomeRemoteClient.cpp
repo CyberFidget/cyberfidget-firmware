@@ -6,6 +6,7 @@
 #ifndef HOST_TEST
 
 #include <Arduino.h>
+#include <Preferences.h>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
@@ -28,7 +29,7 @@ namespace {
 
 constexpr uint32_t kCallMs = 2000;          // each socket wait (connect, send, one read)
 constexpr uint32_t kRequestMs = 6000;       // a whole request, checked between socket waits
-constexpr uint32_t kStopWaitMs = 3000;      // stop(): the worker ends within one socket wait
+constexpr uint32_t kStopWaitMs = 5000;      // stop(): one socket wait, SDK slack and teardown
 constexpr uint32_t kJoinMs = 10000;         // each join attempt
 constexpr uint32_t kStackBytes = 8192;
 constexpr size_t kRequestMax = 4096;        // a template body is ~1.5 KB
@@ -333,10 +334,8 @@ bool joinWifi() {
     return ok;
 }
 
-// Fails whatever is waiting (no network to send it on).
-void failPending() {
-    Lock lock;
-    Shared& s = *g_shared;
+// Fails whatever is waiting (no network to send it on). Caller holds g_lock.
+void failPendingLocked(Shared& s) {
     if (s.actionPending) {
         s.actionPending = false;
         s.actionDoneSeq = s.actionSeq;
@@ -352,6 +351,11 @@ void failPending() {
         s.fetchMeta = meta;
         s.fetchReady = true;
     }
+}
+
+void failPending() {
+    Lock lock;
+    failPendingLocked(*g_shared);
 }
 
 void serve(Private& p) {
@@ -420,11 +424,16 @@ void worker(void*) {
     const bool off = WiFi.mode(WIFI_OFF) && WiFi.getMode() == WIFI_OFF;
     if (!off) Serial.println("[hr] radio_off=failed");
     {
+        // No request is taken from here on (requests check g_alive under
+        // this lock), and whatever was still waiting is answered at once,
+        // so nobody waits on a worker that has ended.
         Lock lock;
+        g_alive = false;
         g_shared->link = Link::Off;
         g_shared->network[0] = '\0';
         g_shared->fetchRunning = false;
         g_shared->actionRunning = false;
+        failPendingLocked(*g_shared);
     }
 #ifdef CF_TEST_CLI
     Serial.printf("[hr] worker=end wifi=%s\n", off ? "off" : "on");
@@ -443,7 +452,6 @@ bool reap(uint32_t waitMs) {
     if (xSemaphoreTake(g_exited, pdMS_TO_TICKS(waitMs)) != pdTRUE) return false;
     vTaskDelete(g_task);
     g_task = nullptr;
-    g_alive = false;
     return true;
 }
 
@@ -498,17 +506,20 @@ void stop() {
     if (!g_task) return;
     g_stop = true;
     // Every socket wait is at most kCallMs and the worker checks the stop
-    // between them, so it normally ends well inside kStopWaitMs.
+    // between them, so it normally ends well inside kStopWaitMs. Teardown
+    // (HTTP, WiFi, radio) belongs to the worker alone: nothing here touches
+    // WiFi while it may be tearing down.
     if (reap(kStopWaitMs)) return;
-    // Still inside a network call: switching WiFi off from here ends any
-    // socket wait, and the worker then finishes its own teardown.
-    Serial.println("[hr] stop=slow wifi=forced-off");
-    WiFi.disconnect(true);
-    WiFi.mode(WIFI_OFF);
-    if (reap(kStopWaitMs)) return;
-    // Never leave a worker, the radio and the key behind the next app:
-    // a controlled restart is the last resort.
+    // Never leave a worker, the radio and the key behind the next app: a
+    // controlled restart, to the menu (skip the start-up animation; no app
+    // one-shot, so Home Remote is not reopened).
     Serial.println("[hr] stop=stuck restart");
+    Preferences boot;
+    if (boot.begin("bootcfg", false)) {
+        boot.putBool("skipanim", true);
+        if (boot.isKey("boothome")) boot.remove("boothome");
+        boot.end();
+    }
     Serial.flush();
     delay(50);
     esp_restart();
@@ -532,10 +543,11 @@ void networkName(char* out, size_t cap) {
 }
 
 uint32_t requestFetch(Fetch kind, const char* arg) {
-    if (!g_alive.load() || !g_shared) return 0;
+    if (!g_shared || !g_lock) return 0;
     uint32_t seq;
     {
         Lock lock;
+        if (!g_alive.load()) return 0;   // checked under the lock the worker ends under
         Shared& s = *g_shared;
         seq = ++g_seq;
         s.fetchPending = true;
@@ -549,10 +561,11 @@ uint32_t requestFetch(Fetch kind, const char* arg) {
 }
 
 uint32_t requestAction(const Action& action) {
-    if (!g_alive.load() || !g_shared) return 0;
+    if (!g_shared || !g_lock) return 0;
     uint32_t seq;
     {
         Lock lock;
+        if (!g_alive.load()) return 0;
         Shared& s = *g_shared;
         seq = ++g_seq;
         s.actionPending = true;

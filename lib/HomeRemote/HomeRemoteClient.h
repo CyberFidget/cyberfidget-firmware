@@ -48,11 +48,11 @@ struct FetchResult {
 /// Loop task. Claims the radio and starts the worker.
 StartError start();
 /// Loop task. Asks the worker to end (WiFi off, radio released, key
-/// wiped) and waits for it, then deletes the task. If it has not ended
-/// after 3 s, WiFi is switched off from here (ending any socket wait) and it
-/// gets 3 s more; failing that the device restarts. It never returns with
-/// the worker still running.
+/// wiped: all done by the worker itself) and waits for it, then deletes the
+/// task. If it has not ended after 5 s the device restarts to the menu. It
+/// never returns with the worker still running.
 void stop();
+/// A worker task exists (running, or ended and not yet deleted by stop()).
 bool workerAlive();
 
 Link link();
