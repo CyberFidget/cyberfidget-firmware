@@ -69,7 +69,7 @@ void saveToken(const char* part, bool append) {
     buf[0] = '\0';
     if (append && token(buf, sizeof(buf))) have = strlen(buf);
     if (have + n > kTokenMax) {
-        memset(buf, 0, sizeof(buf));
+        secureWipe(buf, sizeof(buf));
         Serial.println("[err] hr.token=too-long");
         return;
     }
@@ -81,7 +81,7 @@ void saveToken(const char* part, bool append) {
         ok = prefs.putString(kTokenKey, buf) == have + n;
         prefs.end();
     }
-    memset(buf, 0, sizeof(buf));
+    secureWipe(buf, sizeof(buf));
     if (ok) Serial.printf("[cmd] hr.token=saved chars=%u\n", (unsigned)(have + n));
     else Serial.println("[err] hr.token=storage");
 }
@@ -156,7 +156,7 @@ bool setMirror(bool on) {
 bool hasToken() {
     char buf[kTokenMax + 1];
     const bool have = token(buf, sizeof(buf));
-    memset(buf, 0, sizeof(buf));
+    secureWipe(buf, sizeof(buf));
     return have;
 }
 
@@ -168,7 +168,7 @@ bool token(char* out, size_t cap) {
     const bool have = prefs.isKey(kTokenKey) && prefs.getString(kTokenKey, out, cap) > 0;
     prefs.end();
     if (!have || !validTokenChars(out, strlen(out))) {
-        memset(out, 0, cap);
+        secureWipe(out, cap);
         return false;
     }
     return true;

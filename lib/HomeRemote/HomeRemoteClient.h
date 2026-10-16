@@ -9,8 +9,9 @@
 // claims the radio (CloudSync::claimRadio, so check-ins and USB WiFi jobs
 // wait and Bluetooth later needs a restart), joins a saved network
 // (SavedWifi::join), then serves requests from the app one at a time over
-// plain HTTP to the configured Home Assistant address, with a 4 s timeout
-// per call and one kept connection. The access key goes only into the
+// plain HTTP to the configured Home Assistant address, with a 2 s limit on
+// each socket wait and 6 s on a whole request, and one kept connection.
+// The access key goes only into the
 // Authorization header; its buffers are wiped when the worker ends.
 //
 // The app never waits on the network: it posts a request (each slot is
@@ -46,9 +47,12 @@ struct FetchResult {
 
 /// Loop task. Claims the radio and starts the worker.
 StartError start();
-/// Loop task. Asks the worker to end (WiFi off, radio released) and waits
-/// up to waitMs. False when it is still finishing (it ends on its own).
-bool stop(uint32_t waitMs);
+/// Loop task. Asks the worker to end (WiFi off, radio released, key
+/// wiped) and waits for it, then deletes the task. If it has not ended
+/// after 3 s, WiFi is switched off from here (ending any socket wait) and it
+/// gets 3 s more; failing that the device restarts. It never returns with
+/// the worker still running.
+void stop();
 bool workerAlive();
 
 Link link();

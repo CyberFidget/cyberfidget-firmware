@@ -44,8 +44,7 @@ constexpr int kRowW    = kScreenW - kGutter;
 constexpr uint32_t kPollMs = 1000;            // the open light, while its screen is up
 constexpr uint32_t kToastMs = 2000;
 constexpr uint32_t kAwakeCapMs = 5UL * 60 * 1000;   // a light screen keeps the device awake this long after use
-constexpr uint32_t kFlushWaitMs = 4500;       // end(): the last change still goes out
-constexpr uint32_t kStopWaitMs = 5000;
+constexpr uint32_t kFlushWaitMs = 6500;       // end(): the last change still goes out (one request)
 // Status rows: the connection (Enter checks again), the LED mirror setting
 // (Enter turns it on or off), the address, the WiFi network.
 constexpr int kStatusRows = 4;
@@ -1074,7 +1073,7 @@ void end() {
         if ((screen == Screen::Detail || screen == Screen::Effects) && gate.dirty()) sendNow();
         const uint32_t started = now();
         while (Client::actionBusy() && now() - started < kFlushWaitMs) delay(10);
-        Client::stop(kStopWaitMs);
+        Client::stop();
     }
     screen = Screen::Message;
     msg = Msg::None;

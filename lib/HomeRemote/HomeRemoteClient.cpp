@@ -9,6 +9,7 @@
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <esp_http_client.h>
+#include <esp_system.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
 #include <freertos/task.h>
@@ -25,7 +26,9 @@ namespace HomeRemote {
 namespace Client {
 namespace {
 
-constexpr uint32_t kCallMs = 4000;          // per HTTP call
+constexpr uint32_t kCallMs = 2000;          // each socket wait (connect, send, one read)
+constexpr uint32_t kRequestMs = 6000;       // a whole request, checked between socket waits
+constexpr uint32_t kStopWaitMs = 3000;      // stop(): the worker ends within one socket wait
 constexpr uint32_t kJoinMs = 10000;         // each join attempt
 constexpr uint32_t kStackBytes = 8192;
 constexpr size_t kRequestMax = 4096;        // a template body is ~1.5 KB
@@ -71,7 +74,8 @@ struct Private {
 Shared* g_shared = nullptr;
 Private* g_priv = nullptr;
 SemaphoreHandle_t g_lock = nullptr;
-TaskHandle_t g_task = nullptr;
+TaskHandle_t g_task = nullptr;      // loop task only (created, deleted there)
+SemaphoreHandle_t g_exited = nullptr;   // given by the worker as its last act
 std::atomic<bool> g_stop{false};
 std::atomic<bool> g_alive{false};
 uint32_t g_seq = 0;
@@ -121,58 +125,82 @@ const char* outcomeName(Outcome o) {
 }
 #endif
 
+// Frees the client. The SDK keeps its own copy of the Authorization value
+// in its header list: it is reached through esp_http_client_get_header and
+// zeroed before the free. (The SDK's serialized request in its send buffer
+// is not reachable through its API and is freed as it is.)
 void closeClient(Private& p) {
-    if (p.client) {
-        esp_http_client_cleanup(p.client);
-        p.client = nullptr;
-    }
+    if (!p.client) return;
+    char* value = nullptr;
+    if (esp_http_client_get_header(p.client, "Authorization", &value) == ESP_OK && value)
+        secureWipe(value, strlen(value));
+    esp_http_client_cleanup(p.client);
+    p.client = nullptr;
 }
 
-// One POST to the configured address. Returns true when a status line came
-// back (status set); the body, when keepBody, is in p.response (cut at the
-// last whole line if it did not fit) and its length in *respLen.
+bool passed(uint32_t deadline) { return (int32_t)(millis() - deadline) >= 0; }
+
+// A new client for the configured address, with the key set once for its
+// whole life (setting it per request would leave each old copy freed
+// unwiped inside the SDK).
+bool openClient(Private& p) {
+    esp_http_client_config_t config = {};
+    config.url = p.url;
+    config.method = HTTP_METHOD_POST;
+    config.timeout_ms = kCallMs;
+    config.disable_auto_redirect = true;
+    config.buffer_size_tx = 1024;   // the request line and headers, key included
+    p.client = esp_http_client_init(&config);
+    if (!p.client) return false;
+    char auth[kTokenMax + 8];
+    snprintf(auth, sizeof(auth), "Bearer %s", p.token);
+    const bool authSet = esp_http_client_set_header(p.client, "Authorization", auth) == ESP_OK;
+    secureWipe(auth, sizeof(auth));
+    if (!authSet ||
+        esp_http_client_set_header(p.client, "Content-Type", "application/json") != ESP_OK) {
+        closeClient(p);
+        return false;
+    }
+    return true;
+}
+
+// One POST to the configured address, bounded by `deadline` (checked
+// between socket waits, each at most kCallMs) and by a stop request.
+//
+// keepBody (template reads): true only when the whole answer arrived; the
+// body is in p.response (cut at the last whole line if it did not fit) and
+// its length in *respLen. A read that failed on a kept connection is
+// retried once on a fresh one (reads change nothing).
+// Otherwise (service calls): true when a status line came back. Never
+// retried: the call may already have run (a toggle would undo itself).
 bool post(Private& p, const char* path, const char* body, size_t bodyLen, int& status,
-          bool keepBody, size_t* respLen, bool retried = false) {
+          bool keepBody, size_t* respLen, uint32_t deadline, bool retried = false) {
     status = 0;
     if (respLen) *respLen = 0;
     p.response[0] = '\0';
-    if (WiFi.status() != WL_CONNECTED || stopping()) return false;
+    if (WiFi.status() != WL_CONNECTED || stopping() || passed(deadline)) return false;
     const int n = snprintf(p.url, sizeof(p.url), "%s%s", p.base, path);
     if (n <= 0 || (size_t)n >= sizeof(p.url)) return false;
     const bool reused = p.client != nullptr;
     if (!p.client) {
-        esp_http_client_config_t config = {};
-        config.url = p.url;
-        config.method = HTTP_METHOD_POST;
-        config.timeout_ms = kCallMs;
-        config.disable_auto_redirect = true;
-        config.buffer_size_tx = 1024;   // the request line and headers, key included
-        p.client = esp_http_client_init(&config);
-        if (!p.client) return false;
+        if (!openClient(p)) return false;
     } else if (esp_http_client_set_url(p.client, p.url) != ESP_OK) {
         closeClient(p);
         return false;
     }
     esp_http_client_set_method(p.client, HTTP_METHOD_POST);
     esp_http_client_set_timeout_ms(p.client, kCallMs);
-    char auth[kTokenMax + 8];
-    snprintf(auth, sizeof(auth), "Bearer %s", p.token);
-    const bool authSet = esp_http_client_set_header(p.client, "Authorization", auth) == ESP_OK;
-    memset(auth, 0, sizeof(auth));
-    if (!authSet ||
-        esp_http_client_set_header(p.client, "Content-Type", "application/json") != ESP_OK) {
-        closeClient(p);
-        return false;
-    }
     bool ok = esp_http_client_open(p.client, (int)bodyLen) == ESP_OK;
+    if (ok && (stopping() || passed(deadline))) ok = false;
     if (ok) ok = esp_http_client_write(p.client, body, (int)bodyLen) == (int)bodyLen;
+    if (ok && (stopping() || passed(deadline))) ok = false;
     if (ok) ok = esp_http_client_fetch_headers(p.client) >= 0;
     if (!ok) {
         closeClient(p);
         // The server may have closed the kept connection while idle:
-        // nothing was answered, so try once on a fresh one.
-        if (reused && !retried && !stopping())
-            return post(p, path, body, bodyLen, status, keepBody, respLen, true);
+        // a read is tried once more on a fresh one.
+        if (keepBody && reused && !retried && !stopping() && !passed(deadline))
+            return post(p, path, body, bodyLen, status, keepBody, respLen, deadline, true);
         return false;
     }
     status = esp_http_client_get_status_code(p.client);
@@ -180,6 +208,7 @@ bool post(Private& p, const char* path, const char* body, size_t bodyLen, int& s
     bool truncated = false;
     char drain[256];
     for (;;) {
+        if (stopping() || passed(deadline)) { ok = false; break; }
         int got;
         if (keepBody && !truncated && len + 1 < sizeof(p.response)) {
             got = esp_http_client_read(p.client, p.response + len, (int)(sizeof(p.response) - 1 - len));
@@ -194,7 +223,6 @@ bool post(Private& p, const char* path, const char* body, size_t bodyLen, int& s
             break;
         }
         if (keepBody && len + 1 >= sizeof(p.response)) truncated = true;
-        if (stopping()) { ok = false; break; }
     }
     if (keepBody) {
         if (truncated) {
@@ -202,10 +230,11 @@ bool post(Private& p, const char* path, const char* body, size_t bodyLen, int& s
             while (len && p.response[len - 1] != '\n') len--;
         }
         p.response[len] = '\0';
-        if (respLen) *respLen = len;
+        if (respLen) *respLen = ok ? len : 0;
     }
     if (!ok || status < 200 || status >= 300) closeClient(p);
-    // A status line came back even when the body was cut short.
+    // A read cut short is a failed read: the list shown before stays.
+    if (keepBody) return ok;
     return status != 0;
 }
 
@@ -251,7 +280,8 @@ void runFetch(Private& p, Fetch kind, const char* arg, uint32_t seq) {
     int status = 0;
     size_t len = 0;
     Outcome outcome = Outcome::BadReply;
-    if (n > 0) outcome = classify(post(p, "/api/template", p.request, n, status, true, &len), status);
+    if (n > 0) outcome = classify(post(p, "/api/template", p.request, n, status, true, &len,
+                                           millis() + kRequestMs), status);
     publishFetch(kind, seq, outcome, status, p, len);
 #ifdef CF_TEST_CLI
     Serial.printf("[hr] fetch=%s status=%d outcome=%s bytes=%u ms=%lu\n", fetchName(kind), status,
@@ -268,7 +298,8 @@ void runAction(Private& p, const Action& a, uint32_t seq) {
     Outcome outcome = Outcome::BadReply;
     const size_t n = serviceBody(a, p.request, sizeof(p.request));
     if (n > 0 && servicePath(a, path, sizeof(path)))
-        outcome = classify(post(p, path, p.request, n, status, false, nullptr), status);
+        outcome = classify(post(p, path, p.request, n, status, false, nullptr, millis() + kRequestMs),
+                           status);
     {
         Lock lock;
         g_shared->actionRunning = false;
@@ -349,7 +380,7 @@ void serve(Private& p) {
             }
         }
         if (!haveAction && !haveFetch) {
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(100));
+            vTaskDelay(pdMS_TO_TICKS(20));   // polled: nobody holds this task's handle to wake it
             continue;
         }
         if (WiFi.status() != WL_CONNECTED) {
@@ -383,8 +414,8 @@ void worker(void*) {
     WiFi.persistent(false);   // nothing is written to the radio's own storage
     serve(p);
     closeClient(p);
-    memset(p.token, 0, sizeof(p.token));
-    memset(p.request, 0, sizeof(p.request));
+    secureWipe(p.token, sizeof(p.token));
+    secureWipe(p.request, sizeof(p.request));
     WiFi.disconnect(true);
     const bool off = WiFi.mode(WIFI_OFF) && WiFi.getMode() == WIFI_OFF;
     if (!off) Serial.println("[hr] radio_off=failed");
@@ -400,28 +431,42 @@ void worker(void*) {
 #endif
     // Released only now: whoever waits for the radio sees it off.
     CloudSync::releaseRadio();
+    // The task never deletes itself: the loop task, which alone holds its
+    // handle, deletes it once it has taken this (reap()).
+    xSemaphoreGive(g_exited);
+    for (;;) vTaskSuspend(nullptr);
+}
+
+// Loop task: deletes a worker that has finished (waiting up to waitMs).
+bool reap(uint32_t waitMs) {
+    if (!g_task) return true;
+    if (xSemaphoreTake(g_exited, pdMS_TO_TICKS(waitMs)) != pdTRUE) return false;
+    vTaskDelete(g_task);
     g_task = nullptr;
     g_alive = false;
-    vTaskDelete(nullptr);
+    return true;
 }
 
 } // namespace
 
 StartError start() {
-    if (g_alive.load()) return StartError::RadioBusy;
     if (!g_lock) g_lock = xSemaphoreCreateMutex();
+    if (!g_exited) g_exited = xSemaphoreCreateBinary();
     if (!g_shared) g_shared = allocate<Shared>();
     if (!g_priv) g_priv = allocate<Private>();
-    if (!g_lock || !g_shared || !g_priv) return StartError::NoMemory;
+    if (!g_lock || !g_exited || !g_shared || !g_priv) return StartError::NoMemory;
+    // One that ended on its own (another radio user asked) is cleared away;
+    // one still running keeps the radio.
+    if (!reap(0)) return StartError::RadioBusy;
 
     Private& p = *g_priv;
     if (!SavedWifi::anySaved()) return StartError::NoWifi;
     if (!Config::url(p.base, sizeof(p.base)) || !Config::token(p.token, sizeof(p.token))) {
-        memset(p.token, 0, sizeof(p.token));
+        secureWipe(p.token, sizeof(p.token));
         return StartError::NotConfigured;
     }
     if (!CloudSync::claimRadio()) {
-        memset(p.token, 0, sizeof(p.token));
+        secureWipe(p.token, sizeof(p.token));
         return StartError::RadioBusy;
     }
     {
@@ -434,10 +479,11 @@ StartError start() {
     }
     g_stop = false;
     g_alive = true;
+    xSemaphoreTake(g_exited, 0);   // empty before this worker can give it
     if (xTaskCreate(worker, "homeremote", kStackBytes, nullptr, 1, &g_task) != pdPASS) {
         g_alive = false;
         g_task = nullptr;
-        memset(p.token, 0, sizeof(p.token));
+        secureWipe(p.token, sizeof(p.token));
         setLink(Link::Off);
         CloudSync::releaseRadio();
         return StartError::NoMemory;
@@ -448,16 +494,27 @@ StartError start() {
     return StartError::None;
 }
 
-bool stop(uint32_t waitMs) {
-    if (!g_alive.load()) return true;
+void stop() {
+    if (!g_task) return;
     g_stop = true;
-    if (TaskHandle_t t = g_task) xTaskNotifyGive(t);
-    const uint32_t started = millis();
-    while (g_alive.load() && millis() - started < waitMs) delay(10);
-    return !g_alive.load();
+    // Every socket wait is at most kCallMs and the worker checks the stop
+    // between them, so it normally ends well inside kStopWaitMs.
+    if (reap(kStopWaitMs)) return;
+    // Still inside a network call: switching WiFi off from here ends any
+    // socket wait, and the worker then finishes its own teardown.
+    Serial.println("[hr] stop=slow wifi=forced-off");
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+    if (reap(kStopWaitMs)) return;
+    // Never leave a worker, the radio and the key behind the next app:
+    // a controlled restart is the last resort.
+    Serial.println("[hr] stop=stuck restart");
+    Serial.flush();
+    delay(50);
+    esp_restart();
 }
 
-bool workerAlive() { return g_alive.load(); }
+bool workerAlive() { return g_task != nullptr; }
 
 Link link() {
     if (!g_shared || !g_lock) return Link::Off;
@@ -488,7 +545,6 @@ uint32_t requestFetch(Fetch kind, const char* arg) {
         strncpy(s.fetchArg, arg ? arg : "", sizeof(s.fetchArg) - 1);
         s.fetchArg[sizeof(s.fetchArg) - 1] = '\0';
     }
-    if (TaskHandle_t t = g_task) xTaskNotifyGive(t);
     return seq;
 }
 
@@ -503,7 +559,6 @@ uint32_t requestAction(const Action& action) {
         s.action = action;
         s.actionSeq = seq;
     }
-    if (TaskHandle_t t = g_task) xTaskNotifyGive(t);
     return seq;
 }
 
