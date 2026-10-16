@@ -1044,7 +1044,7 @@ void SerialCli::dispatch(const char* line, bool retry) {
 void SerialCli::cmdBtn(const char* args) {
     char* rest = nullptr;
     long idx = strtol(args, &rest, 10);
-    if (rest == args) { Serial.println("[err] btn: usage: btn <index> <press|release|tap>"); return; }
+    if (rest == args) { Serial.println("[err] btn: usage: btn <index> <press|held|release|tap>"); return; }
     while (*rest == ' ') rest++;
     int numButtons = HAL::buttonManager().getNumButtons();
     if (idx < 0 || idx >= numButtons || idx >= kMaxInjectButtons) {
@@ -1064,8 +1064,16 @@ void SerialCli::cmdBtn(const char* args) {
         unsigned long due = millis() + kTapReleaseMs;
         tapReleaseDueMs[idx] = (due == 0) ? 1 : due;
         Serial.printf("[cmd] btn.tap=%ld release_in_ms=%lu\n", idx, kTapReleaseMs);
+    } else if (ieq(rest, "held")) {
+        // The long-hold event of a press made with `btn <i> press`.
+        if (!HAL::buttonManager().isPressed((int)idx)) {
+            Serial.println("[err] btn: held needs a press first (btn <index> press)");
+            return;
+        }
+        HAL::buttonManager().injectEvent((int)idx, ButtonEvent_Held);
+        Serial.printf("[cmd] btn.held=%ld\n", idx);
     } else {
-        Serial.println("[err] btn: usage: btn <index> <press|release|tap>");
+        Serial.println("[err] btn: usage: btn <index> <press|held|release|tap>");
     }
 }
 

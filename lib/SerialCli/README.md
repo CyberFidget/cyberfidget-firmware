@@ -408,12 +408,15 @@ adds a diary marker carrying the resolved app index.
 
 ```text
 btn <index> press   -> [cmd] btn.press=<index>
+btn <index> held    -> [cmd] btn.held=<index>   (after press: the long-hold event)
 btn <index> release -> [cmd] btn.release=<index>
 btn <index> tap     -> [cmd] btn.tap=<index> release_in_ms=120
 sleep               -> [cmd] sleep=requested
 ```
 
-A tap generates a later `[cmd] btn.release=<index>` line. `sleep` sets a request
+A tap generates a later `[cmd] btn.release=<index>` line. An injected press
+is not timed by the pin scan, so a long hold is `press`, `held`, `release`;
+`held` is refused unless the button is down and fires once per press. `sleep` sets a request
 consumed by `AppManager`, keeping teardown out of serial dispatch.
 
 ### Sample prompt
