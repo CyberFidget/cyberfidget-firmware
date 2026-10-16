@@ -132,8 +132,11 @@ const char kRowMacro[] =
     "{{ s.entity_id }}|"
     "{{ (s.name|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:48] }}|"
     "{{ s.state }}|"
-    "{{ a.get('brightness')|int(0) }}|"
-    "{{ ((c[0]|int(0))~','~(c[1]|int(0))~','~(c[2]|int(0))) if c and c|count == 3 else '' }}|"
+    "{{ [[a.get('brightness')|int(0),0]|max,255]|min }}|"
+    // Clamped on the server: Home Assistant can report a channel outside
+    // 0-255 (a Matter light at a saturation just over 100 gives -1).
+    "{{ (([[c[0]|int(0),0]|max,255]|min)~','~([[c[1]|int(0),0]|max,255]|min)~','~"
+    "([[c[2]|int(0),0]|max,255]|min)) if c and c|count == 3 else '' }}|"
     "{{ (1 if dim else 0) + (2 if col else 0) }}|"
     "{{ fx|count }}|"
     "{{ ((a.get('effect') or '')|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:32] }}\n"
