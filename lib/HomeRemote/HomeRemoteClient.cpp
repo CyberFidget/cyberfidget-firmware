@@ -29,7 +29,7 @@ namespace {
 
 constexpr uint32_t kCallMs = 2000;          // each socket wait (connect, send, one read)
 constexpr uint32_t kRequestMs = 6000;       // a whole request, checked between SDK calls
-constexpr size_t kReadStep = 64;            // body bytes asked of one esp_http_client_read
+constexpr size_t kReadStep = 1;             // body bytes asked of one esp_http_client_read
 
 // How long stop() can take for a working server, and its budget.
 //
@@ -42,14 +42,14 @@ constexpr size_t kReadStep = 64;            // body bytes asked of one esp_http_
 // - esp_http_client_fetch_headers: reads until the response headers end.
 //   It cannot be split, but Home Assistant's headers are ~0.3 KB and arrive
 //   in one segment -> one socket wait.
-// - esp_http_client_read: kReadStep bytes per call -> one socket wait (see
-//   post()).
+// - esp_http_client_read: one byte per call, so it returns as soon as any
+//   data arrives -> at most one socket wait (see post()).
 // - SavedWifi::join polls the stop every 100 ms; a scan it has started ends
 //   within ~2 s.
 // So: one socket wait (2 s) or a scan (2 s), plus HTTP cleanup and WiFi
-// off (under 1 s): about 3 s. The budget is 6 s. A server that sends its
-// headers or body a few bytes at a time can exceed it; that is the case
-// the restart in stop() is for.
+// off (under 1 s): about 3 s. The budget is 6 s. Only a server that
+// trickles its response headers can exceed it; that is the case the
+// restart in stop() is for.
 constexpr uint32_t kStopWaitMs = 6000;
 constexpr uint32_t kJoinMs = 10000;         // each join attempt
 constexpr uint32_t kStackBytes = 8192;
@@ -228,12 +228,13 @@ bool post(Private& p, const char* path, const char* body, size_t bodyLen, int& s
     status = esp_http_client_get_status_code(p.client);
     size_t len = 0;
     bool truncated = false;
-    // The body is read kReadStep bytes per call: esp_http_client_read keeps
-    // reading the socket until it has the length asked for, so a large ask
-    // could hold the worker through many socket waits. With a small ask a
-    // call returns after one socket wait whenever the server sends at least
-    // kReadStep bytes (or the rest of the body) at a time, and the stop and
-    // the deadline are checked between calls.
+    // The body is read one byte per call: esp_http_client_read keeps reading
+    // the socket until it has the length asked for, so any larger ask could
+    // hold the worker through many socket waits on a slow server. One byte
+    // returns as soon as data arrives (at most one socket wait), and the
+    // stop and the deadline are checked between calls. Bodies are a few KB
+    // and come from the SDK's and lwIP's buffers, so the extra calls are
+    // cheap.
     char drain[kReadStep];
     for (;;) {
         if (stopping() || passed(deadline)) { ok = false; break; }
