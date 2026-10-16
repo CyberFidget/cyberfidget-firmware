@@ -6,7 +6,10 @@
 #ifndef HOST_TEST
 
 #include <Arduino.h>
+#include <Preferences.h>
+#include <esp_bt.h>
 #include <esp_heap_caps.h>
+#include <esp_system.h>
 #include <new>
 #include <stdio.h>
 #include <string.h>
@@ -1015,6 +1018,28 @@ T* allocate() {
 } // namespace
 
 void begin() {
+    // WiFi never starts beside a Bluetooth stack started earlier in this
+    // power cycle (the Music Player keeps it): as the portal does, restart
+    // and reopen this app in a clean power cycle (`boothome`, AppManager).
+    if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE) {
+        display.clear();
+        display.setColor(WHITE);
+        display.setFont(ArialMT_Plain_10);
+        display.setTextAlignment(TEXT_ALIGN_CENTER);
+        display.drawString(64, 27, "Opening Home Remote...");
+        display.display();
+        Preferences prefs;
+        if (prefs.begin("bootcfg", false)) {
+            prefs.putBool("skipanim", true);
+            prefs.putBool("boothome", true);
+            prefs.end();
+        }
+        Serial.println("[hr] begin=bluetooth-active restart=1");
+        Serial.flush();
+        delay(50);
+        esp_restart();
+    }
+
     auto& buttons = HAL::buttonManager();
     buttons.registerCallback(button_UpIndex, onUp);
     buttons.registerCallback(button_DownIndex, onDown);
