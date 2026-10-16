@@ -12,7 +12,7 @@
 //   parses the full state dump:
 //     entity: entity_id|name|state|brightness|r,g,b|caps|effect_count|effect
 //     area:   area_id|name|count
-//     effect: one name per line
+//     effect: one JSON string per line (decoded exactly, see decodeJsonString)
 //   caps: bit 0 = can dim, bit 1 = can take a colour. r,g,b is empty when
 //   the light reports no colour (off, or a white-only light).
 // - Request bodies: the template bodies and the service call bodies.
@@ -90,6 +90,27 @@ bool normalizeBaseUrl(const char* in, char* out, size_t cap);
 
 /// A token can be saved: printable ASCII without spaces, 1..kTokenMax.
 bool validTokenChars(const char* token, size_t len);
+
+// ---- templates --------------------------------------------------------------
+
+enum class Template : uint8_t { Favorites, Areas, AreaEntities, Entity, Effects };
+constexpr size_t kTemplateMax = 2048;
+
+/// The exact Jinja text sent for a list (arg: the area or entity id, where
+/// one is needed). Every template lives in HomeRemoteLogic.cpp only. Returns
+/// the length, or 0 when it would not fit or the id is refused.
+size_t templateText(Template kind, const char* arg, char* out, size_t cap);
+
+/// One JSON string literal (with its quotes) decoded to UTF-8. Returns the
+/// length, or -1 when it is malformed, holds a NUL or does not fit in cap
+/// (terminator included).
+int decodeJsonString(const char* in, size_t len, char* out, size_t cap);
+
+/// Text safe to draw: control characters become spaces.
+void displayText(const char* in, char* out, size_t cap);
+
+/// Zeroes memory in a way the compiler keeps (secrets before a free/return).
+void secureWipe(void* p, size_t n);
 
 // ---- request bodies (JSON for POST /api/template) ---------------------------
 // Each returns the body length, or 0 when it would not fit or an id is

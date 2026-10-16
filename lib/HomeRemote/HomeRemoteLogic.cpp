@@ -112,26 +112,55 @@ bool lowerDigitUnderscore(char c) {
 }
 
 // ---- templates --------------------------------------------------------------
-// The shared row macro (see the line format in the header). Names are cut
-// to 48 characters and lose any '|' and line breaks on the server, so a
-// row is always one line with exactly eight fields.
+// Every template the device sends is written here and nowhere else
+// (templateText below puts them together).
+//
+// The shared row macro (see the line format in the header). Every attribute
+// is read with .get(), so an entity without brightness, colour or effects (a
+// scene, a script, an on/off light, any other domain) renders as 0 / empty
+// instead of failing the whole list. Names are cut to 48 characters and lose
+// any '|' and line breaks on the server, so a row is always one line with
+// exactly eight fields. The current effect is for display only.
 const char kRowMacro[] =
     "{%- macro row(s) -%}"
-    "{%- set m = s.attributes.supported_color_modes or [] -%}"
+    "{%- set a = s.attributes -%}"
+    "{%- set m = a.get('supported_color_modes') or [] -%}"
     "{%- set col = m|select('in',['hs','rgb','rgbw','rgbww','xy'])|list|count > 0 -%}"
     "{%- set dim = col or m|select('in',['brightness','color_temp','white'])|list|count > 0 -%}"
-    "{%- set c = s.attributes.rgb_color -%}"
+    "{%- set c = a.get('rgb_color') -%}"
+    "{%- set fx = a.get('effect_list') or [] -%}"
     "{{ s.entity_id }}|"
     "{{ (s.name|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:48] }}|"
     "{{ s.state }}|"
-    "{{ s.attributes.brightness|int(0) }}|"
-    "{{ ((c[0]|int)~','~(c[1]|int)~','~(c[2]|int)) if c else '' }}|"
+    "{{ a.get('brightness')|int(0) }}|"
+    "{{ ((c[0]|int(0))~','~(c[1]|int(0))~','~(c[2]|int(0))) if c and c|count == 3 else '' }}|"
     "{{ (1 if dim else 0) + (2 if col else 0) }}|"
-    "{{ (s.attributes.effect_list or [])|count }}|"
-    "{{ ((s.attributes.effect or '')|string|replace('|','/')|replace('\\n',' '))[:32] }}\n"
+    "{{ fx|count }}|"
+    "{{ ((a.get('effect') or '')|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:32] }}\n"
     "{% endmacro -%}";
 
 const char kDomains[] = "['light','scene','script']";
+
+// The loop over a selection of states (a filter chain ending in states).
+const char kRowsLoop[] =
+    "{%%- for s in (%s|selectattr('domain','in',%s)|sort(attribute='name')|list)[:%d] -%%}"
+    "{{ row(s) }}{%%- endfor -%%}";
+
+const char kAreasTemplate[] =
+    "{%%- for a in areas() -%%}"
+    "{%%- set n = states|selectattr('entity_id','in',area_entities(a))"
+    "|selectattr('domain','in',%s)|list|count -%%}"
+    "{%%- if n > 0 -%%}"
+    "{{ a }}|{{ (area_name(a)|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:48] }}|{{ n }}\n"
+    "{%% endif -%%}"
+    "{%%- endfor -%%}";
+
+// One effect per line as a JSON string, so any name (with '|', quotes,
+// line breaks or edge spaces) comes back exactly and can be sent back.
+const char kEffectsTemplate[] =
+    "{%%- for e in (state_attr('%s','effect_list') or [])[:%d] -%%}"
+    "{{ e|string|to_json }}\n"
+    "{%% endfor -%%}";
 
 // Wraps a template as {"template":"..."}. Returns the length or 0.
 size_t wrapTemplate(const char* tmpl, char* out, size_t cap) {
@@ -150,19 +179,57 @@ size_t wrapTemplate(const char* tmpl, char* out, size_t cap) {
     return head + body + tail;
 }
 
-constexpr size_t kTemplateMax = 1600;
+// Macro + loop over the selection. Returns the length or 0.
+size_t rowsTemplate(const char* selection, char* out, size_t cap) {
+    const size_t macro = sizeof(kRowMacro) - 1;
+    if (!out || cap <= macro) { if (out && cap) out[0] = '\0'; return 0; }
+    memcpy(out, kRowMacro, macro);
+    const int n = snprintf(out + macro, cap - macro, kRowsLoop, selection, kDomains, kMaxRows);
+    if (n <= 0 || (size_t)n >= cap - macro) { out[0] = '\0'; return 0; }
+    return macro + (size_t)n;
+}
 
-size_t rowsBody(const char* selection, char* out, size_t cap) {
+size_t body(Template kind, const char* arg, char* out, size_t cap) {
     char tmpl[kTemplateMax];
-    const int n = snprintf(tmpl, sizeof(tmpl),
-        "%s{%%- for s in (%s|selectattr('domain','in',%s)|sort(attribute='name')|list)[:%d] -%%}"
-        "{{ row(s) }}{%%- endfor -%%}",
-        kRowMacro, selection, kDomains, kMaxRows);
-    if (n <= 0 || (size_t)n >= sizeof(tmpl)) { if (out && cap) out[0] = '\0'; return 0; }
+    if (templateText(kind, arg, tmpl, sizeof(tmpl)) == 0) {
+        if (out && cap) out[0] = '\0';
+        return 0;
+    }
     return wrapTemplate(tmpl, out, cap);
 }
 
 } // namespace
+
+size_t templateText(Template kind, const char* arg, char* out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    char selection[kIdMax + 96];
+    int n = 0;
+    switch (kind) {
+        case Template::Favorites:
+            snprintf(selection, sizeof(selection),
+                     "states|selectattr('entity_id','in',label_entities('%s'))", kFavoriteLabel);
+            return rowsTemplate(selection, out, cap);
+        case Template::AreaEntities:
+            if (!validAreaId(arg)) return 0;
+            snprintf(selection, sizeof(selection),
+                     "states|selectattr('entity_id','in',area_entities('%s'))", arg);
+            return rowsTemplate(selection, out, cap);
+        case Template::Entity:
+            if (!validEntityId(arg)) return 0;
+            snprintf(selection, sizeof(selection), "states|selectattr('entity_id','eq','%s')", arg);
+            return rowsTemplate(selection, out, cap);
+        case Template::Areas:
+            n = snprintf(out, cap, kAreasTemplate, kDomains);
+            break;
+        case Template::Effects:
+            if (!validEntityId(arg)) return 0;
+            n = snprintf(out, cap, kEffectsTemplate, arg, kMaxEffects);
+            break;
+    }
+    if (n <= 0 || (size_t)n >= cap) { out[0] = '\0'; return 0; }
+    return (size_t)n;
+}
 
 Kind kindOf(const char* id) {
     if (!id) return Kind::Other;
@@ -271,10 +338,9 @@ int parseEffects(const char* body, size_t len, char (*out)[kEffectMax + 1], int 
     int n = 0;
     if (!body || !out || max <= 0) return 0;
     forEachLine(body, len, [&](const char* p, size_t l) {
-        // A name too long to keep whole could not be sent back: skip it.
-        if (l > kEffectMax) return true;
-        memcpy(out[n], p, l);
-        out[n][l] = '\0';
+        // Each line is one JSON string. A name that does not decode, or is
+        // too long to keep whole, could not be sent back: skip it.
+        if (decodeJsonString(p, l, out[n], kEffectMax + 1) <= 0) return true;
         n++;
         return n < max;
     });
@@ -347,53 +413,108 @@ bool validTokenChars(const char* token, size_t len) {
     return true;
 }
 
-size_t favoritesBody(char* out, size_t cap) {
-    char selection[96];
-    snprintf(selection, sizeof(selection),
-             "states|selectattr('entity_id','in',label_entities('%s'))", kFavoriteLabel);
-    return rowsBody(selection, out, cap);
-}
-
-size_t areasBody(char* out, size_t cap) {
-    char tmpl[kTemplateMax];
-    const int n = snprintf(tmpl, sizeof(tmpl),
-        "{%%- for a in areas() -%%}"
-        "{%%- set n = states|selectattr('entity_id','in',area_entities(a))"
-        "|selectattr('domain','in',%s)|list|count -%%}"
-        "{%%- if n > 0 -%%}"
-        "{{ a }}|{{ (area_name(a)|string|replace('|','/')|replace('\\n',' '))[:48] }}|{{ n }}\n"
-        "{%% endif -%%}"
-        "{%%- endfor -%%}",
-        kDomains);
-    if (n <= 0 || (size_t)n >= sizeof(tmpl)) { if (out && cap) out[0] = '\0'; return 0; }
-    return wrapTemplate(tmpl, out, cap);
-}
-
+size_t favoritesBody(char* out, size_t cap) { return body(Template::Favorites, nullptr, out, cap); }
+size_t areasBody(char* out, size_t cap) { return body(Template::Areas, nullptr, out, cap); }
 size_t areaEntitiesBody(const char* areaId, char* out, size_t cap) {
-    if (!validAreaId(areaId)) { if (out && cap) out[0] = '\0'; return 0; }
-    char selection[kIdMax + 96];
-    snprintf(selection, sizeof(selection),
-             "states|selectattr('entity_id','in',area_entities('%s'))", areaId);
-    return rowsBody(selection, out, cap);
+    return body(Template::AreaEntities, areaId, out, cap);
 }
-
 size_t entityBody(const char* entityId, char* out, size_t cap) {
-    if (!validEntityId(entityId)) { if (out && cap) out[0] = '\0'; return 0; }
-    char selection[kIdMax + 64];
-    snprintf(selection, sizeof(selection), "states|selectattr('entity_id','eq','%s')", entityId);
-    return rowsBody(selection, out, cap);
+    return body(Template::Entity, entityId, out, cap);
+}
+size_t effectsBody(const char* entityId, char* out, size_t cap) {
+    return body(Template::Effects, entityId, out, cap);
 }
 
-size_t effectsBody(const char* entityId, char* out, size_t cap) {
-    if (!validEntityId(entityId)) { if (out && cap) out[0] = '\0'; return 0; }
-    char tmpl[512];
-    const int n = snprintf(tmpl, sizeof(tmpl),
-        "{%%- for e in (state_attr('%s','effect_list') or [])[:%d] -%%}"
-        "{{ e|string|replace('|','/')|replace('\\n',' ') }}\n"
-        "{%% endfor -%%}",
-        entityId, kMaxEffects);
-    if (n <= 0 || (size_t)n >= sizeof(tmpl)) { if (out && cap) out[0] = '\0'; return 0; }
-    return wrapTemplate(tmpl, out, cap);
+namespace {
+void putUtf8(uint32_t cp, char* out, size_t& w) {
+    if (cp < 0x80) {
+        out[w++] = (char)cp;
+    } else if (cp < 0x800) {
+        out[w++] = (char)(0xC0 | (cp >> 6));
+        out[w++] = (char)(0x80 | (cp & 0x3F));
+    } else if (cp < 0x10000) {
+        out[w++] = (char)(0xE0 | (cp >> 12));
+        out[w++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[w++] = (char)(0x80 | (cp & 0x3F));
+    } else {
+        out[w++] = (char)(0xF0 | (cp >> 18));
+        out[w++] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        out[w++] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        out[w++] = (char)(0x80 | (cp & 0x3F));
+    }
+}
+
+bool hex4(const char* p, uint32_t& v) {
+    v = 0;
+    for (int i = 0; i < 4; i++) {
+        const char c = p[i];
+        v <<= 4;
+        if (c >= '0' && c <= '9') v |= (uint32_t)(c - '0');
+        else if (c >= 'a' && c <= 'f') v |= (uint32_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') v |= (uint32_t)(c - 'A' + 10);
+        else return false;
+    }
+    return true;
+}
+} // namespace
+
+int decodeJsonString(const char* in, size_t len, char* out, size_t cap) {
+    if (!in || !out || cap == 0 || len < 2 || in[0] != '"' || in[len - 1] != '"') return -1;
+    size_t w = 0;
+    for (size_t i = 1; i + 1 < len; i++) {
+        const unsigned char c = (unsigned char)in[i];
+        if (c < 0x20 || c == '"') return -1;
+        if (w + 2 > cap) return -1;   // room for one byte and the terminator
+        if (c != '\\') { out[w++] = (char)c; continue; }
+        if (i + 2 >= len) return -1;
+        const char e = in[++i];
+        switch (e) {
+            case '"': out[w++] = '"'; break;
+            case '\\': out[w++] = '\\'; break;
+            case '/': out[w++] = '/'; break;
+            case 'b': out[w++] = '\b'; break;
+            case 'f': out[w++] = '\f'; break;
+            case 'n': out[w++] = '\n'; break;
+            case 'r': out[w++] = '\r'; break;
+            case 't': out[w++] = '\t'; break;
+            case 'u': {
+                uint32_t cp = 0;
+                if (i + 4 >= len || !hex4(in + i + 1, cp)) return -1;
+                i += 4;
+                if (cp >= 0xD800 && cp <= 0xDBFF) {
+                    uint32_t lo = 0;
+                    if (i + 6 >= len || in[i + 1] != '\\' || in[i + 2] != 'u' || !hex4(in + i + 3, lo) ||
+                        lo < 0xDC00 || lo > 0xDFFF) return -1;
+                    i += 6;
+                    cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+                } else if (cp >= 0xDC00 && cp <= 0xDFFF) {
+                    return -1;
+                }
+                if (cp == 0) return -1;   // a NUL would cut the name short
+                const size_t need = cp < 0x80 ? 1 : cp < 0x800 ? 2 : cp < 0x10000 ? 3 : 4;
+                if (w + need + 1 > cap) return -1;
+                putUtf8(cp, out, w);
+                break;
+            }
+            default: return -1;
+        }
+    }
+    out[w] = '\0';
+    return (int)w;
+}
+
+void displayText(const char* in, char* out, size_t cap) {
+    if (!out || cap == 0) return;
+    size_t w = 0;
+    for (const char* p = in ? in : ""; *p && w + 1 < cap; p++)
+        out[w++] = ((unsigned char)*p < 0x20) ? ' ' : *p;
+    out[w] = '\0';
+}
+
+void secureWipe(void* p, size_t n) {
+    // volatile so the clear is not optimised away before a free or return.
+    volatile unsigned char* v = static_cast<volatile unsigned char*>(p);
+    for (size_t i = 0; p && i < n; i++) v[i] = 0;
 }
 
 bool servicePath(const Action& a, char* out, size_t cap) {
@@ -572,6 +693,10 @@ void SoftTakeover::arm(int real, int slider) {
 void SoftTakeover::setReal(int real, int slider) {
     real = clamp255(real);
     slider = clamp255(slider);
+    // The same value again (a poll that agrees) changes nothing: the
+    // slider keeps the side it started on, so a crossing made on this
+    // frame still counts.
+    if (real == real_) return;
     if (engaged_ && absi(slider - real) <= kTolerance) {
         real_ = real;
         return;

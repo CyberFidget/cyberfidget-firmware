@@ -6,6 +6,8 @@
 // send gate, the poll guard and hold-to-repeat.
 
 #include <unity.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <string>
 
@@ -140,11 +142,81 @@ void test_area_lines(void) {
 }
 
 void test_effect_lines_skip_names_too_long_to_send_back(void) {
-    std::string body = "sunrise\nsunset\n" + std::string(kEffectMax + 1, 'z') + "\nmovie\n";
+    std::string body = "\"sunrise\"\n\"sunset\"\n\"" + std::string(kEffectMax + 1, 'z') +
+                       "\"\nnot json\n\"movie\"\n";
     char effects[kMaxEffects][kEffectMax + 1];
     const int n = parseEffects(body.c_str(), body.size(), effects, kMaxEffects);
     TEST_ASSERT_EQUAL_INT(3, n);
     TEST_ASSERT_EQUAL_STRING("movie", effects[2]);
+    // Exactly kEffectMax bytes still fits.
+    body = "\"" + std::string(kEffectMax, 'y') + "\"\n";
+    TEST_ASSERT_EQUAL_INT(1, parseEffects(body.c_str(), body.size(), effects, kMaxEffects));
+}
+
+// The name the device sends back is byte-for-byte the one Home Assistant
+// listed: '|', quotes, backslashes, line breaks, edge spaces, non-ASCII.
+void test_effect_names_round_trip_exactly(void) {
+    const char body[] =
+        "\"A|B\"\n"
+        "\"say \\\"hi\\\"\"\n"
+        "\"back\\\\slash\"\n"
+        "\"two\\nlines\"\n"
+        "\"  edge  \"\n"
+        "\"caf\\u00e9\"\n"
+        "\"caf\xc3\xa9 raw\"\n"
+        "\"\\ud83c\\udf05 dawn\"\n";
+    char effects[kMaxEffects][kEffectMax + 1];
+    const int n = parseEffects(body, strlen(body), effects, kMaxEffects);
+    TEST_ASSERT_EQUAL_INT(8, n);
+    TEST_ASSERT_EQUAL_STRING("A|B", effects[0]);
+    TEST_ASSERT_EQUAL_STRING("say \"hi\"", effects[1]);
+    TEST_ASSERT_EQUAL_STRING("back\\slash", effects[2]);
+    TEST_ASSERT_EQUAL_STRING("two\nlines", effects[3]);
+    TEST_ASSERT_EQUAL_STRING("  edge  ", effects[4]);
+    TEST_ASSERT_EQUAL_STRING("caf\xc3\xa9", effects[5]);
+    TEST_ASSERT_EQUAL_STRING("caf\xc3\xa9 raw", effects[6]);
+    TEST_ASSERT_EQUAL_STRING("\xf0\x9f\x8c\x85 dawn", effects[7]);
+
+    // And it goes back out as the same JSON string value.
+    Action a;
+    strcpy(a.entity, "light.x");
+    a.type = Action::Type::TurnOn;
+    a.setEffect = true;
+    char out[256];
+    for (int i = 0; i < n; i++) {
+        strcpy(a.effect, effects[i]);
+        TEST_ASSERT_TRUE(serviceBody(a, out, sizeof(out)) > 0);
+        const char* v = strstr(out, "\"effect\":");
+        TEST_ASSERT_NOT_NULL(v);
+        v += 9;
+        char back[kEffectMax + 1];
+        TEST_ASSERT_EQUAL_INT((int)strlen(effects[i]),
+                              decodeJsonString(v, strlen(v) - 1, back, sizeof(back)));
+        TEST_ASSERT_EQUAL_STRING(effects[i], back);
+    }
+
+    // Drawn without the line break.
+    char shown[kEffectMax + 1];
+    displayText(effects[3], shown, sizeof(shown));
+    TEST_ASSERT_EQUAL_STRING("two lines", shown);
+}
+
+void test_json_string_decode_rejects(void) {
+    char out[16];
+    TEST_ASSERT_EQUAL_INT(-1, decodeJsonString("abc", 3, out, sizeof(out)));          // no quotes
+    TEST_ASSERT_EQUAL_INT(-1, decodeJsonString("\"a\\x\"", 5, out, sizeof(out)));     // bad escape
+    TEST_ASSERT_EQUAL_INT(-1, decodeJsonString("\"\\u0000\"", 8, out, sizeof(out)));  // NUL
+    TEST_ASSERT_EQUAL_INT(-1, decodeJsonString("\"\\ud800\"", 8, out, sizeof(out)));  // lone surrogate
+    TEST_ASSERT_EQUAL_INT(-1, decodeJsonString("\"a\"b\"", 5, out, sizeof(out)));     // bare quote
+    TEST_ASSERT_EQUAL_INT(-1, decodeJsonString("\"0123456789abcdef\"", 18, out, sizeof(out)));  // too long
+    TEST_ASSERT_EQUAL_INT(0, decodeJsonString("\"\"", 2, out, sizeof(out)));
+}
+
+void test_secure_wipe(void) {
+    char buf[8] = "secret";
+    secureWipe(buf, sizeof(buf));
+    for (char c : buf) TEST_ASSERT_EQUAL_CHAR(0, c);
+    secureWipe(nullptr, 4);   // harmless
 }
 
 // ---- ids, urls, tokens ------------------------------------------------------
@@ -225,10 +297,70 @@ void test_template_bodies(void) {
 
     TEST_ASSERT_TRUE(effectsBody("light.table_lamp", body, sizeof(body)) > 0);
     TEST_ASSERT_NOT_NULL(strstr(body, "state_attr('light.table_lamp','effect_list')"));
+    TEST_ASSERT_NOT_NULL(strstr(body, "to_json"));
 
     // Too small a buffer is refused, never cut.
     TEST_ASSERT_EQUAL_size_t(0, favoritesBody(body, 100));
     TEST_ASSERT_EQUAL_STRING("", body);
+}
+
+// Entities without brightness / colour / effects (scenes, scripts, on/off
+// lights, other domains) must not fail the list: every attribute is read
+// with .get(), never as a bare attribute that is undefined when missing.
+void test_row_template_tolerates_missing_attributes(void) {
+    char t[kTemplateMax];
+    TEST_ASSERT_TRUE(templateText(Template::Favorites, nullptr, t, sizeof(t)) > 0);
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('brightness')|int(0)"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('rgb_color')"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('effect_list') or []"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('supported_color_modes') or []"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('effect') or ''"));
+    TEST_ASSERT_NULL(strstr(t, "s.attributes."));
+    // The template text and the body agree (the body is just its JSON form).
+    char body[4096];
+    TEST_ASSERT_TRUE(favoritesBody(body, sizeof(body)) > strlen(t));
+    TEST_ASSERT_EQUAL_size_t(0, templateText(Template::Entity, "bad id", t, sizeof(t)));
+    TEST_ASSERT_EQUAL_size_t(0, templateText(Template::Favorites, nullptr, t, 64));
+}
+
+// HR_DUMP_TEMPLATES=<dir> pio test -e test_home_remote writes every
+// template exactly as sent (raw Jinja and the JSON request body) so they
+// can be checked against a real Home Assistant (POST the .json file to
+// /api/template). Without the variable it writes nothing.
+void test_dump_templates(void) {
+    const char* dir = getenv("HR_DUMP_TEMPLATES");
+    if (!dir || !dir[0]) { TEST_PASS_MESSAGE("HR_DUMP_TEMPLATES not set; nothing written"); return; }
+    struct Item { const char* name; Template kind; const char* arg; };
+    const Item items[] = {
+        {"favorites", Template::Favorites, nullptr},
+        {"areas", Template::Areas, nullptr},
+        {"area_booth", Template::AreaEntities, "booth"},
+        {"entity_table_lamp", Template::Entity, "light.table_lamp"},
+        {"effects_table_lamp", Template::Effects, "light.table_lamp"},
+    };
+    for (const Item& it : items) {
+        char t[kTemplateMax];
+        TEST_ASSERT_TRUE(templateText(it.kind, it.arg, t, sizeof(t)) > 0);
+        char json[4096];
+        size_t n = 0;
+        switch (it.kind) {
+            case Template::Favorites:    n = favoritesBody(json, sizeof(json)); break;
+            case Template::Areas:        n = areasBody(json, sizeof(json)); break;
+            case Template::AreaEntities: n = areaEntitiesBody(it.arg, json, sizeof(json)); break;
+            case Template::Entity:       n = entityBody(it.arg, json, sizeof(json)); break;
+            case Template::Effects:      n = effectsBody(it.arg, json, sizeof(json)); break;
+        }
+        TEST_ASSERT_TRUE(n > 0);
+        const std::string base = std::string(dir) + "/" + it.name;
+        FILE* f = fopen((base + ".j2").c_str(), "wb");
+        TEST_ASSERT_NOT_NULL(f);
+        fwrite(t, 1, strlen(t), f);
+        fclose(f);
+        f = fopen((base + ".json").c_str(), "wb");
+        TEST_ASSERT_NOT_NULL(f);
+        fwrite(json, 1, n, f);
+        fclose(f);
+    }
 }
 
 void test_service_calls(void) {
@@ -439,6 +571,24 @@ void test_takeover_drops_when_someone_else_changes_it(void) {
     TEST_ASSERT_EQUAL_INT(32, v);
 }
 
+// A poll with the same level arriving on the frame the slider jumped across
+// it (the app reads polls before the slider) must not erase the crossing.
+void test_takeover_unchanged_poll_between_move_and_pickup(void) {
+    SoftTakeover t;
+    t.arm(128, 140);
+    int v = -1;
+    TEST_ASSERT_FALSE(t.update(140, &v));
+    t.setReal(128, 100);                     // same level, slider already past it
+    TEST_ASSERT_TRUE(t.update(100, &v));     // still a crossing: picked up
+    TEST_ASSERT_EQUAL_INT(100, v);
+    // A poll with a different level does re-arm from where the slider is.
+    SoftTakeover u;
+    u.arm(128, 140);
+    u.setReal(90, 100);
+    TEST_ASSERT_FALSE(u.update(100, &v));
+    TEST_ASSERT_TRUE(u.update(85, &v));
+}
+
 void test_takeover_off_light(void) {
     SoftTakeover t;
     t.arm(0, 180);                           // an off light reads 0
@@ -521,6 +671,12 @@ int main(int, char**) {
     RUN_TEST(test_overlong_line_is_dropped);
     RUN_TEST(test_area_lines);
     RUN_TEST(test_effect_lines_skip_names_too_long_to_send_back);
+    RUN_TEST(test_effect_names_round_trip_exactly);
+    RUN_TEST(test_json_string_decode_rejects);
+    RUN_TEST(test_secure_wipe);
+    RUN_TEST(test_row_template_tolerates_missing_attributes);
+    RUN_TEST(test_dump_templates);
+    RUN_TEST(test_takeover_unchanged_poll_between_move_and_pickup);
     RUN_TEST(test_ids);
     RUN_TEST(test_base_url);
     RUN_TEST(test_token_chars);

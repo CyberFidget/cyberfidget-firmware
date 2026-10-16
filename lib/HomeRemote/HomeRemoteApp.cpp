@@ -193,7 +193,7 @@ void fxLabel(int i, char* out, size_t cap, const char** right) {
     *right = nullptr;
     if (!effectsLoaded) { snprintf(out, cap, "Loading..."); return; }
     if (L->effectCount == 0) { snprintf(out, cap, "No effects"); return; }
-    snprintf(out, cap, "%s", L->effects[i]);
+    displayText(L->effects[i], out, cap);   // the exact name is kept for sending
     if (strcmp(L->effects[i], d.effect) == 0) *right = "On";
 }
 
