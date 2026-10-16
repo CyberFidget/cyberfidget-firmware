@@ -234,7 +234,12 @@ bool post(Private& p, const char* path, const char* body, size_t bodyLen, int& s
     // returns as soon as data arrives (at most one socket wait), and the
     // stop and the deadline are checked between calls. Bodies are a few KB
     // and come from the SDK's and lwIP's buffers, so the extra calls are
-    // cheap.
+    // cheap (measured: no visible change in the hardware bench).
+    // Known limit: with chunked transfer encoding the SDK also reads chunk
+    // framing inside one call, so a server trickling that framing can hold a
+    // call longer. Home Assistant answers these requests with Content-Length,
+    // so this does not arise with it; with another server the stop() restart
+    // is the fallback.
     char drain[kReadStep];
     for (;;) {
         if (stopping() || passed(deadline)) { ok = false; break; }
