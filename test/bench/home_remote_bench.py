@@ -410,8 +410,14 @@ def main():
         report("hr.token", ok, (r or "").replace(token, "<KEY>"))
         r = dev.cmd("hr show", ["[cmd] hr.url="])
         report("hr.show", r is not None and " token=set" in r, r or "")
-        fields = parse_fields((r or "")[len("[cmd] hr.url="):], first="url")
-        report("hr.mirror_default_on", fields.get("mirror") == "on", r or "")
+        # The mirror setting is saved, so whatever an earlier session left is
+        # not a default: set it each way, read it back, and leave it on.
+        for want in ("off", "on"):
+            r = dev.cmd("hr mirror " + want, ["[cmd] hr.mirror="])
+            report("hr.mirror_" + want, r == "[cmd] hr.mirror=" + want, r or "")
+            r = dev.cmd("hr show", ["[cmd] hr.url="])
+            fields = parse_fields((r or "")[len("[cmd] hr.url="):], first="url")
+            report("hr.show_mirror_" + want, fields.get("mirror") == want, r or "")
 
         # ---- 3. favorites ---------------------------------------------------
         r = dev.cmd("launch Home Remote", ["[cmd] launch.ok="])
