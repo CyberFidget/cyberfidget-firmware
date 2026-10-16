@@ -43,6 +43,7 @@ scopes which directories run for each test environment.
 | `test_ota_manifest`  | `test/test_ota_*/`            | `pio test -e test_ota_manifest` |
 | `test_audio_engine`  | `test/test_audio_engine_*/`   | `pio test -e test_audio_engine` |
 | `test_booper`        | `test/test_booper_*/`        | `pio test -e test_booper` |
+| `test_home_remote`   | `test/test_home_remote_*/`    | `pio test -e test_home_remote` |
 
 To add a new app's tests:
 
