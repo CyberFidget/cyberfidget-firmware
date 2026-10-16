@@ -28,8 +28,29 @@ namespace Client {
 namespace {
 
 constexpr uint32_t kCallMs = 2000;          // each socket wait (connect, send, one read)
-constexpr uint32_t kRequestMs = 6000;       // a whole request, checked between socket waits
-constexpr uint32_t kStopWaitMs = 5000;      // stop(): one socket wait, SDK slack and teardown
+constexpr uint32_t kRequestMs = 6000;       // a whole request, checked between SDK calls
+constexpr size_t kReadStep = 64;            // body bytes asked of one esp_http_client_read
+
+// How long stop() can take for a working server, and its budget.
+//
+// The worker checks the stop between SDK calls, so the wait is the longest
+// single call plus teardown:
+// - esp_http_client_open: one connect (<= kCallMs) and the request headers
+//   (~0.4 KB, one send) -> one socket wait.
+// - esp_http_client_write: the body (<= 4 KB on the LAN, sent at once)
+//   -> one socket wait.
+// - esp_http_client_fetch_headers: reads until the response headers end.
+//   It cannot be split, but Home Assistant's headers are ~0.3 KB and arrive
+//   in one segment -> one socket wait.
+// - esp_http_client_read: kReadStep bytes per call -> one socket wait (see
+//   post()).
+// - SavedWifi::join polls the stop every 100 ms; a scan it has started ends
+//   within ~2 s.
+// So: one socket wait (2 s) or a scan (2 s), plus HTTP cleanup and WiFi
+// off (under 1 s): about 3 s. The budget is 6 s. A server that sends its
+// headers or body a few bytes at a time can exceed it; that is the case
+// the restart in stop() is for.
+constexpr uint32_t kStopWaitMs = 6000;
 constexpr uint32_t kJoinMs = 10000;         // each join attempt
 constexpr uint32_t kStackBytes = 8192;
 constexpr size_t kRequestMax = 4096;        // a template body is ~1.5 KB
@@ -166,7 +187,7 @@ bool openClient(Private& p) {
 }
 
 // One POST to the configured address, bounded by `deadline` (checked
-// between socket waits, each at most kCallMs) and by a stop request.
+// between SDK calls, see kStopWaitMs) and by a stop request.
 //
 // keepBody (template reads): true only when the whole answer arrived; the
 // body is in p.response (cut at the last whole line if it did not fit) and
@@ -207,12 +228,20 @@ bool post(Private& p, const char* path, const char* body, size_t bodyLen, int& s
     status = esp_http_client_get_status_code(p.client);
     size_t len = 0;
     bool truncated = false;
-    char drain[256];
+    // The body is read kReadStep bytes per call: esp_http_client_read keeps
+    // reading the socket until it has the length asked for, so a large ask
+    // could hold the worker through many socket waits. With a small ask a
+    // call returns after one socket wait whenever the server sends at least
+    // kReadStep bytes (or the rest of the body) at a time, and the stop and
+    // the deadline are checked between calls.
+    char drain[kReadStep];
     for (;;) {
         if (stopping() || passed(deadline)) { ok = false; break; }
         int got;
         if (keepBody && !truncated && len + 1 < sizeof(p.response)) {
-            got = esp_http_client_read(p.client, p.response + len, (int)(sizeof(p.response) - 1 - len));
+            size_t want = sizeof(p.response) - 1 - len;
+            if (want > kReadStep) want = kReadStep;
+            got = esp_http_client_read(p.client, p.response + len, (int)want);
             if (got > 0) len += (size_t)got;
         } else {
             got = esp_http_client_read(p.client, drain, sizeof(drain));
@@ -505,8 +534,8 @@ StartError start() {
 void stop() {
     if (!g_task) return;
     g_stop = true;
-    // Every socket wait is at most kCallMs and the worker checks the stop
-    // between them, so it normally ends well inside kStopWaitMs. Teardown
+    // The worker checks the stop between SDK calls, each about one socket
+    // wait for a working server (see kStopWaitMs for the bound). Teardown
     // (HTTP, WiFi, radio) belongs to the worker alone: nothing here touches
     // WiFi while it may be tearing down.
     if (reap(kStopWaitMs)) return;

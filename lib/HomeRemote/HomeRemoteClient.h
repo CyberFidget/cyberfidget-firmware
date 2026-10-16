@@ -49,7 +49,7 @@ struct FetchResult {
 StartError start();
 /// Loop task. Asks the worker to end (WiFi off, radio released, key
 /// wiped: all done by the worker itself) and waits for it, then deletes the
-/// task. If it has not ended after 5 s the device restarts to the menu. It
+/// task. If it has not ended after 6 s the device restarts to the menu. It
 /// never returns with the worker still running.
 void stop();
 /// A worker task exists (running, or ended and not yet deleted by stop()).
