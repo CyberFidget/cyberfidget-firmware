@@ -27,6 +27,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
 | `lget`, `lbuiltin`, `lapply`, `syncinfo` | `prompt`, `status`, `upd` |
 | `wifi scan`, `wifi add`, `wifi try`, `wifi saved` | `wifi <ssid>\|<pass>`, `wifi list\|first\|forget\|hint-bad\|hint-clear`, `cloud ...`, `link ...` |
+| `hr url`, `hr token`, `hr token+`, `hr show`, `hr clear` | `hr state` |
 
 The `local_test` PlatformIO environment defines `CF_TEST_CLI`. A normal
 `local` build does not compile the gated dispatch arms or implementations.
@@ -258,6 +259,32 @@ handler before its results are read or freed; if that never comes
 once WiFi is off, the library's "scanning" flag is cleared so later scans
 (the portal's, a check-in's) still start. `wifi.try=ok` names the network the
 join actually used.
+
+### Home Remote setup
+
+```text
+hr url <http://host[:port]> -> [cmd] hr.url=<address>          ([err] hr.url=invalid)
+hr token <key>              -> [cmd] hr.token=saved chars=<n>   ([err] hr.token=invalid | too-long)
+hr token+ <more>            -> [cmd] hr.token=saved chars=<n>   (adds to the end of the saved key)
+hr show                     -> [cmd] hr.url=<address|unset> token=<set|unset>
+hr clear                    -> [cmd] hr.clear=ok
+hr state  (test builds)     -> [cmd] hr.state=<screen> msg=<..> link=<..> sel=<n> rows=<n> fav=<n> right=<..> label=<row>
+                               [cmd] hr.light=<entity> on=<0|1> bri=<0-255> rgb=<r,g,b> hex=#RRGGBB effect=<..> takeover=<0|1>
+                                     (the second line only on a light or effect screen)
+anything else after `hr`    -> [err] hr.usage=...
+```
+
+The Home Remote app (`lib/HomeRemote`) talks to a Home Assistant server.
+Its address and long-lived access key are kept in NVS namespace
+`homeremote` (`url`, `tok`). Only a plain `http://` address is taken
+(Home Assistant's default on a home network), with any trailing `/`
+removed. A key is longer than one 160-byte serial line, so it is sent in
+pieces: `hr token` starts it and each `hr token+` adds to the end (a key
+is at most 300 printable characters, no spaces). No reply, log line or
+screen ever shows the key: replies give only its length, a usage error
+never echoes the line, and the dispatcher wipes the input line after any
+`hr` command. `hr state` prints the app's current screen and selected row
+for bench scripts; entity names and ids are not secret.
 
 ### Installing updates
 

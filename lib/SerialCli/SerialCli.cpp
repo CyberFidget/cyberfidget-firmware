@@ -29,6 +29,7 @@
 #include "FactoryReset.h"
 #include "SavedWifi.h"        // wifi add / try / saved (every build)
 #include "UsbWifi.h"          // pure framing, scan list, replies for the wifi setup verbs
+#include "HomeRemoteConfig.h" // hr url / token / show / clear (every build)
 #include <WiFi.h>
 #include <esp_bt.h>           // Bluetooth started: WiFi waits for a restart
 #include <esp_wifi.h>
@@ -809,6 +810,14 @@ void SerialCli::dispatch(const char* line, bool retry) {
     if (ieq(line, "wifi saved")) { cmdWifiSaved(); return; }
     if (ieq(line, "wifi add"))   { cmdWifiAdd(""); return; }
     if (verbWithArg(line, "wifi add", &arg)) { cmdWifiAdd(arg); return; }
+    // Home Remote's Home Assistant address and access key (every build).
+    // The line may hold the key: it is never echoed, and it is wiped here
+    // once handled.
+    if (ieq(line, "hr") || verbWithArg(line, "hr", &arg)) {
+        HomeRemote::Config::cliCommand(ieq(line, "hr") ? "" : arg);
+        memset(const_cast<char*>(line), 0, strlen(line));
+        return;
+    }
 #ifdef CF_TEST_CLI
     if (ieq(line, "link start")) {
         if (!CloudSync::startLink()) Serial.println("[cmd] link.state=error reason=busy");
@@ -1515,6 +1524,7 @@ void SerialCli::cmdHelp() {
                    "fstat,fread,lget,lbuiltin,lapply,syncinfo");
     Serial.println("[cmd] help.update=upd slot,upd allow-unsigned <on|off>");
     Serial.println("[cmd] help.wifi=wifi scan,wifi add <len> <crc32>,wifi try,wifi saved");
+    Serial.println("[cmd] help.hr=hr url <url>,hr token <key>,hr token+ <more>,hr show,hr clear");
 #ifdef CF_TEST_CLI
     Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,heapstat,"
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"
