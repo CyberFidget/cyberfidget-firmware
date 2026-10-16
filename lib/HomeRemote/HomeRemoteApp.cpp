@@ -345,10 +345,16 @@ void openDetail(const Entity& e, Screen parent) {
 
 // The front LEDs (1-3) mirror the open light's colour; everything else
 // keeps them off. Only a change is written.
+//
+// Idle sleep does not run end(), so the mirror is lit only while this app is
+// holding sleep off (a light screen within kAwakeCapMs of its last use, the
+// same test update() uses). Once that window closes the LEDs go dark, and
+// the idle sleep can only come TASK_LASTINTERACT (60 s) after it.
 void updateLeds() {
     const bool lightScreen = screen == Screen::Detail || screen == Screen::Effects;
+    const bool keptAwake = now() - lastUseMs < kAwakeCapMs;
     LedColor want;
-    if (lightScreen && HomeRemote::Config::mirror() && d.available)
+    if (lightScreen && keptAwake && HomeRemote::Config::mirror() && d.available)
         want = mirrorColor(d.on, d.hasRgb, d.r, d.g, d.b, d.brightness);
     const bool lit = want != LedColor();
     if (!lit) {
@@ -840,7 +846,9 @@ void drawDetail() {
         if (bar) {
             const int level = row == Row::Bri ? (d.on ? d.brightness : 0)
                             : row == Row::R ? d.r : row == Row::G ? d.g : d.b;
-            constexpr int kBarX = 36, kBarW = 60;
+            // The value is right-aligned at kRowW - 2; "100%" is ~25 px wide, so
+            // the bar ends ~8 px before the widest value can start.
+            constexpr int kBarX = 36, kBarW = 52;
             drawBar(kBarX, y + 3, kBarW, level, fg);
             if (row == Row::Bri && !take.engaged()) {
                 // Where the slider is, until it picks the level up.
