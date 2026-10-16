@@ -1032,8 +1032,14 @@ void SerialCli::dispatch(const char* line, bool retry) {
         return;
     }
 #endif
-    // Nothing of the line is echoed: a mistyped command can carry a secret.
-    Serial.println("[err] unknown command");
+    // Only the verb is echoed (clients such as the website's terminal tell
+    // a release build by `unknown command: btn`), never the rest of the
+    // line, and not even the verb when it could be part of a secret.
+    char verb[UsbWifi::kVerbEchoMax + 1];
+    if (UsbWifi::echoableVerb(line, verb, sizeof(verb)))
+        Serial.printf("[err] unknown command: %s\n", verb);
+    else
+        Serial.println("[err] unknown command");
 }
 
 #ifdef CF_TEST_CLI

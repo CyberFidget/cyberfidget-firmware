@@ -167,6 +167,25 @@ void scanSort(ScanList& list) {
     }
 }
 
+bool echoableVerb(const char* line, char* out, size_t cap) {
+    if (!out || cap == 0) return false;
+    out[0] = '\0';
+    if (!line) return false;
+    while (*line == ' ' || *line == '\t') line++;
+    size_t n = 0;
+    while (line[n] && line[n] != ' ' && line[n] != '\t') {
+        const unsigned char c = static_cast<unsigned char>(line[n]);
+        if (c < 0x21 || c > 0x7e) return false;
+        if (++n > kVerbEchoMax) return false;
+    }
+    if (n == 0 || n + 1 > cap) return false;
+    const char h = line[0] | 0x20, r = n > 1 ? (line[1] | 0x20) : 0;
+    if (h == 'h' && r == 'r') return false;
+    memcpy(out, line, n);
+    out[n] = '\0';
+    return true;
+}
+
 const char* busyReason(const RadioOwners& o) {
     if (o.usbJob) return "wifi";
     if (o.update) return "update";

@@ -85,6 +85,6 @@ the ticket + AC they prove (e.g. `t183-ferried-app-runs.json`).
 are always compiled.
 
 Symptom of running a case against a non-test build: `launch`/`btn`
-steps fail with `[err] unknown command` and `assert_wasmstat`
+steps fail with `[err] unknown command: ...` and `assert_wasmstat`
 reports `frames=-1 error='?'` (no reply at all). Check the boot
 banner's build type before debugging the case.

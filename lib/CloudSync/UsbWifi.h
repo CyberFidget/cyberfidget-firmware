@@ -98,6 +98,16 @@ struct RadioOwners {
 /// checkin|bluetooth.
 const char* busyReason(const RadioOwners& owners);
 
+// ---- unknown commands ----------------------------------------------------------------
+
+constexpr size_t kVerbEchoMax = 16;
+/// The part of an unknown line that `[err] unknown command: <verb>` may
+/// echo: its first word (after leading spaces/tabs, up to the next space or
+/// tab), only when it is 1..kVerbEchoMax printable ASCII characters and does
+/// not start with "hr" (a mistyped `hr token<key>` glued into one word).
+/// False: echo nothing. Nothing after the first word is ever echoed.
+bool echoableVerb(const char* line, char* out, size_t cap);
+
 // ---- wifi try ----------------------------------------------------------------------
 
 /// What `wifi try` reports for a failed join (`wifi.try=fail reason=<word>`).
