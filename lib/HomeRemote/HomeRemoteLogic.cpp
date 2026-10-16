@@ -447,6 +447,27 @@ void putUtf8(uint32_t cp, char* out, size_t& w) {
     }
 }
 
+// Length of the well-formed UTF-8 sequence starting at p (at most avail
+// bytes), or 0 when it is not one (RFC 3629 table).
+size_t utf8Length(const unsigned char* p, size_t avail) {
+    const unsigned char b0 = p[0];
+    size_t n = 0;
+    unsigned char lo = 0x80, hi = 0xBF;   // allowed range of the second byte
+    if (b0 >= 0xC2 && b0 <= 0xDF) n = 2;
+    else if (b0 == 0xE0) { n = 3; lo = 0xA0; }            // no overlong
+    else if (b0 == 0xED) { n = 3; hi = 0x9F; }            // no surrogates
+    else if (b0 >= 0xE1 && b0 <= 0xEF) n = 3;
+    else if (b0 == 0xF0) { n = 4; lo = 0x90; }            // no overlong
+    else if (b0 == 0xF4) { n = 4; hi = 0x8F; }            // not above U+10FFFF
+    else if (b0 >= 0xF1 && b0 <= 0xF3) n = 4;
+    else return 0;                                        // 80-C1, F5-FF
+    if (avail < n) return 0;
+    if (p[1] < lo || p[1] > hi) return 0;
+    for (size_t k = 2; k < n; k++)
+        if (p[k] < 0x80 || p[k] > 0xBF) return 0;
+    return n;
+}
+
 bool hex4(const char* p, uint32_t& v) {
     v = 0;
     for (int i = 0; i < 4; i++) {
@@ -468,6 +489,16 @@ int decodeJsonString(const char* in, size_t len, char* out, size_t cap) {
         const unsigned char c = (unsigned char)in[i];
         if (c < 0x20 || c == '"') return -1;
         if (w + 2 > cap) return -1;   // room for one byte and the terminator
+        if (c >= 0x80) {
+            // Raw UTF-8: only well-formed sequences (no overlong forms, no
+            // surrogates, nothing above U+10FFFF) are kept and sent back.
+            const size_t n = utf8Length(reinterpret_cast<const unsigned char*>(in) + i, len - 1 - i);
+            if (n == 0 || w + n + 1 > cap) return -1;
+            memcpy(out + w, in + i, n);
+            w += n;
+            i += n - 1;
+            continue;
+        }
         if (c != '\\') { out[w++] = (char)c; continue; }
         if (i + 2 >= len) return -1;
         const char e = in[++i];

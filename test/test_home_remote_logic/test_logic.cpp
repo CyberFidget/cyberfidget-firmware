@@ -212,6 +212,45 @@ void test_json_string_decode_rejects(void) {
     TEST_ASSERT_EQUAL_INT(0, decodeJsonString("\"\"", 2, out, sizeof(out)));
 }
 
+static int decodeRaw(const std::string& inner) {
+    const std::string s = "\"" + inner + "\"";
+    char out[32];
+    return decodeJsonString(s.data(), s.size(), out, sizeof(out));
+}
+
+void test_json_string_decode_checks_raw_utf8(void) {
+    // Well-formed: 2, 3 and 4 byte forms, and the edges of each range.
+    TEST_ASSERT_EQUAL_INT(2, decodeRaw("\xc3\xa9"));             // U+00E9
+    TEST_ASSERT_EQUAL_INT(2, decodeRaw("\xc2\x80"));             // U+0080
+    TEST_ASSERT_EQUAL_INT(3, decodeRaw("\xe0\xa0\x80"));         // U+0800
+    TEST_ASSERT_EQUAL_INT(3, decodeRaw("\xed\x9f\xbf"));         // U+D7FF
+    TEST_ASSERT_EQUAL_INT(3, decodeRaw("\xee\x80\x80"));         // U+E000
+    TEST_ASSERT_EQUAL_INT(4, decodeRaw("\xf0\x90\x80\x80"));     // U+10000
+    TEST_ASSERT_EQUAL_INT(4, decodeRaw("\xf4\x8f\xbf\xbf"));     // U+10FFFF
+    // Overlong forms.
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xc0\xaf"));
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xc1\xbf"));
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xe0\x9f\xbf"));
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xf0\x8f\xbf\xbf"));
+    // Surrogates encoded raw.
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xed\xa0\x80"));
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xed\xbf\xbf"));
+    // Above U+10FFFF, and lead bytes that never start a character.
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xf4\x90\x80\x80"));
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xf5\x80\x80\x80"));
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xff"));
+    // Bad or missing continuation bytes.
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\x80"));
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xc3" "A"));
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xe2\x82"));            // cut short by the closing quote
+    TEST_ASSERT_EQUAL_INT(-1, decodeRaw("\xe2\x28\xa1"));
+    // A bad one inside an effect list line drops only that line.
+    const char body[] = "\"ok\"\n\"bad\xc0\xaf\"\n\"fine\xc3\xa9\"\n";
+    char effects[kMaxEffects][kEffectMax + 1];
+    TEST_ASSERT_EQUAL_INT(2, parseEffects(body, strlen(body), effects, kMaxEffects));
+    TEST_ASSERT_EQUAL_STRING("fine\xc3\xa9", effects[1]);
+}
+
 void test_secure_wipe(void) {
     char buf[8] = "secret";
     secureWipe(buf, sizeof(buf));
@@ -673,6 +712,7 @@ int main(int, char**) {
     RUN_TEST(test_effect_lines_skip_names_too_long_to_send_back);
     RUN_TEST(test_effect_names_round_trip_exactly);
     RUN_TEST(test_json_string_decode_rejects);
+    RUN_TEST(test_json_string_decode_checks_raw_utf8);
     RUN_TEST(test_secure_wipe);
     RUN_TEST(test_row_template_tolerates_missing_attributes);
     RUN_TEST(test_dump_templates);
