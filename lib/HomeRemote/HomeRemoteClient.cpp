@@ -492,6 +492,58 @@ bool reap(uint32_t waitMs) {
 
 } // namespace
 
+Check checkConnection(const char* baseUrl, const char* key, uint32_t limitMs) {
+    if (!limitMs || limitMs > INT32_MAX || WiFi.status() != WL_CONNECTED) return Check::CantReach;
+    const uint32_t deadline = millis() + limitMs;
+    char base[kUrlMax + 1];
+    char trimmed[kTokenMax + 1];
+    const bool valid = Config::validateUrlValue(baseUrl, base) == Config::SaveResult::Ok &&
+                       Config::validateKeyValue(key, trimmed) == Config::SaveResult::Ok;
+    char auth[kTokenMax + 8] = {};
+    if (valid) snprintf(auth, sizeof(auth), "Bearer %s", trimmed);
+    secureWipe(trimmed, sizeof(trimmed));
+    if (!valid || passed(deadline)) {
+        secureWipe(auth, sizeof(auth));
+        return Check::CantReach;
+    }
+    char address[kUrlMax + 6];
+    snprintf(address, sizeof(address), "%s/api/", base);
+    esp_http_client_config_t config = {};
+    config.url = address;
+    config.method = HTTP_METHOD_GET;
+    config.timeout_ms = (int)limitMs;
+    config.disable_auto_redirect = true;
+    config.max_authorization_retries = -1;
+    config.buffer_size_tx = 1024;
+    esp_http_client_handle_t client = esp_http_client_init(&config);
+    bool ok = client && esp_http_client_set_header(client, "Authorization", auth) == ESP_OK;
+    secureWipe(auth, sizeof(auth));
+    int remaining = (int32_t)(deadline - millis());
+    if (ok && remaining > 0) {
+        esp_http_client_set_timeout_ms(client, remaining);
+        ok = esp_http_client_open(client, 0) == ESP_OK;
+    } else ok = false;
+    // The SDK's blocking DNS and header reader can outlast a socket timeout.
+    // Budget each stage from the same deadline; never start another after it.
+    remaining = (int32_t)(deadline - millis());
+    if (ok && remaining > 0) {
+        esp_http_client_set_timeout_ms(client, remaining);
+        ok = esp_http_client_fetch_headers(client) >= 0;
+    } else ok = false;
+    const int status = ok && !passed(deadline) ? esp_http_client_get_status_code(client) : 0;
+    if (client) {
+        char* value = nullptr;
+        if (esp_http_client_get_header(client, "Authorization", &value) == ESP_OK && value)
+            secureWipe(value, strlen(value));
+        esp_http_client_cleanup(client);
+    }
+    const Check result = status == 200 ? Check::Reachable :
+        (status == 401 || status == 403) ? Check::KeyRejected : Check::CantReach;
+    Serial.printf("[hr] check=%s status=%d\n", result == Check::Reachable ? "reachable" :
+                  result == Check::KeyRejected ? "rejected" : "unreachable", status);
+    return result;
+}
+
 StartError start() {
     if (!g_lock) g_lock = xSemaphoreCreateMutex();
     if (!g_exited) g_exited = xSemaphoreCreateBinary();

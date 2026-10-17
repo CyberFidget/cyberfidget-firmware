@@ -12,6 +12,8 @@
 #include <string>
 
 #include "HomeRemoteLogic.h"
+#include "HomeRemoteConfig.h"
+#include "HomeRemoteRequest.h"
 
 using namespace HomeRemote;
 
@@ -888,8 +890,145 @@ void test_repeat_waits_then_accelerates(void) {
     TEST_ASSERT_TRUE(total > 255);
 }
 
+void test_portal_request_good_bodies(void) {
+    char url[kUrlMax + 1], key[kTokenMax + 1];
+    const char* body = "{\"url\":\"http://homeassistant.local:8123\",\"key\":\"abc.DEF-_012\"}";
+    TEST_ASSERT_TRUE(Request::parse(body, strlen(body), url, key));
+    TEST_ASSERT_EQUAL_STRING("http://homeassistant.local:8123", url);
+    TEST_ASSERT_EQUAL_STRING("abc.DEF-_012", key);
+    body = " \r\n{ \"key\" : \"\",\t\"url\" : \"http://ha\" } \n";
+    TEST_ASSERT_TRUE(Request::parse(body, strlen(body), url, key));
+    TEST_ASSERT_EQUAL_STRING("http://ha", url);
+    TEST_ASSERT_EQUAL_STRING("", key);
+    std::string maxBody = "{\"url\":\"" + std::string(kUrlMax, 'a') +
+                          "\",\"key\":\"" + std::string(kTokenMax, 'b') + "\"}";
+    maxBody.append(Request::kBodyMax - maxBody.size(), ' ');
+    TEST_ASSERT_TRUE(Request::parse(maxBody.data(), maxBody.size(), url, key));
+    TEST_ASSERT_EQUAL_UINT(kUrlMax, strlen(url));
+    TEST_ASSERT_EQUAL_UINT(kTokenMax, strlen(key));
+    secureWipe(key, sizeof(key));
+}
+
+void test_portal_request_rejects_malformed(void) {
+    const char* bad[] = {
+        "", "[]", "{}", "{\"url\":\"x\"}", "{\"key\":\"x\"}",
+        "{\"url\":\"\",\"key\":\"x\"}",
+        "{\"url\":\"x\",\"url\":\"y\"}", "{\"key\":\"x\",\"key\":\"y\"}",
+        "{\"url\":\"x\",\"key\":\"x\",\"url\":\"y\"}",
+        "{\"url\":\"x\",\"extra\":\"x\"}", "{\"url\":\"x\",\"key\":0}",
+        "{\"url\":true,\"key\":\"x\"}", "{\"url\":\"x\",\"key\":null}",
+        "{\"url\":\"x\",\"key\":\"x\",}", "{\"url\":\"x\" \"key\":\"x\"}",
+        "{\"url\":\"x\",\"key\":\"x\"}x", "{\"url\":\"x\",\"key\":\"x\"}{}",
+        "{\"url\":\"x\\/\",\"key\":\"x\"}", "{\"url\":\"x\",\"key\":\"x\\n\"}",
+        "{\"url\":\"x\",\"key\":\"\\u0000\"}", "{\"u\\rl\":\"x\",\"key\":\"x\"}",
+        "{\"url\":\"x\",\"key\":\"x\n\"}", "{\"url\":\"x\",\"key\":\"unterminated}"
+    };
+    char url[kUrlMax + 1], key[kTokenMax + 1];
+    for (const char* body : bad) {
+        memset(url, 'u', sizeof(url));
+        memset(key, 'k', sizeof(key));
+        TEST_ASSERT_FALSE(Request::parse(body, strlen(body), url, key));
+        for (char c : url) TEST_ASSERT_EQUAL_CHAR(0, c);
+        for (char c : key) TEST_ASSERT_EQUAL_CHAR(0, c);
+    }
+    const char nul[] = "{\"url\":\"x\",\"key\":\"ab\0cd\"}";
+    TEST_ASSERT_FALSE(Request::parse(nul, sizeof(nul) - 1, url, key));
+    TEST_ASSERT_EQUAL_STRING("", key);
+    TEST_ASSERT_FALSE(Request::parse(nullptr, 1, url, key));
+    secureWipe(key, sizeof(key));
+}
+
+void test_portal_request_rejects_lengths(void) {
+    char url[kUrlMax + 1], key[kTokenMax + 1];
+    const std::string bodies[] = {
+        "{\"url\":\"" + std::string(kUrlMax + 1, 'a') + "\",\"key\":\"\"}",
+        "{\"url\":\"x\",\"key\":\"" + std::string(kTokenMax + 1, 'b') + "\"}",
+        std::string(513, ' ')
+    };
+    for (const std::string& body : bodies) {
+        TEST_ASSERT_FALSE(Request::parse(body.data(), body.size(), url, key));
+        TEST_ASSERT_EQUAL_STRING("", url);
+        TEST_ASSERT_EQUAL_STRING("", key);
+    }
+    secureWipe(key, sizeof(key));
+}
+
+void test_portal_request_collect_and_wipe(void) {
+    const char* text = "{\"url\":\"http://ha\",\"key\":\"fake-key\"}";
+    const size_t n = strlen(text);
+    Request::Body b;
+    Request::begin(b);
+    TEST_ASSERT_EQUAL_INT((int)Request::Collect::More,
+        (int)Request::collect(b, (const uint8_t*)text, 7, 0, n));
+    TEST_ASSERT_EQUAL_INT((int)Request::Collect::Done,
+        (int)Request::collect(b, (const uint8_t*)text + 7, n - 7, 7, n));
+    TEST_ASSERT_EQUAL_STRING(text, b.text);
+    TEST_ASSERT_EQUAL_UINT(n, b.len);
+    Request::wipe(b);
+    for (char c : b.text) TEST_ASSERT_EQUAL_CHAR(0, c);
+    TEST_ASSERT_EQUAL_UINT(0, b.len);
+}
+
+void test_portal_request_collect_rejects_bad_pieces(void) {
+    const uint8_t data[] = {'a', 'b', 'c', 'd'};
+    Request::Body b;
+    auto invalid = [&](size_t len, size_t index, size_t total, bool nullData = false) {
+        TEST_ASSERT_EQUAL_INT((int)Request::Collect::Invalid,
+            (int)Request::collect(b, nullData ? nullptr : data, len, index, total));
+        TEST_ASSERT_TRUE(b.failed);
+        for (char c : b.text) TEST_ASSERT_EQUAL_CHAR(0, c);
+        TEST_ASSERT_EQUAL_INT((int)Request::Collect::Invalid,
+            (int)Request::collect(b, data, 4, 0, 4));
+    };
+    Request::begin(b); invalid(1, 1, 4);
+    Request::begin(b); invalid(4, 0, 3);
+    Request::begin(b); invalid(0, 0, 4);
+    Request::begin(b); invalid(1, 0, 4, true);
+    Request::begin(b); invalid(0, 0, 0);
+    Request::begin(b); invalid(1, 0, 513);
+    Request::begin(b);
+    Request::collect(b, data, 2, 0, 4);
+    invalid(1, 1, 4);
+    Request::begin(b);
+    Request::collect(b, data, 2, 0, 4);
+    invalid(2, 2, 5);
+    Request::begin(b);
+    Request::collect(b, data, 2, 0, 4);
+    invalid(3, 2, 4);
+    Request::begin(b);
+    Request::collect(b, data, 4, 0, 4);
+    invalid(1, 5, 4);
+}
+
+void test_portal_values_validate_without_storage(void) {
+    char url[kUrlMax + 1], key[kTokenMax + 1];
+    TEST_ASSERT_EQUAL_INT((int)Config::SaveResult::Ok,
+        (int)Config::validateUrlValue(" HTTP://homeassistant.local:8123/// \r", url));
+    TEST_ASSERT_EQUAL_STRING("http://homeassistant.local:8123", url);
+    TEST_ASSERT_EQUAL_INT((int)Config::SaveResult::InvalidUrl,
+        (int)Config::validateUrlValue("ftp://x", url));
+    TEST_ASSERT_EQUAL_STRING("", url);
+    TEST_ASSERT_EQUAL_INT((int)Config::SaveResult::Ok,
+        (int)Config::validateKeyValue(" fake.Key-_123 \r", key));
+    TEST_ASSERT_EQUAL_STRING("fake.Key-_123", key);
+    const std::string keys[] = {"", " \r", "fake key", "fake\tkey", "fake\nkey",
+                                std::string(301, 'k'), std::string(1, (char)0x7f)};
+    for (const std::string& value : keys) {
+        TEST_ASSERT_EQUAL_INT((int)Config::SaveResult::InvalidKey,
+            (int)Config::validateKeyValue(value.c_str(), key));
+        TEST_ASSERT_EQUAL_STRING("", key);
+    }
+    secureWipe(key, sizeof(key));
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
+    RUN_TEST(test_portal_request_good_bodies);
+    RUN_TEST(test_portal_request_rejects_malformed);
+    RUN_TEST(test_portal_request_rejects_lengths);
+    RUN_TEST(test_portal_request_collect_and_wipe);
+    RUN_TEST(test_portal_request_collect_rejects_bad_pieces);
+    RUN_TEST(test_portal_values_validate_without_storage);
     RUN_TEST(test_entity_line_full_light);
     RUN_TEST(test_entity_line_off_light_has_no_colour);
     RUN_TEST(test_entity_line_scene_and_script);
