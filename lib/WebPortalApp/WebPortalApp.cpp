@@ -898,17 +898,20 @@ static void collectHomeRemoteBody(AsyncWebServerRequest* req, uint8_t* data, siz
                                   size_t index, size_t total) {
     using namespace HomeRemote;
     Request::Body* body = static_cast<Request::Body*>(req->_tempObject);
-    if (!body) {
-        if (index != 0) return;
+    if (!body && index == 0) {
         body = static_cast<Request::Body*>(malloc(sizeof(Request::Body)));
-        if (!body) return;
-        Request::begin(*body);
-        req->_tempObject = body;
-        req->onDisconnect([req]() {
-            if (req->_tempObject) Request::wipe(*static_cast<Request::Body*>(req->_tempObject));
-        });
+        if (body) {
+            Request::begin(*body);
+            req->_tempObject = body;
+            req->onDisconnect([req]() {
+                if (req->_tempObject) Request::wipe(*static_cast<Request::Body*>(req->_tempObject));
+            });
+        }
     }
-    Request::collect(*body, data, len, index, total);
+    if (body) Request::collect(*body, data, len, index, total);
+    // The piece may hold the key: clear the receive buffer too, whether or
+    // not it was kept, before the network stack frees it.
+    if (data) secureWipe(data, len);
 }
 
 // Both the form's raw key and its trimmed copy are wiped on every exit.

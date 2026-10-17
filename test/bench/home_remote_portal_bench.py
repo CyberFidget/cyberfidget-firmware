@@ -214,7 +214,8 @@ def run(dev, args, key, portals):
         report(name, ok, "%.1fs" % (time.monotonic() - started))
     # A connection test must never save anything.
     code, state = portal.state()
-    report("check.saved_nothing", code == 200 and state == {"url": "", "keySet": False}, str(state))
+    # Fixed text only: a response is never echoed (it could hold the key).
+    report("check.saved_nothing", code == 200 and state == {"url": "", "keySet": False})
 
     code, saved = portal.request("/api/homeremote", {"url": args.ha_url, "key": key})
     require("save.accepted", code == 200 and saved == {"status": "saved", "keySet": True})
