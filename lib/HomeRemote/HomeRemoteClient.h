@@ -26,6 +26,10 @@
 namespace HomeRemote {
 namespace Client {
 
+enum class Check : uint8_t { Reachable, KeyRejected, CantReach };
+// Portal loop task only, with Home Remote stopped. Uses the portal's radio.
+Check checkConnection(const char* baseUrl, const char* key, uint32_t limitMs);
+
 enum class StartError : uint8_t { None, NotConfigured, NoWifi, RadioBusy, NoMemory };
 
 enum class Link : uint8_t {

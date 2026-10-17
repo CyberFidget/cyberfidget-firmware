@@ -2,6 +2,41 @@
 // Copyright (c) 2023-2026 Dismo Industries LLC
 
 #include "HomeRemoteConfig.h"
+#include "HomeRemoteLogic.h"
+#include <string.h>
+
+namespace HomeRemote {
+namespace Config {
+namespace {
+size_t valueLength(const char*& in) {
+    if (!in) return 0;
+    while (*in == ' ' || *in == '\r') in++;
+    size_t n = strlen(in);
+    while (n && (in[n - 1] == ' ' || in[n - 1] == '\r')) n--;
+    return n;
+}
+} // namespace
+
+SaveResult validateUrlValue(const char* in, char* normalized) {
+    normalized[0] = '\0';
+    const size_t n = valueLength(in);
+    char tmp[kUrlMax + 2];
+    if (!n || n >= sizeof(tmp)) return SaveResult::InvalidUrl;
+    memcpy(tmp, in, n);
+    tmp[n] = '\0';
+    return normalizeBaseUrl(tmp, normalized, kUrlMax + 1) ? SaveResult::Ok : SaveResult::InvalidUrl;
+}
+
+SaveResult validateKeyValue(const char* in, char* trimmed) {
+    secureWipe(trimmed, kTokenMax + 1);
+    const size_t n = valueLength(in);
+    if (!validTokenChars(in, n)) return SaveResult::InvalidKey;
+    memcpy(trimmed, in, n);
+    trimmed[n] = '\0';
+    return SaveResult::Ok;
+}
+} // namespace Config
+} // namespace HomeRemote
 
 #ifndef HOST_TEST
 
@@ -111,6 +146,34 @@ void saveUrl(const char* in) {
 }
 
 } // namespace
+
+SaveResult saveUrlValue(const char* in) {
+    char norm[kUrlMax + 1];
+    const SaveResult result = validateUrlValue(in, norm);
+    if (result != SaveResult::Ok) return result;
+    Preferences prefs;
+    if (!prefs.begin(kNamespace, false)) return SaveResult::Storage;
+    const bool ok = prefs.putString(kUrlKey, norm) == strlen(norm);
+    prefs.end();
+    return ok ? SaveResult::Ok : SaveResult::Storage;
+}
+
+SaveResult saveKeyValue(const char* in) {
+    char key[kTokenMax + 1];
+    const SaveResult result = validateKeyValue(in, key);
+    if (result != SaveResult::Ok) {
+        secureWipe(key, sizeof(key));
+        return result;
+    }
+    Preferences prefs;
+    bool ok = prefs.begin(kNamespace, false);
+    if (ok) {
+        ok = prefs.putString(kTokenKey, key) == strlen(key);
+        prefs.end();
+    }
+    secureWipe(key, sizeof(key));
+    return ok ? SaveResult::Ok : SaveResult::Storage;
+}
 
 bool url(char* out, size_t cap) {
     if (!out || cap == 0) return false;
