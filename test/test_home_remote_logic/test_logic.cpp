@@ -130,6 +130,185 @@ void test_overlong_line_is_dropped(void) {
 
 // ---- areas and effects ------------------------------------------------------
 
+void test_speaker_rows_and_mixed_lists(void) {
+    Entity e;
+    TEST_ASSERT_TRUE(parseLine("media_player.kitchen|Kitchen|playing|128|Song / Live|16445|1|Artist", e));
+    TEST_ASSERT_TRUE(e.kind == Kind::Speaker);
+    TEST_ASSERT_EQUAL_STRING("Playing", speakerStateText(e.speakerState));
+    TEST_ASSERT_TRUE(e.available);
+    TEST_ASSERT_TRUE(e.hasVolume);
+    TEST_ASSERT_EQUAL_INT(128, e.volume);
+    TEST_ASSERT_EQUAL_UINT32(16445, e.features);
+    TEST_ASSERT_TRUE(e.muted);
+    TEST_ASSERT_EQUAL_STRING("Song / Live", e.title);
+    TEST_ASSERT_EQUAL_STRING("Artist", e.artist);
+    TEST_ASSERT_FALSE(e.canDim);
+    TEST_ASSERT_FALSE(e.canColor);
+    TEST_ASSERT_TRUE(parseLine("media_player.kitchen|Kitchen|paused|102||4|0|", e));
+    TEST_ASSERT_EQUAL_STRING("Paused", speakerStateText(e.speakerState));
+    TEST_ASSERT_EQUAL_INT(102, e.volume);
+    TEST_ASSERT_TRUE(parseLine("media_player.kitchen|Kitchen|off|102||4|0|", e));
+    TEST_ASSERT_EQUAL_STRING("Off", speakerStateText(e.speakerState));
+    TEST_ASSERT_EQUAL_INT(102, e.volume);
+    TEST_ASSERT_TRUE(parseLine("media_player.kitchen|Kitchen|idle|0||4|0|", e));
+    TEST_ASSERT_EQUAL_STRING("Idle", speakerStateText(e.speakerState));
+    TEST_ASSERT_TRUE(e.hasVolume);
+    TEST_ASSERT_TRUE(parseLine("media_player.kitchen|Kitchen|unavailable|||0|0|", e));
+    TEST_ASSERT_FALSE(e.available);
+    TEST_ASSERT_FALSE(e.hasVolume);
+    TEST_ASSERT_FALSE(parseLine("media_player.kitchen|Kitchen|paused|256||4|0|", e));
+    TEST_ASSERT_FALSE(parseLine("media_player.kitchen|Kitchen|paused|20||4294967296|0|", e));
+    TEST_ASSERT_FALSE(parseLine("media_player.kitchen|Kitchen|paused|20||4|2|", e));
+    TEST_ASSERT_FALSE(parseLine("media_player.kitchen|Kitchen|paused|20||4|false|", e));
+    TEST_ASSERT_FALSE(parseLine("media_player.kitchen|Kitchen|paused|20||4|0|bad|row", e));
+    TEST_ASSERT_TRUE(parseLine("media_player.kitchen|Kitchen|paused|20||4294967295|0|", e));
+    TEST_ASSERT_EQUAL_UINT32(UINT32_MAX, e.features);
+    const char mixed[] = "light.a|A|on|10||1|0|\nmedia_player.b|B|paused|128||4|0|\nscene.c|C|off|0||0|0|\n";
+    Entity rows[3];
+    TEST_ASSERT_EQUAL_INT(3, parseEntities(mixed, strlen(mixed), rows, 3));
+    TEST_ASSERT_TRUE(rows[1].kind == Kind::Speaker);
+    // Server limits are in characters; long UTF-8 rows still fit, and display
+    // truncation never leaves part of a multibyte character in a fixed buffer.
+    const std::string glyph = "\xf0\x9f\x8e\xb5";
+    std::string name, title;
+    for (int i = 0; i < 48; i++) name += glyph;
+    for (int i = 0; i < 32; i++) title += glyph;
+    const std::string unicode = "media_player.kitchen|" + name + "|playing|128|" + title + "|4|0|" + title;
+    TEST_ASSERT_TRUE(parseEntityLine(unicode.data(), unicode.size(), e));
+    TEST_ASSERT_EQUAL_size_t(48, strlen(e.name));
+    TEST_ASSERT_EQUAL_size_t(32, strlen(e.title));
+    TEST_ASSERT_EQUAL_INT(1, parseEntities(unicode.data(), unicode.size(), rows, 3));
+    const std::string cut = "media_player.kitchen|Kitchen|playing|128|x" + title + "|4|0|";
+    TEST_ASSERT_TRUE(parseEntityLine(cut.data(), cut.size(), e));
+    TEST_ASSERT_EQUAL_size_t(29, strlen(e.title));
+}
+
+void test_speaker_features_gate_each_control(void) {
+    const SpeakerFeature bits[] = {Pause, VolumeSet, VolumeMute, PreviousTrack, NextTrack, Stop, Play};
+    for (SpeakerFeature bit : bits) {
+        TEST_ASSERT_FALSE(speakerSupports(0, bit));
+        TEST_ASSERT_TRUE(speakerSupports((uint32_t)bit, bit));
+        for (SpeakerFeature other : bits)
+            if (bit != other) TEST_ASSERT_FALSE(speakerSupports((uint32_t)other, bit));
+    }
+    TEST_ASSERT_TRUE(speakerCanPlayPause(Pause, SpeakerState::Playing));
+    TEST_ASSERT_FALSE(speakerCanPlayPause(Play, SpeakerState::Playing));
+    TEST_ASSERT_TRUE(speakerCanPlayPause(Play, SpeakerState::Paused));
+    TEST_ASSERT_FALSE(speakerCanPlayPause(Pause, SpeakerState::Paused));
+    TEST_ASSERT_TRUE(speakerCanPlayPause(Play, SpeakerState::Idle));
+    TEST_ASSERT_TRUE(speakerCanPlayPause(Play, SpeakerState::Off));
+    TEST_ASSERT_FALSE(speakerCanPlayPause(Stop, SpeakerState::Playing));
+}
+
+void test_speaker_volume_mapping_and_capped_steps(void) {
+    TEST_ASSERT_EQUAL_INT(0, volumeByte(-50));
+    TEST_ASSERT_EQUAL_INT(255, volumeByte(200));
+    TEST_ASSERT_EQUAL_INT(128, volumeByte(50));
+    TEST_ASSERT_EQUAL_INT(0, volumePercent(-50));
+    TEST_ASSERT_EQUAL_INT(100, volumePercent(400));
+    for (int pct = 0; pct <= 100; pct++) {
+        const uint8_t level = volumeByte(pct);
+        TEST_ASSERT_EQUAL_INT(pct, volumePercent(level));
+        TEST_ASSERT_EQUAL_INT(pct < 100 ? pct + 1 : 100, volumePercent(steppedVolume(level, 1, 1)));
+        TEST_ASSERT_EQUAL_INT(pct > 0 ? pct - 1 : 0, volumePercent(steppedVolume(level, -1, 1)));
+        const int up = volumePercent(steppedVolume(level, 1, RepeatAccel::stepSize(4000)));
+        const int down = volumePercent(steppedVolume(level, -1, RepeatAccel::stepSize(4000)));
+        TEST_ASSERT_TRUE(up >= pct && up - pct <= 5);
+        TEST_ASSERT_TRUE(down <= pct && pct - down <= 5);
+    }
+    for (int level = 0; level <= 255; level++) {
+        const int up = volumePercent(steppedVolume((uint8_t)level, 1, 15));
+        const int down = volumePercent(steppedVolume((uint8_t)level, -1, 15));
+        TEST_ASSERT_TRUE(up * 255 - level * 100 <= 5 * 255);
+        TEST_ASSERT_TRUE(level * 100 - down * 255 <= 5 * 255);
+    }
+}
+
+void test_speaker_service_paths_and_bodies(void) {
+    Action a;
+    strcpy(a.entity, "media_player.kitchen");
+    char path[64], body[256];
+    const Action::Type types[] = {Action::Type::PlayPause, Action::Type::SetVolume, Action::Type::Mute,
+                                 Action::Type::Previous, Action::Type::Next};
+    const char* services[] = {"media_play_pause", "volume_set", "volume_mute", "media_previous_track", "media_next_track"};
+    for (int i = 0; i < 5; i++) {
+        a.type = types[i];
+        char want[64];
+        snprintf(want, sizeof(want), "/api/services/media_player/%s", services[i]);
+        TEST_ASSERT_TRUE(servicePath(a, path, sizeof(path)));
+        TEST_ASSERT_EQUAL_STRING(want, path);
+        TEST_ASSERT_TRUE(serviceBody(a, body, sizeof(body)) > 0);
+    }
+    a.type = Action::Type::SetVolume;
+    const int inputs[] = {-100, 0, 1, 9, 50, 99, 100, 1000};
+    const char* decimals[] = {"0.00", "0.00", "0.01", "0.09", "0.50", "0.99", "1.00", "1.00"};
+    for (int i = 0; i < 8; i++) {
+        a.volumePercent = inputs[i];
+        TEST_ASSERT_TRUE(serviceBody(a, body, sizeof(body)) > 0);
+        char want[128];
+        snprintf(want, sizeof(want), "{\"entity_id\":\"media_player.kitchen\",\"volume_level\":%s}", decimals[i]);
+        TEST_ASSERT_EQUAL_STRING(want, body);
+    }
+    TEST_ASSERT_EQUAL_INT(0, serviceBody(a, body, 32));
+    TEST_ASSERT_EQUAL_STRING("", body);
+    a.type = Action::Type::Mute;
+    a.muted = true;
+    TEST_ASSERT_TRUE(serviceBody(a, body, sizeof(body)) > 0);
+    TEST_ASSERT_EQUAL_STRING("{\"entity_id\":\"media_player.kitchen\",\"is_volume_muted\":true}", body);
+    a.muted = false;
+    TEST_ASSERT_TRUE(serviceBody(a, body, sizeof(body)) > 0);
+    TEST_ASSERT_EQUAL_STRING("{\"entity_id\":\"media_player.kitchen\",\"is_volume_muted\":false}", body);
+    a.type = Action::Type::Toggle;
+    TEST_ASSERT_FALSE(servicePath(a, path, sizeof(path)));
+    a.type = Action::Type::SetVolume;
+    strcpy(a.entity, "light.a");
+    TEST_ASSERT_FALSE(servicePath(a, path, sizeof(path)));
+}
+
+void test_speaker_takeover_open_poll_and_return_never_send(void) {
+    SoftTakeover take;
+    SendGate gate;
+    int out = -1;
+    for (int slider : {0, 124, 128, 132, 255}) {
+        take.arm(128, slider, true);
+        TEST_ASSERT_FALSE(take.engaged());
+        for (int poll = 0; poll < 10; poll++) {
+            take.setReal(128, slider);
+            if (take.update(slider, &out)) gate.markDirty();
+        }
+        TEST_ASSERT_FALSE(gate.dirty());
+        TEST_ASSERT_FALSE(gate.ready(5000, false));
+        take.setReal(slider, slider);   // polling a new level sends nothing
+        TEST_ASSERT_FALSE(take.update(slider, &out));
+        take.arm(128, slider, true);    // returning rearms instead of sending
+        TEST_ASSERT_FALSE(take.update(slider, &out));
+    }
+    take.arm(128, 80, true);
+    TEST_ASSERT_FALSE(take.update(124, &out));  // merely near is insufficient
+    TEST_ASSERT_FALSE(take.engaged());
+    TEST_ASSERT_FALSE(take.update(128, &out));  // crossing itself is consumed
+    TEST_ASSERT_TRUE(take.engaged());
+    TEST_ASSERT_FALSE(take.update(128, &out));
+    TEST_ASSERT_TRUE(take.update(131, &out));
+    TEST_ASSERT_EQUAL_INT(131, out);
+    take.arm(128, 180, true);
+    TEST_ASSERT_FALSE(take.update(128, &out));
+    TEST_ASSERT_TRUE(take.update(125, &out));
+    take.setReal(160, 125);   // a button step or external change rearms pickup
+    TEST_ASSERT_FALSE(take.engaged());
+    TEST_ASSERT_FALSE(take.update(156, &out));
+    TEST_ASSERT_FALSE(take.update(160, &out));
+    TEST_ASSERT_TRUE(take.update(163, &out));
+    take.arm(128, 20, true);
+    TEST_ASSERT_FALSE(take.update(220, &out));  // a sweep cannot jump volume
+    TEST_ASSERT_FALSE(take.engaged());
+    TEST_ASSERT_FALSE(take.update(222, &out));
+    TEST_ASSERT_FALSE(take.update(129, &out));  // still on the same side
+    TEST_ASSERT_FALSE(take.update(128, &out));
+    TEST_ASSERT_TRUE(take.engaged());
+    TEST_ASSERT_TRUE(take.update(126, &out));
+}
+
 void test_area_lines(void) {
     const char body[] = "booth|Booth|3\nliving_room|Living Room|2\nBad Id|X|1\nshop||4\n";
     Area areas[8];
@@ -354,6 +533,12 @@ void test_row_template_tolerates_missing_attributes(void) {
     TEST_ASSERT_NOT_NULL(strstr(t, "a.get('effect_list') or []"));
     TEST_ASSERT_NOT_NULL(strstr(t, "a.get('supported_color_modes') or []"));
     TEST_ASSERT_NOT_NULL(strstr(t, "a.get('effect') or ''"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "'media_player'"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('volume_level')"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('supported_features')|int(0)"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('is_volume_muted')"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('media_title') or ''"));
+    TEST_ASSERT_NOT_NULL(strstr(t, "a.get('media_artist') or ''"));
     TEST_ASSERT_NULL(strstr(t, "s.attributes."));
     // The template text and the body agree (the body is just its JSON form).
     char body[4096];
@@ -375,6 +560,7 @@ void test_dump_templates(void) {
         {"areas", Template::Areas, nullptr},
         {"area_booth", Template::AreaEntities, "booth"},
         {"entity_table_lamp", Template::Entity, "light.table_lamp"},
+        {"entity_speaker", Template::Entity, "media_player.kitchen"},
         {"effects_table_lamp", Template::Effects, "light.table_lamp"},
     };
     for (const Item& it : items) {
@@ -659,6 +845,12 @@ void test_send_gate_latest_wins_at_most_five_per_second(void) {
         if (g.ready(t, false)) { g.sent(t); sends++; }
     }
     TEST_ASSERT_EQUAL_INT(5, sends);
+    // Opening a speaker clears pending work but retains the send clock.
+    g.clear();
+    TEST_ASSERT_FALSE(g.ready(2990, false));
+    g.markDirty();
+    TEST_ASSERT_FALSE(g.ready(2990, false));
+    TEST_ASSERT_TRUE(g.ready(3000, false));
 }
 
 void test_poll_guard_holds_a_touched_control(void) {
@@ -702,6 +894,11 @@ int main(int, char**) {
     RUN_TEST(test_entity_line_off_light_has_no_colour);
     RUN_TEST(test_entity_line_scene_and_script);
     RUN_TEST(test_entity_line_unavailable);
+    RUN_TEST(test_speaker_rows_and_mixed_lists);
+    RUN_TEST(test_speaker_features_gate_each_control);
+    RUN_TEST(test_speaker_volume_mapping_and_capped_steps);
+    RUN_TEST(test_speaker_service_paths_and_bodies);
+    RUN_TEST(test_speaker_takeover_open_poll_and_return_never_send);
     RUN_TEST(test_entity_line_trims_carriage_return_and_spaces);
     RUN_TEST(test_entity_line_rejects_malformed);
     RUN_TEST(test_entity_name_is_cut_to_fit);

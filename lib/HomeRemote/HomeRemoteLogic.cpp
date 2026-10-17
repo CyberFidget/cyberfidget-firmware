@@ -35,7 +35,9 @@ bool split(const char* line, size_t len, Field* f, int want) {
 }
 
 void copyField(const Field& f, char* out, size_t cap) {
-    const size_t n = f.n < cap - 1 ? f.n : cap - 1;
+    size_t n = f.n < cap - 1 ? f.n : cap - 1;
+    // Display strings are truncated only at a UTF-8 boundary.
+    if (n < f.n) while (n && ((unsigned char)f.p[n] & 0xC0) == 0x80) n--;
     memcpy(out, f.p, n);
     out[n] = '\0';
 }
@@ -50,7 +52,9 @@ bool parseUint(const char* p, size_t n, int digits, uint32_t max, uint32_t& out)
     uint32_t v = 0;
     for (size_t i = 0; i < n; i++) {
         if (p[i] < '0' || p[i] > '9') return false;
-        v = v * 10 + (uint32_t)(p[i] - '0');
+        const uint32_t digit = (uint32_t)(p[i] - '0');
+        if (v > max / 10 || (v == max / 10 && digit > max % 10)) return false;
+        v = v * 10 + digit;
     }
     if (v > max) return false;
     out = v;
@@ -101,7 +105,7 @@ void forEachLine(const char* body, size_t len, Fn fn) {
             size_t n = i - start;
             start = i + 1;
             trim(p, n);
-            if (n == 0 || n > kLineMax) continue;
+            if (n == 0 || n > kSpeakerLineMax) continue;
             if (!fn(p, n)) return;
         }
     }
@@ -124,6 +128,15 @@ bool lowerDigitUnderscore(char c) {
 const char kRowMacro[] =
     "{%- macro row(s) -%}"
     "{%- set a = s.attributes -%}"
+    "{%- if s.domain == 'media_player' -%}"
+    "{{ s.entity_id }}|"
+    "{{ (s.name|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:48] }}|"
+    "{{ s.state }}|"
+    "{{ [[(a.get('volume_level')|float(0)*255)|round|int,0]|max,255]|min if a.get('volume_level') is not none else '' }}|"
+    "{{ ((a.get('media_title') or '')|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:32] }}|"
+    "{{ a.get('supported_features')|int(0) }}|{{ 1 if a.get('is_volume_muted') else 0 }}|"
+    "{{ ((a.get('media_artist') or '')|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:32] }}"
+    "{%- else -%}"
     "{%- set m = a.get('supported_color_modes') or [] -%}"
     "{%- set col = m|select('in',['hs','rgb','rgbw','rgbww','xy'])|list|count > 0 -%}"
     "{%- set dim = col or m|select('in',['brightness','color_temp','white'])|list|count > 0 -%}"
@@ -139,10 +152,11 @@ const char kRowMacro[] =
     "([[c[2]|int(0),0]|max,255]|min)) if c and c|count == 3 else '' }}|"
     "{{ (1 if dim else 0) + (2 if col else 0) }}|"
     "{{ fx|count }}|"
-    "{{ ((a.get('effect') or '')|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:32] }}\n"
+    "{{ ((a.get('effect') or '')|string|replace('|','/')|replace('\\n',' ')|replace('\\r',' '))[:32] }}"
+    "{%- endif %}\n"
     "{% endmacro -%}";
 
-const char kDomains[] = "['light','scene','script']";
+const char kDomains[] = "['light','scene','script','media_player']";
 
 // The loop over a selection of states (a filter chain ending in states).
 const char kRowsLoop[] =
@@ -239,7 +253,47 @@ Kind kindOf(const char* id) {
     if (strncmp(id, "light.", 6) == 0) return Kind::Light;
     if (strncmp(id, "scene.", 6) == 0) return Kind::Scene;
     if (strncmp(id, "script.", 7) == 0) return Kind::Script;
+    if (strncmp(id, "media_player.", 13) == 0) return Kind::Speaker;
     return Kind::Other;
+}
+
+const char* speakerStateText(SpeakerState state) {
+    switch (state) {
+        case SpeakerState::Playing: return "Playing";
+        case SpeakerState::Paused: return "Paused";
+        case SpeakerState::Off: return "Off";
+        default: return "Idle";
+    }
+}
+
+bool speakerSupports(uint32_t features, SpeakerFeature feature) {
+    return (features & (uint32_t)feature) != 0;
+}
+
+bool speakerCanPlayPause(uint32_t features, SpeakerState state) {
+    return speakerSupports(features, state == SpeakerState::Playing ? Pause : Play);
+}
+
+uint8_t volumeByte(int percent) {
+    percent = percent < 0 ? 0 : (percent > 100 ? 100 : percent);
+    return (uint8_t)((percent * 255 + 50) / 100);
+}
+
+int volumePercent(int level) {
+    level = level < 0 ? 0 : (level > 255 ? 255 : level);
+    return (level * 100 + 127) / 255;
+}
+
+uint8_t steppedVolume(uint8_t level, int direction, int amount) {
+    amount = amount < 0 ? 0 : (amount > 5 ? 5 : amount);
+    if (!amount || !direction) return level;
+    int target = volumePercent(level) + (direction > 0 ? amount : -amount);
+    // Include initial display rounding in the five-percent safety limit.
+    const int ceiling = (int)level * 100 / 255 + 5;
+    const int floor = ((int)level * 100 + 254) / 255 - 5;
+    if (target > ceiling) target = ceiling;
+    if (target < floor) target = floor;
+    return volumeByte(target);
 }
 
 bool validEntityId(const char* id) {
@@ -270,7 +324,7 @@ bool validAreaId(const char* id) {
 bool parseEntityLine(const char* line, size_t len, Entity& out) {
     if (!line) return false;
     trim(line, len);
-    if (len == 0 || len > kLineMax) return false;
+    if (len == 0 || len > kSpeakerLineMax) return false;
     Field f[kMaxFields];
     if (!split(line, len, f, 8)) return false;
     Entity e;
@@ -279,10 +333,25 @@ bool parseEntityLine(const char* line, size_t len, Entity& out) {
     if (!validEntityId(e.id)) return false;
     e.kind = kindOf(e.id);
     if (e.kind == Kind::Other) return false;
+    if (e.kind != Kind::Speaker && len > kLineMax) return false;
     copyField(f[1], e.name, sizeof(e.name));
     if (e.name[0] == '\0') copyField(f[0], e.name, sizeof(e.name));
     e.on = fieldIs(f[2], "on");
     e.available = !(fieldIs(f[2], "unavailable") || fieldIs(f[2], "unknown") || f[2].n == 0);
+    if (e.kind == Kind::Speaker) {
+        if (fieldIs(f[2], "playing")) e.speakerState = SpeakerState::Playing;
+        else if (fieldIs(f[2], "paused")) e.speakerState = SpeakerState::Paused;
+        else if (fieldIs(f[2], "off")) e.speakerState = SpeakerState::Off;
+        e.hasVolume = f[3].n != 0;
+        if (e.hasVolume && !parseByte(f[3].p, f[3].n, e.volume)) return false;
+        copyField(f[4], e.title, sizeof(e.title));
+        if (!parseUint(f[5].p, f[5].n, 10, UINT32_MAX, e.features)) return false;
+        if (!fieldIs(f[6], "0") && !fieldIs(f[6], "1")) return false;
+        e.muted = fieldIs(f[6], "1");
+        copyField(f[7], e.artist, sizeof(e.artist));
+        out = e;
+        return true;
+    }
     if (!parseByte(f[3].p, f[3].n, e.brightness)) return false;
     if (!parseRgb(f[4], e)) return false;
     uint32_t caps = 0;
@@ -566,6 +635,16 @@ bool servicePath(const Action& a, char* out, size_t cap) {
             case Action::Type::TurnOff: service = "turn_off"; break;
             default: return false;
         }
+    } else if (kind == Kind::Speaker) {
+        domain = "media_player";
+        switch (a.type) {
+            case Action::Type::PlayPause: service = "media_play_pause"; break;
+            case Action::Type::SetVolume: service = "volume_set"; break;
+            case Action::Type::Mute: service = "volume_mute"; break;
+            case Action::Type::Previous: service = "media_previous_track"; break;
+            case Action::Type::Next: service = "media_next_track"; break;
+            default: return false;
+        }
     } else if (kind == Kind::Scene || kind == Kind::Script) {
         // A scene or script only runs (a long hold "toggles" it by running it).
         if (a.type != Action::Type::Run && a.type != Action::Type::Toggle &&
@@ -581,13 +660,23 @@ bool servicePath(const Action& a, char* out, size_t cap) {
 }
 
 size_t serviceBody(const Action& a, char* out, size_t cap) {
-    char path[48];
+    char path[64];
     if (!out || cap == 0) return 0;
     out[0] = '\0';
     if (!servicePath(a, path, sizeof(path))) return 0;
     int n = snprintf(out, cap, "{\"entity_id\":\"%s\"", a.entity);
     if (n <= 0 || (size_t)n >= cap) { out[0] = '\0'; return 0; }
     size_t w = (size_t)n;
+    if (kindOf(a.entity) == Kind::Speaker) {
+        if (a.type == Action::Type::SetVolume) {
+            const int pct = a.volumePercent < 0 ? 0 : (a.volumePercent > 100 ? 100 : a.volumePercent);
+            n = snprintf(out + w, cap - w, ",\"volume_level\":%d.%02d", pct / 100, pct % 100);
+        } else if (a.type == Action::Type::Mute) {
+            n = snprintf(out + w, cap - w, ",\"is_volume_muted\":%s", a.muted ? "true" : "false");
+        } else n = 0;
+        if (n < 0 || (size_t)n >= cap - w) { out[0] = '\0'; return 0; }
+        w += (size_t)n;
+    }
     if (kindOf(a.entity) == Kind::Light && a.type == Action::Type::TurnOn) {
         if (a.setBrightness) {
             n = snprintf(out + w, cap - w, ",\"brightness\":%u", (unsigned)a.brightness);
@@ -716,12 +805,13 @@ int absi(int v) { return v < 0 ? -v : v; }
 int clamp255(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
 }
 
-void SoftTakeover::arm(int real, int slider) {
+void SoftTakeover::arm(int real, int slider, bool strict) {
     real_ = clamp255(real);
     slider = clamp255(slider);
     lastSent_ = slider;
     side_ = sign(slider - real_);
-    engaged_ = absi(slider - real_) <= kTolerance;
+    strict_ = strict;
+    engaged_ = !strict_ && absi(slider - real_) <= kTolerance;
 }
 
 void SoftTakeover::setReal(int real, int slider) {
@@ -731,18 +821,33 @@ void SoftTakeover::setReal(int real, int slider) {
     // slider keeps the side it started on, so a crossing made on this
     // frame still counts.
     if (real == real_) return;
-    if (engaged_ && absi(slider - real) <= kTolerance) {
+    if (!strict_ && engaged_ && absi(slider - real) <= kTolerance) {
         real_ = real;
         return;
     }
     // Not picked up (or someone else moved the value away from the
     // slider): the slider has to meet the new value first.
-    arm(real, slider);
+    arm(real, slider, strict_);
 }
 
 bool SoftTakeover::update(int slider, int* out) {
     slider = clamp255(slider);
     if (!engaged_) {
+        if (strict_) {
+            const bool crossed = side_ != 0 && sign(slider - real_) != side_;
+            const bool movedFromLevel = side_ == 0 && slider != lastSent_;
+            if (!crossed && !movedFromLevel) return false;
+            if (absi(slider - real_) > kTolerance) {
+                // A fast sweep past the level must come back to it before
+                // pickup; the next tiny movement must not cause a big jump.
+                side_ = sign(slider - real_);
+                lastSent_ = slider;
+                return false;
+            }
+            engaged_ = true;
+            lastSent_ = slider;
+            return false;   // pickup alone never jumps to the slider's position
+        }
         const bool near = absi(slider - real_) <= kTolerance;
         const bool crossed = side_ != 0 && sign(slider - real_) != side_;
         if (!near && !crossed) return false;

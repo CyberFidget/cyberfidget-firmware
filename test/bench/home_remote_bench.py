@@ -42,6 +42,14 @@ API at the end. `awake set off` is always sent before closing.
 The key is read from --token-file and never printed: commands that carry
 it are logged as `hr token <N chars>`.
 
+Optional --speaker media_player.<name> opens a speaker from favorites or
+Rooms, checks that opening preserves its volume, taps Right for one percent,
+then Left to restore it (within half a percent for display rounding). Start
+below 100% with volume setting supported. Playback is untouched unless
+--speaker-allow-playback is passed; that check needs play and pause support
+and a speaker already playing or paused. The original volume is restored
+in cleanup if this scenario changed it.
+
 Run with pio's python (has pyserial):
 
   %USERPROFILE%\\.platformio\\penv\\Scripts\\python.exe test\\bench\\home_remote_bench.py ^
@@ -181,7 +189,7 @@ class Dev:
         return r is not None and r.startswith("[cmd] btn.held=")
 
     def state(self):
-        """`hr state` as dicts: (state, light-or-None)."""
+        """`hr state` as dicts: (state, light-or-speaker-details-or-None)."""
         line = self.cmd("hr state", ["[cmd] hr.state="])
         if not line or not line.startswith("[cmd] hr.state="):
             return None, None
@@ -191,6 +199,10 @@ class Dev:
             l2 = self.wait_for("[cmd] hr.light=", 1.0)
             if l2:
                 light = parse_fields(l2[len("[cmd] hr.light="):], first="entity")
+        elif st.get("screen") == "speaker":
+            l2 = self.wait_for("[cmd] hr.speaker=", 1.0)
+            if l2:
+                light = parse_fields(l2[len("[cmd] hr.speaker="):], first="entity")
         return st, light
 
 
@@ -369,6 +381,124 @@ def wifi_off(dev, timeout=10.0):
     return False, mode
 
 
+def open_speaker(dev, entity):
+    """Search favorites, then every room, checking the opened speaker's id."""
+
+    def scan_list():
+        st, _ = dev.state()
+        for _ in range(int((st or {}).get("rows", "0"))):
+            st, _ = dev.state()
+            if st and st.get("id") == entity:
+                dev.tap(BTN_ENTER)
+                opened, speaker = wait_state(dev, lambda s, l: s.get("screen") == "speaker", 3)
+                if speaker and speaker.get("entity") == entity:
+                    return True
+                if opened and opened.get("screen") in ("speaker", "light"):
+                    dev.tap(BTN_BACK)
+                    time.sleep(0.8)
+            dev.tap(BTN_DOWN)
+        return False
+
+    if not go_top(dev):
+        return False
+    if scan_list():
+        return True
+    if not go_top(dev):
+        return False
+    st = None
+    for _ in range(35):
+        st, _ = dev.state()
+        if st and st.get("label") == "Rooms" and st.get("id") == "-":
+            break
+        dev.tap(BTN_DOWN)
+    else:
+        st = None
+    if not st:
+        return False
+    dev.tap(BTN_ENTER)
+    st, _ = wait_state(dev, lambda s, l: s.get("screen") == "rooms" and s.get("label") != "Loading...", 10)
+    if not st or st.get("screen") != "rooms" or st.get("label") == "No rooms found":
+        return False
+    for _ in range(int(st.get("rows", "0"))):
+        dev.tap(BTN_ENTER)
+        opened, _ = wait_state(dev, lambda s, l: s.get("screen") == "room" and s.get("label") != "Loading...", 10)
+        if opened and opened.get("screen") == "room":
+            if scan_list():
+                return True
+            dev.tap(BTN_BACK)
+        dev.tap(BTN_DOWN)
+    return False
+
+
+def wait_speaker_volume(ha, entity, expected, tolerance=0.002, timeout=7):
+    end = time.time() + timeout
+    got = None
+    while time.time() < end:
+        state = ha.state(entity)
+        got = (state or {}).get("attributes", {}).get("volume_level")
+        if got is not None and abs(got - expected) <= tolerance:
+            return True, got
+        time.sleep(0.3)
+    return False, got
+
+
+def speaker_scenario(dev, ha, args, saved, changed):
+    entity = args.speaker
+    report("speaker.opened", open_speaker(dev, entity))
+    st, speaker = dev.state()
+    if not st or st.get("screen") != "speaker" or not speaker or speaker.get("entity") != entity:
+        return
+    time.sleep(2.0)   # opening plus at least one poll must leave volume unchanged
+    baseline = saved.get("attributes", {}).get("volume_level")
+    fresh = ha.state(entity)
+    got = (fresh or {}).get("attributes", {}).get("volume_level")
+    report("speaker.open_preserved_volume", baseline is not None and got == baseline,
+           "before=%s after=%s" % (baseline, got))
+    if baseline is None:
+        return
+    st, speaker = select_row(dev, lambda label: label == "Volume", max_steps=5)
+    if not st or not speaker or speaker.get("known") != "1":
+        report("speaker.volume_supported", False)
+        return
+    pct = int(speaker["volume"])
+    report("speaker.volume_can_rise", pct < 100, "volume=%d%%" % pct)
+    if pct >= 100:
+        return
+    changed["volume"] = True   # cleanup restores even if an assertion fails
+    dev.tap(BTN_RIGHT)
+    expected = (pct + 1) / 100
+    ok, got = wait_speaker_volume(ha, entity, expected)
+    report("speaker.right_raised_volume", ok and got > baseline,
+           "expected=%.2f got=%s" % (expected, got))
+    dev.tap(BTN_LEFT)
+    ok, got = wait_speaker_volume(ha, entity, pct / 100)
+    report("speaker.left_restored_volume", ok and abs(got - baseline) <= 0.0051,
+           "before=%s restored=%s" % (baseline, got))
+    screencap(dev, args.out, "speaker_volume")
+    if not args.speaker_allow_playback:
+        return
+    before = ha.state(entity)
+    features = (before or {}).get("attributes", {}).get("supported_features", 0)
+    state = (before or {}).get("state")
+    if state not in ("playing", "paused") or features & (1 | 16384) != (1 | 16384):
+        report("speaker.playback_supported", False, "needs play/pause and an existing playing or paused track")
+        return
+    st, _ = select_row(dev, lambda label: label == "Play/Pause", max_steps=5)
+    report("speaker.playback_row", st is not None)
+    if st:
+        changed["playback"] = state
+        dev.tap(BTN_ENTER)
+        expected_state = "paused" if state == "playing" else "playing"
+        end = time.time() + 7
+        after = None
+        while time.time() < end:
+            after = (ha.state(entity) or {}).get("state")
+            if after == expected_state:
+                break
+            time.sleep(0.3)
+        report("speaker.playback_toggled", after == expected_state, "%s -> %s" % (state, after))
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--port", required=True)
@@ -379,7 +509,13 @@ def main():
     ap.add_argument("--toggle-entity", default="light.table_lamp")
     ap.add_argument("--color-entity", default="light.table_lamp")
     ap.add_argument("--skip-bad-token", action="store_true")
+    ap.add_argument("--speaker", help="optional speaker to test; start below full volume")
+    ap.add_argument("--speaker-allow-playback", action="store_true", help="also exercise play/pause for --speaker")
     args = ap.parse_args()
+    if args.speaker and not args.speaker.startswith("media_player."):
+        ap.error("--speaker must name a media_player speaker")
+    if args.speaker_allow_playback and not args.speaker:
+        ap.error("--speaker-allow-playback requires --speaker")
 
     with open(args.token_file, "r", encoding="utf-8") as f:
         token = f.read().strip()
@@ -394,6 +530,12 @@ def main():
         report("ha.reachable." + e, st is not None, "state=%s" % (st or {}).get("state"))
     if not all(saved.values()):
         return 1
+    saved_speaker = ha.state(args.speaker) if args.speaker else None
+    speaker_changed = {}
+    if args.speaker:
+        report("speaker.reachable", saved_speaker is not None)
+        if not saved_speaker:
+            return 1
 
     dev = Dev(args.port, token)
     try:
@@ -485,6 +627,9 @@ def main():
         else:
             report("light.row_found", False, "label=%s" % cname)
 
+        if args.speaker:
+            speaker_scenario(dev, ha, args, saved_speaker, speaker_changed)
+
         # ---- 6. leave: WiFi off --------------------------------------------
         report("exit.back_to_menu", leave_app(dev))
         ok, mode = wifi_off(dev)
@@ -510,6 +655,18 @@ def main():
             dev.cmd("awake set off", ["[cmd] awake.set="])
             dev.drain(1.0)
         finally:
+            # Close the app before REST cleanup so a pending device send cannot
+            # undo the original volume we restore here.
+            if speaker_changed:
+                leave_app(dev)
+                if speaker_changed.get("volume"):
+                    ha.call("media_player", "volume_set", {
+                        "entity_id": args.speaker,
+                        "volume_level": saved_speaker["attributes"]["volume_level"],
+                    })
+                if speaker_changed.get("playback"):
+                    service = "media_play" if speaker_changed["playback"] == "playing" else "media_pause"
+                    ha.call("media_player", service, {"entity_id": args.speaker})
             for st in saved.values():
                 ha.restore(st)
             # ---- 8. the key never came back over serial --------------------

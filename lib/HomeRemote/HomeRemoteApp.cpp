@@ -56,7 +56,7 @@ enum class Screen : uint8_t { Message, Top, Areas, AreaList, Detail, Effects, St
 enum class Msg : uint8_t {
     None, Joining, NotSetUp, NoWifi, RadioBusy, NoMemory, JoinFailed, Unreachable, Rejected, BadReply
 };
-enum class Row : uint8_t { Power, Bri, R, G, B, Preset, Effect };
+enum class Row : uint8_t { Power, Bri, R, G, B, Preset, Effect, Playback, Volume, Track, Mute };
 
 // Lists live in PSRAM when there is some (allocated once, kept).
 struct Lists {
@@ -93,6 +93,7 @@ bool ledsLit = false;
 LedColor ledShown;
 ScrollLabel focusLabel;
 ScrollLabel titleLabel;
+ScrollLabel mediaLabel;
 int focusFor = -1;
 Screen focusScreen = Screen::Message;
 
@@ -111,7 +112,11 @@ Row detailRows[7];
 int detailRowCount = 0;
 int presetIdx = 0;
 bool dirtyPower = false, dirtyBri = false, dirtyRgb = false, dirtyEffect = false;
-SendGate gate;
+bool dirtyVolume = false;
+bool leaveAfterVolume = false;
+SendGate lightGate, volumeGate;
+// Keep the speaker's send clock across screen changes and reopening.
+SendGate& sendGate() { return d.kind == Kind::Speaker ? volumeGate : lightGate; }
 PollGuard guard;
 SoftTakeover take;
 RepeatAccel accel;
@@ -157,6 +162,7 @@ bool topIsRooms(int i) { return i == favRows(); }
 bool topIsStatus(int i) { return i == favRows() + 1; }
 
 const char* entityRight(const Entity& e) {
+    if (e.kind == Kind::Speaker) return e.available ? speakerStateText(e.speakerState) : "--";
     if (e.kind != Kind::Light) return "Run";
     if (!e.available) return "--";
     return e.on ? "On" : "Off";
@@ -203,6 +209,16 @@ void fxLabel(int i, char* out, size_t cap, const char** right) {
 
 void rebuildDetailRows() {
     int n = 0;
+    if (d.kind == Kind::Speaker) {
+        if (speakerCanPlayPause(d.features, d.speakerState)) detailRows[n++] = Row::Playback;
+        if (speakerSupports(d.features, VolumeSet)) detailRows[n++] = Row::Volume;
+        if (speakerSupports(d.features, PreviousTrack) || speakerSupports(d.features, NextTrack))
+            detailRows[n++] = Row::Track;
+        if (speakerSupports(d.features, VolumeMute)) detailRows[n++] = Row::Mute;
+        detailRowCount = n;
+        detailCur.setCount(n);
+        return;
+    }
     detailRows[n++] = Row::Power;
     if (d.canDim) detailRows[n++] = Row::Bri;
     if (d.canColor) {
@@ -216,11 +232,11 @@ void rebuildDetailRows() {
     detailCur.setCount(n);
 }
 
-Row currentRow() { return detailRows[detailCur.selected()]; }
+Row currentRow() { return detailRowCount ? detailRows[detailCur.selected()] : Row::Playback; }
 
 void touch(PollGuard::Control c) {
     guard.touched(c, now());
-    gate.markDirty();
+    sendGate().markDirty();
     lastUseMs = now();
 }
 
@@ -274,8 +290,43 @@ void setEffect(const char* name) {
     touch(PollGuard::Effect);
 }
 
+void setVolume(int level, bool fromSlider) {
+    if (!d.available || !d.hasVolume || !speakerSupports(d.features, VolumeSet)) return;
+    const uint8_t next = volumeByte(volumePercent(level));
+    if (!fromSlider) take.arm(next, sliderNow(), true);
+    if (volumePercent(next) == volumePercent(d.volume)) return;
+    d.volume = next;
+    dirtyVolume = true;
+    touch(PollGuard::Brightness);   // this screen's level uses the same guarded control
+}
+
+void speakerAction(Action::Type type) {
+    if (!d.available) { showToast("Not available"); return; }
+    if (type == Action::Type::PlayPause && !speakerCanPlayPause(d.features, d.speakerState)) return;
+    if (type == Action::Type::Previous && !speakerSupports(d.features, PreviousTrack)) return;
+    if (type == Action::Type::Next && !speakerSupports(d.features, NextTrack)) return;
+    if (type == Action::Type::Mute && !speakerSupports(d.features, VolumeMute)) return;
+    // Preserve a deliberate volume adjustment before posting another action
+    // to the worker's latest-wins slot. Try again once it has gone out.
+    if (sendGate().dirty() || Client::actionBusy()) { showToast("Please wait"); return; }
+    Action a;
+    strncpy(a.entity, d.id, sizeof(a.entity) - 1);
+    a.type = type;
+    if (type == Action::Type::Mute) {
+        d.muted = !d.muted;
+        a.muted = d.muted;
+        guard.touched(PollGuard::Effect, now());
+    }
+    Client::requestAction(a);
+    lastPollMs = now() - kPollMs;
+}
+
 void adjust(Row row, int dir, int amount) {
     switch (row) {
+        case Row::Volume: setVolume(steppedVolume(d.volume, dir, amount), false); break;
+        case Row::Track: speakerAction(dir < 0 ? Action::Type::Previous : Action::Type::Next); break;
+        case Row::Playback:
+        case Row::Mute: break;
         case Row::Power: setPower(dir > 0); break;
         case Row::Bri: {
             // In whole percent, so every step shows.
@@ -299,6 +350,13 @@ void adjust(Row row, int dir, int amount) {
 Action pendingAction() {
     Action a;
     strncpy(a.entity, d.id, sizeof(a.entity) - 1);
+    if (d.kind == Kind::Speaker) {
+        if (dirtyVolume) {
+            a.type = Action::Type::SetVolume;
+            a.volumePercent = volumePercent(d.volume);
+        }
+        return a;
+    }
     if (dirtyPower && !d.on) {
         a.type = Action::Type::TurnOff;
         return a;
@@ -313,16 +371,16 @@ Action pendingAction() {
     return a;
 }
 
-void clearDirty() { dirtyPower = dirtyBri = dirtyRgb = dirtyEffect = false; }
+void clearDirty() { dirtyPower = dirtyBri = dirtyRgb = dirtyEffect = dirtyVolume = false; }
 
 void sendNow() {
     Client::requestAction(pendingAction());
-    gate.sent(now());
+    sendGate().sent(now());
     clearDirty();
 }
 
 void sendIfDue() {
-    if (gate.ready(now(), Client::actionBusy())) sendNow();
+    if (sendGate().ready(now(), Client::actionBusy())) sendNow();
 }
 
 void openDetail(const Entity& e, Screen parent) {
@@ -331,12 +389,17 @@ void openDetail(const Entity& e, Screen parent) {
     detailParent = parent;
     presetIdx = 0;
     clearDirty();
-    gate = SendGate();
+    leaveAfterVolume = false;
+    if (d.kind == Kind::Speaker) volumeGate.clear();
+    else lightGate = SendGate();
     guard.reset();
     accel.release();
     // Opening never changes the light: the slider must reach its level first.
-    take.arm(d.on ? d.brightness : 0, sliderNow());
-    detailCur.reset(1, kRows);
+    take.arm(d.kind == Kind::Speaker ? d.volume : (d.on ? d.brightness : 0),
+             sliderNow(), d.kind == Kind::Speaker);
+    titleLabel.restart(now());
+    mediaLabel.restart(now());
+    detailCur.reset(1, d.kind == Kind::Speaker ? 3 : kRows);
     rebuildDetailRows();
     screen = Screen::Detail;
     lastPollMs = now() - kPollMs;   // read it fresh at once
@@ -354,7 +417,7 @@ void updateLeds() {
     const bool lightScreen = screen == Screen::Detail || screen == Screen::Effects;
     const bool keptAwake = now() - lastUseMs < kAwakeCapMs;
     LedColor want;
-    if (lightScreen && keptAwake && HomeRemote::Config::mirror() && d.available)
+    if (lightScreen && d.kind == Kind::Light && keptAwake && HomeRemote::Config::mirror() && d.available)
         want = mirrorColor(d.on, d.hasRgb, d.r, d.g, d.b, d.brightness);
     const bool lit = want != LedColor();
     if (!lit) {
@@ -376,7 +439,12 @@ void ledsOff() {
 void leaveDetail() {
     accel.release();
     ledsOff();
-    if (gate.dirty()) sendNow();   // the last change still goes out
+    if (d.kind == Kind::Speaker && sendGate().dirty() && !sendGate().ready(now(), Client::actionBusy())) {
+        leaveAfterVolume = true;
+        return;
+    }
+    leaveAfterVolume = false;
+    if (sendGate().dirty()) sendNow();   // the last change still goes out
     screen = detailParent;
     // The list behind shows on/off: read it again.
     if (screen == Screen::AreaList) request(Fetch::AreaEntities, L->areaId);
@@ -386,9 +454,33 @@ void leaveDetail() {
 void applyPolled(const Entity& e) {
     if (strcmp(e.id, d.id) != 0) return;
     // A change of ours still going out would be undone by an older reading.
-    if (Client::actionBusy() || gate.dirty()) return;
+    if (Client::actionBusy() || sendGate().dirty()) return;
     const uint32_t t = now();
+    const bool availableChanged = d.available != e.available;
     d.available = e.available;
+    if (d.kind == Kind::Speaker) {
+        const bool changedVolume = d.hasVolume != e.hasVolume;
+        d.features = e.features;
+        if (strcmp(d.title, e.title) || strcmp(d.artist, e.artist) || availableChanged || d.speakerState != e.speakerState)
+            mediaLabel.restart(t);
+        d.speakerState = e.speakerState;
+        memcpy(d.name, e.name, sizeof(d.name));
+        memcpy(d.title, e.title, sizeof(d.title));
+        memcpy(d.artist, e.artist, sizeof(d.artist));
+        if (guard.accepts(PollGuard::Effect, t)) d.muted = e.muted;
+        if (guard.accepts(PollGuard::Brightness, t)) {
+            d.hasVolume = e.hasVolume;
+            d.volume = e.volume;
+            if (changedVolume) take.arm(d.volume, sliderNow(), true);
+            else take.setReal(d.volume, sliderNow());
+        }
+        if (!d.available) {
+            accel.release();
+            take.arm(d.volume, sliderNow(), true);
+        }
+        rebuildDetailRows();
+        return;
+    }
     d.canDim = e.canDim;
     d.canColor = e.canColor;
     d.effectCount = e.effectCount;
@@ -414,6 +506,9 @@ void runOrToggle(Entity& e, bool toggle) {
     if (e.kind == Kind::Light) {
         a.type = Action::Type::Toggle;
         e.on = !e.on;   // shown at once; the list is read again after
+    } else if (e.kind == Kind::Speaker) {
+        if (!speakerCanPlayPause(e.features, e.speakerState)) { showToast("Not supported"); return; }
+        a.type = Action::Type::PlayPause;
     } else {
         a.type = Action::Type::Run;
         showToast(e.kind == Kind::Scene ? "Scene on" : "Script started");
@@ -425,7 +520,7 @@ void runOrToggle(Entity& e, bool toggle) {
 
 void openEntity(Entity& e, Screen from) {
     if (!e.available) { showToast("Not available"); return; }
-    if (e.kind == Kind::Light) openDetail(e, from);
+    if (e.kind == Kind::Light || e.kind == Kind::Speaker) openDetail(e, from);
     else runOrToggle(e, false);
 }
 
@@ -587,7 +682,7 @@ void onSide(const ButtonEvent& ev, int dir) {
     lastUseMs = now();
     const Row row = currentRow();
     adjust(row, dir, 1);
-    if (row == Row::Bri || row == Row::R || row == Row::G || row == Row::B) {
+    if (row == Row::Bri || row == Row::R || row == Row::G || row == Row::B || row == Row::Volume) {
         accel.press(now());
         accelDir = dir;
         accelRow = row;
@@ -617,7 +712,10 @@ void activate() {
             if (roomLoaded && L->roomRowCount > 0) openEntity(L->roomRows[roomCur.selected()], Screen::AreaList);
             break;
         case Screen::Detail:
+            if (!detailRowCount) break;
             switch (currentRow()) {
+                case Row::Playback: speakerAction(Action::Type::PlayPause); break;
+                case Row::Mute: speakerAction(Action::Type::Mute); break;
                 case Row::Power:  setPower(!d.on); break;
                 case Row::Preset: applyPreset(); break;
                 case Row::Effect: openEffects(); break;
@@ -783,6 +881,10 @@ void drawBar(int x, int y, int w, int value, OLEDDISPLAY_COLOR fg) {
 
 const char* rowName(Row row) {
     switch (row) {
+        case Row::Playback: return "Play/Pause";
+        case Row::Volume: return "Volume";
+        case Row::Track: return "Track";
+        case Row::Mute: return "Mute";
         case Row::Power:  return "Power";
         case Row::Bri:    return "Bright";
         case Row::R:      return "R";
@@ -796,6 +898,14 @@ const char* rowName(Row row) {
 
 void detailValue(Row row, char* out, size_t cap) {
     switch (row) {
+        case Row::Playback: snprintf(out, cap, "%s", speakerStateText(d.speakerState)); break;
+        case Row::Volume:
+            if (d.hasVolume) snprintf(out, cap, "%d%%", volumePercent(d.volume));
+            else snprintf(out, cap, "--");
+            break;
+        case Row::Track: snprintf(out, cap, "%s %s", speakerSupports(d.features, PreviousTrack) ? "<" : "",
+                                  speakerSupports(d.features, NextTrack) ? ">" : ""); break;
+        case Row::Mute: snprintf(out, cap, "%s", d.muted ? "On" : "Off"); break;
         case Row::Power:  snprintf(out, cap, "%s", !d.available ? "Not available" : (d.on ? "On" : "Off")); break;
         case Row::Bri:    snprintf(out, cap, "%d%%", d.on ? brightnessPercent(d.brightness) : 0); break;
         case Row::R:      snprintf(out, cap, "%u", (unsigned)d.r); break;
@@ -827,11 +937,24 @@ void drawDetail() {
     display.setColor(WHITE);
     display.setTextAlignment(TEXT_ALIGN_LEFT);
 
+    const bool speaker = d.kind == Kind::Speaker;
+    const int listY = speaker ? 28 : kListY;
+    const int visibleRows = speaker ? 3 : kRows;
+    if (speaker) {
+        char track[kMediaTextMax * 2 + 4];
+        if (!d.available) snprintf(track, sizeof(track), "Not available");
+        else if (d.title[0] && (d.speakerState == SpeakerState::Playing || d.speakerState == SpeakerState::Paused))
+            snprintf(track, sizeof(track), "%s%s%s", d.title, d.artist[0] ? " - " : "", d.artist);
+        else snprintf(track, sizeof(track), "%s", speakerStateText(d.speakerState));
+        mediaLabel.draw(2, 14, kScreenW - 4, track, false);
+        if (!detailRowCount) display.drawString(2, listY, "No controls available");
+    }
+
     const int slider = sliderNow();
     for (int r = 0; r < detailCur.visible(); r++) {
         const int idx = detailCur.top() + r;
         const Row row = detailRows[idx];
-        const int y = kListY + r * kRowH;
+        const int y = listY + r * kRowH;
         const bool sel = idx == detailCur.selected();
         const OLEDDISPLAY_COLOR fg = sel ? BLACK : WHITE;
         if (sel) {
@@ -842,15 +965,15 @@ void drawDetail() {
         display.setTextAlignment(TEXT_ALIGN_LEFT);
         display.drawString(2, y - 1, rowName(row));
         detailValue(row, value, sizeof(value));
-        const bool bar = row == Row::Bri || row == Row::R || row == Row::G || row == Row::B;
+        const bool bar = (row == Row::Volume && d.hasVolume) || row == Row::Bri || row == Row::R || row == Row::G || row == Row::B;
         if (bar) {
-            const int level = row == Row::Bri ? (d.on ? d.brightness : 0)
+            const int level = row == Row::Volume ? d.volume : row == Row::Bri ? (d.on ? d.brightness : 0)
                             : row == Row::R ? d.r : row == Row::G ? d.g : d.b;
             // The value is right-aligned at kRowW - 2; "100%" is ~25 px wide, so
             // the bar ends ~8 px before the widest value can start.
-            constexpr int kBarX = 36, kBarW = 52;
+            const int kBarX = speaker ? 42 : 36, kBarW = speaker ? 46 : 52;
             drawBar(kBarX, y + 3, kBarW, level, fg);
-            if (row == Row::Bri && !take.engaged()) {
+            if ((row == Row::Bri || row == Row::Volume) && !take.engaged()) {
                 // Where the slider is, until it picks the level up.
                 const int gx = kBarX + 1 + (slider * (kBarW - 3)) / 255;
                 display.setColor(INVERSE);
@@ -861,21 +984,21 @@ void drawDetail() {
             display.setTextAlignment(TEXT_ALIGN_RIGHT);
             display.drawString(kRowW - 2, y - 1, value);
         } else {
-            fitText(value, cut, sizeof(cut), kRowW - 44);
+            fitText(value, cut, sizeof(cut), kRowW - (row == Row::Playback ? 66 : 44));
             display.setTextAlignment(TEXT_ALIGN_RIGHT);
             display.drawString(kRowW - 2, y - 1, cut);
         }
         display.setColor(WHITE);
         display.setTextAlignment(TEXT_ALIGN_LEFT);
     }
-    const int listH = kRows * kRowH;
+    const int listH = visibleRows * kRowH;
     display.setColor(BLACK);
-    display.fillRect(kRowW, kListY, kGutter, listH);
+    display.fillRect(kRowW, listY, kGutter, listH);
     display.setColor(WHITE);
-    if (detailRowCount > kRows) {
+    if (detailRowCount > visibleRows) {
         const int thumbH = (listH * detailCur.visible()) / detailRowCount;
-        const int thumbY = kListY + (listH * detailCur.top()) / detailRowCount;
-        display.drawRect(kScreenW - 2, kListY, 2, listH);
+        const int thumbY = listY + (listH * detailCur.top()) / detailRowCount;
+        display.drawRect(kScreenW - 2, listY, 2, listH);
         display.fillRect(kScreenW - 2, thumbY, 2, thumbH);
     }
 }
@@ -992,7 +1115,7 @@ const char* screenName(Screen s) {
         case Screen::Top:      return "top";
         case Screen::Areas:    return "rooms";
         case Screen::AreaList: return "room";
-        case Screen::Detail:   return "light";
+        case Screen::Detail:   return d.kind == Kind::Speaker ? "speaker" : "light";
         case Screen::Effects:  return "effects";
         case Screen::Status:   return "status";
     }
@@ -1103,7 +1226,13 @@ void end() {
         drawTitle("Home Remote");
         drawLines("Closing...", nullptr, nullptr, nullptr);
         display.display();
-        if ((screen == Screen::Detail || screen == Screen::Effects) && gate.dirty()) sendNow();
+        if ((screen == Screen::Detail || screen == Screen::Effects) && sendGate().dirty()) {
+            // Volume obeys the same send interval even when the app closes.
+            const uint32_t flushAt = now();
+            while (d.kind == Kind::Speaker && !sendGate().ready(now(), Client::actionBusy()) &&
+                   now() - flushAt < kFlushWaitMs) delay(10);
+            if (d.kind != Kind::Speaker || sendGate().ready(now(), Client::actionBusy())) sendNow();
+        }
         const uint32_t started = now();
         while (Client::actionBusy() && now() - started < kFlushWaitMs) delay(10);
         Client::stop();
@@ -1132,11 +1261,17 @@ void update() {
             lastUseMs = t;
         }
         int level = 0;
-        if (screen == Screen::Detail && d.canDim && d.available && take.update(slider, &level))
-            setBrightness(level, true);
+        if (screen == Screen::Detail && !leaveAfterVolume && d.available) {
+            if (d.kind == Kind::Speaker) {
+                if (d.hasVolume && speakerSupports(d.features, VolumeSet) && take.update(slider, &level))
+                    setVolume(level, true);
+            } else if (d.canDim && take.update(slider, &level)) setBrightness(level, true);
+        }
         sendIfDue();
+        if (leaveAfterVolume && !sendGate().dirty()) leaveDetail();
         // While the light screen is up, read it about once a second.
-        if (!Client::fetchBusy() && !gate.dirty() && t - lastPollMs >= kPollMs) {
+        if ((screen == Screen::Detail || screen == Screen::Effects) &&
+            !Client::fetchBusy() && !sendGate().dirty() && t - lastPollMs >= kPollMs) {
             lastPollMs = t;
             request(Fetch::Entity, d.id);
         }
@@ -1206,14 +1341,22 @@ void printState() {
             break;
         default: break;
     }
+    const char* selectedId = "-";
+    if (screen == Screen::Top && topIsFav(sel)) selectedId = L->fav[sel].id;
+    else if (screen == Screen::AreaList && roomLoaded && L->roomRowCount > 0) selectedId = L->roomRows[sel].id;
+    else if (screen == Screen::Detail || screen == Screen::Effects) selectedId = d.id;
     const Client::Link link = Client::link();
     const char* linkName = link == Client::Link::Ready ? "ready"
                          : link == Client::Link::Joining ? "joining"
                          : link == Client::Link::JoinFailed ? "join-failed" : "off";
-    Serial.printf("[cmd] hr.state=%s msg=%s link=%s sel=%d rows=%d fav=%d right=%s label=%s\n",
+    Serial.printf("[cmd] hr.state=%s msg=%s link=%s sel=%d rows=%d fav=%d right=%s id=%s label=%s\n",
                   screenName(screen), msgName(msg), linkName, sel, rows,
-                  (L && favLoaded) ? L->favCount : -1, right ? right : "-", label);
-    if (screen == Screen::Detail || screen == Screen::Effects) {
+                  (L && favLoaded) ? L->favCount : -1, right ? right : "-", selectedId, label);
+    if (screen == Screen::Detail && d.kind == Kind::Speaker) {
+        Serial.printf("[cmd] hr.speaker=%s volume=%d known=%d muted=%d features=%lu takeover=%d\n",
+                      d.id, volumePercent(d.volume), d.hasVolume ? 1 : 0, d.muted ? 1 : 0,
+                      (unsigned long)d.features, take.engaged() ? 1 : 0);
+    } else if (screen == Screen::Detail || screen == Screen::Effects) {
         char hex[8];
         formatHex(d.r, d.g, d.b, hex);
         Serial.printf("[cmd] hr.light=%s on=%d bri=%u rgb=%u,%u,%u hex=%s effect=%s takeover=%d\n", d.id,

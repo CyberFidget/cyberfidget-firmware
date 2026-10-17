@@ -53,8 +53,8 @@ constexpr size_t kReadStep = 1;             // body bytes asked of one esp_http_
 constexpr uint32_t kStopWaitMs = 6000;
 constexpr uint32_t kJoinMs = 10000;         // each join attempt
 constexpr uint32_t kStackBytes = 8192;
-constexpr size_t kRequestMax = 4096;        // a template body is ~1.5 KB
-constexpr size_t kResponseMax = 8192;       // 32 rows of at most ~200 bytes
+constexpr size_t kRequestMax = 4096;        // the shared list template fits, JSON escaping included
+constexpr size_t kResponseMax = kMaxRows * (kSpeakerLineMax + 1); // also fits UTF-8 speaker rows
 
 // Shared between the app (loop task) and the worker, under g_lock.
 struct Shared {
@@ -329,7 +329,7 @@ void runFetch(Private& p, Fetch kind, const char* arg, uint32_t seq) {
 
 void runAction(Private& p, const Action& a, uint32_t seq) {
     const uint32_t started = millis();
-    char path[48] = {0};
+    char path[64] = {0};
     int status = 0;
     Outcome outcome = Outcome::BadReply;
     const size_t n = serviceBody(a, p.request, sizeof(p.request));
