@@ -660,6 +660,22 @@ input[type="file"]{display:none}
       </div>
     </div>
 
+    <div class="wifi-card">
+      <h3>Home Remote</h3>
+      <div class="wifi-note">Control your Home Assistant lights and speakers from your Cyber Fidget.</div>
+      <label for="hrUrl">Home Assistant address</label>
+      <input type="text" class="wifi-input" id="hrUrl" value="http://homeassistant.local:8123" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div class="info-row"><span class="label">Access key</span><span class="val" id="hrKeyStatus">Not set</span></div>
+      <label for="hrKey">Access key</label>
+      <input type="password" class="wifi-input" id="hrKey" autocomplete="off" placeholder="Paste your access key">
+      <div class="wifi-actions">
+        <button class="btn btn-play" onclick="testHomeRemote()" id="hrTestBtn">Test connection</button>
+        <button class="btn btn-accent" onclick="saveHomeRemote()" id="hrSaveBtn">Save</button>
+      </div>
+      <div class="wifi-note" id="hrResult" role="status" aria-live="polite"></div>
+      <div class="wifi-note">To make an access key: open Home Assistant and select your name at the bottom left to open your profile. Open the Security tab, scroll to Long-lived access tokens and select Create token. Name it Cyber Fidget, then copy the key and paste it here. Home Assistant shows it only once.</div>
+    </div>
+
     <!-- "Its own network", not "access point"; "address", not "IP". The network
          name CyberFidget is the one proper noun these surfaces use. -->
     <div class="wifi-card">
@@ -1969,6 +1985,81 @@ function addToNewPl(){
 }
 
 // ─── WiFi Settings ───
+let hrPoll=0;
+async function homeRemoteRequest(path,options={},timeout=4000){
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),timeout);
+  try{
+    const r=await fetch('/api/homeremote'+path,{...options,cache:'no-store',signal:controller.signal});
+    return {code:r.status,data:await r.json()};
+  }finally{clearTimeout(timer)}
+}
+async function loadHomeRemote(keepAddress=false){
+  try{
+    const {code,data}=await homeRemoteRequest('');
+    if(code!==200)return;
+    if(!keepAddress)$('hrUrl').value=data.url||'http://homeassistant.local:8123';
+    $('hrKeyStatus').textContent=data.keySet?'Set':'Not set';
+    $('hrKey').placeholder=data.keySet?'Saved - leave empty to keep it':'Paste your access key';
+  }catch(e){}
+}
+function homeRemoteResult(status){
+  const messages={reachable:'Connected to Home Assistant.',rejected:"Home Assistant didn't accept that access key.",
+    unreachable:"Couldn't reach Home Assistant at that address.",'no-wifi':'Connect your Cyber Fidget to your home WiFi first (above).',
+    'no-key':'Paste an access key first.',idle:''};
+  $('hrResult').innerHTML=status==='checking'?'<span class="wifi-spinner"></span>Checking...':esc(messages[status]||"Couldn't check. Try again.");
+}
+function homeRemoteError(code,error,saving){
+  let message=saving?"Couldn't save. Try again.":"Couldn't check. Try again.";
+  if(code===400&&error==='address')message='Use an address that starts with http://, like http://homeassistant.local:8123.';
+  if(code===400&&error==='key')message="That access key doesn't look right. Copy it again from Home Assistant.";
+  if(code===409)message='Already checking...';
+  if(code===413)message='That access key is too long.';
+  $('hrResult').textContent=message;
+}
+function homeRemoteForm(){
+  return {method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({url:$('hrUrl').value,key:$('hrKey').value})};
+}
+async function saveHomeRemote(){
+  const btn=$('hrSaveBtn');btn.disabled=true;
+  ++hrPoll;
+  try{
+    const {code,data}=await homeRemoteRequest('',homeRemoteForm());
+    if(code===200){
+      $('hrKey').value='';
+      $('hrResult').textContent='Saved. Open Home Remote on your Cyber Fidget to use it.';
+      await loadHomeRemote(true);
+    }else homeRemoteError(code,data.error,true);
+  }catch(e){homeRemoteError(0,'',true)}
+  finally{btn.disabled=false}
+}
+async function testHomeRemote(){
+  const poll=++hrPoll,until=Date.now()+10000;
+  const btn=$('hrTestBtn');btn.disabled=true;
+  homeRemoteResult('checking');
+  try{
+    const {code,data}=await homeRemoteRequest('/test',homeRemoteForm());
+    if(poll!==hrPoll)return;
+    if(code!==202&&code!==200&&code!==409){homeRemoteError(code,data.error,false);return}
+    if(code===409)homeRemoteError(code,data.error,false);
+    else homeRemoteResult(data.status);
+    if(code===200)return;
+    while(poll===hrPoll&&Date.now()<until){
+      await new Promise(resolve=>setTimeout(resolve,500));
+      const remaining=until-Date.now();
+      if(remaining<=0)break;
+      const result=await homeRemoteRequest('/test',{},Math.min(4000,remaining));
+      if(poll!==hrPoll)return;
+      if(result.code!==200){homeRemoteError(result.code,result.data.error,false);return}
+      homeRemoteResult(result.data.status);
+      if(result.data.status!=='checking')return;
+    }
+    if(poll===hrPoll)$('hrResult').textContent="Couldn't check. Try again.";
+  }catch(e){if(poll===hrPoll)homeRemoteError(0,'',false)}
+  finally{btn.disabled=false}
+}
+
 let selectedSSID='';
 let savedNames=[],scanNets=[],landingSeen=false;
 // The address as first opened, before showPage() rewrites the hash: Setup
@@ -2159,6 +2250,7 @@ setDeviceClock();   // stamp the device clock before the user records anything
 loadFiles();
 loadPlaylists();
 loadWifiStatus();
+loadHomeRemote();
 </script>
 </body>
 </html>

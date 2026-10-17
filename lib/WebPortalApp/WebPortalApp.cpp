@@ -21,6 +21,8 @@
 #include "SDManager.h"
 #include "SavedWifi.h"   // the saved networks (lib/CloudSync)
 #include "WifiRequest.h" // their request bodies (lib/CloudSync)
+#include "HomeRemoteConfig.h"
+#include "HomeRemoteClient.h"
 #include "PortalPassword.h"
 #include "SyncProtocol.h" // formatDeviceId: the canonical unit id
 #include "CaptiveDns.h"
@@ -357,6 +359,10 @@ bool WebPortalApp::bluetoothReleasedThisPowerCycle() {
 // Lifecycle
 // ---------------------------------------------------------------------------
 void WebPortalApp::begin() {
+    portENTER_CRITICAL(&homeRemoteMux);
+    homeRemoteClosing = false;
+    homeRemoteStatus = HomeRemoteStatus::Idle;
+    portEXIT_CRITICAL(&homeRemoteMux);
     if (esp_bt_controller_get_status() != ESP_BT_CONTROLLER_STATUS_IDLE) {
         WP_LOG("begin: Bluetooth active; restarting before portal entry");
 
@@ -540,6 +546,16 @@ void WebPortalApp::teardown() {
         return;
     }
     teardownDone = true;
+    portENTER_CRITICAL(&homeRemoteMux);
+    homeRemoteClosing = true;
+    HomeRemoteCheck* pending = homeRemotePending;
+    homeRemotePending = nullptr;
+    homeRemoteStatus = HomeRemoteStatus::Idle;
+    portEXIT_CRITICAL(&homeRemoteMux);
+    if (pending) {
+        HomeRemote::secureWipe(pending, sizeof(*pending));
+        free(pending);
+    }
     WP_LOG("end: enter");
 
     // Tell a live listener the device is leaving, release the mic
@@ -688,6 +704,7 @@ void WebPortalApp::update() {
 
     // Live caption link: apply what the AsyncTCP task mailed over, then
     // move captured audio toward the client.
+    runHomeRemoteCheck();
     processLiveMailbox();
     pumpLiveAudio();
 
@@ -869,6 +886,147 @@ static bool takeWifiBody(AsyncWebServerRequest* req, WifiRequest::Kind kind,
     if (tooBig) req->send(413, "application/json", "{\"error\":\"too-big\"}");
     else req->send(400, "application/json", "{\"error\":\"invalid\"}");
     return false;
+}
+
+static void sendHomeRemoteJson(AsyncWebServerRequest* req, int code, const String& json) {
+    AsyncWebServerResponse* response = req->beginResponse(code, "application/json", json);
+    response->addHeader("Cache-Control", "no-store");
+    req->send(response);
+}
+
+static void collectHomeRemoteBody(AsyncWebServerRequest* req, uint8_t* data, size_t len,
+                                  size_t index, size_t total) {
+    using namespace HomeRemote;
+    Request::Body* body = static_cast<Request::Body*>(req->_tempObject);
+    if (!body) {
+        if (index != 0) return;
+        body = static_cast<Request::Body*>(malloc(sizeof(Request::Body)));
+        if (!body) return;
+        Request::begin(*body);
+        req->_tempObject = body;
+        req->onDisconnect([req]() {
+            if (req->_tempObject) Request::wipe(*static_cast<Request::Body*>(req->_tempObject));
+        });
+    }
+    Request::collect(*body, data, len, index, total);
+}
+
+// Both the form's raw key and its trimmed copy are wiped on every exit.
+struct HomeRemoteForm {
+    char url[HomeRemote::kUrlMax + 1] = {};
+    char key[HomeRemote::kTokenMax + 1] = {};
+    char normalized[HomeRemote::kUrlMax + 1] = {};
+    char trimmed[HomeRemote::kTokenMax + 1] = {};
+    ~HomeRemoteForm() {
+        HomeRemote::secureWipe(key, sizeof(key));
+        HomeRemote::secureWipe(trimmed, sizeof(trimmed));
+    }
+};
+
+const char* WebPortalApp::homeRemoteStatusText() {
+    portENTER_CRITICAL(&homeRemoteMux);
+    const HomeRemoteStatus status = homeRemoteStatus;
+    portEXIT_CRITICAL(&homeRemoteMux);
+    switch (status) {
+        case HomeRemoteStatus::Checking: return "checking";
+        case HomeRemoteStatus::Reachable: return "reachable";
+        case HomeRemoteStatus::Rejected: return "rejected";
+        case HomeRemoteStatus::Unreachable: return "unreachable";
+        case HomeRemoteStatus::NoWifi: return "no-wifi";
+        case HomeRemoteStatus::NoKey: return "no-key";
+        default: return "idle";
+    }
+}
+
+void WebPortalApp::handleHomeRemote(AsyncWebServerRequest* req, bool test) {
+    using namespace HomeRemote;
+    HomeRemoteForm form;
+    Request::Body* body = static_cast<Request::Body*>(req->_tempObject);
+    const bool tooBig = req->contentLength() > Request::kBodyMax;
+    const bool whole = body && !body->failed && body->total && body->len == body->total;
+    const bool parsed = whole && Request::parse(body->text, body->len, form.url, form.key);
+    if (body) Request::wipe(*body);
+    if (!parsed) {
+        sendHomeRemoteJson(req, tooBig ? 413 : 400,
+                           tooBig ? "{\"error\":\"too-big\"}" : "{\"error\":\"invalid\"}");
+        return;
+    }
+    if (Config::validateUrlValue(form.url, form.normalized) != Config::SaveResult::Ok) {
+        sendHomeRemoteJson(req, 400, "{\"error\":\"address\"}");
+        return;
+    }
+    const bool replace = form.key[0] != '\0';
+    if (replace && Config::validateKeyValue(form.key, form.trimmed) != Config::SaveResult::Ok) {
+        sendHomeRemoteJson(req, 400, "{\"error\":\"key\"}");
+        return;
+    }
+    if (!test) {
+        // All fields have passed validation before either write starts.
+        if (Config::saveUrlValue(form.normalized) != Config::SaveResult::Ok ||
+            (replace && Config::saveKeyValue(form.trimmed) != Config::SaveResult::Ok)) {
+            sendHomeRemoteJson(req, 500, "{\"error\":\"storage\"}");
+            return;
+        }
+        const bool keySet = Config::hasToken();
+        WP_LOGF("home remote settings saved, key=%s", replace ? "set" : keySet ? "kept" : "unset");
+        sendHomeRemoteJson(req, 200, String("{\"status\":\"saved\",\"keySet\":") +
+                           (keySet ? "true}" : "false}"));
+        return;
+    }
+    const bool haveKey = replace || Config::token(form.trimmed, sizeof(form.trimmed));
+    const bool haveWifi = staConnected;
+    HomeRemoteCheck* pending = nullptr;
+    if (haveKey && haveWifi) {
+        pending = static_cast<HomeRemoteCheck*>(malloc(sizeof(HomeRemoteCheck)));
+        if (pending) {
+            strcpy(pending->url, form.normalized);
+            strcpy(pending->key, form.trimmed);
+        }
+    }
+    portENTER_CRITICAL(&homeRemoteMux);
+    const bool busy = homeRemoteClosing || homeRemoteStatus == HomeRemoteStatus::Checking;
+    if (!busy) {
+        if (!haveWifi) homeRemoteStatus = HomeRemoteStatus::NoWifi;
+        else if (!haveKey) homeRemoteStatus = HomeRemoteStatus::NoKey;
+        else if (pending) {
+            homeRemotePending = pending;
+            homeRemoteStatus = HomeRemoteStatus::Checking;
+        }
+    }
+    portEXIT_CRITICAL(&homeRemoteMux);
+    if (busy || (haveKey && haveWifi && !pending)) {
+        if (pending) {
+            secureWipe(pending, sizeof(*pending));
+            free(pending);
+        }
+        sendHomeRemoteJson(req, busy ? 409 : 500,
+                           busy ? "{\"error\":\"busy\"}" : "{\"error\":\"storage\"}");
+        return;
+    }
+    if (!pending) WP_LOGF("home remote check=%s", homeRemoteStatusText());
+    sendHomeRemoteJson(req, pending ? 202 : 200, pending ? "{\"status\":\"checking\"}" :
+                       String("{\"status\":\"") + homeRemoteStatusText() + "\"}");
+}
+
+void WebPortalApp::runHomeRemoteCheck() {
+    portENTER_CRITICAL(&homeRemoteMux);
+    HomeRemoteCheck* pending = homeRemotePending;
+    portEXIT_CRITICAL(&homeRemoteMux);
+    if (!pending) return;
+    const bool haveWifi = staConnected;
+    const HomeRemote::Client::Check result = haveWifi ?
+        HomeRemote::Client::checkConnection(pending->url, pending->key, 5000) :
+        HomeRemote::Client::Check::CantReach;
+    HomeRemote::secureWipe(pending, sizeof(*pending));
+    portENTER_CRITICAL(&homeRemoteMux);
+    homeRemotePending = nullptr;
+    homeRemoteStatus = !haveWifi ? HomeRemoteStatus::NoWifi :
+        result == HomeRemote::Client::Check::Reachable ? HomeRemoteStatus::Reachable :
+        result == HomeRemote::Client::Check::KeyRejected ? HomeRemoteStatus::Rejected :
+        HomeRemoteStatus::Unreachable;
+    portEXIT_CRITICAL(&homeRemoteMux);
+    free(pending);
+    if (!haveWifi) WP_LOG("home remote check=no-wifi");
 }
 
 // Captive DNS on raw lwIP UDP: bound to the AP address only (a query to
@@ -1108,6 +1266,22 @@ void WebPortalApp::setupRoutes() {
     // API: Delete playlist
     server->on("/api/playlist/delete", HTTP_POST, [this](AsyncWebServerRequest* req) {
         handlePlaylistDelete(req);
+    });
+
+    server->on("/api/homeremote", HTTP_GET, [](AsyncWebServerRequest* req) {
+        char address[HomeRemote::kUrlMax + 1];
+        HomeRemote::Config::url(address, sizeof(address));
+        sendHomeRemoteJson(req, 200, String("{\"url\":\"") + address + "\",\"keySet\":" +
+                           (HomeRemote::Config::hasToken() ? "true}" : "false}"));
+    });
+    server->on("/api/homeremote", HTTP_POST,
+        [this](AsyncWebServerRequest* req) { handleHomeRemote(req, false); },
+        nullptr, collectHomeRemoteBody);
+    server->on("/api/homeremote/test", HTTP_POST,
+        [this](AsyncWebServerRequest* req) { handleHomeRemote(req, true); },
+        nullptr, collectHomeRemoteBody);
+    server->on("/api/homeremote/test", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        sendHomeRemoteJson(req, 200, String("{\"status\":\"") + homeRemoteStatusText() + "\"}");
     });
 
     // API: WiFi scan

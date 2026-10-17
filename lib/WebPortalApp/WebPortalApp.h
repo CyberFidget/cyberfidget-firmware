@@ -17,6 +17,7 @@
 #include "OpenAddressHint.h"
 #include "PortalSsid.h"
 #include "ShellStamp.h"
+#include "HomeRemoteRequest.h"
 
 class WebPortalApp {
 public:
@@ -82,6 +83,19 @@ private:
     bool mdnsStarted = false;
     unsigned long lastMdnsAttempt = 0;
     String staSSID;
+
+    enum class HomeRemoteStatus : uint8_t { Idle, Checking, Reachable, Rejected, Unreachable, NoWifi, NoKey };
+    struct HomeRemoteCheck {
+        char url[HomeRemote::kUrlMax + 1];
+        char key[HomeRemote::kTokenMax + 1];
+    };
+    portMUX_TYPE homeRemoteMux = portMUX_INITIALIZER_UNLOCKED;
+    HomeRemoteCheck* homeRemotePending = nullptr; // allocated only while checking
+    HomeRemoteStatus homeRemoteStatus = HomeRemoteStatus::Idle;
+    bool homeRemoteClosing = false;
+    void handleHomeRemote(AsyncWebServerRequest* req, bool test);
+    void runHomeRemoteCheck();
+    const char* homeRemoteStatusText();
     unsigned long staConnectStart = 0;
     static const unsigned long STA_TIMEOUT_MS = 15000;
     static const unsigned long MDNS_RETRY_MS = 3000;
