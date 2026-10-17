@@ -1268,6 +1268,15 @@ void WebPortalApp::setupRoutes() {
         handlePlaylistDelete(req);
     });
 
+    // The /test routes come first: a route also answers every path below it
+    // ("/api/homeremote" matches "/api/homeremote/test"), and the first
+    // registered match wins - registered after, a test would save the form.
+    server->on("/api/homeremote/test", HTTP_POST,
+        [this](AsyncWebServerRequest* req) { handleHomeRemote(req, true); },
+        nullptr, collectHomeRemoteBody);
+    server->on("/api/homeremote/test", HTTP_GET, [this](AsyncWebServerRequest* req) {
+        sendHomeRemoteJson(req, 200, String("{\"status\":\"") + homeRemoteStatusText() + "\"}");
+    });
     server->on("/api/homeremote", HTTP_GET, [](AsyncWebServerRequest* req) {
         char address[HomeRemote::kUrlMax + 1];
         HomeRemote::Config::url(address, sizeof(address));
@@ -1277,12 +1286,6 @@ void WebPortalApp::setupRoutes() {
     server->on("/api/homeremote", HTTP_POST,
         [this](AsyncWebServerRequest* req) { handleHomeRemote(req, false); },
         nullptr, collectHomeRemoteBody);
-    server->on("/api/homeremote/test", HTTP_POST,
-        [this](AsyncWebServerRequest* req) { handleHomeRemote(req, true); },
-        nullptr, collectHomeRemoteBody);
-    server->on("/api/homeremote/test", HTTP_GET, [this](AsyncWebServerRequest* req) {
-        sendHomeRemoteJson(req, 200, String("{\"status\":\"") + homeRemoteStatusText() + "\"}");
-    });
 
     // API: WiFi scan
     server->on("/api/wifi/scan", HTTP_GET, [this](AsyncWebServerRequest* req) {

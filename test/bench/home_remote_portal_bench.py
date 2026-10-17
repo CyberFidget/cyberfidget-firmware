@@ -203,11 +203,18 @@ def run(dev, args, key, portals):
     require("portal.key_unset", code == 200 and state.get("keySet") is False)
 
     bad_key = ("Abc123.-_" * 21)[:183]
-    report("check.bad_key_rejected", portal.check(args.ha_url, bad_key, "rejected"))
-    report("check.wrong_host", portal.check("http://192.0.2.1:8123", key, "unreachable"))
-    report("check.unknown_name", portal.check("http://cf-bench-nohost.local:8123", key, "unreachable"))
-    report("check.no_key", portal.check(args.ha_url, "", "no-key"))
-    report("check.real_key", portal.check(args.ha_url, key, "reachable"))
+    for name, url, value, want in (
+            ("check.bad_key_rejected", args.ha_url, bad_key, "rejected"),
+            ("check.wrong_host", "http://192.0.2.1:8123", key, "unreachable"),
+            ("check.unknown_name", "http://cf-bench-nohost.local:8123", key, "unreachable"),
+            ("check.no_key", args.ha_url, "", "no-key"),
+            ("check.real_key", args.ha_url, key, "reachable")):
+        started = time.monotonic()
+        ok = portal.check(url, value, want)
+        report(name, ok, "%.1fs" % (time.monotonic() - started))
+    # A connection test must never save anything.
+    code, state = portal.state()
+    report("check.saved_nothing", code == 200 and state == {"url": "", "keySet": False}, str(state))
 
     code, saved = portal.request("/api/homeremote", {"url": args.ha_url, "key": key})
     require("save.accepted", code == 200 and saved == {"status": "saved", "keySet": True})
