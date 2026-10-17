@@ -278,9 +278,11 @@ hr token+ <more>            -> [cmd] hr.token=saved chars=<n>   (adds to the end
 hr mirror on|off            -> [cmd] hr.mirror=<on|off>        (front LEDs show the open light's colour; default on)
 hr show                     -> [cmd] hr.url=<address|unset> token=<set|unset> mirror=<on|off>
 hr clear                    -> [cmd] hr.clear=ok
-hr state  (test builds)     -> [cmd] hr.state=<screen> msg=<..> link=<..> sel=<n> rows=<n> fav=<n> right=<..> label=<row>
+hr state  (test builds)     -> [cmd] hr.state=<screen> msg=<..> link=<..> sel=<n> rows=<n> fav=<n> right=<..> id=<entity|-> label=<row>
                                [cmd] hr.light=<entity> on=<0|1> bri=<0-255> rgb=<r,g,b> hex=#RRGGBB effect=<..> takeover=<0|1>
                                      (the second line only on a light or effect screen)
+                               [cmd] hr.speaker=<entity> volume=<0-100> known=<0|1> muted=<0|1> features=<bits> takeover=<0|1>
+                                     (instead of hr.light on a speaker screen)
 anything else after `hr`    -> [err] hr.usage=...
 ```
 
@@ -295,6 +297,10 @@ screen ever shows the key: replies give only its length, a usage error
 never echoes the line, and the dispatcher wipes the input line after any
 `hr` command. `hr state` prints the app's current screen and selected row
 for bench scripts; entity names and ids are not secret.
+On lists, `id` identifies the selected device, scene or script, so scripts
+can select a speaker even when another row has the same name. Other rows
+use `-`. Opening a speaker reports `screen=speaker` and its volume in whole
+percent; `known=0` means the speaker has not reported a volume yet.
 
 ### Installing updates
 

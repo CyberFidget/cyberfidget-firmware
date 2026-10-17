@@ -4,7 +4,7 @@
 #ifndef HOME_REMOTE_APP_H
 #define HOME_REMOTE_APP_H
 
-// Tools > Home Remote (APP_HOME_REMOTE): controls lights, scenes and
+// Tools > Home Remote (APP_HOME_REMOTE): controls lights, speakers, scenes and
 // scripts through a Home Assistant server on the home network.
 //
 // Screens: the top list (the favorites - entities with the "Cyber Fidget"
@@ -17,6 +17,9 @@
 // light screen Left/Right change the row's value (hold to speed up) and
 // the slider sets the brightness once it has reached the light's level
 // (opening a light never changes it).
+// Speakers open their own controls: Play/Pause, Volume, Track and Mute,
+// as supported. Volume pickup requires crossing the current level; opening
+// or polling a speaker never sends volume. The LEDs stay off here.
 //
 // Network: lib/HomeRemote/HomeRemoteClient.h. Settings: HomeRemoteConfig.h.
 
@@ -27,7 +30,7 @@ void end();
 void update();
 
 #ifdef CF_TEST_CLI
-/// `hr state`: the screen, selected row and (light screen) its values.
+/// `hr state`: the screen, selected row and the open light/speaker's values.
 void printState();
 #endif
 
