@@ -1135,6 +1135,13 @@ void test_release_build_verb_allowlist() {
         TEST_ASSERT_TRUE_MESSAGE(countWhere(lines, v, true) >= 1, v);
         TEST_ASSERT_EQUAL_INT_MESSAGE(0, countWhere(lines, v, false), v);
     }
+    // Home Remote setup (`hr url|token|token+|mirror|show|clear`) is in every
+    // build; its `hr state` probe is test-only.
+    TEST_ASSERT_TRUE_MESSAGE(countWhere(lines, "HomeRemote::Config::cliCommand", false) >= 1,
+                             "HomeRemote::Config::cliCommand");
+    const std::vector<SourceLine> hr = classify(readSource("lib/HomeRemote/HomeRemoteConfig.cpp"));
+    TEST_ASSERT_TRUE(countWhere(hr, "HomeRemoteApp::printState", true) >= 1);
+    TEST_ASSERT_EQUAL_INT(0, countWhere(hr, "HomeRemoteApp::printState", false));
 }
 
 void test_syncinfo_setup_before_fw_terminator() {

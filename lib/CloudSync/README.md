@@ -23,8 +23,8 @@ check..." if a session is running, cancels it and waits for WiFi to be off. When
 stop in time, or when the Music Player is launched after a session has used
 WiFi in this power cycle, the device restarts with a one-shot
 (`bootcfg.bootmusic` or the portal's `bootcfg.bootapp`, plus `skipanim`) that
-relaunches the app in a clean power cycle. Home Remote has no relaunch: when
-the session does not stop in time the menu stays and says to try again.
+relaunches the app in a clean power cycle. Home Remote relaunches the same
+way, through `bootcfg.boothome` plus `skipanim`.
 Home Remote holds the radio through `claimRadio()` for as long as it is open
 (so it counts as WiFi use this power cycle), and no session starts while it
 is the active app. The session only switches WiFi off if it switched it on.
