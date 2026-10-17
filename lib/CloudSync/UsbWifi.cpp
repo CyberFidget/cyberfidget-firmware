@@ -167,6 +167,35 @@ void scanSort(ScanList& list) {
     }
 }
 
+const char* knownVerb(const char* line) {
+    // Every first word SerialCli::dispatch answers, in any build (`hr` is
+    // left out: its lines are always taken by the hr handler).
+    static const char* const kVerbs[] = {
+        "abench", "app", "apps", "awake", "battery", "btn", "btstat", "cloud", "diary",
+        "fdelete", "flist", "fread", "fstat", "fwabort", "fwcommit", "fwdata", "fwrite",
+        "gauge", "heapmap", "heapstat", "help", "info", "lapply", "launch", "lbuiltin",
+        "lget", "link", "mark", "menutree", "mic", "net", "prompt", "rail", "reboot",
+        "reset", "screencap", "screenstream", "sleep", "soak", "status", "syncinfo",
+        "tlsalloc", "tlsprobe", "upd", "uvlo", "version", "wasm", "wasmstat", "wifi",
+    };
+    if (!line) return nullptr;
+    while (*line == ' ' || *line == '\t') line++;
+    size_t n = 0;
+    while (line[n] && line[n] != ' ' && line[n] != '\t') n++;
+    if (n == 0) return nullptr;
+    for (const char* v : kVerbs) {
+        if (strlen(v) != n) continue;
+        size_t i = 0;
+        for (; i < n; i++) {
+            char c = line[i];
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (c != v[i]) break;
+        }
+        if (i == n) return v;
+    }
+    return nullptr;
+}
+
 const char* busyReason(const RadioOwners& o) {
     if (o.usbJob) return "wifi";
     if (o.update) return "update";
@@ -275,9 +304,15 @@ void LineInput::quarantine(uint32_t nowMs) {
     inLine_ = false;
     mismatch_ = false;
     matched_ = 0;
-    wipe(buf_, sizeof(buf_));
+    UsbWifi::wipe(buf_, sizeof(buf_));
     len_ = 0;
     overflow_ = false;
+    nul_ = false;
+}
+
+void LineInput::wipe() {
+    UsbWifi::wipe(buf_, sizeof(buf_));
+    len_ = 0;
 }
 
 namespace {
@@ -335,8 +370,15 @@ LineInput::Next LineInput::next(Port& port) {
         if (c == '\n' || c == '\r') {
             if (overflow_) {
                 overflow_ = false;
-                len_ = 0;
+                nul_ = false;
+                wipe();
                 return Next::TooLong;
+            }
+            if (nul_) {
+                nul_ = false;
+                wipe();
+                if (c == '\r') takePairedLf(port);
+                return Next::Invalid;
             }
             if (len_ == 0) continue;   // empty line, or the LF of a CRLF
             buf_[len_] = '\0';
@@ -345,8 +387,11 @@ LineInput::Next LineInput::next(Port& port) {
             if (c == '\r') takePairedLf(port);
             return Next::Line;
         }
+        if (overflow_) continue;    // dropped up to the end of the line
+        if (c == '\0') nul_ = true;
         if (len_ + 1 >= kCap) {
-            overflow_ = true;   // dropped up to the end of the line
+            overflow_ = true;
+            wipe();             // nothing of a dropped line stays in memory
             continue;
         }
         buf_[len_++] = c;

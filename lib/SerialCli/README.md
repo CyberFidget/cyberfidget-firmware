@@ -15,6 +15,15 @@ file/loadout synchronization, and a gated set of bench-only device controls.
   `.done` line or have a fixed set of tagged lines.
 * The `[boot]` and `[uvlo]` prefixes belong to startup and autonomous UVLO
   reporting. CLI verbs never emit `[uvlo]`.
+* An unknown command whose first word is the name of a CLI verb (typically
+  a test-build verb sent to a release build) is answered
+  `[err] unknown command: <verb>`, the name taken from a fixed list; clients
+  tell a release build by `[err] unknown command: btn`. Any other line is
+  answered `[err] unknown command`: nothing typed is ever echoed, since a
+  mistyped line can carry a secret (`UsbWifi::knownVerb`). A line longer than 159
+  bytes is answered `[err] line too long`, and one holding a NUL byte
+  `[err] line invalid`; neither runs. The input buffer is zeroed after every
+  line, handled or dropped.
 * Sync payloads are length-framed raw bytes with CRC-32. See
   `lib/SyncProtocol/README.md` for the full transport and confinement contract.
 
@@ -27,6 +36,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
 | `lget`, `lbuiltin`, `lapply`, `syncinfo` | `prompt`, `status`, `upd` |
 | `wifi scan`, `wifi add`, `wifi try`, `wifi saved` | `wifi <ssid>\|<pass>`, `wifi list\|first\|forget\|hint-bad\|hint-clear`, `cloud ...`, `link ...` |
+| `hr url`, `hr token`, `hr token+`, `hr mirror`, `hr show`, `hr clear` | `hr state` |
 
 The `local_test` PlatformIO environment defines `CF_TEST_CLI`. A normal
 `local` build does not compile the gated dispatch arms or implementations.
@@ -259,6 +269,33 @@ once WiFi is off, the library's "scanning" flag is cleared so later scans
 (the portal's, a check-in's) still start. `wifi.try=ok` names the network the
 join actually used.
 
+### Home Remote setup
+
+```text
+hr url <http://host[:port]> -> [cmd] hr.url=<address>          ([err] hr.url=invalid)
+hr token <key>              -> [cmd] hr.token=saved chars=<n>   ([err] hr.token=invalid | too-long)
+hr token+ <more>            -> [cmd] hr.token=saved chars=<n>   (adds to the end of the saved key)
+hr mirror on|off            -> [cmd] hr.mirror=<on|off>        (front LEDs show the open light's colour; default on)
+hr show                     -> [cmd] hr.url=<address|unset> token=<set|unset> mirror=<on|off>
+hr clear                    -> [cmd] hr.clear=ok
+hr state  (test builds)     -> [cmd] hr.state=<screen> msg=<..> link=<..> sel=<n> rows=<n> fav=<n> right=<..> label=<row>
+                               [cmd] hr.light=<entity> on=<0|1> bri=<0-255> rgb=<r,g,b> hex=#RRGGBB effect=<..> takeover=<0|1>
+                                     (the second line only on a light or effect screen)
+anything else after `hr`    -> [err] hr.usage=...
+```
+
+The Home Remote app (`lib/HomeRemote`) talks to a Home Assistant server.
+Its address and long-lived access key are kept in NVS namespace
+`homeremote` (`url`, `tok`). Only a plain `http://` address is taken
+(Home Assistant's default on a home network), with any trailing `/`
+removed. A key is longer than one 160-byte serial line, so it is sent in
+pieces: `hr token` starts it and each `hr token+` adds to the end (a key
+is at most 300 printable characters, no spaces). No reply, log line or
+screen ever shows the key: replies give only its length, a usage error
+never echoes the line, and the dispatcher wipes the input line after any
+`hr` command. `hr state` prints the app's current screen and selected row
+for bench scripts; entity names and ids are not secret.
+
 ### Installing updates
 
 ```text
@@ -375,12 +412,15 @@ adds a diary marker carrying the resolved app index.
 
 ```text
 btn <index> press   -> [cmd] btn.press=<index>
+btn <index> held    -> [cmd] btn.held=<index>   (after press: the long-hold event)
 btn <index> release -> [cmd] btn.release=<index>
 btn <index> tap     -> [cmd] btn.tap=<index> release_in_ms=120
 sleep               -> [cmd] sleep=requested
 ```
 
-A tap generates a later `[cmd] btn.release=<index>` line. `sleep` sets a request
+A tap generates a later `[cmd] btn.release=<index>` line. An injected press
+is not timed by the pin scan, so a long hold is `press`, `held`, `release`;
+`held` is refused unless the button is down and fires once per press. `sleep` sets a request
 consumed by `AppManager`, keeping teardown out of serial dispatch.
 
 ### Sample prompt

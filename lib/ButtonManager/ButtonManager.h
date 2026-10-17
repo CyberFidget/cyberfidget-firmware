@@ -100,9 +100,10 @@ public:
      * @brief Test-only (CF_TEST_CLI): inject a button event as if the
      * physical pin had changed. Feeds the same event queue / callback path
      * physical presses use, so it works for native and wasm apps alike.
-     * Pressed also latches the pressed state (isPressed() agrees, and Held
-     * fires naturally if not released) until a Released injection.
-     * Only ButtonEvent_Pressed / ButtonEvent_Released are supported.
+     * Pressed also latches the pressed state (isPressed() agrees) until a
+     * Released injection. Held is injected explicitly between the two (once
+     * per press; ignored when the button is not down): the pin scan does
+     * not time an injected press.
      */
     void injectEvent(int buttonIndex, ButtonEventType type);
 #endif

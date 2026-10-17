@@ -574,10 +574,15 @@ struct Loop {
                 port.out += "[err] line too long\n";
                 continue;
             }
+            if (next == LineInput::Next::Invalid) {
+                port.out += "[err] line invalid\n";
+                continue;
+            }
             const char* line = input.line();
             if (strcmp(line, "wifi add") == 0) handleAdd("", port, input, recordSave, refuse);
             else if (strncmp(line, "wifi add ", 9) == 0) handleAdd(line + 9, port, input, recordSave, refuse);
             else commands.push_back(line);
+            input.wipe();   // as the driver does after every line
         }
     }
     // Polls every 10 ms (a loop pass) until `untilMs`.
@@ -902,6 +907,110 @@ void test_stream_lines_crlf_empty_and_too_long() {
     TEST_ASSERT_EQUAL_STRING("[err] line too long\n", loop.port.out.c_str());
 }
 
+static bool bufferZero(const LineInput& in) {
+    for (size_t i = 0; i < LineInput::kCap; i++)
+        if (in.line()[i] != 0) return false;
+    return true;
+}
+
+// Nothing of a handled, over-long or NUL-holding line stays in the buffer
+// (a line can carry a secret such as `hr token <key>`).
+void test_line_buffer_wiped_after_every_line() {
+    Loop loop;
+    loop.port.send(0, std::string("hr token abcdefghijklmnopqrstuvwxyz\n"));
+    loop.run(50);
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_TRUE(bufferZero(loop.input));
+
+    Loop over;
+    over.port.send(0, std::string("hr token ") + std::string(300, 'k') + "\n");
+    over.run(50);
+    TEST_ASSERT_EQUAL(0, (int)over.commands.size());
+    TEST_ASSERT_EQUAL_STRING("[err] line too long\n", over.port.out.c_str());
+    TEST_ASSERT_TRUE(bufferZero(over.input));
+
+    // An over-long line still arriving is already gone from memory.
+    Loop partial;
+    partial.port.send(0, std::string("hr token ") + std::string(200, 'k'));
+    partial.run(50);
+    TEST_ASSERT_TRUE(bufferZero(partial.input));
+}
+
+void test_line_with_nul_is_refused() {
+    Loop loop;
+    std::string line = "hr token abc";
+    line.push_back('\0');
+    line += "secret\nversion\n";
+    loop.port.send(0, line);
+    loop.run(50);
+    TEST_ASSERT_EQUAL(1, (int)loop.commands.size());
+    TEST_ASSERT_EQUAL_STRING("version", loop.commands[0].c_str());
+    TEST_ASSERT_EQUAL_STRING("[err] line invalid\n", loop.port.out.c_str());
+    TEST_ASSERT_TRUE(bufferZero(loop.input));
+}
+
+// The driver wipes the input after every dispatched line, echoes at most the
+// checked verb of an unknown line, and handles `hr` in every build.
+void test_driver_never_keeps_or_echoes_a_line() {
+    const std::string cli = readSource("lib/SerialCli/SerialCli.cpp");
+    const std::string poll = functionBody(cli, "void SerialCli::poll(");
+    const size_t dispatchAt = poll.find("dispatch(g_input.line());");
+    TEST_ASSERT_TRUE(dispatchAt != std::string::npos);
+    TEST_ASSERT_TRUE(poll.find("g_input.wipe();", dispatchAt) != std::string::npos);
+    TEST_ASSERT_TRUE(poll.find("Next::Invalid") != std::string::npos);
+    const size_t echo = cli.find("\"[err] unknown command: %s");
+    TEST_ASSERT_TRUE(echo != std::string::npos);
+    TEST_ASSERT_TRUE(cli.find("\"[err] unknown command: %s", echo + 1) == std::string::npos);
+    TEST_ASSERT_TRUE(cli.find("verb);", echo) == cli.find(");", echo) - 4);   // prints `verb` only
+    TEST_ASSERT_TRUE(cli.find("UsbWifi::knownVerb(line)") != std::string::npos);
+    const std::vector<SourceLine> lines = classify(cli);
+    TEST_ASSERT_TRUE(countWhere(lines, "HomeRemote::Config::cliCommand(args)", false) >= 1);
+}
+
+// `[err] unknown command: <verb>` keeps clients that test for a missing verb
+// (`unknown command: btn` on a release build) working; what it echoes comes
+// from a fixed list, so a pasted key or a fragment of one never comes back.
+void test_unknown_command_echoes_only_a_known_verb() {
+    TEST_ASSERT_EQUAL_STRING("btn", knownVerb("btn 5 tap"));       // the website's release check
+    TEST_ASSERT_EQUAL_STRING("btn", knownVerb("btn"));
+    TEST_ASSERT_EQUAL_STRING("btn", knownVerb("BTN 5 tap"));       // echoed from the list, not the line
+    TEST_ASSERT_EQUAL_STRING("launch", knownVerb("  launch\tHome Remote"));
+    TEST_ASSERT_EQUAL_STRING("screencap", knownVerb("screencap"));
+    TEST_ASSERT_NULL(knownVerb("frobnicate"));
+    TEST_ASSERT_NULL(knownVerb("shortKey123"));                    // a short pasted key
+    TEST_ASSERT_NULL(knownVerb("  shortKey123"));                  // ... after leading spaces
+    TEST_ASSERT_NULL(knownVerb(" abcdefghijklmnop remainder-of-key"));   // a key fragment
+    TEST_ASSERT_NULL(knownVerb("eyJhbGciOiJIUzI1NiJ9.eyJpc3MiOiJ4In0"));
+    TEST_ASSERT_NULL(knownVerb("hrtokenabc"));
+    TEST_ASSERT_NULL(knownVerb("hr"));
+    TEST_ASSERT_NULL(knownVerb("btnx"));                           // a verb only as a prefix
+    TEST_ASSERT_NULL(knownVerb("bt"));
+    TEST_ASSERT_NULL(knownVerb("   "));
+    TEST_ASSERT_NULL(knownVerb(""));
+    TEST_ASSERT_NULL(knownVerb(nullptr));
+}
+
+// Every first word the driver answers is on the list, so a release build
+// names any test-build verb it was sent.
+void test_known_verbs_cover_the_driver() {
+    const std::string cli = readSource("lib/SerialCli/SerialCli.cpp");
+    const std::string body = functionBody(cli, "void SerialCli::dispatch(");
+    TEST_ASSERT_TRUE(body.size() > 1000);
+    int seen = 0;
+    for (const char* pat : {"ieq(line, \"", "verbWithArg(line, \""}) {
+        size_t at = 0;
+        while ((at = body.find(pat, at)) != std::string::npos) {
+            at += strlen(pat);
+            const size_t end = body.find_first_of("\" ", at);
+            const std::string verb = body.substr(at, end - at);
+            if (verb == "hr") continue;
+            TEST_ASSERT_NOT_NULL_MESSAGE(knownVerb(verb.c_str()), verb.c_str());
+            seen++;
+        }
+    }
+    TEST_ASSERT_TRUE(seen > 40);
+}
+
 // The driver's `wifi add` is this handler, and the join never logs a key.
 void test_driver_uses_the_tested_add_path() {
     const std::string cli = readSource("lib/SerialCli/SerialCli.cpp");
@@ -1026,6 +1135,13 @@ void test_release_build_verb_allowlist() {
         TEST_ASSERT_TRUE_MESSAGE(countWhere(lines, v, true) >= 1, v);
         TEST_ASSERT_EQUAL_INT_MESSAGE(0, countWhere(lines, v, false), v);
     }
+    // Home Remote setup (`hr url|token|token+|mirror|show|clear`) is in every
+    // build; its `hr state` probe is test-only.
+    TEST_ASSERT_TRUE_MESSAGE(countWhere(lines, "HomeRemote::Config::cliCommand", false) >= 1,
+                             "HomeRemote::Config::cliCommand");
+    const std::vector<SourceLine> hr = classify(readSource("lib/HomeRemote/HomeRemoteConfig.cpp"));
+    TEST_ASSERT_TRUE(countWhere(hr, "HomeRemoteApp::printState", true) >= 1);
+    TEST_ASSERT_EQUAL_INT(0, countWhere(hr, "HomeRemoteApp::printState", false));
 }
 
 void test_syncinfo_setup_before_fw_terminator() {
@@ -1084,6 +1200,11 @@ int main(int, char**) {
     RUN_TEST(test_try_replies);
     RUN_TEST(test_lines_never_cut);
     RUN_TEST(test_release_build_verb_allowlist);
+    RUN_TEST(test_line_buffer_wiped_after_every_line);
+    RUN_TEST(test_line_with_nul_is_refused);
+    RUN_TEST(test_driver_never_keeps_or_echoes_a_line);
+    RUN_TEST(test_unknown_command_echoes_only_a_known_verb);
+    RUN_TEST(test_known_verbs_cover_the_driver);
     RUN_TEST(test_syncinfo_setup_before_fw_terminator);
     return UNITY_END();
 }
