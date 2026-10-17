@@ -15,6 +15,9 @@
 //     effect: one JSON string per line (decoded exactly, see decodeJsonString)
 //   caps: bit 0 = can dim, bit 1 = can take a colour. r,g,b is empty when
 //   the light reports no colour (off, or a white-only light).
+//   speaker: entity_id|name|state|volume|title|features|muted|artist
+//   volume is 0-255 (empty when unknown), features are HA feature bits,
+//   muted is 0/1. Title/artist are display-only, sanitized like names.
 // - Request bodies: the template bodies and the service call bodies.
 // - Controls: soft takeover for the physical slider, the outgoing send
 //   gate (latest wins, at most one send per interval), the poll guard (a
@@ -32,13 +35,20 @@ constexpr size_t kIdMax = 64;       // entity / area id
 constexpr size_t kNameMax = 48;     // a shown name
 constexpr size_t kEffectMax = 32;   // an effect name
 constexpr size_t kLineMax = 256;    // a longer line is dropped
+constexpr size_t kSpeakerLineMax = 768;  // room for the server's UTF-8 display text
 constexpr size_t kUrlMax = 96;
 constexpr size_t kTokenMax = 300;   // Home Assistant's long-lived keys are ~183
 
 /// The label that marks an entity as a favorite in Home Assistant.
 constexpr const char* kFavoriteLabel = "cyber_fidget";
 
-enum class Kind : uint8_t { Light, Scene, Script, Other };
+enum class Kind : uint8_t { Light, Scene, Script, Speaker, Other };
+enum class SpeakerState : uint8_t { Playing, Paused, Idle, Off };
+enum SpeakerFeature : uint32_t {
+    Pause = 1, VolumeSet = 4, VolumeMute = 8, PreviousTrack = 16,
+    NextTrack = 32, Stop = 4096, Play = 16384
+};
+constexpr size_t kMediaTextMax = 32;
 
 struct Entity {
     char id[kIdMax + 1] = {0};
@@ -53,6 +63,13 @@ struct Entity {
     bool canColor = false;
     uint8_t effectCount = 0;
     char effect[kEffectMax + 1] = {0};
+    SpeakerState speakerState = SpeakerState::Idle;
+    uint32_t features = 0;
+    bool hasVolume = false;
+    uint8_t volume = 0;
+    bool muted = false;
+    char title[kMediaTextMax + 1] = {0};
+    char artist[kMediaTextMax + 1] = {0};
 };
 
 struct Area {
@@ -62,6 +79,13 @@ struct Area {
 };
 
 Kind kindOf(const char* entityId);
+const char* speakerStateText(SpeakerState state);
+bool speakerSupports(uint32_t features, SpeakerFeature feature);
+bool speakerCanPlayPause(uint32_t features, SpeakerState state);
+uint8_t volumeByte(int percent);
+int volumePercent(int level);
+/// Whole percent steps, capped at five even during accelerated repeats.
+uint8_t steppedVolume(uint8_t level, int direction, int amount);
 
 /// One line (without its newline). False for a malformed line.
 bool parseEntityLine(const char* line, size_t len, Entity& out);
@@ -124,7 +148,10 @@ size_t effectsBody(const char* entityId, char* out, size_t cap);
 // ---- service calls ----------------------------------------------------------
 
 struct Action {
-    enum class Type : uint8_t { None, Toggle, TurnOn, TurnOff, Run };
+    enum class Type : uint8_t {
+        None, Toggle, TurnOn, TurnOff, Run, PlayPause, SetVolume, Mute,
+        Previous, Next
+    };
     Type type = Type::None;
     char entity[kIdMax + 1] = {0};
     bool setBrightness = false;
@@ -133,6 +160,8 @@ struct Action {
     uint8_t r = 0, g = 0, b = 0;
     bool setEffect = false;
     char effect[kEffectMax + 1] = {0};
+    int volumePercent = 0;   ///< clamped to 0..100, serialized as 0.00..1.00
+    bool muted = false;
 };
 
 /// "/api/services/<domain>/<service>" for the action. False when refused.
@@ -213,7 +242,9 @@ public:
     static constexpr int kTolerance = 6;
     static constexpr int kMinStep = 2;
 
-    void arm(int real, int slider);
+    /// Strict pickup requires crossing, consumes that movement without a
+    /// send, and never engages merely because the slider is near the level.
+    void arm(int real, int slider, bool strict = false);
     /// A new real value (a poll that is allowed to update the control).
     void setReal(int real, int slider);
     /// The slider's position now. True when *out is a new value to send.
@@ -225,6 +256,7 @@ private:
     int side_ = 0;        // sign of (slider - real) when armed
     int lastSent_ = 0;    // the slider position last turned into a value
     bool engaged_ = false;
+    bool strict_ = false;
 };
 
 // ---- outgoing send gate -----------------------------------------------------
