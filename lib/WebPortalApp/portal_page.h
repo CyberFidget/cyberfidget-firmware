@@ -438,6 +438,7 @@ input[type="file"]{display:none}
 .saved-list li:hover{background:none}
 .saved-list .btn-sm{margin-left:4px}
 .wifi-note{font-size:0.8em;color:var(--text-secondary);line-height:1.5;margin-top:8px}
+.wifi-card label{display:block;font-size:0.8em;color:var(--text-mute);margin-top:12px}
 .wifi-note.landing{margin:0 0 14px;color:var(--text-primary)}
 .wifi-spinner{display:inline-block;width:16px;height:16px;border:2px solid var(--border);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite;vertical-align:middle;margin-right:6px}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -665,8 +666,7 @@ input[type="file"]{display:none}
       <div class="wifi-note">Control your Home Assistant lights and speakers from your Cyber Fidget.</div>
       <label for="hrUrl">Home Assistant address</label>
       <input type="text" class="wifi-input" id="hrUrl" value="http://homeassistant.local:8123" inputmode="url" autocapitalize="off" autocorrect="off" spellcheck="false">
-      <div class="info-row"><span class="label">Access key</span><span class="val" id="hrKeyStatus">Not set</span></div>
-      <label for="hrKey">Access key</label>
+      <label for="hrKey">Access key - <span id="hrKeyStatus">not set</span></label>
       <input type="password" class="wifi-input" id="hrKey" autocomplete="off" placeholder="Paste your access key">
       <div class="wifi-actions">
         <button class="btn btn-play" onclick="testHomeRemote()" id="hrTestBtn">Test connection</button>
@@ -1999,7 +1999,7 @@ async function loadHomeRemote(keepAddress=false){
     const {code,data}=await homeRemoteRequest('');
     if(code!==200)return;
     if(!keepAddress)$('hrUrl').value=data.url||'http://homeassistant.local:8123';
-    $('hrKeyStatus').textContent=data.keySet?'Set':'Not set';
+    $('hrKeyStatus').textContent=data.keySet?'set':'not set';
     $('hrKey').placeholder=data.keySet?'Saved - leave empty to keep it':'Paste your access key';
   }catch(e){}
 }
