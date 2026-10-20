@@ -25,6 +25,9 @@ ButtonManager::ButtonManager(const int* pins,
     _lastChangeTime  = new unsigned long[_numButtons];
     _pressStartTime  = new unsigned long[_numButtons];
     _heldReported    = new bool[_numButtons];
+    _pressedEdges    = new bool[_numButtons];
+    _releasedEdges   = new bool[_numButtons];
+    clearEdges();
 #ifdef CF_TEST_CLI
     _injectedHold    = new bool[_numButtons];
 #endif
@@ -144,6 +147,29 @@ bool ButtonManager::getNextEvent(ButtonEvent &event) {
 bool ButtonManager::isPressed(int buttonIndex) const {
     if (buttonIndex < 0 || buttonIndex >= _numButtons) return false;
     return _currentState[buttonIndex];
+}
+
+bool ButtonManager::wasPressed(int buttonIndex) const {
+    if (buttonIndex < 0 || buttonIndex >= _numButtons) return false;
+    return _pressedEdges[buttonIndex];
+}
+
+bool ButtonManager::wasReleased(int buttonIndex) const {
+    if (buttonIndex < 0 || buttonIndex >= _numButtons) return false;
+    return _releasedEdges[buttonIndex];
+}
+
+void ButtonManager::latchEdge(const ButtonEvent& event) {
+    if (event.buttonIndex < 0 || event.buttonIndex >= _numButtons) return;
+    if (event.eventType == ButtonEvent_Pressed) _pressedEdges[event.buttonIndex] = true;
+    if (event.eventType == ButtonEvent_Released) _releasedEdges[event.buttonIndex] = true;
+}
+
+void ButtonManager::clearEdges() {
+    for (int i = 0; i < _numButtons; ++i) {
+        _pressedEdges[i] = false;
+        _releasedEdges[i] = false;
+    }
 }
 
 void ButtonManager::registerCallback(int buttonIndex, ButtonCallback callback) {

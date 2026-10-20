@@ -47,6 +47,28 @@ extern int   sliderPosition_8Bits_Inverted_Filtered;
 extern float sliderPosition_12Bits_Filtered;
 extern float sliderPosition_12Bits_Inverted_Filtered;
 
+// 0 at the bottom, 100 at the top.
+inline int sliderPercent() {
+    const float value = sliderPosition_Percentage_Inverted_Filtered;
+    if (!(value > 0.0f)) return 0;  // also catches NaN
+    if (value >= 100.0f) return 100;
+    return (int)(value + 0.5f);
+}
+
+// 0 at the bottom, 255 at the top.
+inline int slider255() {
+    int value = sliderPosition_8Bits_Inverted_Filtered;
+    return value < 0 ? 0 : (value > 255 ? 255 : value);
+}
+
+// 0 at the bottom, 4095 at the top.
+inline int slider4095() {
+    const float value = sliderPosition_12Bits_Inverted_Filtered;
+    if (!(value > 0.0f)) return 0;  // also catches NaN
+    if (value >= 4095.0f) return 4095;
+    return (int)(value + 0.5f);
+}
+
 namespace HAL {
     DisplayProxy& displayProxy();
     ButtonManager& buttonManager();
@@ -57,6 +79,10 @@ namespace HAL {
     void drawString(int16_t x, int16_t y, const String& text);
     void setRgbLed(int index, uint8_t r, uint8_t g, uint8_t b, uint8_t w);
     void setRgbLedsOff();
+}
+
+inline void setLed(int index, uint8_t r, uint8_t g, uint8_t b, uint8_t w) {
+    HAL::setRgbLed(index, r, g, b, w);
 }
 
 #endif  // HAL_H

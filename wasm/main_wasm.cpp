@@ -228,6 +228,7 @@ static void mainLoop() {
 #ifdef CF_WASM_MODULE_HOST
         if (moduleActive) moduleCall(3, ev.buttonIndex, ev.eventType);
 #else
+        HAL::buttonManager().latchEdge(ev);
         if (HAL::buttonManager().hasCallback(ev.buttonIndex)) {
             auto cb = HAL::buttonManager().getCallback(ev.buttonIndex);
             if (cb) cb(ev);
@@ -240,8 +241,10 @@ static void mainLoop() {
     HAL::displayProxy().display();
 #elif defined(APP_INSTANCE)
     APP_INSTANCE.update();
+    HAL::buttonManager().clearEdges();
 #else
     demoUpdate();
+    HAL::buttonManager().clearEdges();
 #endif
 }
 
@@ -251,6 +254,7 @@ int main() {
 #ifdef CF_WASM_MODULE_HOST
     // JS starts the guest explicitly, after installing Module.guestCall.
 #elif defined(APP_INSTANCE)
+    HAL::buttonManager().clearEdges();
     APP_INSTANCE.begin();
 #else
     demoBegin();

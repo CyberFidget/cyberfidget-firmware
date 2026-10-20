@@ -86,6 +86,14 @@ public:
      */
     bool isPressed(int buttonIndex) const;
 
+    /** @brief Press/release edges seen since the previous app update. */
+    bool wasPressed(int buttonIndex) const;
+    bool wasReleased(int buttonIndex) const;
+
+    // App runner only: latch delivered events and clear after an update or before begin.
+    void latchEdge(const ButtonEvent& event);
+    void clearEdges();
+
     /**
      * @brief Method to register a callback for a specific button.
      * 
@@ -136,6 +144,8 @@ private:
     unsigned long* _lastChangeTime; ///< Last time (ms) the reading changed
     unsigned long* _pressStartTime; ///< When the button was pressed (for press duration)
     bool* _heldReported;         ///< Whether we've already sent a "Held" event for this press
+    bool* _pressedEdges;         ///< Pressed events delivered since the previous app update
+    bool* _releasedEdges;        ///< Released events delivered since the previous app update
 #ifdef CF_TEST_CLI
     bool* _injectedHold;         ///< Test-only: pin scan treats button as pressed while set
 #endif
