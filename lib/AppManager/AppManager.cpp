@@ -439,7 +439,6 @@ void AppManager::runActiveApp()
     // paused (its update is skipped) until the prompt closes.
     if (ModalPrompt::instance().isOpen()) {
         ModalPrompt::instance().update();
-        HAL::buttonManager().clearEdges();  // the prompt's presses aren't the app's
         return;
     }
     // calls the runFunc for the currently active app
