@@ -20,11 +20,39 @@ with the version and date automatically.
 
 ### Added
 
+- New app, Tools > Home Remote: control the lights and speakers in your Home
+  Assistant from the Fidget. Favorites lists the lights, speakers, scenes and
+  scripts you give the `cyber_fidget` label in Home Assistant, and Rooms lists
+  your Home Assistant areas. Hold Enter on a row to switch a light on or off,
+  play or pause a speaker, or run a scene or script without opening it.
+- In Home Remote, a light's screen turns it on or off, sets the brightness
+  with the slider, adjusts red, green and blue, and picks a colour or an
+  effect when the light has them. Opening a light changes nothing until you
+  move the slider past its current level.
+- A speaker's screen plays and pauses, sets the volume with the slider, skips
+  tracks and mutes, where the speaker supports it, and shows what is playing.
+- Home Remote can show a light's colour on the front LEDs. Turn it off with
+  "Mirror on LEDs" on Home Remote's Status screen.
+- Set up Home Remote from your phone: the Web Portal's Settings > Network has
+  a Home Remote card for your Home Assistant address and access key, with a
+  Test connection button and steps for making an access key in Home
+  Assistant. You need Home Assistant on your home Wi-Fi.
+- Apps you make can check a button press right inside `update()`:
+  `buttonManager.wasPressed(...)` and `wasReleased(...)` are true once per
+  press, with no callback needed.
+- Apps you make can read the slider as a whole number that rises as you slide
+  up: `sliderPercent()` (0 to 100), `slider255()` and `slider4095()`.
+- Apps you make can set one LED with `setLed(index, r, g, b, w)`.
+
 ### Changed
+
+- Typing an unknown command into the USB serial console no longer repeats
+  what you typed back, so a pasted access key can't show up in the console.
 
 ### Fixed
 
-### Removed
+- `sliderPosition_12Bits_Inverted_Filtered` now reads the slider on the
+  device and in the emulator. It always read 0 before.
 
 ## [1.5.0] - 2026-10-07
 
