@@ -336,6 +336,8 @@ bool parseEntityLine(const char* line, size_t len, Entity& out) {
     if (e.kind != Kind::Speaker && len > kLineMax) return false;
     copyField(f[1], e.name, sizeof(e.name));
     if (e.name[0] == '\0') copyField(f[0], e.name, sizeof(e.name));
+    // Names, titles and artists are only ever drawn: no control characters.
+    displayText(e.name, e.name, sizeof(e.name));
     e.on = fieldIs(f[2], "on");
     e.available = !(fieldIs(f[2], "unavailable") || fieldIs(f[2], "unknown") || f[2].n == 0);
     if (e.kind == Kind::Speaker) {
@@ -345,10 +347,12 @@ bool parseEntityLine(const char* line, size_t len, Entity& out) {
         e.hasVolume = f[3].n != 0;
         if (e.hasVolume && !parseByte(f[3].p, f[3].n, e.volume)) return false;
         copyField(f[4], e.title, sizeof(e.title));
+        displayText(e.title, e.title, sizeof(e.title));
         if (!parseUint(f[5].p, f[5].n, 10, UINT32_MAX, e.features)) return false;
         if (!fieldIs(f[6], "0") && !fieldIs(f[6], "1")) return false;
         e.muted = fieldIs(f[6], "1");
         copyField(f[7], e.artist, sizeof(e.artist));
+        displayText(e.artist, e.artist, sizeof(e.artist));
         out = e;
         return true;
     }
@@ -379,6 +383,7 @@ bool parseAreaLine(const char* line, size_t len, Area& out) {
     if (!validAreaId(a.id)) return false;
     copyField(f[1], a.name, sizeof(a.name));
     if (a.name[0] == '\0') copyField(f[0], a.name, sizeof(a.name));
+    displayText(a.name, a.name, sizeof(a.name));
     uint32_t count = 0;
     if (!parseUint(f[2].p, f[2].n, 5, 65535, count)) return false;
     a.count = (uint16_t)count;
