@@ -20,6 +20,16 @@ with the version and date automatically.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+## [1.6.0] - 2026-10-21
+
+### Added
+
 - New app, Tools > Home Remote: control the lights and speakers in your Home
   Assistant from the Fidget. Favorites lists the lights, speakers, scenes and
   scripts you give the `cyber_fidget` label in Home Assistant, and Rooms lists
@@ -192,7 +202,8 @@ with the version and date automatically.
 
 - Dead header generation left over in the app module build.
 
-[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.5.0...HEAD
+[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.6.0...HEAD
+[1.6.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.3.3-rc2...v1.4.0
