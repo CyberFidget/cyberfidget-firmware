@@ -128,6 +128,7 @@ namespace HAL {
             int sliderRaw = ::wasm_analog_values[0];
             sliderPosition_12Bits = sliderRaw;
             sliderPosition_12Bits_Filtered = (float)sliderRaw;
+            sliderPosition_12Bits_Inverted_Filtered = 4095.0f - sliderPosition_12Bits_Filtered;
             sliderPosition_8Bits_Filtered = sliderRaw * 255 / 4095;
             sliderPosition_8Bits_Inverted_Filtered = 255 - sliderPosition_8Bits_Filtered;
             sliderPosition_Percentage_Filtered = sliderRaw * 100.0f / 4095.0f;

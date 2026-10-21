@@ -22,6 +22,11 @@
       "rationale": "The glue clears guest-local button state between app runs; the firmware ButtonManager is a long-lived singleton with no equivalent."
     },
     {
+      "file": "wasm/device_module/shims/ButtonManager.h",
+      "symbol": "endFrame",
+      "rationale": "The glue clears guest-local press/release edges after each app_update; the firmware app runner clears its own edges with clearEdges."
+    },
+    {
       "file": "wasm/device_module/shims/DisplayProxy.h",
       "symbol": "setOverlayMode",
       "rationale": "The device host owns overlay state, so the guest setter is intentionally a no-op."

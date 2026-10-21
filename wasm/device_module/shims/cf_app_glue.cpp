@@ -180,6 +180,7 @@ __attribute__((export_name("app_update"))) void app_update() {
     // A callback that asked to leave: like native, the app doesn't update
     // again (the host ends it after this call returns).
     if (!g_exitRequested) CF_APP_INSTANCE.update();
+    g_buttonManager.endFrame();
     if (millis_APP_LASTINTERACTION != lastInteractionBefore) {
         cf_keepalive();  // forward the deep-sleep inhibit to the host
     }

@@ -64,6 +64,14 @@ public:
         return buttonIndex >= 0 && buttonIndex < kMaxButtons && pressed[buttonIndex];
     }
 
+    // Press/release edges seen since the previous app update.
+    bool wasPressed(int buttonIndex) const {
+        return buttonIndex >= 0 && buttonIndex < kMaxButtons && pressedEdges[buttonIndex];
+    }
+    bool wasReleased(int buttonIndex) const {
+        return buttonIndex >= 0 && buttonIndex < kMaxButtons && releasedEdges[buttonIndex];
+    }
+
     // Called by the exported app_handle_button() glue: updates state now (even
     // with no callback registered, so isPressed() works for polling apps) and
     // queues the event for flushCallbacks().
@@ -73,10 +81,12 @@ public:
         uint32_t duration = 0;
         switch (eventType) {
         case ButtonEvent_Pressed:
+            pressedEdges[buttonIndex] = true;
             pressed[buttonIndex] = true;
             pressedAt[buttonIndex] = now;
             break;
         case ButtonEvent_Released:
+            releasedEdges[buttonIndex] = true;
             if (pressed[buttonIndex]) duration = now - pressedAt[buttonIndex];
             pressed[buttonIndex] = false;
             break;
@@ -127,9 +137,18 @@ public:
         }
     }
 
+    // Glue-only: clear edges after app_update(), including a skipped update.
+    void endFrame() {
+        for (int i = 0; i < kMaxButtons; ++i) {
+            pressedEdges[i] = false;
+            releasedEdges[i] = false;
+        }
+    }
+
     // Called by the glue in app_begin(): a fresh start with nothing pending
     // and no button considered down.
     void reset() {
+        endFrame();
         for (int i = 0; i < kMaxButtons; ++i) { pressed[i] = false; pressedAt[i] = 0; }
         pendingHead = 0;
         pendingCount = 0;
@@ -139,6 +158,8 @@ private:
     static constexpr int kMaxPending = 32;
     ButtonCallback callbacks[kMaxButtons] = {};
     bool pressed[kMaxButtons] = {};
+    bool pressedEdges[kMaxButtons] = {};
+    bool releasedEdges[kMaxButtons] = {};
     uint32_t pressedAt[kMaxButtons] = {};
     ButtonEvent pending[kMaxPending] = {};
     int pendingHead = 0;

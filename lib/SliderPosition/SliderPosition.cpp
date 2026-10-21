@@ -147,6 +147,7 @@ void sliderPositionRead(int sliderVoltagePin) {
     sliderPosition_12Bits_Filtered = filtered_12Bits;
     if (sliderPosition_12Bits_Filtered < 0.0f) sliderPosition_12Bits_Filtered = 0.0f;
     if (sliderPosition_12Bits_Filtered > 4095.0f) sliderPosition_12Bits_Filtered = 4095.0f;
+    sliderPosition_12Bits_Inverted_Filtered = 4095.0f - sliderPosition_12Bits_Filtered;
 
     // Calculate the percentage as a floating-point value to retain precision
     float percentage = (filtered_12Bits * 100.0f) / 4095.0f;

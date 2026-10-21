@@ -323,6 +323,7 @@ void AppManager::setup() {
 
     BOOT_MARK("resume");
     // Start the menu
+    HAL::buttonManager().clearEdges();
     appDefs[appActive].beginFunc();
     BOOT_MARK("begin");
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
@@ -442,6 +443,7 @@ void AppManager::runActiveApp()
     }
     // calls the runFunc for the currently active app
     appDefs[appActive].runFunc();
+    HAL::buttonManager().clearEdges();
 }
 
 void AppManager::processButtonEvents()
@@ -455,6 +457,7 @@ void AppManager::processButtonEvents()
         // their 48 h safety net.
         AwakeMode::noteButton();
         if (ModalPrompt::instance().swallowEvent(ev)) continue;
+        if (!ModalPrompt::instance().isOpen()) HAL::buttonManager().latchEdge(ev);
         if (HAL::buttonManager().hasCallback(ev.buttonIndex)) {
             auto cb = HAL::buttonManager().getCallback(ev.buttonIndex);
             if (cb) cb(ev);
@@ -617,6 +620,7 @@ void AppManager::switchToApp(AppIndex newApp)
     appActive     = newApp;
 
     // begin new
+    HAL::buttonManager().clearEdges();
     appDefs[appActive].beginFunc();
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
 }
@@ -641,6 +645,7 @@ void AppManager::relaunchActive()
         std::string id, label;
         if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
     }
+    HAL::buttonManager().clearEdges();
     appDefs[appActive].beginFunc();
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
 }
