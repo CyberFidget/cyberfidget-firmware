@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """T-001 HIL smoke test: capture boot banner + exercise version/info/help/garbage CLI."""
 import argparse
+import re
 import sys
 import time
 import serial
@@ -75,7 +76,9 @@ def main():
     print("\n=== unknown command ===")
     out = send_cmd(ser, "garbage", wait_s=0.5)
     print(out)
-    err_ok = "[err] unknown command:" in out
+    # Unknown commands answer "[err] unknown command" (with ": <verb>" only
+    # for a known verb name), so match the stable prefix.
+    err_ok = re.search(r"\[err\] unknown command\b", out) is not None
 
     print("\n=== overflow (100-char line) ===")
     out = send_cmd(ser, "x" * 100, wait_s=0.5)

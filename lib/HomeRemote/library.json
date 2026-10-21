@@ -1,0 +1,6 @@
+{
+    "name": "HomeRemote",
+    "version": "1.0.0",
+    "description": "Home Remote app: controls lights through a Home Assistant server on the home network",
+    "dependencies": []
+}

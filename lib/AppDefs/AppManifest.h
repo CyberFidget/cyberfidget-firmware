@@ -81,3 +81,6 @@ APP_ENTRY(APP_FACTORY_RESET,         "Reset to factory",   "Settings",       Fac
 APP_ENTRY(APP_DATA_SCREENSAVER,      "",                    "",               DataScreensaver::appBegin,                       DataScreensaver::appEnd,                       DataScreensaver::appUpdate                 )
 // Settings > Sound > Speaker EQ: a few named presets, saved across power cycles.
 APP_ENTRY(APP_SPEAKER_EQ,            "Speaker EQ",          "Settings/Sound", SpeakerEqScreen::begin,                          SpeakerEqScreen::end,                          SpeakerEqScreen::update                    )
+// Tools > Home Remote: lights, scenes and scripts through a Home Assistant
+// server on the home network. A radio app (AppManager::switchToApp).
+APP_ENTRY(APP_HOME_REMOTE,           "Home Remote",         "Tools",          HomeRemoteApp::begin,                            HomeRemoteApp::end,                            HomeRemoteApp::update                      )

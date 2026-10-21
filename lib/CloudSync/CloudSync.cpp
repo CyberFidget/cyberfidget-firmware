@@ -1977,7 +1977,7 @@ bool runSession(Reason reason, bool applyWaiting, int32_t dailyVbat, int32_t dai
     recoverClearBeforeSession();
     // Never under an app that owns a radio: it would share the power cycle.
     const AppIndex active = AppManager::instance().activeApp();
-    if (active == APP_MUSIC_PLAYER || active == APP_WEB_PORTAL) return false;
+    if (active == APP_MUSIC_PLAYER || active == APP_WEB_PORTAL || active == APP_HOME_REMOTE) return false;
     CloudPlanner entry;
     if (entry.start(esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) == Step::Reboot) {
         // The check continues after the restart; "Get them now" goes with it.
@@ -2046,7 +2046,7 @@ static bool beginPairWorker(WorkerKind kind) {
         SerialCli::instance().radioBusy()) return false;
     recoverClearBeforeSession();
     const AppIndex active = AppManager::instance().activeApp();
-    if (active == APP_MUSIC_PLAYER || active == APP_WEB_PORTAL) return false;
+    if (active == APP_MUSIC_PLAYER || active == APP_WEB_PORTAL || active == APP_HOME_REMOTE) return false;
     CloudPlanner entry;
     if (entry.start(esp_bt_controller_get_status() == ESP_BT_CONTROLLER_STATUS_IDLE) == Step::Reboot) {
         Preferences boot;

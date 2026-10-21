@@ -233,6 +233,87 @@ static void test_reset_clears_pending_and_pressed() {
     TEST_ASSERT_TRUE(bm.hasCallback(1));  // registrations belong to the app, not reset
 }
 
+static void test_edges_are_one_shot_with_and_without_callbacks() {
+    ButtonManager bm;
+    bm.registerCallback(1, record);
+    for (int b = 0; b < 2; ++b) bm.dispatch(b, ButtonEvent_Pressed);
+    bm.flushCallbacks();
+    for (int b = 0; b < 2; ++b) {
+        TEST_ASSERT_TRUE(bm.wasPressed(b));
+        TEST_ASSERT_FALSE(bm.wasReleased(b));
+    }
+    TEST_ASSERT_EQUAL_INT(1, g_calls);
+    bm.endFrame();
+    bm.flushCallbacks();
+    for (int b = 0; b < 2; ++b) {
+        TEST_ASSERT_TRUE(bm.isPressed(b));
+        TEST_ASSERT_FALSE(bm.wasPressed(b));
+        TEST_ASSERT_FALSE(bm.wasReleased(b));
+    }
+    bm.endFrame();
+    for (int b = 0; b < 2; ++b) bm.dispatch(b, ButtonEvent_Released);
+    bm.flushCallbacks();
+    for (int b = 0; b < 2; ++b) {
+        TEST_ASSERT_FALSE(bm.wasPressed(b));
+        TEST_ASSERT_TRUE(bm.wasReleased(b));
+        TEST_ASSERT_FALSE(bm.isPressed(b));
+    }
+    TEST_ASSERT_EQUAL_INT(2, g_calls);
+    bm.endFrame();
+    bm.flushCallbacks();
+    for (int b = 0; b < 2; ++b) {
+        TEST_ASSERT_FALSE(bm.wasPressed(b));
+        TEST_ASSERT_FALSE(bm.wasReleased(b));
+    }
+    bm.endFrame();
+}
+
+static void test_tap_latches_both_edges_in_one_frame() {
+    ButtonManager bm;
+    bm.dispatch(3, ButtonEvent_Pressed);
+    bm.dispatch(3, ButtonEvent_Released);
+    bm.flushCallbacks();
+    TEST_ASSERT_TRUE(bm.wasPressed(3));
+    TEST_ASSERT_TRUE(bm.wasReleased(3));
+    TEST_ASSERT_FALSE(bm.isPressed(3));
+    bm.endFrame();
+    TEST_ASSERT_FALSE(bm.wasPressed(3));
+    TEST_ASSERT_FALSE(bm.wasReleased(3));
+}
+
+static void test_held_sets_neither_edge() {
+    ButtonManager bm;
+    bm.dispatch(2, ButtonEvent_Held);
+    bm.flushCallbacks();
+    TEST_ASSERT_TRUE(bm.isPressed(2));
+    TEST_ASSERT_FALSE(bm.wasPressed(2));
+    TEST_ASSERT_FALSE(bm.wasReleased(2));
+    bm.endFrame();
+}
+
+static void test_reset_clears_both_edges() {
+    ButtonManager bm;
+    bm.dispatch(1, ButtonEvent_Pressed);
+    bm.dispatch(1, ButtonEvent_Released);
+    bm.reset();
+    bm.flushCallbacks();
+    TEST_ASSERT_FALSE(bm.wasPressed(1));
+    TEST_ASSERT_FALSE(bm.wasReleased(1));
+    bm.endFrame();
+}
+
+static void test_edge_indices_out_of_range_are_false() {
+    ButtonManager bm;
+    bm.dispatch(-1, ButtonEvent_Pressed);
+    bm.dispatch(6, ButtonEvent_Released);
+    bm.flushCallbacks();
+    TEST_ASSERT_FALSE(bm.wasPressed(-1));
+    TEST_ASSERT_FALSE(bm.wasPressed(6));
+    TEST_ASSERT_FALSE(bm.wasReleased(-1));
+    TEST_ASSERT_FALSE(bm.wasReleased(6));
+    bm.endFrame();
+}
+
 int main(int, char**) {
     UNITY_BEGIN();
     RUN_TEST(test_pressed_has_zero_duration_and_latches_state);
@@ -252,5 +333,10 @@ int main(int, char**) {
     RUN_TEST(test_exit_request_discards_later_callbacks);
     RUN_TEST(test_batched_press_held_release_keeps_the_hold);
     RUN_TEST(test_reset_clears_pending_and_pressed);
+    RUN_TEST(test_edges_are_one_shot_with_and_without_callbacks);
+    RUN_TEST(test_tap_latches_both_edges_in_one_frame);
+    RUN_TEST(test_held_sets_neither_edge);
+    RUN_TEST(test_reset_clears_both_edges);
+    RUN_TEST(test_edge_indices_out_of_range_are_false);
     return UNITY_END();
 }

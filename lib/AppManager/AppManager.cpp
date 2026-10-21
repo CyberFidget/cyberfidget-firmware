@@ -192,6 +192,7 @@ void AppManager::setup() {
     bool bootCloud = false;
     bool bootApply = false;
     bool bootMusic = false;
+    bool bootHome = false;
     bool bootLink = false;
     bool bootUnlink = false;
     bool bootWifiPage = false;
@@ -203,6 +204,7 @@ void AppManager::setup() {
         bootCloud = bootPrefs.getBool("bootcloud", false);
         bootApply = bootPrefs.getBool("bootapply", false);
         bootMusic = bootPrefs.getBool("bootmusic", false);
+        bootHome = bootPrefs.getBool("boothome", false);
         bootLink = bootPrefs.getBool("bootlink", false);
         bootUnlink = bootPrefs.getBool("bootunlink", false);
         bootWifiPage = bootPrefs.getBool("bootwifi", false);
@@ -216,6 +218,7 @@ void AppManager::setup() {
         bootPrefs.remove("bootcloud");
         bootPrefs.remove("bootapply");
         bootPrefs.remove("bootmusic");
+        if (bootPrefs.isKey("boothome")) bootPrefs.remove("boothome");
         bootPrefs.remove("bootlink");
         bootPrefs.remove("bootunlink");
         if (bootPrefs.isKey("bootwifi")) bootPrefs.remove("bootwifi");
@@ -266,12 +269,12 @@ void AppManager::setup() {
     BOOT_MARK("awake");
     // A manual check that restarted after Bluetooth use continues here.
     const PromptPolicy::CheckResume resume =
-        PromptPolicy::resumeAfterRestart(bootCloud, bootApply, bootPortal || bootMusic);
+        PromptPolicy::resumeAfterRestart(bootCloud, bootApply, bootPortal || bootMusic || bootHome);
 
     // A delivered app reopened in a fresh start (see restartIntoWasmApp).
     bool bootWasm = false;
     s_wasmResumedBoot = !bootWasmId.empty();
-    if (!bootWasmId.empty() && !bootPortal && !bootMusic) {
+    if (!bootWasmId.empty() && !bootPortal && !bootMusic && !bootHome) {
         LoadoutManifest::Loadout lo;
         if (loadLoadoutManifest(lo, nullptr)) {
             for (const auto& e : lo.entries) {
@@ -301,6 +304,7 @@ void AppManager::setup() {
     appActive     = UpdateSession::imagePending() ? APP_MENU
                   : bootPortal ? APP_WEB_PORTAL
                   : bootMusic  ? APP_MUSIC_PLAYER
+                  : bootHome   ? APP_HOME_REMOTE
                   : bootLink   ? APP_LINK
                   : bootWasm   ? APP_WASM_HOST
                   : resume.openCheckScreen ? APP_CHECK_UPDATES
@@ -319,6 +323,7 @@ void AppManager::setup() {
 
     BOOT_MARK("resume");
     // Start the menu
+    HAL::buttonManager().clearEdges();
     appDefs[appActive].beginFunc();
     BOOT_MARK("begin");
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
@@ -329,9 +334,9 @@ void AppManager::setup() {
         // another check for it, however fast it finishes.
         if (appActive == APP_CHECK_UPDATES) UpdatePrompt::resumeCheck(started);
     }
-    if (bootUnlink && !bootPortal && !bootMusic) CloudSync::startUnlink();
+    if (bootUnlink && !bootPortal && !bootMusic && !bootHome) CloudSync::startUnlink();
     bootWindowPending = true;
-    bootWasOneShot = skipBootAnimation || bootPortal || bootMusic || bootLink ||
+    bootWasOneShot = skipBootAnimation || bootPortal || bootMusic || bootHome || bootLink ||
                      bootUnlink || bootCloud || !bootWasmId.empty();
     // The update popup follows the start-up animation only.
     if (appActive == APP_BOOT_ANIMATION) UpdatePrompt::armBootPopup();
@@ -438,6 +443,7 @@ void AppManager::runActiveApp()
     }
     // calls the runFunc for the currently active app
     appDefs[appActive].runFunc();
+    HAL::buttonManager().clearEdges();
 }
 
 void AppManager::processButtonEvents()
@@ -451,6 +457,7 @@ void AppManager::processButtonEvents()
         // their 48 h safety net.
         AwakeMode::noteButton();
         if (ModalPrompt::instance().swallowEvent(ev)) continue;
+        if (!ModalPrompt::instance().isOpen()) HAL::buttonManager().latchEdge(ev);
         if (HAL::buttonManager().hasCallback(ev.buttonIndex)) {
             auto cb = HAL::buttonManager().getCallback(ev.buttonIndex);
             if (cb) cb(ev);
@@ -547,7 +554,7 @@ void AppManager::switchToApp(AppIndex newApp)
         std::string id, label;
         if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
     }
-    if (newApp == APP_MUSIC_PLAYER || newApp == APP_WEB_PORTAL) {
+    if (newApp == APP_MUSIC_PLAYER || newApp == APP_WEB_PORTAL || newApp == APP_HOME_REMOTE) {
         // Radio apps: a network check must be over (WiFi off) before they
         // start. Bluetooth after any WiFi use this power cycle, or a check
         // that would not stop in time, goes through a reboot that
@@ -568,7 +575,8 @@ void AppManager::switchToApp(AppIndex newApp)
             Preferences boot;
             if (boot.begin("bootcfg", false)) {
                 boot.putBool("skipanim", true);
-                boot.putBool(newApp == APP_MUSIC_PLAYER ? "bootmusic" : "bootapp", true);
+                boot.putBool(newApp == APP_MUSIC_PLAYER ? "bootmusic"
+                             : newApp == APP_HOME_REMOTE ? "boothome" : "bootapp", true);
                 boot.end();
             }
             if (!checking) showRadioNotice("Restarting...");
@@ -612,6 +620,7 @@ void AppManager::switchToApp(AppIndex newApp)
     appActive     = newApp;
 
     // begin new
+    HAL::buttonManager().clearEdges();
     appDefs[appActive].beginFunc();
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
 }
@@ -636,6 +645,7 @@ void AppManager::relaunchActive()
         std::string id, label;
         if (WasmFsApp::pendingLaunch(id, label) && !id.empty()) restartIntoWasmApp(id, label);
     }
+    HAL::buttonManager().clearEdges();
     appDefs[appActive].beginFunc();
     ModalPrompt::instance().setHostAllows(appTakesPrompts(appActive));
 }

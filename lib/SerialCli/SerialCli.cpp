@@ -29,6 +29,8 @@
 #include "FactoryReset.h"
 #include "SavedWifi.h"        // wifi add / try / saved (every build)
 #include "UsbWifi.h"          // pure framing, scan list, replies for the wifi setup verbs
+#include "HomeRemoteConfig.h" // hr url / token / show / clear (every build)
+#include "HomeRemoteLogic.h"  // secureWipe
 #include <WiFi.h>
 #include <esp_bt.h>           // Bluetooth started: WiFi waits for a restart
 #include <esp_wifi.h>
@@ -676,7 +678,13 @@ void SerialCli::poll() {
             Serial.println("[err] line too long");
             continue;
         }
+        if (next == UsbWifi::LineInput::Next::Invalid) {
+            Serial.println("[err] line invalid");
+            continue;
+        }
         dispatch(g_input.line());
+        // A line can carry a secret (`hr token`): nothing of it is kept.
+        g_input.wipe();
         // A deferred verb stops reading here (see pollDeferred).
         if (deferredPending) return;
     }
@@ -809,6 +817,26 @@ void SerialCli::dispatch(const char* line, bool retry) {
     if (ieq(line, "wifi saved")) { cmdWifiSaved(); return; }
     if (ieq(line, "wifi add"))   { cmdWifiAdd(""); return; }
     if (verbWithArg(line, "wifi add", &arg)) { cmdWifiAdd(arg); return; }
+    // Home Remote's Home Assistant address and access key (every build).
+    // The line may hold the key: it is never echoed, and poll() wipes the
+    // whole input buffer after every line. Leading spaces/tabs and tabs
+    // between words are accepted, so a pasted line still lands here.
+    {
+        const char* p = line;
+        while (*p == ' ' || *p == '\t') p++;
+        if ((p[0] == 'h' || p[0] == 'H') && (p[1] == 'r' || p[1] == 'R') &&
+            (p[2] == '\0' || p[2] == ' ' || p[2] == '\t')) {
+            p += 2;
+            while (*p == ' ' || *p == '\t') p++;
+            char args[UsbWifi::LineInput::kCap];
+            size_t n = 0;
+            for (; *p && n + 1 < sizeof(args); p++) args[n++] = (*p == '\t') ? ' ' : *p;
+            args[n] = '\0';
+            HomeRemote::Config::cliCommand(args);
+            HomeRemote::secureWipe(args, sizeof(args));
+            return;
+        }
+    }
 #ifdef CF_TEST_CLI
     if (ieq(line, "link start")) {
         if (!CloudSync::startLink()) Serial.println("[cmd] link.state=error reason=busy");
@@ -1004,7 +1032,13 @@ void SerialCli::dispatch(const char* line, bool retry) {
         return;
     }
 #endif
-    Serial.printf("[err] unknown command: %s\n", line);
+    // Only a known verb's name, taken from a fixed list, is echoed (clients
+    // such as the website's terminal tell a release build by `unknown
+    // command: btn`); nothing typed is ever echoed, as it may be a secret.
+    if (const char* verb = UsbWifi::knownVerb(line))
+        Serial.printf("[err] unknown command: %s\n", verb);
+    else
+        Serial.println("[err] unknown command");
 }
 
 #ifdef CF_TEST_CLI
@@ -1015,7 +1049,7 @@ void SerialCli::dispatch(const char* line, bool retry) {
 void SerialCli::cmdBtn(const char* args) {
     char* rest = nullptr;
     long idx = strtol(args, &rest, 10);
-    if (rest == args) { Serial.println("[err] btn: usage: btn <index> <press|release|tap>"); return; }
+    if (rest == args) { Serial.println("[err] btn: usage: btn <index> <press|held|release|tap>"); return; }
     while (*rest == ' ') rest++;
     int numButtons = HAL::buttonManager().getNumButtons();
     if (idx < 0 || idx >= numButtons || idx >= kMaxInjectButtons) {
@@ -1035,8 +1069,16 @@ void SerialCli::cmdBtn(const char* args) {
         unsigned long due = millis() + kTapReleaseMs;
         tapReleaseDueMs[idx] = (due == 0) ? 1 : due;
         Serial.printf("[cmd] btn.tap=%ld release_in_ms=%lu\n", idx, kTapReleaseMs);
+    } else if (ieq(rest, "held")) {
+        // The long-hold event of a press made with `btn <i> press`.
+        if (!HAL::buttonManager().isPressed((int)idx)) {
+            Serial.println("[err] btn: held needs a press first (btn <index> press)");
+            return;
+        }
+        HAL::buttonManager().injectEvent((int)idx, ButtonEvent_Held);
+        Serial.printf("[cmd] btn.held=%ld\n", idx);
     } else {
-        Serial.println("[err] btn: usage: btn <index> <press|release|tap>");
+        Serial.println("[err] btn: usage: btn <index> <press|held|release|tap>");
     }
 }
 
@@ -1515,6 +1557,7 @@ void SerialCli::cmdHelp() {
                    "fstat,fread,lget,lbuiltin,lapply,syncinfo");
     Serial.println("[cmd] help.update=upd slot,upd allow-unsigned <on|off>");
     Serial.println("[cmd] help.wifi=wifi scan,wifi add <len> <crc32>,wifi try,wifi saved");
+    Serial.println("[cmd] help.hr=hr url <url>,hr token <key>,hr token+ <more>,hr mirror <on|off>,hr show,hr clear");
 #ifdef CF_TEST_CLI
     Serial.println("[cmd] help.test=apps,app,launch <name|index>,net,heapstat,"
                    "tlsprobe [url],tlsalloc <psram|internal>,mic,"

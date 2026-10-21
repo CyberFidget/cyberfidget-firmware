@@ -98,6 +98,16 @@ struct RadioOwners {
 /// checkin|bluetooth.
 const char* busyReason(const RadioOwners& owners);
 
+// ---- unknown commands ----------------------------------------------------------------
+
+/// What `[err] unknown command: <verb>` may echo for an unknown line: the
+/// fixed, lowercase name of a SerialCli verb when the line's first word
+/// (after leading spaces/tabs, up to the next space or tab) is exactly that
+/// name in any case - typically a test-build verb sent to a release build
+/// (`btn`). nullptr for anything else: then nothing is echoed. The text
+/// echoed always comes from the fixed list, never from the line.
+const char* knownVerb(const char* line);
+
 // ---- wifi try ----------------------------------------------------------------------
 
 /// What `wifi try` reports for a failed join (`wifi.try=fail reason=<word>`).
@@ -158,18 +168,23 @@ constexpr char kResyncLine[] = "version";
 class LineInput {
 public:
     static constexpr size_t kCap = 160;   // SerialCli::kBufferSize
-    enum class Next : uint8_t { None, Line, TooLong };
+    enum class Next : uint8_t { None, Line, TooLong, Invalid };
     /// Reads until a whole line (Line: see line()), the end of an over-long
-    /// line (TooLong), or nothing more is waiting / a quarantine is still on
-    /// (None).
+    /// line (TooLong), the end of a line holding a NUL byte (Invalid), or
+    /// nothing more is waiting / a quarantine is still on (None). A dropped
+    /// line is wiped from the buffer as soon as it is dropped.
     Next next(Port& port);
     const char* line() const { return buf_; }
+    /// Zeroes the whole buffer (call once a line has been handled: it may
+    /// have carried a secret).
+    void wipe();
     void quarantine(uint32_t nowMs);
     bool quarantined() const { return quarantine_; }
 private:
     char buf_[kCap] = {0};
     size_t len_ = 0;
     bool overflow_ = false;
+    bool nul_ = false;          // the current line holds a NUL byte
     bool quarantine_ = false;
     uint32_t lastByteMs_ = 0;
     // Quarantine keeps no byte it reads (a refused payload holds a
