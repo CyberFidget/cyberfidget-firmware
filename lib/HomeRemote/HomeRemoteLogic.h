@@ -130,7 +130,8 @@ size_t templateText(Template kind, const char* arg, char* out, size_t cap);
 /// (terminator included).
 int decodeJsonString(const char* in, size_t len, char* out, size_t cap);
 
-/// Text safe to draw: control characters become spaces.
+/// Text safe to draw: control characters become spaces (the display's width
+/// lookup has no entry below the space). `in` may be `out`.
 void displayText(const char* in, char* out, size_t cap);
 
 /// Zeroes memory in a way the compiler keeps (secrets before a free/return).

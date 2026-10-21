@@ -914,6 +914,8 @@ void detailValue(Row row, char* out, size_t cap) {
         case Row::Preset: snprintf(out, cap, "< %s >", preset(presetIdx).name); break;
         case Row::Effect: snprintf(out, cap, "%s >", d.effect[0] ? d.effect : "None"); break;
     }
+    // The effect is kept exact for sending; only this copy is drawn.
+    displayText(out, out, cap);
 }
 
 void drawDetail() {

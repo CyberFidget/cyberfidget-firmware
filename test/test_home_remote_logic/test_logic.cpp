@@ -76,6 +76,24 @@ void test_entity_line_trims_carriage_return_and_spaces(void) {
     TEST_ASSERT_FALSE(e.canColor);
 }
 
+void test_drawn_text_has_no_control_characters(void) {
+    // The display's width lookup has no entry below the space, so names,
+    // titles and artists lose control characters; the effect stays exact
+    // because it is sent back to Home Assistant.
+    Entity e;
+    TEST_ASSERT_TRUE(parseLine("light.desk|Desk\tLamp|on|10|1,2,3|3|2|Slow\tFade", e));
+    TEST_ASSERT_EQUAL_STRING("Desk Lamp", e.name);
+    TEST_ASSERT_EQUAL_STRING("Slow\tFade", e.effect);
+    TEST_ASSERT_TRUE(parseLine("media_player.den|Den\x01|playing|50|Song\tA|16|0|Band\x1f", e));
+    TEST_ASSERT_EQUAL_STRING("Den ", e.name);
+    TEST_ASSERT_EQUAL_STRING("Song A", e.title);
+    TEST_ASSERT_EQUAL_STRING("Band ", e.artist);
+    const char body[] = "den|Den\tRoom|1\n";
+    Area areas[2];
+    TEST_ASSERT_EQUAL_INT(1, parseAreas(body, strlen(body), areas, 2));
+    TEST_ASSERT_EQUAL_STRING("Den Room", areas[0].name);
+}
+
 void test_entity_line_rejects_malformed(void) {
     Entity e;
     TEST_ASSERT_FALSE(parseLine("", e));
@@ -1039,6 +1057,7 @@ int main(int, char**) {
     RUN_TEST(test_speaker_service_paths_and_bodies);
     RUN_TEST(test_speaker_takeover_open_poll_and_return_never_send);
     RUN_TEST(test_entity_line_trims_carriage_return_and_spaces);
+    RUN_TEST(test_drawn_text_has_no_control_characters);
     RUN_TEST(test_entity_line_rejects_malformed);
     RUN_TEST(test_entity_name_is_cut_to_fit);
     RUN_TEST(test_empty_name_falls_back_to_id);
