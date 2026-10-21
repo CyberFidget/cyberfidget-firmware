@@ -1023,7 +1023,7 @@ void drawMessage() {
                       nullptr, nullptr, "Back: exit");
             break;
         case Msg::NotSetUp:
-            drawLines("Not set up yet.", "Connect over USB", "to set it up.", "Back: exit");
+            drawLines("Not set up yet. Use", "Tools > CyberFidget", "Portal, or USB.", "Back: exit");
             break;
         case Msg::NoWifi:
             drawLines("Set up WiFi first", "in Settings.", nullptr, "Back: exit");
