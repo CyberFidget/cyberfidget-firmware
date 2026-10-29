@@ -84,3 +84,5 @@ APP_ENTRY(APP_SPEAKER_EQ,            "Speaker EQ",          "Settings/Sound", Sp
 // Tools > Home Remote: lights, scenes and scripts through a Home Assistant
 // server on the home network. A radio app (AppManager::switchToApp).
 APP_ENTRY(APP_HOME_REMOTE,           "Home Remote",         "Tools",          HomeRemoteApp::begin,                            HomeRemoteApp::end,                            HomeRemoteApp::update                      )
+// Tools > Counter: two tallies, left buttons and right buttons.
+APP_ENTRY(APP_COUNTER,               "Counter",             "Tools",          counterBegin,                                    counterEnd,                                    counterUpdate                              )
