@@ -43,3 +43,4 @@
 #include "DataScreensaver.h"
 #include "SpeakerEqScreen.h"
 #include "HomeRemoteApp.h"
+#include "Counter.h"

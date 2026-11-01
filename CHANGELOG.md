@@ -20,6 +20,10 @@ with the version and date automatically.
 
 ### Added
 
+- New app, Tools > Counter: two tallies side by side. The left buttons add
+  to the left count and the right buttons to the right one; hold the top
+  button on a side to zero it. Counts are kept when the Fidget is off.
+
 ### Changed
 
 ### Fixed
