@@ -10,13 +10,12 @@
 
 namespace {
 
-// The count each button adds to, by button index; -1 is Back.
-constexpr int8_t kSide[] = {0, 1, 0, 1, -1, 1};
-static_assert(button_TopLeftIndex == 0 && button_TopRightIndex == 1 &&
-              button_MiddleLeftIndex == 2 && button_MiddleRightIndex == 3 &&
-              button_BottomLeftIndex == 4 && button_BottomRightIndex == 5,
-              "kSide follows the HAL button order");
-constexpr int kButtons = sizeof(kSide) / sizeof(kSide[0]);
+// Every button the app answers; HAL.h says which index is which.
+constexpr int kButtons[] = {
+    button_TopLeftIndex,  button_MiddleLeftIndex,
+    button_TopRightIndex, button_MiddleRightIndex, button_BottomRightIndex,
+    button_SelectIndex,
+};
 
 // Presses are saved together once the buttons have been still this long,
 // so a burst of taps is one flash write. Idle sleep comes much later.
@@ -36,6 +35,19 @@ void save()
     dirty = false;
 }
 
+// The count a button adds to; -1 for Back.
+int sideFor(int idx)
+{
+    switch (idx) {
+    case button_TopLeftIndex:
+    case button_MiddleLeftIndex:   return 0;
+    case button_TopRightIndex:
+    case button_MiddleRightIndex:
+    case button_BottomRightIndex:  return 1;
+    default:                       return -1; // button_SelectIndex (back)
+    }
+}
+
 void setCount(int side, uint32_t value)
 {
     counts[side] = value;
@@ -45,7 +57,7 @@ void setCount(int side, uint32_t value)
 
 void onButton(const ButtonEvent& event)
 {
-    const int side = kSide[event.buttonIndex];
+    const int side = sideFor(event.buttonIndex);
     if (side < 0) {
         // switchToApp ends this app, which saves.
         if (event.eventType == ButtonEvent_Released) MenuManager::instance().returnToMenu();
@@ -66,13 +78,13 @@ void counterBegin()
     for (int i = 0; i < 2; i++) counts[i] = prefs.getUInt(kKeys[i], 0);
     prefs.end();
     dirty = false;
-    for (int i = 0; i < kButtons; i++) HAL::buttonManager().registerCallback(i, onButton);
+    for (int b : kButtons) HAL::buttonManager().registerCallback(b, onButton);
 }
 
 void counterEnd()
 {
     if (dirty) save();
-    for (int i = 0; i < kButtons; i++) HAL::buttonManager().unregisterCallback(i);
+    for (int b : kButtons) HAL::buttonManager().unregisterCallback(b);
 }
 
 void counterUpdate()
