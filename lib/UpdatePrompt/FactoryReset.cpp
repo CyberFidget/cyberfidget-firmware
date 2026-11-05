@@ -280,7 +280,7 @@ void showPartialNotice() {
     delay(6000);
 }
 
-void finishIfInterrupted() {
+bool finishIfInterrupted() {
     using FactoryResetPolicy::BootStep;
 #ifdef CF_TEST_CLI
     if (esp_reset_reason() == ESP_RST_POWERON) faultFsMagic = 0;
@@ -288,16 +288,16 @@ void finishIfInterrupted() {
     const auto step = FactoryResetPolicy::bootStep(readMark(), UpdateSession::imagePending());
     if (step == BootStep::Normal) {
         showPartialNotice();
-        return;
+        return false;
     }
     if (step == BootStep::Unreadable) {
         // Logged by readMark; start normally, the mark (if any) stays.
         Serial.println("[reset] factory=boot-normal mark=unreadable");
-        return;
+        return true;
     }
     if (step == BootStep::Wait) {
         Serial.println("[reset] factory=interrupted wait=pending-image");
-        return;
+        return true;
     }
     Serial.println("[reset] factory=finishing");
     // A timer wake has not started the screen; the restart below brings it up.
@@ -327,7 +327,7 @@ void finishIfInterrupted() {
         // Start normally and try again next time rather than restart in a loop.
         Serial.println("[reset] factory=error nvs");
         nvs_flash_init();
-        return;
+        return true;
     }
     if (FactoryResetPolicy::finishResult(formatted) == FactoryResetPolicy::FinishResult::Partial) {
         // The settings are gone (the mark with them, so no loop), but the

@@ -265,7 +265,7 @@ CheckResume resumeAfterRestart(bool bootcloud, bool bootapply, bool otherAppFirs
 
 bool earlyAnimationFrame(const StartShots& s) {
     return !s.imagePending && !s.timerWake && !s.skipanim && !s.portal && !s.music &&
-           !s.link && !s.wasmApp && !s.bootcloud;
+           !s.link && !s.wasmApp && !s.bootcloud && !s.resumeApp;
 }
 
 CheckEntry checkEntry(bool resumedSessionStarted, bool sessionBusy) {
