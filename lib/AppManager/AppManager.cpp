@@ -26,6 +26,10 @@
 #include "WebPortalApp.h"
 #include "BootAnimation.h"
 #include <Preferences.h>
+#include <esp_sleep.h>
+#include <esp_system.h>
+#include "version.h"
+#include "ResumePolicy.h"
 #include <esp_heap_caps.h>
 #include <cstring>
 #include <string>
@@ -88,6 +92,64 @@ static bool wasmRestartHelps()
     delay(200);
     ESP.restart();
     for (;;) {}
+}
+
+static uint32_t resumeBuildId()
+{
+    return ResumePolicy::buildId(FW_VERSION_FULL_STRING, FW_BUILD_TIMESTAMP);
+}
+
+static bool resumeEligible(int app)
+{
+    for (AppIndex eligible : resumeEligibleApps) if (app == eligible) return true;
+    return false;
+}
+
+static bool validResume(const ResumePolicy::Record& record)
+{
+    return ResumePolicy::valid(record, APP_COUNT, resumeBuildId()) &&
+           resumeEligible(record.appIndex);
+}
+
+static bool discardStoredResume()
+{
+    bool present = HAL::resumeRecord().magic != 0;
+    HAL::clearResumeRecord();
+    Preferences boot;
+    if (boot.begin("bootcfg", false)) {
+        if (boot.isKey(ResumePolicy::kBootKey)) {
+            present = true;
+            boot.remove(ResumePolicy::kBootKey);
+        }
+        boot.end();
+    }
+    return present;
+}
+
+static void commitResume(SleepReason reason)
+{
+    // Deferred sleep keeps running the foreground app: sample it here.
+    const int app = AppManager::instance().activeApp();
+    ResumePolicy::Record record = {};
+    if (ResumePolicy::shouldArm(reason, app, resumeEligible(app)) &&
+        ResumePolicy::makeRecord(record, app, MenuManager::instance().currentCategory().c_str(),
+                                 resumeBuildId())) {
+        HAL::storeResumeRecord(record);
+    } else {
+        HAL::clearResumeRecord();
+    }
+}
+
+void AppManager::preserveResumeForRestart()
+{
+    const auto& record = HAL::resumeRecord();
+    if (!validResume(record)) return;
+    Preferences boot;
+    if (boot.begin("bootcfg", false)) {
+        const bool saved = boot.putBytes(ResumePolicy::kBootKey, &record, sizeof(record)) == sizeof(record);
+        boot.end();
+        Serial.printf("[boot] resume-handoff=%s\n", saved ? "saved" : "storage-error");
+    }
 }
 
 // Set in setup(); the boot-window check starts on the first loop pass, once
@@ -155,18 +217,26 @@ void AppManager::setup() {
     // nothing below may start while it is still unconfirmed.
     BOOT_MARK("setup");
     UpdateSession::beginSelfTest();
+    // Clear the handoff before verification can roll back to an older image.
+    const bool pendingResumeDiscarded = UpdateSession::imagePending() &&
+        esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER && discardStoredResume();
     BOOT_MARK("selftest");
     HAL::configureWakeupPins();
     esp_log_level_set("*", ESP_LOG_VERBOSE);
     esp_log_level_set(TAG_MAIN, ESP_LOG_VERBOSE);
     HAL::initHardware();
     BOOT_MARK("hw");
+    if (pendingResumeDiscarded) Serial.println("[boot] resume=none reason=update");
     // Pending image: pass, or restart into the previous image.
     UpdateSession::finishBoot();
     BOOT_MARK("finish");
     // A reset to factory cut off by power loss finishes here, before
     // anything reads WiFi, the account link or the apps (it restarts).
-    FactoryReset::finishIfInterrupted();
+    const bool factoryInterrupted = FactoryReset::finishIfInterrupted();
+    const bool updateRequested = UpdateSession::sessionRequestArmed();
+    if (updateRequested && esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) {
+        if (discardStoredResume()) Serial.println("[boot] resume=none reason=update");
+    }
     {
         // "Install now" restarted into the update session: it never
         // returns (it restarts), and nothing else starts in this power cycle.
@@ -180,6 +250,7 @@ void AppManager::setup() {
         CheckinScheduler::runHeadless(wakeVcellMv, wakeSocPct);
     }
     HAL::setBeforeSleep(CheckinScheduler::armBeforeSleep);
+    HAL::setSleepCommitHook(commitResume);
     BOOT_MARK("session");
     DeviceIdentity::checkStored();
     BOOT_MARK("ident");
@@ -196,9 +267,17 @@ void AppManager::setup() {
     bool bootLink = false;
     bool bootUnlink = false;
     bool bootWifiPage = false;
+    ResumePolicy::Record resumeRecord = HAL::resumeRecord();
+    bool bootResume = false;
+    bool bootPrefsRead = false;
+    bool explicitBoot = false;
+    bool resumeConsumed = true;
     std::string bootWasmId;
     std::string bootWasmCat;
     if (bootPrefs.begin("bootcfg", false)) {
+        const char* explicitKeys[] = {"skipanim", "bootapp", "bootcloud", "bootapply", "bootmusic",
+            "boothome", "bootlink", "bootunlink", "bootwifi", "wasmid", "wasmcat"};
+        for (const char* key : explicitKeys) if (bootPrefs.isKey(key)) explicitBoot = true;
         skipBootAnimation = bootPrefs.getBool("skipanim", false);
         bootPortal = bootPrefs.getBool("bootapp", false);
         bootCloud = bootPrefs.getBool("bootcloud", false);
@@ -210,6 +289,14 @@ void AppManager::setup() {
         bootWifiPage = bootPrefs.getBool("bootwifi", false);
         if (bootPrefs.isKey("wasmid")) bootWasmId = bootPrefs.getString("wasmid", "").c_str();
         if (bootPrefs.isKey("wasmcat")) bootWasmCat = bootPrefs.getString("wasmcat", "").c_str();
+        bootPrefsRead = true;
+        bootResume = bootPrefs.isKey(ResumePolicy::kBootKey);
+        if (bootResume) {
+            resumeRecord = {};
+            if (bootPrefs.getBytesLength(ResumePolicy::kBootKey) == sizeof(resumeRecord))
+                bootPrefs.getBytes(ResumePolicy::kBootKey, &resumeRecord, sizeof(resumeRecord));
+            resumeConsumed = bootPrefs.remove(ResumePolicy::kBootKey);
+        }
         // Consumed before the app starts: a failing app never loops.
         bootPrefs.remove("wasmid");
         bootPrefs.remove("wasmcat");
@@ -226,6 +313,29 @@ void AppManager::setup() {
     } else {
         ESP_LOGW(TAG_MAIN, "Failed to open boot preferences");
     }
+    ResumePolicy::BootInputs resumeInputs;
+    resumeInputs.reset = esp_reset_reason() == ESP_RST_DEEPSLEEP
+        ? ResumePolicy::Reset::DeepSleep : ResumePolicy::Reset::Other;
+    const esp_sleep_wakeup_cause_t wakeCause = esp_sleep_get_wakeup_cause();
+    resumeInputs.wake = wakeCause == ESP_SLEEP_WAKEUP_EXT0  ? ResumePolicy::Wake::Button
+                      : wakeCause == ESP_SLEEP_WAKEUP_TIMER ? ResumePolicy::Wake::Timer
+                                                            : ResumePolicy::Wake::Other;
+    resumeInputs.recordPresent = HAL::resumeRecord().magic != 0;
+    resumeInputs.recordValid = resumeConsumed && validResume(resumeRecord);
+    resumeInputs.resumeOneShot = bootResume;
+    resumeInputs.explicitOneShot = explicitBoot || !bootPrefsRead;
+    resumeInputs.imagePending = UpdateSession::imagePending();
+    resumeInputs.updateVerification = updateRequested;
+    resumeInputs.factoryReset = factoryInterrupted;
+    resumeInputs.appIndex = resumeRecord.appIndex;
+    const auto resumeDecision = ResumePolicy::decide(resumeInputs);
+    const bool resumedApp = resumeDecision.appIndex >= 0;
+    if (resumeDecision.discardRecord) HAL::clearResumeRecord();
+    if (resumedApp || resumeInputs.recordPresent || bootResume) {
+        Serial.printf("[boot] resume=%s reason=%s\n",
+                      resumedApp ? appIds[resumeDecision.appIndex] : "none",
+                      ResumePolicy::reasonName(resumeDecision.reason));
+    }
     BOOT_MARK("bootcfg");
 
     // An ordinary start opens on the start-up animation: its first frame
@@ -235,6 +345,7 @@ void AppManager::setup() {
     shots.imagePending = UpdateSession::imagePending();
     shots.timerWake = strcmp(HAL::bootWakeupCauseName(), "timer") == 0;
     shots.skipanim = skipBootAnimation;
+    shots.resumeApp = resumedApp;
     shots.portal = bootPortal;
     shots.music = bootMusic;
     shots.link = bootLink;
@@ -293,6 +404,10 @@ void AppManager::setup() {
                       (unsigned)heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL));
     }
 
+    if (resumedApp)
+        MenuManager::instance().restoreAfterSleep(resumeRecord.category,
+                                                 (AppIndex)resumeDecision.appIndex);
+
     // A Bluetooth app relaunched across the reboot that followed a network
     // check starts in a clean power cycle. A check asked for after Bluetooth
     // use continues on the Check for updates screen, which shows its result.
@@ -307,6 +422,7 @@ void AppManager::setup() {
                   : bootHome   ? APP_HOME_REMOTE
                   : bootLink   ? APP_LINK
                   : bootWasm   ? APP_WASM_HOST
+                  : resumedApp ? (AppIndex)resumeDecision.appIndex
                   : resume.openCheckScreen ? APP_CHECK_UPDATES
                                : (skipBootAnimation ? APP_MENU : APP_BOOT_ANIMATION);
     appPreviously = APP_MENU;
@@ -336,7 +452,7 @@ void AppManager::setup() {
     }
     if (bootUnlink && !bootPortal && !bootMusic && !bootHome) CloudSync::startUnlink();
     bootWindowPending = true;
-    bootWasOneShot = skipBootAnimation || bootPortal || bootMusic || bootHome || bootLink ||
+    bootWasOneShot = resumedApp || skipBootAnimation || bootPortal || bootMusic || bootHome || bootLink ||
                      bootUnlink || bootCloud || !bootWasmId.empty();
     // The update popup follows the start-up animation only.
     if (appActive == APP_BOOT_ANIMATION) UpdatePrompt::armBootPopup();

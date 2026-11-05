@@ -155,7 +155,8 @@ namespace HAL {
     // wifiManagerCF() intentionally omitted — not available in WASM
 
     void configureWakeupPins() {}
-    void enterDeepSleep() {}
+    void enterDeepSleep(bool, SleepReason) {}
+    void setSleepCommitHook(void (*)(SleepReason)) {}
     void setAuxPower(bool) {}
 
     float getBatteryVoltage()    { return batteryVoltage; }

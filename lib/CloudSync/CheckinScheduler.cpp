@@ -171,7 +171,8 @@ bool wakeButtonPressed(bool duringSession) {
     Serial.printf("[checkin] reason=daily button=pressed stopped=%d restart=normal\n",
                   CloudSync::busy() ? 0 : 1);
     Serial.flush();
-    // A software restart is not a timer wake: the next start is a normal one.
+    AppManager::preserveResumeForRestart();
+    // A software restart loses RTC_DATA_ATTR: the one-shot carries the app.
     esp_restart();
     for (;;) {}
 }

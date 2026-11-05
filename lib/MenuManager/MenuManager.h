@@ -162,6 +162,7 @@ public:
      * so Back returns to where the app was opened from.
      */
     void restoreAfterRestart(const std::string &category, const std::string &blobId);
+    void restoreAfterSleep(const char* category, AppIndex app);
 
 private:
     // Private constructor: we use the singleton pattern above
@@ -194,6 +195,7 @@ private:
     bool restorePending = false;
     std::string restoreCategory;
     std::string restoreBlobId;
+    AppIndex restoreApp = APP_COUNT;
     void applyRestore();
 
     // If we navigate into a sub-menu, we push state here so we can go back

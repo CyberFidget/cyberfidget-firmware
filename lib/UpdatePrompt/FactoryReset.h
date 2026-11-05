@@ -9,7 +9,8 @@ void begin();
 void end();
 void update();
 // Early start-up: finishes a reset that a power cut interrupted.
-void finishIfInterrupted();
+// True if recovery blocked an ordinary boot, including a storage error.
+bool finishIfInterrupted();
 #ifdef CF_TEST_CLI
 // holdBetweenErases: wait 10 s after the apps erase (bench power-cut aim).
 // fault: MarkWrite makes the mark write fail (the reset must refuse);

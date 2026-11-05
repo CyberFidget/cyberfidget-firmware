@@ -1,0 +1,6 @@
+{
+    "name": "ResumePolicy",
+    "version": "1.0.0",
+    "description": "Pure sleep resume rules and record validation",
+    "dependencies": []
+}

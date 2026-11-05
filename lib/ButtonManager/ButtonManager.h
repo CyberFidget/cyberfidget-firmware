@@ -6,6 +6,7 @@
 
 #include <Arduino.h>
 #include "globals.h"
+#include "BootGesture.h"
 
 /**
  * @brief Different types of events a button can generate.
@@ -143,6 +144,7 @@ private:
     bool* _previousState;        ///< Previous stable state
     unsigned long* _lastChangeTime; ///< Last time (ms) the reading changed
     unsigned long* _pressStartTime; ///< When the button was pressed (for press duration)
+    BootGesture* _bootGestures;   ///< Suppress a physical press already down at init
     bool* _heldReported;         ///< Whether we've already sent a "Held" event for this press
     bool* _pressedEdges;         ///< Pressed events delivered since the previous app update
     bool* _releasedEdges;        ///< Released events delivered since the previous app update

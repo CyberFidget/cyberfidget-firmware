@@ -28,6 +28,9 @@ public:
     // restart). Returns only when nothing is staged.
     void restartIntoPendingApp();
 
+    // Headless button wake: carry the RTC resume through a software restart.
+    static void preserveResumeForRestart();
+
     // Currently running app (read-only; used by the test-mode Serial CLI)
     AppIndex activeApp() const { return appActive; }
 
