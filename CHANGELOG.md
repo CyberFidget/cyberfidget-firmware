@@ -27,6 +27,9 @@ with the version and date automatically.
   asleep while one of them is open, waking it opens that app again. Back
   takes you to the menu as usual. Switching off with Power Manager, or any
   other restart, still starts at the menu.
+- In Dev mode, when you send a firmware update from the website while an
+  app is open, the Fidget opens that app again once the new firmware has
+  started. If the update doesn't go through, it starts at the menu.
 
 ### Changed
 
@@ -34,6 +37,11 @@ with the version and date automatically.
 
 - The button press that wakes the Fidget only wakes it. Holding it down
   while the Fidget starts no longer counts as a press in the app or menu.
+- Deleting a playlist in the Web Portal works. It could fail before, or
+  overwrite the playlist instead of deleting it.
+- The `wifi add` command in the USB serial console turns down a network
+  name or password that contains a line break and says why, instead of
+  saving a cut-off one.
 
 ### Removed
 
