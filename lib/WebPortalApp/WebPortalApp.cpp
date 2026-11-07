@@ -1251,6 +1251,14 @@ void WebPortalApp::setupRoutes() {
         handlePlaylistList(req);
     });
 
+    // API: Delete playlist. Comes before the save route: a route also answers
+    // every path below it ("/api/playlist" matches "/api/playlist/delete"),
+    // and the first registered match wins - registered after, a delete would
+    // reach the save route.
+    server->on("/api/playlist/delete", HTTP_POST, [this](AsyncWebServerRequest* req) {
+        handlePlaylistDelete(req);
+    });
+
     // API: Get/save playlist
     server->on("/api/playlist", HTTP_GET, [this](AsyncWebServerRequest* req) {
         handlePlaylistGet(req);
@@ -1265,11 +1273,6 @@ void WebPortalApp::setupRoutes() {
             handlePlaylistSave(req, data, len, index, total);
         }
     );
-
-    // API: Delete playlist
-    server->on("/api/playlist/delete", HTTP_POST, [this](AsyncWebServerRequest* req) {
-        handlePlaylistDelete(req);
-    });
 
     // The /test routes come first: a route also answers every path below it
     // ("/api/homeremote" matches "/api/homeremote/test"), and the first
