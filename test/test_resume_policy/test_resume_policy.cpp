@@ -127,13 +127,14 @@ void test_install_records_only_eligible_app_in_dev_mode() {
 }
 
 void test_install_reload_only_for_target_image_and_when_consumed() {
-    TEST_ASSERT_TRUE(shouldReload("1.6.2+abc", "1.6.2+abc", true));
-    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.1+def", true));  // rollback or failed download
-    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.3+abc", true));  // a later image
-    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.2+abc", false)); // record not consumed
-    TEST_ASSERT_FALSE(shouldReload("", "", true));                    // record without a target
-    TEST_ASSERT_FALSE(shouldReload(nullptr, "1.6.2+abc", true));
-    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", nullptr, true));
+    TEST_ASSERT_TRUE(shouldReload("1.6.2+abc", "1.6.2+abc", true, true));
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.1+def", true, true));  // rollback or failed download
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.3+abc", true, true));  // a later image
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.2+abc", false, true)); // record not consumed
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.2+abc", true, false)); // failed install: same image restarted
+    TEST_ASSERT_FALSE(shouldReload("", "", true, true));                    // record without a target
+    TEST_ASSERT_FALSE(shouldReload(nullptr, "1.6.2+abc", true, true));
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", nullptr, true, true));
 }
 
 void test_install_reload_finds_app_by_id() {

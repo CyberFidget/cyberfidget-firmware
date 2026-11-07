@@ -36,8 +36,9 @@ constexpr const char* kReloadAppKey = "reloadapp";
 constexpr const char* kReloadCatKey = "reloadcat";
 constexpr const char* kReloadVerKey = "reloadver";
 // Reopen only for the image the install targeted, and only when the record
-// was actually consumed (otherwise a later boot could reuse it).
-bool shouldReload(const char* targetVersion, const char* runningVersion, bool consumed);
+// was actually consumed (otherwise a later boot could reuse it). A boot of
+// an image that was not pending is a plain restart: nothing was installed.
+bool shouldReload(const char* targetVersion, const char* runningVersion, bool consumed, bool imagePending);
 bool shouldRecordForInstall(bool devMode, bool eligible);
 int indexOfId(const char* id, const char* const* ids, int count);
 

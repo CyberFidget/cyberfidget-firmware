@@ -345,7 +345,8 @@ void AppManager::setup() {
             if (bootPrefs.isKey(ResumePolicy::kReloadVerKey))
                 consumed = bootPrefs.remove(ResumePolicy::kReloadVerKey) && consumed;
             // Only the image this install targeted reopens the app.
-            if (!ResumePolicy::shouldReload(target.c_str(), FW_VERSION_FULL_STRING, consumed)) reloadId.clear();
+            if (!ResumePolicy::shouldReload(target.c_str(), FW_VERSION_FULL_STRING, consumed,
+                                         UpdateSession::imagePending())) reloadId.clear();
         }
         // Consumed before the app starts: a failing app never loops.
         bootPrefs.remove("wasmid");
