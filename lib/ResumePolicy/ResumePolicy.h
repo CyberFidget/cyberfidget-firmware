@@ -29,6 +29,19 @@ bool valid(const Record& record, int appCount, uint32_t build);
 bool shouldArm(SleepReason reason, int appIndex, bool eligible);
 bool makeRecord(Record& out, int appIndex, const char* category, uint32_t build);
 
+// A firmware install in dev mode carries the open app across the update by
+// id (indexes can move between releases) and reopens it once the new image
+// is kept.
+constexpr const char* kReloadAppKey = "reloadapp";
+constexpr const char* kReloadCatKey = "reloadcat";
+constexpr const char* kReloadVerKey = "reloadver";
+// Reopen only for the image the install targeted, and only when the record
+// was actually consumed (otherwise a later boot could reuse it). A boot of
+// an image that was not pending is a plain restart: nothing was installed.
+bool shouldReload(const char* targetVersion, const char* runningVersion, bool consumed, bool imagePending);
+bool shouldRecordForInstall(bool devMode, bool eligible);
+int indexOfId(const char* id, const char* const* ids, int count);
+
 enum class Reset { DeepSleep, PowerOn, Software, Panic, Watchdog, Brownout, Other };
 enum class Wake { Button, Timer, Other };
 enum class Reason { NoRecord, Timer, InvalidRecord, ExplicitBoot, Update, FactoryReset,

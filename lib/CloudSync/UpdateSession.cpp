@@ -21,6 +21,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "AppManager.h"
 #include "CloudSync.h"
 #include "DisplayProxy.h"
 #include "HAL.h"
@@ -903,6 +904,7 @@ bool armInstall(const char* version, const char** why) {
     }
     boot.end();
     if (!ok) *why = "storage";
+    else AppManager::recordInstallResume(version);
     return ok;
 }
 

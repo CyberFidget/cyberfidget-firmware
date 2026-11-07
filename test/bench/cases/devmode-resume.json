@@ -1,0 +1,123 @@
+{
+  "name": "Dev mode: the app open before a firmware install reopens once the new image is kept; a normal reboot does not",
+  "reviewer_setup": "Two local_test builds that differ only in version (X flashed to the unit, Y one patch higher), served by the update-site fixture (test/bench/fixtures/ota-site, see its README; CF_OTA_RELEASES holds release 'y' made from Y). Environment: CF_OTA_HOST=<host ip>:8297, CF_VER_X / CF_VER_Y = the exact versions the builds report. The unit needs saved WiFi (the update session joins it). Run: python test/bench/cf_replay.py test/bench/cases/devmode-resume.json --port <PORT> --out <dir>. The case ends with dev mode Off; the unit stays on Y (flash X again to repeat).",
+  "steps": [
+    {
+      "do": "reset",
+      "until": "[update] boot slot=",
+      "expand_env": true,
+      "contains": [
+        "[boot] fw=${CF_VER_X} "
+      ]
+    },
+    {
+      "do": "wait_cli"
+    },
+    {
+      "do": "command",
+      "command": "awake set off",
+      "timeout_s": 4
+    },
+    {
+      "do": "command",
+      "command": "upd allow-unsigned on",
+      "contains": [
+        "[cmd] upd.unsig_ok=1"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "cloud base http://${CF_OTA_HOST}/y",
+      "expand_env": true,
+      "contains": [
+        "[cmd] cloud.base=ok"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "awake set dev until",
+      "until": "[awake] boot mode=dev",
+      "timeout_s": 30
+    },
+    {
+      "do": "wait_cli"
+    },
+    {
+      "do": "launch",
+      "id": "menu"
+    },
+    {
+      "do": "command",
+      "command": "launch Counter",
+      "contains": [
+        "[cmd] launch.ok"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "app",
+      "contains": [
+        "app.name=Counter"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "upd install ${CF_VER_Y}",
+      "expand_env": true,
+      "until": "[boot] reload=",
+      "timeout_s": 180,
+      "order": [
+        "[cmd] upd.install=restarting",
+        "[update] session=start",
+        "[update] session=end result=installed",
+        "[boot] fw=${CF_VER_Y} ",
+        "state=pending",
+        "[boot] reload=APP_COUNTER"
+      ]
+    },
+    {
+      "do": "wait_cli"
+    },
+    {
+      "do": "wait",
+      "ms": 3000,
+      "why": "the new image is kept after its first frame, then the app opens"
+    },
+    {
+      "do": "command",
+      "command": "app",
+      "contains": [
+        "app.name=Counter"
+      ]
+    },
+    {
+      "do": "screencap",
+      "save": "reloaded",
+      "review": "human"
+    },
+    {
+      "do": "reset",
+      "until": "[boot] fw=",
+      "expand_env": true,
+      "contains": [
+        "[boot] fw=${CF_VER_Y} "
+      ]
+    },
+    {
+      "do": "wait_cli"
+    },
+    {
+      "do": "command",
+      "command": "app",
+      "contains": [
+        "app.name=Boot Animation"
+      ]
+    },
+    {
+      "do": "command",
+      "command": "awake set off",
+      "until": "[awake] boot mode=off",
+      "timeout_s": 15
+    }
+  ]
+}

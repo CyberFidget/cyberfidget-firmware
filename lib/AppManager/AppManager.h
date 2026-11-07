@@ -31,6 +31,10 @@ public:
     // Headless button wake: carry the RTC resume through a software restart.
     static void preserveResumeForRestart();
 
+    // "Install now" in dev mode: note the open app so it reopens after the
+    // new image is kept.
+    static void recordInstallResume(const char* targetVersion);
+
     // Currently running app (read-only; used by the test-mode Serial CLI)
     AppIndex activeApp() const { return appActive; }
 

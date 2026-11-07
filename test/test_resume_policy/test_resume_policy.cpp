@@ -120,6 +120,33 @@ void test_timer_preserves_record_then_button_consumes_before_launch() {
     TEST_ASSERT_EQUAL(-1, decide(in).appIndex);
 }
 
+void test_install_records_only_eligible_app_in_dev_mode() {
+    for (int dev = 0; dev < 2; ++dev)
+        for (int eligible = 0; eligible < 2; ++eligible)
+            TEST_ASSERT_EQUAL(dev && eligible, shouldRecordForInstall(dev, eligible));
+}
+
+void test_install_reload_only_for_target_image_and_when_consumed() {
+    TEST_ASSERT_TRUE(shouldReload("1.6.2+abc", "1.6.2+abc", true, true));
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.1+def", true, true));  // rollback or failed download
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.3+abc", true, true));  // a later image
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.2+abc", false, true)); // record not consumed
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.2+abc", true, false)); // failed install: same image restarted
+    TEST_ASSERT_FALSE(shouldReload("", "", true, true));                    // record without a target
+    TEST_ASSERT_FALSE(shouldReload(nullptr, "1.6.2+abc", true, true));
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", nullptr, true, true));
+}
+
+void test_install_reload_finds_app_by_id() {
+    const char* const ids[] = {"APP_MENU", "APP_COUNTER", "APP_HOME_REMOTE"};
+    TEST_ASSERT_EQUAL(1, indexOfId("APP_COUNTER", ids, 3));
+    TEST_ASSERT_EQUAL(2, indexOfId("APP_HOME_REMOTE", ids, 3));
+    TEST_ASSERT_EQUAL(-1, indexOfId("APP_GONE", ids, 3));
+    TEST_ASSERT_EQUAL(-1, indexOfId("", ids, 3));
+    TEST_ASSERT_EQUAL(-1, indexOfId(nullptr, ids, 3));
+    TEST_ASSERT_EQUAL(-1, indexOfId("APP_COUNTER", ids, 1));
+}
+
 void test_resume_has_no_early_animation_frame() {
     PromptPolicy::StartShots shots;
     TEST_ASSERT_TRUE(PromptPolicy::earlyAnimationFrame(shots));
@@ -159,6 +186,9 @@ int main(int, char**) {
     RUN_TEST(test_record_validation_and_build_identity);
     RUN_TEST(test_exhaustive_boot_arbitration);
     RUN_TEST(test_timer_preserves_record_then_button_consumes_before_launch);
+    RUN_TEST(test_install_records_only_eligible_app_in_dev_mode);
+    RUN_TEST(test_install_reload_only_for_target_image_and_when_consumed);
+    RUN_TEST(test_install_reload_finds_app_by_id);
     RUN_TEST(test_resume_has_no_early_animation_frame);
     RUN_TEST(test_wake_press_release_and_bounce_are_swallowed);
     RUN_TEST(test_released_boot_buttons_are_normal_and_gates_are_independent);
