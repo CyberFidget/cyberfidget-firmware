@@ -58,6 +58,10 @@ Frame parseAddFrame(const uint8_t* data, size_t len, uint32_t crc,
     wipe(pass, WifiList::kPassMax + 1);
     if (!data || !frameLengthOk((uint32_t)len)) return Frame::Invalid;
     if (SyncProtocol::crc32(data, len) != crc) return Frame::Crc;
+    // Names and passwords sent this way never contain CR or LF (the website
+    // refuses them and the setup docs say so); a payload that does is refused
+    // whole, before anything is saved.
+    if (memchr(data, '\n', len) || memchr(data, '\r', len)) return Frame::Invalid;
     const uint8_t* nul = static_cast<const uint8_t*>(memchr(data, 0, len));
     if (!nul) return Frame::Invalid;
     const size_t nameLen = (size_t)(nul - data);
