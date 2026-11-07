@@ -30,7 +30,7 @@ with the version and date automatically.
 - In Dev mode, when you send a firmware update from the website while
   Counter or Home Remote is open, the Fidget opens that app again once the
   new firmware has started. If the update doesn't go through, it starts at
-  the menu.
+  the menu. This works from the first update after 1.7.0 is installed.
 
 ### Changed
 
