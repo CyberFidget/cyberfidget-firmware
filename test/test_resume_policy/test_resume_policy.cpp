@@ -126,6 +126,16 @@ void test_install_records_only_eligible_app_in_dev_mode() {
             TEST_ASSERT_EQUAL(dev && eligible, shouldRecordForInstall(dev, eligible));
 }
 
+void test_install_reload_only_for_target_image_and_when_consumed() {
+    TEST_ASSERT_TRUE(shouldReload("1.6.2+abc", "1.6.2+abc", true));
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.1+def", true));  // rollback or failed download
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.3+abc", true));  // a later image
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", "1.6.2+abc", false)); // record not consumed
+    TEST_ASSERT_FALSE(shouldReload("", "", true));                    // record without a target
+    TEST_ASSERT_FALSE(shouldReload(nullptr, "1.6.2+abc", true));
+    TEST_ASSERT_FALSE(shouldReload("1.6.2+abc", nullptr, true));
+}
+
 void test_install_reload_finds_app_by_id() {
     const char* const ids[] = {"APP_MENU", "APP_COUNTER", "APP_HOME_REMOTE"};
     TEST_ASSERT_EQUAL(1, indexOfId("APP_COUNTER", ids, 3));
@@ -176,6 +186,7 @@ int main(int, char**) {
     RUN_TEST(test_exhaustive_boot_arbitration);
     RUN_TEST(test_timer_preserves_record_then_button_consumes_before_launch);
     RUN_TEST(test_install_records_only_eligible_app_in_dev_mode);
+    RUN_TEST(test_install_reload_only_for_target_image_and_when_consumed);
     RUN_TEST(test_install_reload_finds_app_by_id);
     RUN_TEST(test_resume_has_no_early_animation_frame);
     RUN_TEST(test_wake_press_release_and_bounce_are_swallowed);

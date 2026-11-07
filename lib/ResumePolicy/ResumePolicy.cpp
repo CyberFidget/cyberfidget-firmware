@@ -34,6 +34,10 @@ bool makeRecord(Record& out, int appIndex, const char* category, uint32_t build)
     return true;
 }
 bool shouldRecordForInstall(bool devMode, bool eligible) { return devMode && eligible; }
+bool shouldReload(const char* targetVersion, const char* runningVersion, bool consumed) {
+    return consumed && targetVersion && runningVersion && targetVersion[0] &&
+           strcmp(targetVersion, runningVersion) == 0;
+}
 int indexOfId(const char* id, const char* const* ids, int count) {
     if (!id || !ids) return -1;
     for (int i = 0; i < count; ++i) if (ids[i] && strcmp(ids[i], id) == 0) return i;

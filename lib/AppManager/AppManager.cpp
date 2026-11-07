@@ -152,17 +152,19 @@ void AppManager::preserveResumeForRestart()
     }
 }
 
-void AppManager::recordInstallResume()
+void AppManager::recordInstallResume(const char* targetVersion)
 {
     Preferences boot;
     if (!boot.begin("bootcfg", false)) return;
     boot.remove(ResumePolicy::kReloadAppKey);
     boot.remove(ResumePolicy::kReloadCatKey);
+    boot.remove(ResumePolicy::kReloadVerKey);
     const int app = AppManager::instance().activeApp();
     if (ResumePolicy::shouldRecordForInstall(AwakeMode::setting().mode == AwakePolicy::Mode::Dev,
                                              app >= 0 && resumeEligible(app))) {
         boot.putString(ResumePolicy::kReloadAppKey, appIds[app]);
         boot.putString(ResumePolicy::kReloadCatKey, MenuManager::instance().currentCategory().c_str());
+        boot.putString(ResumePolicy::kReloadVerKey, targetVersion);
     }
     boot.end();
 }
@@ -337,8 +339,13 @@ void AppManager::setup() {
         if (bootPrefs.isKey(ResumePolicy::kReloadAppKey) && esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) {
             reloadId = bootPrefs.getString(ResumePolicy::kReloadAppKey, "").c_str();
             s_reloadCategory = bootPrefs.getString(ResumePolicy::kReloadCatKey, "").c_str();
-            bootPrefs.remove(ResumePolicy::kReloadAppKey);
-            bootPrefs.remove(ResumePolicy::kReloadCatKey);
+            const std::string target = bootPrefs.getString(ResumePolicy::kReloadVerKey, "").c_str();
+            bool consumed = bootPrefs.remove(ResumePolicy::kReloadAppKey);
+            consumed = bootPrefs.remove(ResumePolicy::kReloadCatKey) && consumed;
+            if (bootPrefs.isKey(ResumePolicy::kReloadVerKey))
+                consumed = bootPrefs.remove(ResumePolicy::kReloadVerKey) && consumed;
+            // Only the image this install targeted reopens the app.
+            if (!ResumePolicy::shouldReload(target.c_str(), FW_VERSION_FULL_STRING, consumed)) reloadId.clear();
         }
         // Consumed before the app starts: a failing app never loops.
         bootPrefs.remove("wasmid");

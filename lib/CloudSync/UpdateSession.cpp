@@ -904,7 +904,7 @@ bool armInstall(const char* version, const char** why) {
     }
     boot.end();
     if (!ok) *why = "storage";
-    else AppManager::recordInstallResume();
+    else AppManager::recordInstallResume(version);
     return ok;
 }
 
