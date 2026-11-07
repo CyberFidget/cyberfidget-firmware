@@ -27,9 +27,10 @@ with the version and date automatically.
   asleep while one of them is open, waking it opens that app again. Back
   takes you to the menu as usual. Switching off with Power Manager, or any
   other restart, still starts at the menu.
-- In Dev mode, when you send a firmware update from the website while an
-  app is open, the Fidget opens that app again once the new firmware has
-  started. If the update doesn't go through, it starts at the menu.
+- In Dev mode, when you send a firmware update from the website while
+  Counter or Home Remote is open, the Fidget opens that app again once the
+  new firmware has started. If the update doesn't go through, it starts at
+  the menu.
 
 ### Changed
 
