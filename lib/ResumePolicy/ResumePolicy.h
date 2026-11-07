@@ -29,6 +29,14 @@ bool valid(const Record& record, int appCount, uint32_t build);
 bool shouldArm(SleepReason reason, int appIndex, bool eligible);
 bool makeRecord(Record& out, int appIndex, const char* category, uint32_t build);
 
+// A firmware install in dev mode carries the open app across the update by
+// id (indexes can move between releases) and reopens it once the new image
+// is kept.
+constexpr const char* kReloadAppKey = "reloadapp";
+constexpr const char* kReloadCatKey = "reloadcat";
+bool shouldRecordForInstall(bool devMode, bool eligible);
+int indexOfId(const char* id, const char* const* ids, int count);
+
 enum class Reset { DeepSleep, PowerOn, Software, Panic, Watchdog, Brownout, Other };
 enum class Wake { Button, Timer, Other };
 enum class Reason { NoRecord, Timer, InvalidRecord, ExplicitBoot, Update, FactoryReset,

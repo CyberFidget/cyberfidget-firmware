@@ -152,6 +152,41 @@ void AppManager::preserveResumeForRestart()
     }
 }
 
+void AppManager::recordInstallResume()
+{
+    Preferences boot;
+    if (!boot.begin("bootcfg", false)) return;
+    boot.remove(ResumePolicy::kReloadAppKey);
+    boot.remove(ResumePolicy::kReloadCatKey);
+    const int app = AppManager::instance().activeApp();
+    if (ResumePolicy::shouldRecordForInstall(AwakeMode::setting().mode == AwakePolicy::Mode::Dev,
+                                             app >= 0 && resumeEligible(app))) {
+        boot.putString(ResumePolicy::kReloadAppKey, appIds[app]);
+        boot.putString(ResumePolicy::kReloadCatKey, MenuManager::instance().currentCategory().c_str());
+    }
+    boot.end();
+}
+
+// The app to reopen after an install, read in setup() and opened by loop()
+// once the new image is kept.
+static int s_reloadApp = -1;
+static std::string s_reloadCategory;
+
+static void drawReloading(int app)
+{
+    char line[40];
+    snprintf(line, sizeof(line), "Reloading %s", appDefs[app].name);
+    DisplayProxy& d = HAL::displayProxy();
+    d.clear();
+    d.setColor(WHITE);
+    d.setFont(ArialMT_Plain_10);
+    d.setTextAlignment(TEXT_ALIGN_CENTER);
+    d.drawString(64, 18, "Updating...");
+    d.drawString(64, 34, line);
+    d.display();
+    d.setTextAlignment(TEXT_ALIGN_LEFT);
+}
+
 // Set in setup(); the boot-window check starts on the first loop pass, once
 // the battery has been read.
 static bool bootWindowPending = false;
@@ -274,6 +309,7 @@ void AppManager::setup() {
     bool resumeConsumed = true;
     std::string bootWasmId;
     std::string bootWasmCat;
+    std::string reloadId;
     if (bootPrefs.begin("bootcfg", false)) {
         const char* explicitKeys[] = {"skipanim", "bootapp", "bootcloud", "bootapply", "bootmusic",
             "boothome", "bootlink", "bootunlink", "bootwifi", "wasmid", "wasmcat"};
@@ -296,6 +332,13 @@ void AppManager::setup() {
             if (bootPrefs.getBytesLength(ResumePolicy::kBootKey) == sizeof(resumeRecord))
                 bootPrefs.getBytes(ResumePolicy::kBootKey, &resumeRecord, sizeof(resumeRecord));
             resumeConsumed = bootPrefs.remove(ResumePolicy::kBootKey);
+        }
+        // An install in dev mode noted the open app; a timer wake leaves it.
+        if (bootPrefs.isKey(ResumePolicy::kReloadAppKey) && esp_sleep_get_wakeup_cause() != ESP_SLEEP_WAKEUP_TIMER) {
+            reloadId = bootPrefs.getString(ResumePolicy::kReloadAppKey, "").c_str();
+            s_reloadCategory = bootPrefs.getString(ResumePolicy::kReloadCatKey, "").c_str();
+            bootPrefs.remove(ResumePolicy::kReloadAppKey);
+            bootPrefs.remove(ResumePolicy::kReloadCatKey);
         }
         // Consumed before the app starts: a failing app never loops.
         bootPrefs.remove("wasmid");
@@ -335,6 +378,12 @@ void AppManager::setup() {
         Serial.printf("[boot] resume=%s reason=%s\n",
                       resumedApp ? appIds[resumeDecision.appIndex] : "none",
                       ResumePolicy::reasonName(resumeDecision.reason));
+    }
+    s_reloadApp = ResumePolicy::indexOfId(reloadId.c_str(), appIds, APP_COUNT);
+    if (s_reloadApp >= 0 && !resumeEligible(s_reloadApp)) s_reloadApp = -1;
+    if (s_reloadApp >= 0) {
+        Serial.printf("[boot] reload=%s\n", appIds[s_reloadApp]);
+        if (UpdateSession::imagePending()) drawReloading(s_reloadApp);
     }
     BOOT_MARK("bootcfg");
 
@@ -468,6 +517,17 @@ void AppManager::loop() {
     static bool frameDrawn = false;
     UpdateSession::loopTick(frameDrawn);
     HAL::loopHardware();
+
+    // The new image is kept: open the app that was open before the install.
+    if (s_reloadApp >= 0 && !UpdateSession::imagePending()) {
+        const AppIndex app = (AppIndex)s_reloadApp;
+        s_reloadApp = -1;
+        if (appActive == APP_MENU) {
+            drawReloading(app);
+            MenuManager::instance().restoreAfterSleep(s_reloadCategory.c_str(), app);
+            switchToApp(app);
+        }
+    }
 
     if (!frameDrawn) BOOT_MARK("hwloop");
     if (bootWindowPending) {

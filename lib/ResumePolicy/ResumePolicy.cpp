@@ -33,6 +33,12 @@ bool makeRecord(Record& out, int appIndex, const char* category, uint32_t build)
     out.magic = kMagic;
     return true;
 }
+bool shouldRecordForInstall(bool devMode, bool eligible) { return devMode && eligible; }
+int indexOfId(const char* id, const char* const* ids, int count) {
+    if (!id || !ids) return -1;
+    for (int i = 0; i < count; ++i) if (ids[i] && strcmp(ids[i], id) == 0) return i;
+    return -1;
+}
 Decision decide(const BootInputs& in) {
     Decision out;
     // The background path must leave the foreground resume untouched.
