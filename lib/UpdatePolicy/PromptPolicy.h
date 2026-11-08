@@ -207,6 +207,7 @@ struct StartShots {
     bool link = false;           ///< bootlink
     bool wasmApp = false;        ///< a delivered app to reopen (wasmid set)
     bool bootcloud = false;      ///< a check resumed after a restart
+    bool resumeApp = false;      ///< a built-in app reopened after idle sleep
 };
 /// True when this start opens on the start-up animation for certain, so its
 /// first frame can be drawn before the slower start-up steps. Any restart

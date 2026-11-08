@@ -348,6 +348,7 @@ void MenuManager::rebuildInPlace()
 
 std::string MenuManager::currentCategory() const
 {
+    if (restorePending) return restoreCategory;
     if (navigationStack.empty()) return std::string();
     const MenuNavState &top = navigationStack.front();
     if (!top.itemList || top.index < 0 || top.index >= (int)top.itemList->size())
@@ -359,6 +360,15 @@ void MenuManager::restoreAfterRestart(const std::string &category, const std::st
 {
     restoreCategory = category;
     restoreBlobId = blobId;
+    restoreApp = APP_COUNT;
+    restorePending = true;
+}
+
+void MenuManager::restoreAfterSleep(const char* category, AppIndex app)
+{
+    restoreCategory = category;
+    restoreBlobId.clear();
+    restoreApp = app;
     restorePending = true;
 }
 
@@ -390,7 +400,11 @@ void MenuManager::applyRestore()
         }
     }
     for (int i = 0; i < (int)currentItemList->size(); i++) {
-        if (!(*currentItemList)[i].isCategory && (*currentItemList)[i].blobId == restoreBlobId) {
+        const MenuItem& item = (*currentItemList)[i];
+        const bool match = restoreApp != APP_COUNT
+            ? item.blobPath.empty() && item.appIndex == restoreApp
+            : !restoreBlobId.empty() && item.blobId == restoreBlobId;
+        if (!item.isCategory && match) {
             currentIndex = i;
             break;
         }

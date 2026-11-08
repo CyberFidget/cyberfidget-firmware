@@ -24,6 +24,7 @@ ButtonManager::ButtonManager(const int* pins,
     _previousState   = new bool[_numButtons];
     _lastChangeTime  = new unsigned long[_numButtons];
     _pressStartTime  = new unsigned long[_numButtons];
+    _bootGestures    = new BootGesture[_numButtons];
     _heldReported    = new bool[_numButtons];
     _pressedEdges    = new bool[_numButtons];
     _releasedEdges   = new bool[_numButtons];
@@ -70,6 +71,7 @@ void ButtonManager::init() {
         } else {
             pinMode(_pins[i], INPUT);
         }
+        _bootGestures[i].init(digitalRead(_pins[i]) == LOW);
     }
     loadButtonCounters();
 }
@@ -89,6 +91,18 @@ void ButtonManager::update() {
         // a spurious Released after the debounce window.
         if (_injectedHold[i]) rawPressed = true;
 #endif
+
+        bool injected = false;
+#ifdef CF_TEST_CLI
+        injected = _injectedHold[i];
+#endif
+        if (!injected && _bootGestures[i].swallow(rawPressed, now, _debounceMs)) {
+            _currentState[i] = false;
+            _previousState[i] = false;
+            _heldReported[i] = false;
+            _lastChangeTime[i] = now;
+            continue;
+        }
 
         // Compare with current stable state
         if (rawPressed != _currentState[i]) {

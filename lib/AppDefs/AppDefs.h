@@ -55,6 +55,9 @@ static_assert(APP_COUNT > 0, "Error: APP_COUNT is zero or not properly defined."
  */
 extern const AppDefinition appDefs[APP_COUNT];
 
+// Only these built-in apps reopen after idle sleep.
+constexpr AppIndex resumeEligibleApps[] = { APP_COUNTER, APP_HOME_REMOTE };
+
 /**
  * Legacy APP_ENTRY enum strings retained only for exact migration of
  * manifests written by older firmware. Parallel to appDefs[].

@@ -80,8 +80,10 @@ def main():
     # for a known verb name), so match the stable prefix.
     err_ok = re.search(r"\[err\] unknown command\b", out) is not None
 
-    print("\n=== overflow (100-char line) ===")
-    out = send_cmd(ser, "x" * 100, wait_s=0.5)
+    # The CLI line buffer is SerialCli::kBufferSize (160) bytes; send 170 so
+    # the line is clearly over it.
+    print("\n=== overflow (170-char line) ===")
+    out = send_cmd(ser, "x" * 170, wait_s=0.5)
     print(out)
     overflow_ok = "[err] line too long" in out
 

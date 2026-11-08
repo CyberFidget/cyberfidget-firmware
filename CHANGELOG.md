@@ -23,10 +23,26 @@ with the version and date automatically.
 - New app, Tools > Counter: two tallies side by side. The left buttons add
   to the left count and the right buttons to the right one; hold the top
   button on a side to zero it. Counts are kept when the Fidget is off.
+- Counter and Home Remote pick up where you left off: if the Fidget falls
+  asleep while one of them is open, waking it opens that app again. Back
+  takes you to the menu as usual. Switching off with Power Manager, or any
+  other restart, still starts at the menu.
+- In Dev mode, when you send a firmware update from the website while
+  Counter or Home Remote is open, the Fidget opens that app again once the
+  new firmware has started. If the update doesn't go through, it starts at
+  the menu. This works from the first update after 1.7.0 is installed.
 
 ### Changed
 
 ### Fixed
+
+- The button press that wakes the Fidget only wakes it. Holding it down
+  while the Fidget starts no longer counts as a press in the app or menu.
+- Deleting a playlist in the Web Portal works. It could fail before, or
+  overwrite the playlist instead of deleting it.
+- The `wifi add` command in the USB serial console turns down a network
+  name or password that contains a line break and says why, instead of
+  saving a cut-off one.
 
 ### Removed
 

@@ -159,6 +159,8 @@ namespace {
     RTC_DATA_ATTR uint32_t s_checkinArmMagic;
     RTC_DATA_ATTR uint32_t s_checkinDueSec;
     void (*s_beforeSleep)() = nullptr;
+    void (*s_sleepCommitHook)(SleepReason) = nullptr;
+    RTC_DATA_ATTR ResumePolicy::Record s_resumeRecord;
 
     // Set when this timer wake continues into a background check-in.
     bool s_timerCheckin = false;
@@ -233,6 +235,7 @@ namespace {
             // of sleep config; regulator quiescent current is ruled out by
             // its datasheet curve, and the leading suspect is the attached
             // USB serial bridge back-feeding the sagging 3.3V rail.)
+            HAL::clearResumeRecord();
             BatteryDiary::onTimerShutdown(vcellMv);
             esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
             gpio_deep_sleep_hold_en();
@@ -340,6 +343,7 @@ namespace HAL
     // with a growing backoff; callers check sleepPending() so the sleep
     // screen, delay and counter saves run only once.
     static bool s_sleepPending = false;
+    static SleepReason s_sleepReason = SleepReason::Idle;
     static uint32_t s_sleepRetryAtMs = 0;
     static uint32_t s_sleepBackoffMs = 0;
     constexpr uint32_t kSleepRetryFirstMs = 1000;
@@ -354,7 +358,7 @@ namespace HAL
         if (s_sleepPending && (int32_t)(millis_NOW - s_sleepRetryAtMs) >= 0) {
             s_sleepBackoffMs = s_sleepBackoffMs * 2 > kSleepRetryMaxMs ? kSleepRetryMaxMs : s_sleepBackoffMs * 2;
             s_sleepRetryAtMs = millis_NOW + s_sleepBackoffMs;
-            enterDeepSleep(false);   // returns only if it has to wait again
+            enterDeepSleep(false, s_sleepReason);   // returns only if it has to wait again
         }
 
         s_audioManager.loop();
@@ -388,6 +392,20 @@ namespace HAL
         esp_sleep_enable_ext0_wakeup(GPIO_NUM_15, LOW);
     }
 
+    const ResumePolicy::Record& resumeRecord() { return s_resumeRecord; }
+    void clearResumeRecord() { s_resumeRecord.magic = 0; }
+    void storeResumeRecord(const ResumePolicy::Record& record)
+    {
+        clearResumeRecord();
+        // Publish the marker only after the payload is complete.
+        s_resumeRecord.version = record.version;
+        s_resumeRecord.appIndex = record.appIndex;
+        memcpy(s_resumeRecord.category, record.category, sizeof(record.category));
+        s_resumeRecord.buildId = record.buildId;
+        s_resumeRecord.magic = record.magic;
+    }
+    void setSleepCommitHook(void (*hook)(SleepReason)) { s_sleepCommitHook = hook; }
+
     void setBeforeSleep(void (*hook)())
     {
         s_beforeSleep = hook;
@@ -411,9 +429,11 @@ namespace HAL
         resleepTimerWake(s_timerVcellMv, s_timerStartedMs, flushDiary);
     }
 
-    void enterDeepSleep(bool hardShutdown)
+    void enterDeepSleep(bool hardShutdown, SleepReason reason)
     {
         if (!UpdateSession::prepareDeepSleep(hardShutdown)) return;
+        if (hardShutdown) reason = SleepReason::EmptyBattery;
+        s_sleepReason = reason;
         // Every path to sleep ends audio here: an app streaming on port 0
         // stops through its own stop path, then the engine fades, its render
         // task acknowledges its exit and the channel is deleted.
@@ -433,6 +453,8 @@ namespace HAL
             // wait. Deep sleep halts the CPU and the I2S clock with it.
             Serial.println("[audio] engine did not stop; shutting down anyway");
         }
+        if (hardShutdown) clearResumeRecord();
+        if (s_sleepCommitHook) s_sleepCommitHook(reason);
         // Arms the next background check-in (only a timer wake can run one).
         if (!hardShutdown && s_beforeSleep) s_beforeSleep();
         if (!hardShutdown) {

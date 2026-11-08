@@ -291,6 +291,13 @@ void test_add_frame_keeps_any_name_bytes() {
     TEST_ASSERT_EQUAL_STRING("pw pw pw", p.pass.c_str());
 }
 
+void test_add_frame_refuses_line_breaks() {
+    TEST_ASSERT_EQUAL_INT((int)Frame::Invalid, (int)parse(frameOf("Home", "pw\nrest")).frame);
+    TEST_ASSERT_EQUAL_INT((int)Frame::Invalid, (int)parse(frameOf("Ho\rme", "pw")).frame);
+    // Even at the very end of the declared length.
+    TEST_ASSERT_EQUAL_INT((int)Frame::Invalid, (int)parse(frameOf("Home", "pw\r\n")).frame);
+}
+
 // ---- names as hex --------------------------------------------------------------------
 
 void test_hex_lowercase_spaces_pipe_utf8() {
@@ -765,6 +772,21 @@ void test_stream_bad_crc_with_bytes_still_coming_runs_nothing() {
     assertNothingLeaked(loop, "secret");
 }
 
+void test_stream_add_with_line_break_is_refused_and_resyncs() {
+    for (const char* pass : {"pw\nversion\nreboot\n", "pw\rrest", "pw\r\n"}) {
+        Loop loop;
+        const std::vector<uint8_t> f = frameOf("Home", pass);
+        loop.port.send(0, header(f.size(), crcOf(f)));
+        loop.port.send(0, f);
+        loop.port.send(1000, std::string("\r\nversion\r\n"));   // blank lead-in after silence
+        loop.run(1500);
+        TEST_ASSERT_EQUAL(0, (int)loop.saves.names.size());
+        TEST_ASSERT_EQUAL_STRING("[err] wifi.invalid\n", loop.port.out.c_str());
+        assertResyncedOnlyByVersion(loop);
+        assertNothingLeaked(loop, "rest");
+    }
+}
+
 void test_stream_bad_crc_alone_reports_crc() {
     // A checksum mismatch means the two ends disagree on the bytes: the
     // client resyncs before anything else runs.
@@ -1166,6 +1188,8 @@ int main(int, char**) {
     RUN_TEST(test_add_frame_second_nul_is_invalid);
     RUN_TEST(test_add_frame_empty_ssid);
     RUN_TEST(test_add_frame_keeps_any_name_bytes);
+    RUN_TEST(test_add_frame_refuses_line_breaks);
+    RUN_TEST(test_stream_add_with_line_break_is_refused_and_resyncs);
     RUN_TEST(test_hex_lowercase_spaces_pipe_utf8);
     RUN_TEST(test_hex_never_overruns);
     RUN_TEST(test_scan_dedupes_and_sorts_strongest_first);

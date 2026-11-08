@@ -10,6 +10,7 @@
 #include <SSD1306Wire.h>
 #include "DisplayProxy.h"
 #include "BoardInfo.h"
+#include "../ResumePolicy/ResumePolicy.h"
 
 // Forward-declare any hardware-related classes you want to expose from the HAL:
 class AudioManager;
@@ -122,7 +123,12 @@ namespace HAL
 
     // If you want to set wake pins, deep sleep, etc. directly from AppManager
     void configureWakeupPins();
-    void enterDeepSleep(bool hardShutdown = false);
+    void enterDeepSleep(bool hardShutdown = false, SleepReason reason = SleepReason::Idle);
+    // Runs once after sleep can no longer defer, before the check-in arm.
+    void setSleepCommitHook(void (*hook)(SleepReason));
+    const ResumePolicy::Record& resumeRecord();
+    void storeResumeRecord(const ResumePolicy::Record& record);
+    void clearResumeRecord();
     // A normal sleep is waiting for audio to stop and will retry by itself
     // (from loopHardware); do not start another sleep sequence meanwhile.
     bool sleepPending();

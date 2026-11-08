@@ -75,7 +75,7 @@ void PowerManager::onButtonPressCallback(const ButtonEvent &event) {
                 delay(500);
                 ESP_LOGV(TAG_MAIN, "Entering deep sleep...");
 
-                HAL::enterDeepSleep();
+                HAL::enterDeepSleep(false, SleepReason::UserOff);
             } else {
                 // Update last tap time
                 instance->lastTapTime = currentTime;
@@ -110,7 +110,7 @@ void PowerManager::deepSleep(bool force) {
             display.display();
 
             delay(3000);
-            HAL::enterDeepSleep();
+            HAL::enterDeepSleep(false, SleepReason::Idle);
         }
         } else {
             HAL::stopAudio();   // no tone over the sleep screen
@@ -122,7 +122,7 @@ void PowerManager::deepSleep(bool force) {
             display.display();
 
             delay(3000);
-            HAL::enterDeepSleep();
+            HAL::enterDeepSleep(false, SleepReason::Idle);
         }
 }
 
@@ -144,7 +144,7 @@ void PowerManager::shutdownForEmptyBattery() {
 
     delay(1500);
     ESP_LOGI(TAG_MAIN, "Runtime battery guard entering hard shutdown");
-    HAL::enterDeepSleep(true);
+    HAL::enterDeepSleep(true, SleepReason::EmptyBattery);
 }
 
 // Global functions for the app system
