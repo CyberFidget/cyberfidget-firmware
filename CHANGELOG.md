@@ -20,6 +20,16 @@ with the version and date automatically.
 
 ### Added
 
+### Changed
+
+### Fixed
+
+### Removed
+
+## [1.7.0] - 2026-11-08
+
+### Added
+
 - New app, Tools > Counter: two tallies side by side. The left buttons add
   to the left count and the right buttons to the right one; hold the top
   button on a side to zero it. Counts are kept when the Fidget is off.
@@ -222,7 +232,8 @@ with the version and date automatically.
 
 - Dead header generation left over in the app module build.
 
-[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.6.0...HEAD
+[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.7.0...HEAD
+[1.7.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.5.0...v1.6.0
 [1.5.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.1...v1.5.0
 [1.4.1]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.4.0...v1.4.1
