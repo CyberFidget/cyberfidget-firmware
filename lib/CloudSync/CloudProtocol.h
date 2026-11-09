@@ -120,9 +120,46 @@ std::string buildCheckinBody(const CheckinFields& fields);
 /// the setting gates sharing.
 const char* usageShareText(bool present, bool on);
 
-/// True when the reply carries a usage_share_set request newer than the last
-/// one applied (`appliedRev`). An equal or older rev is stale and ignored.
-bool usageShareRequestApplies(const CheckinReply& reply, uint32_t appliedRev);
+/// What to do with a reply's usage_share_set request. When in doubt, off wins:
+/// - no request, or rev not greater than `appliedRev` (equal = already
+///   applied, lower = stale; rev 0 never applies): Ignore;
+/// - "off": Apply (turning sharing off is always safe);
+/// - "on" while a local change the site has not seen yet is pending
+///   (`localGen` != `seenGen`): Consume - store the rev, keep the setting;
+/// - "on" otherwise: Apply.
+/// `localGen` (upd.usage_lgen) counts every change made on the device;
+/// `seenGen` (upd.usage_sgen) is the count the last successful check-in sent.
+enum class UsageShareAction : uint8_t { Ignore, Apply, Consume };
+UsageShareAction usageShareAction(const CheckinReply& reply, uint32_t appliedRev,
+                                  uint32_t localGen, uint32_t seenGen);
+
+/// The usage-sharing keys, so the write order is host-tested.
+struct UsageShareStore {
+    virtual ~UsageShareStore() = default;
+    virtual bool putRev(uint32_t rev) = 0;           ///< upd.usage_rev
+    virtual bool putShare(bool on) = 0;              ///< upd.usage_share
+    virtual bool putLocalGen(uint32_t gen) = 0;      ///< upd.usage_lgen
+};
+
+enum class UsageShareResult : uint8_t {
+    Ignored,      ///< nothing written
+    Applied,      ///< rev stored, then the setting
+    Consumed,     ///< rev stored, setting left as it is
+    RevFailed,    ///< the rev could not be stored: nothing changed
+    ShareFailed,  ///< rev stored but the setting write failed: consumed unapplied
+};
+
+/// Applies a usage_share_set request. The rev is written (and checked) FIRST,
+/// so a request can never be replayed over a later local change; the next
+/// check-in reports the real setting with the new rev either way.
+UsageShareResult applyUsageShare(const CheckinReply& reply, uint32_t appliedRev,
+                                 uint32_t localGen, uint32_t seenGen, UsageShareStore& store);
+
+/// A change made on the device (Settings toggle or the USB `usage` verb):
+/// the local generation is bumped FIRST, then the setting is written. If the
+/// setting write fails after the bump, an "on" request is only consumed until
+/// the next check-in reports the real value. False when either write failed.
+bool recordLocalUsageShare(bool on, uint32_t localGen, UsageShareStore& store);
 
 /// RAM-only report history for one worker session. A fresh session starts
 /// without an acknowledged full report, even if a prior boot sent one.

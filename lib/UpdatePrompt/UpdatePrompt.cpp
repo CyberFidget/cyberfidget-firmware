@@ -429,11 +429,9 @@ void activate(Row row) {
         }
         case Row::ShareBattery: {
             const bool enable = !cache.shareBattery;
-            Preferences upd;
-            if (upd.begin(kNamespace, false)) {
-                upd.putBool("usage_share", enable);
-                upd.end();
-            }
+            // The one writer of the setting: it also records the change as a
+            // device change the site has not seen yet.
+            CloudSync::setUsageShare(enable);
             refresh();
             if (cache.shareBattery && enable) {
                 shareExplanation = true;

@@ -125,7 +125,9 @@ void resetLinkStatus();
 // battery data" toggle): "on", "off", or "unset" when it was never set.
 // Unset gates sharing exactly like off.
 const char* usageShare();
-// Writes the setting (USB serial `usage on|off`). False when it could not.
+// The one writer for a change made on the device (the Settings toggle and USB
+// serial `usage on|off`): counts it in upd.usage_lgen, then writes the
+// setting, holding the lock a site request also takes. False when it could not.
 bool setUsageShare(bool on);
 
 // ---- For the update session (lib/CloudSync/UpdateSession) ----------------

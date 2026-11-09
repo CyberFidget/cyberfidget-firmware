@@ -448,18 +448,55 @@ void rememberPoll(uint32_t ms, int status, int retry) {
     prefs.end();
 }
 
-// The owner changed the usage-sharing setting on the site: a request newer
-// than the last one applied sets it. The next check-in reports the value and
-// rev, which acknowledges it. A later change on the device simply wins.
-void applyUsageShareRequest(const CheckinReply& reply) {
-    if (!reply.hasUsageShareSet) return;
+// The usage-sharing setting has one writer at a time: a change on the device
+// (Settings toggle, USB `usage`) and a request from the site each hold this
+// across the generation check and their writes.
+SemaphoreHandle_t usageLock() {
+    static SemaphoreHandle_t lock = xSemaphoreCreateMutex();
+    return lock;
+}
+
+struct UsageLocked {
+    UsageLocked() { xSemaphoreTake(usageLock(), portMAX_DELAY); }
+    ~UsageLocked() { xSemaphoreGive(usageLock()); }
+};
+
+class PrefsUsageStore : public UsageShareStore {
+public:
+    explicit PrefsUsageStore(Preferences& p) : p_(p) {}
+    bool putRev(uint32_t rev) override { return p_.putUInt("usage_rev", rev) != 0; }
+    bool putShare(bool on) override { return p_.putBool("usage_share", on) != 0; }
+    bool putLocalGen(uint32_t gen) override { return p_.putUInt("usage_lgen", gen) != 0; }
+private:
+    Preferences& p_;
+};
+
+// After a successful check-in whose body carried `sentGen` (upd.usage_lgen
+// when the body was built): the site has now seen every device change up to
+// it. Then a usage_share_set request is applied, consumed or ignored
+// (usageShareAction: off always applies; on waits until the site has seen
+// every device change). The next check-in reports the value and rev, which
+// acknowledges it.
+void usageAfterCheckin(const CheckinReply& reply, uint32_t sentGen) {
+    UsageLocked lock;
     Preferences upd;
     if (!upd.begin("upd", false)) return;
-    if (usageShareRequestApplies(reply, upd.getUInt("usage_rev", 0)) &&
-        upd.putBool("usage_share", reply.usageShareOn) != 0) {
-        upd.putUInt("usage_rev", reply.usageShareRev);
-        Serial.printf("[checkin] usage.share=%s rev=%lu (from the site)\n",
-                      reply.usageShareOn ? "on" : "off", (unsigned long)reply.usageShareRev);
+    // Only a change is written (dev mode checks in every few seconds).
+    if (upd.getUInt("usage_sgen", 0) != sentGen) upd.putUInt("usage_sgen", sentGen);
+    if (reply.hasUsageShareSet) {
+        PrefsUsageStore store(upd);
+        const UsageShareResult result = applyUsageShare(
+            reply, upd.getUInt("usage_rev", 0), upd.getUInt("usage_lgen", 0),
+            upd.getUInt("usage_sgen", 0), store);
+        if (result != UsageShareResult::Ignored) {
+            const char* what = result == UsageShareResult::Applied ? "applied" :
+                               result == UsageShareResult::Consumed ? "kept-local" :
+                               result == UsageShareResult::RevFailed ? "rev-write-failed" :
+                                                                       "share-write-failed";
+            Serial.printf("[checkin] usage.request=%s rev=%lu %s\n",
+                          reply.usageShareOn ? "on" : "off",
+                          (unsigned long)reply.usageShareRev, what);
+        }
     }
     upd.end();
 }
@@ -509,7 +546,7 @@ bool readAppliedRecord(LoadoutManifest::AppliedRecord& out) {
 }
 
 std::string checkinBody(const Session& s, bool autoapply, const char* answerBatch, const char* answer,
-                        uint32_t& crc, bool& full, std::string& ackBatch) {
+                        uint32_t& crc, bool& full, std::string& ackBatch, uint32_t& usageGen) {
     LoadoutManifest::Loadout loadout;
     std::string manifest;
     bool present = false;
@@ -552,12 +589,19 @@ std::string checkinBody(const Session& s, bool autoapply, const char* answerBatc
     ackBatch = fields.appliedBatch && fields.result &&
                validBatchId(fields.appliedBatch) && validResult(fields.result)
                    ? fields.appliedBatch : "";
-    Preferences usage;
-    if (usage.begin("upd", true)) {
-        fields.usageShare = usageShareText(usage.isKey("usage_share"),
-                                           usage.getBool("usage_share", false));
-        fields.usageRev = usage.getUInt("usage_rev", 0);
-        usage.end();
+    // The setting and the device-change count are read together, so the site
+    // sees the value that goes with `usageGen`.
+    usageGen = 0;
+    {
+        UsageLocked lock;
+        Preferences usage;
+        if (usage.begin("upd", true)) {
+            fields.usageShare = usageShareText(usage.isKey("usage_share"),
+                                               usage.getBool("usage_share", false));
+            fields.usageRev = usage.getUInt("usage_rev", 0);
+            usageGen = usage.getUInt("usage_lgen", 0);
+            usage.end();
+        }
     }
     full = fullReportRequired(s.reportState, crc, ackBatch.empty() ? nullptr : ackBatch.c_str());
     fields.installed = full ? &loadout : nullptr;
@@ -1204,7 +1248,9 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
     uint32_t manifestCrc = 0;
     bool sentFull = false;
     std::string ackBatch;
-    std::string body = checkinBody(s, autoapply, nullptr, nullptr, manifestCrc, sentFull, ackBatch);
+    uint32_t usageGen = 0;
+    std::string body = checkinBody(s, autoapply, nullptr, nullptr, manifestCrc, sentFull, ackBatch,
+                                   usageGen);
     if (body.empty()) { setError(r, "checkin-body"); return; }
     HttpReply check;
     Step step = checkinWithRetry(s, plan, body, manifestCrc, sentFull, ackBatch,
@@ -1225,7 +1271,7 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
         linkedAt = String(s.reply.serverEpoch);
         setSessionFingerprint(s, account.c_str(), linkedAt.c_str());
     }
-    applyUsageShareRequest(s.reply);
+    usageAfterCheckin(s.reply, usageGen);
     if (s.reply.firmwareOffer) {
         // Only an offer: the update lane compares the manifest and asks.
         strcpy(r.offered, "fw");
@@ -1391,7 +1437,8 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
         r.ok = false;
         return;
     }
-    body = checkinBody(s, autoapply, batchId.c_str(), answer, manifestCrc, sentFull, ackBatch);
+    body = checkinBody(s, autoapply, batchId.c_str(), answer, manifestCrc, sentFull, ackBatch,
+                       usageGen);
     if (body.empty()) { setError(r, "ack-body"); r.ok = false; return; }
     HttpReply follow;
     CheckinReply followParsed;
@@ -1403,6 +1450,7 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
     r.nextMs = plan.nextMs();
     if (step == Step::Done) {
         recordCheckIn(r, followParsed.serverEpoch);
+        usageAfterCheckin(followParsed, usageGen);
     } else if (step == Step::Deferred) {
         // Same as a deferral before sending: the next session answers.
         setError(r, wasOk ? "report-deferred" : answered);
@@ -2295,9 +2343,11 @@ const char* usageShare() {
 }
 
 bool setUsageShare(bool on) {
+    UsageLocked lock;
     Preferences upd;
     if (!upd.begin("upd", false)) return false;
-    const bool ok = upd.putBool("usage_share", on) != 0;
+    PrefsUsageStore store(upd);
+    const bool ok = recordLocalUsageShare(on, upd.getUInt("usage_lgen", 0), store);
     upd.end();
     return ok;
 }

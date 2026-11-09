@@ -318,8 +318,10 @@ bad arguments                -> [err] usage.usage=usage [on|off]
 `usage` reads the usage-sharing setting (`upd.usage_share`, the Settings >
 Updates "Share battery data" toggle): `unset` when the key does not exist
 (never set, or cleared by a factory reset), which gates sharing exactly like
-`off`. `usage on|off` writes the same key the toggle writes and replies with
-the value read back. In every build; announced by `syncinfo.usage`. See
+`off`. `usage on|off` writes the same key through the same path as the toggle
+(`CloudSync::setUsageShare`, which counts it as a device change in
+`upd.usage_lgen`; see `lib/CloudSync/README.md`) and replies with the value
+read back. In every build; announced by `syncinfo.usage`. See
 `lib/BatteryDiary/README.md` for what the setting shares.
 
 ### Installing updates

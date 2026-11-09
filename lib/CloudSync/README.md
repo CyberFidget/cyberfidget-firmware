@@ -89,14 +89,39 @@ check-in and loadout answers, builds the check-in body, and picks waits.
 
 A 200 check-in answer may also carry
 `usage_share_set: {"value": "on"|"off", "rev": <uint>}` - the owner changed
-the usage-sharing setting from their account. After a successful check-in
-the worker writes `upd.usage_share` to that value and stores `upd.usage_rev`
-when `rev` is greater than the stored `upd.usage_rev`. An equal or older rev,
-or a malformed request (another value, a missing, negative or fractional
-rev), is ignored and never changes the setting; it does not fail the reply.
-The next check-in reports the new `usage_share` and `usage_rev`, which is the
-site's acknowledgement. A later change on the device's Settings simply wins
-and is reported at the next check-in.
+the usage-sharing setting from their account. The rule is "when in doubt,
+off wins":
+
+| Request | Condition | Effect |
+|---|---|---|
+| none, or `rev` <= `upd.usage_rev` (equal = already applied, lower = stale; rev 0 never applies) | - | ignored |
+| `"off"` | rev newer | applied (off is always safe) |
+| `"on"` | rev newer, `upd.usage_lgen` == `upd.usage_sgen` | applied |
+| `"on"` | rev newer, `upd.usage_lgen` != `upd.usage_sgen` | consumed: rev stored, setting kept |
+
+`upd.usage_lgen` counts every change made on the device (the Settings toggle
+and the USB `usage on|off` verb, both through `CloudSync::setUsageShare`,
+which bumps the count before writing the setting). `upd.usage_sgen` is the
+count the last successful check-in carried: the body captures `usage_lgen`
+with the setting, and after a successful (200/204) check-in or follow-up the
+worker stores it as `usage_sgen`. So a device change wins until a check-in has
+reported it, including one made while a check-in is in flight. Only
+successful replies are applied; an error or deferred reply never is.
+
+Applying writes `upd.usage_rev` first and checks it: if that write fails
+nothing changes; if the setting write then fails the request is consumed
+unapplied, and the next check-in reports the real value with the new rev.
+A request is never replayed. A device change and a site request hold one
+lock across the count check and their writes. The decision and the write
+order are host-tested (`usageShareAction`, `applyUsageShare`,
+`recordLocalUsageShare`).
+
+The request is parsed strictly: the key once at the top level, an object of
+exactly `value` and `rev`, `value` "on" or "off", `rev` a whole number up to
+4294967295. Anything else (another value; a missing, negative or fractional
+rev; a duplicate or extra child; the key twice) is ignored and never changes
+the setting; it does not fail the reply. The next check-in reports
+`usage_share` and `usage_rev`, which is the site's acknowledgement.
 
 Permanent defects are answered as `rejected:<reason>` so they never wedge the
 queue: `offer-crc`, `offer-batch`, `blob-offer`, `blob-prefix`, `blob-path`,

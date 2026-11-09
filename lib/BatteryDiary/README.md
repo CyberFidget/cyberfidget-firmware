@@ -97,7 +97,10 @@ on|off`, read with `usage` or the `syncinfo.usage` line; see
 WiFi check-in (`usage_share_set`; see `lib/CloudSync/README.md`). Outside the
 device it reads as one of three states: `on`, `off`, or `unset` when the key
 does not exist (never set, or cleared by a factory reset). `unset` is treated
-exactly as off: nothing is uploaded.
+exactly as off: nothing is uploaded. A change made on the device (the
+Settings toggle or USB) wins over a request from the owner's account to turn
+sharing on until a check-in has reported it; a request to turn it off always
+applies (`upd.usage_lgen` / `upd.usage_sgen`, see `lib/CloudSync/README.md`).
 
 ## Referenced outside the firmware
 
