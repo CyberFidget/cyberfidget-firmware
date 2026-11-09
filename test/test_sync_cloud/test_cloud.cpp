@@ -341,6 +341,104 @@ void test_checkin_tracks_server_time_presence_for_date_fallback() {
 }
 
 // ---------------------------------------------------------------------------
+// Usage sharing: the owner's change from the site, and what the device reports
+// ---------------------------------------------------------------------------
+
+void test_checkin_parses_usage_share_request() {
+    CheckinReply reply;
+    TEST_ASSERT_TRUE(parseCheckin(
+        "{\"batch_id\":null,\"usage_share_set\":{\"value\":\"on\",\"rev\":7}}", 0, reply));
+    TEST_ASSERT_TRUE(reply.hasUsageShareSet);
+    TEST_ASSERT_TRUE(reply.usageShareOn);
+    TEST_ASSERT_EQUAL_UINT32(7, reply.usageShareRev);
+    TEST_ASSERT_TRUE(parseCheckin("{\"usage_share_set\":{\"value\":\"off\",\"rev\":4294967295}}",
+                                  0, reply));
+    TEST_ASSERT_TRUE(reply.hasUsageShareSet);
+    TEST_ASSERT_FALSE(reply.usageShareOn);
+    TEST_ASSERT_EQUAL_UINT32(4294967295u, reply.usageShareRev);
+}
+
+void test_checkin_ignores_malformed_usage_share_request() {
+    // Each is ignored without failing the reply (the rest still applies).
+    const char* const bodies[] = {
+        "{\"usage_share_set\":{\"rev\":3}}",                          // no value
+        "{\"usage_share_set\":{\"value\":null,\"rev\":3}}",
+        "{\"usage_share_set\":{\"value\":true,\"rev\":3}}",
+        "{\"usage_share_set\":{\"value\":\"unset\",\"rev\":3}}",      // the site cannot unset
+        "{\"usage_share_set\":{\"value\":\"ON\",\"rev\":3}}",
+        "{\"usage_share_set\":{\"value\":\"yes\",\"rev\":3}}",
+        "{\"usage_share_set\":{\"value\":\"on\"}}",                   // no rev
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":\"3\"}}",     // rev not a number
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":-1}}",
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":2.5}}",
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":4294967296}}",
+        "{\"usage_share_set\":\"on\"}",                               // not an object
+        "{\"usage_share_set\":null}",
+    };
+    for (const char* body : bodies) {
+        CheckinReply reply;
+        TEST_ASSERT_TRUE_MESSAGE(parseCheckin(body, 0, reply), body);
+        TEST_ASSERT_FALSE_MESSAGE(reply.hasUsageShareSet, body);
+        TEST_ASSERT_FALSE_MESSAGE(usageShareRequestApplies(reply, 0), body);
+    }
+    // An old reply without the field parses exactly as before.
+    CheckinReply reply;
+    TEST_ASSERT_TRUE(parseCheckin("{\"batch_id\":\"b1\",\"next_poll_ms\":5000}", 0, reply));
+    TEST_ASSERT_TRUE(reply.hasBatch);
+    TEST_ASSERT_EQUAL_UINT32(5000, reply.nextPollMs);
+    TEST_ASSERT_FALSE(reply.hasUsageShareSet);
+    TEST_ASSERT_FALSE(reply.usageShareOn);
+    TEST_ASSERT_EQUAL_UINT32(0, reply.usageShareRev);
+    // A bad batch id still fails the reply with a good request beside it.
+    TEST_ASSERT_FALSE(parseCheckin(
+        "{\"batch_id\":7,\"usage_share_set\":{\"value\":\"on\",\"rev\":1}}", 0, reply));
+}
+
+void test_usage_share_request_applies_only_when_newer() {
+    CheckinReply reply;
+    TEST_ASSERT_TRUE(parseCheckin("{\"usage_share_set\":{\"value\":\"on\",\"rev\":5}}", 0, reply));
+    TEST_ASSERT_TRUE(usageShareRequestApplies(reply, 0));    // none applied yet
+    TEST_ASSERT_TRUE(usageShareRequestApplies(reply, 4));    // newer
+    TEST_ASSERT_FALSE(usageShareRequestApplies(reply, 5));   // already applied
+    TEST_ASSERT_FALSE(usageShareRequestApplies(reply, 6));   // stale
+    TEST_ASSERT_TRUE(parseCheckin("{\"usage_share_set\":{\"value\":\"off\",\"rev\":0}}", 0, reply));
+    TEST_ASSERT_FALSE(usageShareRequestApplies(reply, 0));   // rev 0 never applies
+    TEST_ASSERT_TRUE(parseCheckin(nullptr, 0, reply));
+    TEST_ASSERT_FALSE(usageShareRequestApplies(reply, 0));   // 204: nothing asked
+}
+
+void test_usage_share_text_has_three_states() {
+    TEST_ASSERT_EQUAL_STRING("unset", usageShareText(false, false));   // key missing
+    TEST_ASSERT_EQUAL_STRING("unset", usageShareText(false, true));
+    TEST_ASSERT_EQUAL_STRING("on", usageShareText(true, true));
+    TEST_ASSERT_EQUAL_STRING("off", usageShareText(true, false));
+}
+
+void test_checkin_body_carries_usage_share() {
+    CheckinFields f;
+    f.deviceId = "aabbccddeeff";
+    cJSON* root = cJSON_Parse(buildCheckinBody(f).c_str());   // defaults
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_EQUAL_STRING("unset", cJSON_GetObjectItem(root, "usage_share")->valuestring);
+    TEST_ASSERT_EQUAL_INT(0, (int)cJSON_GetObjectItem(root, "usage_rev")->valuedouble);
+    cJSON_Delete(root);
+    f.usageShare = usageShareText(true, true);
+    f.usageRev = 12;
+    root = cJSON_Parse(buildCheckinBody(f).c_str());
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_EQUAL_STRING("on", cJSON_GetObjectItem(root, "usage_share")->valuestring);
+    TEST_ASSERT_EQUAL_INT(12, (int)cJSON_GetObjectItem(root, "usage_rev")->valuedouble);
+    cJSON_Delete(root);
+    f.usageShare = usageShareText(true, false);
+    f.usageRev = 4294967295u;
+    root = cJSON_Parse(buildCheckinBody(f).c_str());
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_EQUAL_STRING("off", cJSON_GetObjectItem(root, "usage_share")->valuestring);
+    TEST_ASSERT_TRUE(cJSON_GetObjectItem(root, "usage_rev")->valuedouble == 4294967295.0);
+    cJSON_Delete(root);
+}
+
+// ---------------------------------------------------------------------------
 // Offer parsing
 // ---------------------------------------------------------------------------
 
@@ -740,6 +838,11 @@ int main(int, char**) {
     RUN_TEST(test_server_epoch_rejects_bad_text);
     RUN_TEST(test_http_date_epoch_strict_imf_fixdate);
     RUN_TEST(test_checkin_tracks_server_time_presence_for_date_fallback);
+    RUN_TEST(test_checkin_parses_usage_share_request);
+    RUN_TEST(test_checkin_ignores_malformed_usage_share_request);
+    RUN_TEST(test_usage_share_request_applies_only_when_newer);
+    RUN_TEST(test_usage_share_text_has_three_states);
+    RUN_TEST(test_checkin_body_carries_usage_share);
     RUN_TEST(test_offer_escaped_doc_hashes_verbatim);
     RUN_TEST(test_offer_doc_crc_mismatch_is_permanent);
     RUN_TEST(test_offer_batch_mismatch_is_rejected);

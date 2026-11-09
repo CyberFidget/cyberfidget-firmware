@@ -37,6 +37,11 @@ struct CheckinReply {
     uint32_t nextPollMs = 0;
     bool hasServerTime = false; ///< body contains server_time, even if unreadable
     uint32_t serverEpoch = 0;   ///< 0 when absent or unreadable
+    /// usage_share_set: the owner changed the usage-sharing setting on the
+    /// site. Set only for a well-formed request ("on"|"off" and a whole rev).
+    bool hasUsageShareSet = false;
+    bool usageShareOn = false;
+    uint32_t usageShareRev = 0;
 };
 
 /// Parses a check-in body. `headerNextMs` is X-Next-Poll-Ms (0 when absent)
@@ -102,10 +107,22 @@ struct CheckinFields {
     /// null or empty sends no mode.
     const char* mode = nullptr;
     bool applyApps = true;        ///< this session may apply app changes
+    /// The usage-sharing setting: "on", "off" or "unset" (usageShareText).
+    const char* usageShare = "unset";
+    uint32_t usageRev = 0;        ///< last usage_share_set rev applied; 0 if none
 };
 
 /// The check-in POST body. Empty on an allocation failure.
 std::string buildCheckinBody(const CheckinFields& fields);
+
+/// The usage-sharing setting (upd.usage_share) as reported: "unset" when the
+/// key does not exist, else "on" or "off". Unset is treated as off wherever
+/// the setting gates sharing.
+const char* usageShareText(bool present, bool on);
+
+/// True when the reply carries a usage_share_set request newer than the last
+/// one applied (`appliedRev`). An equal or older rev is stale and ignored.
+bool usageShareRequestApplies(const CheckinReply& reply, uint32_t appliedRev);
 
 /// RAM-only report history for one worker session. A fresh session starts
 /// without an acknowledged full report, even if a prior boot sent one.

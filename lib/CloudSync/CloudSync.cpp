@@ -448,6 +448,22 @@ void rememberPoll(uint32_t ms, int status, int retry) {
     prefs.end();
 }
 
+// The owner changed the usage-sharing setting on the site: a request newer
+// than the last one applied sets it. The next check-in reports the value and
+// rev, which acknowledges it. A later change on the device simply wins.
+void applyUsageShareRequest(const CheckinReply& reply) {
+    if (!reply.hasUsageShareSet) return;
+    Preferences upd;
+    if (!upd.begin("upd", false)) return;
+    if (usageShareRequestApplies(reply, upd.getUInt("usage_rev", 0)) &&
+        upd.putBool("usage_share", reply.usageShareOn) != 0) {
+        upd.putUInt("usage_rev", reply.usageShareRev);
+        Serial.printf("[checkin] usage.share=%s rev=%lu (from the site)\n",
+                      reply.usageShareOn ? "on" : "off", (unsigned long)reply.usageShareRev);
+    }
+    upd.end();
+}
+
 // next_poll_ms from an error body (the site sends it to authenticated
 // devices), else the header.
 uint32_t errorNextMs(const HttpReply& reply) {
@@ -536,6 +552,13 @@ std::string checkinBody(const Session& s, bool autoapply, const char* answerBatc
     ackBatch = fields.appliedBatch && fields.result &&
                validBatchId(fields.appliedBatch) && validResult(fields.result)
                    ? fields.appliedBatch : "";
+    Preferences usage;
+    if (usage.begin("upd", true)) {
+        fields.usageShare = usageShareText(usage.isKey("usage_share"),
+                                           usage.getBool("usage_share", false));
+        fields.usageRev = usage.getUInt("usage_rev", 0);
+        usage.end();
+    }
     full = fullReportRequired(s.reportState, crc, ackBatch.empty() ? nullptr : ackBatch.c_str());
     fields.installed = full ? &loadout : nullptr;
     return buildCheckinBody(fields);
@@ -1202,6 +1225,7 @@ void checkinCycle(Session& s, bool autoapply, const String& account, String& lin
         linkedAt = String(s.reply.serverEpoch);
         setSessionFingerprint(s, account.c_str(), linkedAt.c_str());
     }
+    applyUsageShareRequest(s.reply);
     if (s.reply.firmwareOffer) {
         // Only an offer: the update lane compares the manifest and asks.
         strcpy(r.offered, "fw");
@@ -2260,6 +2284,22 @@ static bool validFetchUrl(const char* url) {
 
 bool useExternalTlsMemory() {
     return mbedtls_platform_set_calloc_free(tlsPsramCalloc, heap_caps_free) == 0;
+}
+
+const char* usageShare() {
+    Preferences upd;
+    if (!upd.begin("upd", true)) return usageShareText(false, false);
+    const char* text = usageShareText(upd.isKey("usage_share"), upd.getBool("usage_share", false));
+    upd.end();
+    return text;
+}
+
+bool setUsageShare(bool on) {
+    Preferences upd;
+    if (!upd.begin("upd", false)) return false;
+    const bool ok = upd.putBool("usage_share", on) != 0;
+    upd.end();
+    return ok;
 }
 
 bool siteBase(char* out, size_t len) {

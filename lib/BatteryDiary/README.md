@@ -91,6 +91,14 @@ accepted sequence and upload time are stored in `upd.usage_seq` and
 only `upd.usage_at` (the same records go at the next upload, a day later);
 an upload with no answer at all advances neither value.
 
+The same setting can also be changed from the website, over USB (`usage
+on|off`, read with `usage` or the `syncinfo.usage` line; see
+`lib/SerialCli/README.md`) or from the owner's account, delivered at the next
+WiFi check-in (`usage_share_set`; see `lib/CloudSync/README.md`). Outside the
+device it reads as one of three states: `on`, `off`, or `unset` when the key
+does not exist (never set, or cleared by a factory reset). `unset` is treated
+exactly as off: nothing is uploaded.
+
 ## Referenced outside the firmware
 
 The Cyber Fidget website links this file from two places: the prompt that

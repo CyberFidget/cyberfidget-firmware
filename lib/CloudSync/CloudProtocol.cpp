@@ -180,8 +180,30 @@ bool parseCheckin(const char* body, uint32_t headerNextMs, CheckinReply& out) {
     num(root, "next_poll_ms", out.nextPollMs);
     out.hasServerTime = cJSON_GetObjectItemCaseSensitive(root, "server_time") != nullptr;
     out.serverEpoch = serverEpoch(str(root, "server_time"));
+    // usage_share_set: a malformed request is ignored, never a failed reply.
+    const cJSON* usage = cJSON_GetObjectItemCaseSensitive(root, "usage_share_set");
+    if (cJSON_IsObject(usage)) {
+        const char* value = str(usage, "value");
+        const cJSON* rev = cJSON_GetObjectItemCaseSensitive(usage, "rev");
+        const bool on = value && strcmp(value, "on") == 0;
+        uint32_t revValue = 0;
+        if ((on || (value && strcmp(value, "off") == 0)) && num(usage, "rev", revValue) &&
+            rev->valuedouble == (double)revValue) {
+            out.hasUsageShareSet = true;
+            out.usageShareOn = on;
+            out.usageShareRev = revValue;
+        }
+    }
     cJSON_Delete(root);
     return ok;
+}
+
+const char* usageShareText(bool present, bool on) {
+    return !present ? "unset" : on ? "on" : "off";
+}
+
+bool usageShareRequestApplies(const CheckinReply& reply, uint32_t appliedRev) {
+    return reply.hasUsageShareSet && reply.usageShareRev > appliedRev;
 }
 
 OfferError parseOffer(const char* body, const char* batchId, Offer& out) {
@@ -268,6 +290,8 @@ std::string buildCheckinBody(const CheckinFields& f) {
     cJSON_AddStringToObject(root, "manifest_crc", crcText);
     cJSON_AddNumberToObject(root, "apply_apps", f.applyApps ? 1 : 0);
     if (f.mode && *f.mode) cJSON_AddStringToObject(root, "mode", f.mode);
+    cJSON_AddStringToObject(root, "usage_share", f.usageShare ? f.usageShare : "unset");
+    cJSON_AddNumberToObject(root, "usage_rev", f.usageRev);
     if (f.appliedBatch && f.result && validBatchId(f.appliedBatch) && validResult(f.result)) {
         cJSON_AddStringToObject(root, "applied_batch", f.appliedBatch);
         cJSON_AddStringToObject(root, "result", f.result);

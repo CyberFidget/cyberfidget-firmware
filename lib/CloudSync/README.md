@@ -59,7 +59,10 @@ check-in and loadout answers, builds the check-in body, and picks waits.
    successful full report, after `send_report`, with an applied-batch answer,
    or after a full report failed. Other check-ins omit `installed`; the site
    keeps its stored list. The last successful full CRC lives only in worker
-   RAM, with no per-poll flash write.
+   RAM, with no per-poll flash write. Every check-in also carries
+   `usage_share` (`"on"`, `"off"` or `"unset"`, the usage-sharing setting;
+   see "Optional daily battery data") and `usage_rev` (the last site request
+   revision applied, 0 if none).
 2. With `apply_apps=0` and pending changes, the site leaves them unsealed and
    replies 200 with `waiting=true` and `batch_id=null`; with nothing pending,
    it replies 204. The device posts "App changes
@@ -83,6 +86,17 @@ check-in and loadout answers, builds the check-in body, and picks waits.
 6. `lapply` gets the unchanged document with the server's CRC, holding the
    `LoadoutStore` lock that the menu reorder also takes.
 7. A follow-up check-in carries `applied_batch` + `result`.
+
+A 200 check-in answer may also carry
+`usage_share_set: {"value": "on"|"off", "rev": <uint>}` - the owner changed
+the usage-sharing setting from their account. After a successful check-in
+the worker writes `upd.usage_share` to that value and stores `upd.usage_rev`
+when `rev` is greater than the stored `upd.usage_rev`. An equal or older rev,
+or a malformed request (another value, a missing, negative or fractional
+rev), is ignored and never changes the setting; it does not fail the reply.
+The next check-in reports the new `usage_share` and `usage_rev`, which is the
+site's acknowledgement. A later change on the device's Settings simply wins
+and is reported at the next check-in.
 
 Permanent defects are answered as `rejected:<reason>` so they never wedge the
 queue: `offer-crc`, `offer-batch`, `blob-offer`, `blob-prefix`, `blob-path`,
@@ -285,7 +299,9 @@ Test builds print one `[dev] poll=...` line per check-in (see
 Only the automatic sessions (the Daily timer session and the start-up Boot
 check-in) consider a usage upload - a Fidget used every day checks in at
 start-up and may never reach a Daily session. The device setting
-`upd.usage_share` defaults off. The scheduler supplies the voltage and charge
+`upd.usage_share` defaults off: a missing key (never set, or cleared by a
+factory reset) reads `unset` over USB and in the check-in, and gates the
+upload exactly like off. The scheduler supplies the voltage and charge
 percentage it measured for that session; both must pass the same 3.6 V and 20 percent
 floor as the automatic check-in. The worker waits until the check-in succeeds,
 then checks the 21-hour accepted-upload interval (under the 24 h daily
