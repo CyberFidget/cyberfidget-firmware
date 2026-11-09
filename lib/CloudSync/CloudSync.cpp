@@ -467,36 +467,34 @@ public:
     bool putRev(uint32_t rev) override { return p_.putUInt("usage_rev", rev) != 0; }
     bool putShare(bool on) override { return p_.putBool("usage_share", on) != 0; }
     bool putLocalGen(uint32_t gen) override { return p_.putUInt("usage_lgen", gen) != 0; }
+    bool putSeenGen(uint32_t gen) override { return p_.putUInt("usage_sgen", gen) != 0; }
 private:
     Preferences& p_;
 };
 
 // After a successful check-in whose body carried `sentGen` (upd.usage_lgen
-// when the body was built): the site has now seen every device change up to
-// it. Then a usage_share_set request is applied, consumed or ignored
-// (usageShareAction: off always applies; on waits until the site has seen
-// every device change). The next check-in reports the value and rev, which
-// acknowledges it.
+// when the body was built). settleUsageAfterCheckin decides a usage_share_set
+// request with the seen count from BEFORE this check-in (off always applies;
+// on waits until the site has seen every device change), and only then
+// advances upd.usage_sgen to `sentGen` (written only when it changes: dev
+// mode checks in every few seconds). The next check-in reports the value and
+// rev, which acknowledges the request.
 void usageAfterCheckin(const CheckinReply& reply, uint32_t sentGen) {
     UsageLocked lock;
     Preferences upd;
     if (!upd.begin("upd", false)) return;
-    // Only a change is written (dev mode checks in every few seconds).
-    if (upd.getUInt("usage_sgen", 0) != sentGen) upd.putUInt("usage_sgen", sentGen);
-    if (reply.hasUsageShareSet) {
-        PrefsUsageStore store(upd);
-        const UsageShareResult result = applyUsageShare(
-            reply, upd.getUInt("usage_rev", 0), upd.getUInt("usage_lgen", 0),
-            upd.getUInt("usage_sgen", 0), store);
-        if (result != UsageShareResult::Ignored) {
-            const char* what = result == UsageShareResult::Applied ? "applied" :
-                               result == UsageShareResult::Consumed ? "kept-local" :
-                               result == UsageShareResult::RevFailed ? "rev-write-failed" :
-                                                                       "share-write-failed";
-            Serial.printf("[checkin] usage.request=%s rev=%lu %s\n",
-                          reply.usageShareOn ? "on" : "off",
-                          (unsigned long)reply.usageShareRev, what);
-        }
+    PrefsUsageStore store(upd);
+    const UsageShareResult result = settleUsageAfterCheckin(
+        reply, upd.getUInt("usage_rev", 0), upd.getUInt("usage_lgen", 0),
+        upd.getUInt("usage_sgen", 0), sentGen, store);
+    if (result != UsageShareResult::Ignored) {
+        const char* what = result == UsageShareResult::Applied ? "applied" :
+                           result == UsageShareResult::Consumed ? "kept-local" :
+                           result == UsageShareResult::RevFailed ? "rev-write-failed" :
+                                                                   "share-write-failed";
+        Serial.printf("[checkin] usage.request=%s rev=%lu %s\n",
+                      reply.usageShareOn ? "on" : "off",
+                      (unsigned long)reply.usageShareRev, what);
     }
     upd.end();
 }

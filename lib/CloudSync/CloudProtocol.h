@@ -139,6 +139,7 @@ struct UsageShareStore {
     virtual bool putRev(uint32_t rev) = 0;           ///< upd.usage_rev
     virtual bool putShare(bool on) = 0;              ///< upd.usage_share
     virtual bool putLocalGen(uint32_t gen) = 0;      ///< upd.usage_lgen
+    virtual bool putSeenGen(uint32_t gen) = 0;       ///< upd.usage_sgen
 };
 
 enum class UsageShareResult : uint8_t {
@@ -160,6 +161,18 @@ UsageShareResult applyUsageShare(const CheckinReply& reply, uint32_t appliedRev,
 /// setting write fails after the bump, an "on" request is only consumed until
 /// the next check-in reports the real value. False when either write failed.
 bool recordLocalUsageShare(bool on, uint32_t localGen, UsageShareStore& store);
+
+/// After a successful check-in whose body carried `sentGen` (usage_lgen when
+/// the body was built). The reply's request is decided with `seenGen` from
+/// BEFORE this check-in: the site built the reply before it had seen
+/// `sentGen`, so a request in it may predate a device change. Only once the
+/// request is handled (ignored, or its rev stored) does usage_sgen advance to
+/// `sentGen`, and only when that changes it. A failed rev write
+/// (RevFailed) leaves usage_sgen where it was, so the same request is decided
+/// the same way next time.
+UsageShareResult settleUsageAfterCheckin(const CheckinReply& reply, uint32_t appliedRev,
+                                         uint32_t localGen, uint32_t seenGen,
+                                         uint32_t sentGen, UsageShareStore& store);
 
 /// RAM-only report history for one worker session. A fresh session starts
 /// without an acknowledged full report, even if a prior boot sent one.

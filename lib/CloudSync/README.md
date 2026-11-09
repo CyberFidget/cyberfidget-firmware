@@ -102,19 +102,27 @@ off wins":
 `upd.usage_lgen` counts every change made on the device (the Settings toggle
 and the USB `usage on|off` verb, both through `CloudSync::setUsageShare`,
 which bumps the count before writing the setting). `upd.usage_sgen` is the
-count the last successful check-in carried: the body captures `usage_lgen`
-with the setting, and after a successful (200/204) check-in or follow-up the
-worker stores it as `usage_sgen`. So a device change wins until a check-in has
-reported it, including one made while a check-in is in flight. Only
-successful replies are applied; an error or deferred reply never is.
+count the site had seen before the current reply: the body captures
+`usage_lgen` with the setting, and after a successful (200/204) check-in or
+follow-up the worker first decides the reply's request with the
+`usage_sgen` it had BEFORE this check-in (the site built that reply before it
+saw the new count, so a request in it may predate a device change), and only
+once the request is handled (ignored, or its rev stored) stores the sent count
+as `usage_sgen` (written only when it changes). So an "on" request is consumed
+until the site has seen a device change, including one made while a check-in
+is in flight: an "on" in the reply to the first check-in that reports the
+change is still consumed; one in a later reply applies. If the rev write
+fails, `usage_sgen` does not advance, so the same request is decided the same
+way next time. Only successful replies are handled; an error or deferred reply
+never is.
 
 Applying writes `upd.usage_rev` first and checks it: if that write fails
 nothing changes; if the setting write then fails the request is consumed
 unapplied, and the next check-in reports the real value with the new rev.
 A request is never replayed. A device change and a site request hold one
-lock across the count check and their writes. The decision and the write
-order are host-tested (`usageShareAction`, `applyUsageShare`,
-`recordLocalUsageShare`).
+lock across the count check and their writes. The decision, the write order
+and the post-check-in bookkeeping are host-tested (`usageShareAction`,
+`applyUsageShare`, `recordLocalUsageShare`, `settleUsageAfterCheckin`).
 
 The request is parsed strictly: the key once at the top level, an object of
 exactly `value` and `rev`, `value` "on" or "off", `rev` a whole number up to

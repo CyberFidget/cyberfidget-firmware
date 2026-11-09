@@ -442,6 +442,28 @@ struct FakeUsageStore : UsageShareStore {
         if (failGen) return false;
         hasGen = true; gen = v; return true;
     }
+    bool putSeenGen(uint32_t v) override {
+        order += "n";
+        hasSeen = true; seen = v; return true;
+    }
+    bool hasSeen = false;
+    uint32_t seen = 0;
+};
+
+// The stored keys across check-ins, for the post-check-in sequences.
+struct UsageKeys : UsageShareStore {
+    uint32_t rev = 0, lgen = 0, sgen = 0;
+    bool share = false;
+    bool failRev = false;
+    int sgenWrites = 0;
+    bool putRev(uint32_t v) override { if (failRev) return false; rev = v; return true; }
+    bool putShare(bool on) override { share = on; return true; }
+    bool putLocalGen(uint32_t v) override { lgen = v; return true; }
+    bool putSeenGen(uint32_t v) override { sgen = v; ++sgenWrites; return true; }
+    // One check-in: the body carries lgen now; the reply is settled after.
+    UsageShareResult checkin(const CheckinReply& reply, uint32_t sentGen) {
+        return settleUsageAfterCheckin(reply, rev, lgen, sgen, sentGen, *this);
+    }
 };
 } // namespace
 
@@ -526,19 +548,106 @@ void test_usage_share_local_change_bumps_generation_first() {
     TEST_ASSERT_TRUE(usageShareAction(usageRequest(true, 3), 0, store.gen, 7) == UsageShareAction::Consume);
 }
 
+// The reply to the check-in that FIRST carries a device change was built
+// before the site saw it, so an older "on" request in it must not apply.
+void test_usage_settle_decides_with_the_seen_count_from_before() {
+    // (a) The site queued "on" rev 2; the device then set off (gen 5, the
+    // site had seen 4, rev 1 applied). The next body carries gen 5 and the
+    // reply still holds "on" rev 2: consumed, sgen advances, value stays off.
+    UsageKeys keys;
+    keys.rev = 1; keys.sgen = 4;
+    TEST_ASSERT_TRUE(recordLocalUsageShare(false, 4, keys));
+    TEST_ASSERT_EQUAL_UINT32(5, keys.lgen);
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), keys.lgen) == UsageShareResult::Consumed);
+    TEST_ASSERT_FALSE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(2, keys.rev);
+    TEST_ASSERT_EQUAL_UINT32(5, keys.sgen);
+    // The same request again (stale now): ignored, value still off.
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), keys.lgen) == UsageShareResult::Ignored);
+    TEST_ASSERT_FALSE(keys.share);
+    // (b) The next reply holds "on" rev 3, made after the site saw gen 5: applies.
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 3), keys.lgen) == UsageShareResult::Applied);
+    TEST_ASSERT_TRUE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(3, keys.rev);
+}
+
+void test_usage_settle_rev_failure_keeps_the_seen_count() {
+    // (c) A consume whose rev write fails: sgen does not advance, so the
+    // same request on the next reply is consumed again, never applied.
+    UsageKeys keys;
+    keys.rev = 1; keys.sgen = 4;
+    TEST_ASSERT_TRUE(recordLocalUsageShare(false, 4, keys));   // lgen 5
+    keys.failRev = true;
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), keys.lgen) == UsageShareResult::RevFailed);
+    TEST_ASSERT_EQUAL_UINT32(4, keys.sgen);
+    TEST_ASSERT_EQUAL_UINT32(1, keys.rev);
+    TEST_ASSERT_FALSE(keys.share);
+    keys.failRev = false;
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), keys.lgen) == UsageShareResult::Consumed);
+    TEST_ASSERT_FALSE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(2, keys.rev);
+    TEST_ASSERT_EQUAL_UINT32(5, keys.sgen);
+    // An "off" whose rev write fails: nothing changes either.
+    keys.failRev = true;
+    keys.share = true;
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(false, 3), keys.lgen) == UsageShareResult::RevFailed);
+    TEST_ASSERT_TRUE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(2, keys.rev);
+}
+
+void test_usage_settle_off_always_applies() {
+    // (d) Off with a newer rev applies whatever the counts say.
+    const uint32_t gens[][3] = {{0, 0, 0}, {5, 4, 5}, {5, 4, 4}, {2, 9, 2}, {7, 7, 8}};
+    for (const auto& g : gens) {
+        UsageKeys keys;
+        keys.share = true; keys.rev = 1;
+        keys.lgen = g[0]; keys.sgen = g[1];
+        TEST_ASSERT_TRUE(keys.checkin(usageRequest(false, 2), g[2]) == UsageShareResult::Applied);
+        TEST_ASSERT_FALSE(keys.share);
+        TEST_ASSERT_EQUAL_UINT32(2, keys.rev);
+    }
+}
+
+void test_usage_settle_without_request_advances_the_seen_count() {
+    // (e) No request: sgen advances to the sent count, written only on a change.
+    UsageKeys keys;
+    keys.lgen = 5; keys.sgen = 4;
+    CheckinReply none;
+    TEST_ASSERT_TRUE(keys.checkin(none, 5) == UsageShareResult::Ignored);
+    TEST_ASSERT_EQUAL_UINT32(5, keys.sgen);
+    TEST_ASSERT_EQUAL_INT(1, keys.sgenWrites);
+    TEST_ASSERT_TRUE(keys.checkin(none, 5) == UsageShareResult::Ignored);
+    TEST_ASSERT_EQUAL_INT(1, keys.sgenWrites);   // unchanged: not written again
+    // A stale request is ignored the same way and still advances sgen.
+    keys.rev = 9; keys.lgen = 6;
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 3), 6) == UsageShareResult::Ignored);
+    TEST_ASSERT_EQUAL_UINT32(6, keys.sgen);
+    TEST_ASSERT_EQUAL_INT(2, keys.sgenWrites);
+    // Order: the request's writes come before the sgen write.
+    FakeUsageStore store;
+    TEST_ASSERT_TRUE(settleUsageAfterCheckin(usageRequest(true, 2), 1, 4, 4, 5, store) ==
+                     UsageShareResult::Applied);
+    TEST_ASSERT_EQUAL_STRING("rsn", store.order.c_str());
+    TEST_ASSERT_EQUAL_UINT32(5, store.seen);
+}
+
 // A device change made while a check-in is in flight: the body carried gen 4,
 // the change made it 5, so an "on" answer to that check-in is only consumed.
 void test_usage_share_change_during_checkin_wins() {
-    const uint32_t sentGen = 4;
-    const uint32_t localGen = 5;              // bumped after the body was built
-    const uint32_t seenGen = sentGen;         // stored after the successful reply
-    TEST_ASSERT_TRUE(usageShareAction(usageRequest(true, 2), 1, localGen, seenGen) ==
-                     UsageShareAction::Consume);
-    TEST_ASSERT_TRUE(usageShareAction(usageRequest(false, 2), 1, localGen, seenGen) ==
-                     UsageShareAction::Apply);
-    // The next check-in carries gen 5; then a newer "on" applies.
-    TEST_ASSERT_TRUE(usageShareAction(usageRequest(true, 3), 2, localGen, localGen) ==
-                     UsageShareAction::Apply);
+    UsageKeys keys;
+    keys.rev = 1; keys.lgen = 4; keys.sgen = 4;   // the site has seen gen 4
+    const uint32_t sentGen = keys.lgen;           // the body carries gen 4
+    TEST_ASSERT_TRUE(recordLocalUsageShare(false, keys.lgen, keys));   // in flight: gen 5
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), sentGen) == UsageShareResult::Consumed);
+    TEST_ASSERT_FALSE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(4, keys.sgen);
+    // The next check-in carries gen 5: an "on" built before the site saw it
+    // is still consumed; one built after applies.
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 3), keys.lgen) == UsageShareResult::Consumed);
+    TEST_ASSERT_FALSE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(5, keys.sgen);
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 4), keys.lgen) == UsageShareResult::Applied);
+    TEST_ASSERT_TRUE(keys.share);
 }
 
 void test_usage_share_text_has_three_states() {
@@ -984,6 +1093,10 @@ int main(int, char**) {
     RUN_TEST(test_usage_share_apply_writes_rev_first);
     RUN_TEST(test_usage_share_local_change_bumps_generation_first);
     RUN_TEST(test_usage_share_change_during_checkin_wins);
+    RUN_TEST(test_usage_settle_decides_with_the_seen_count_from_before);
+    RUN_TEST(test_usage_settle_rev_failure_keeps_the_seen_count);
+    RUN_TEST(test_usage_settle_off_always_applies);
+    RUN_TEST(test_usage_settle_without_request_advances_the_seen_count);
     RUN_TEST(test_usage_share_text_has_three_states);
     RUN_TEST(test_checkin_body_carries_usage_share);
     RUN_TEST(test_offer_escaped_doc_hashes_verbatim);

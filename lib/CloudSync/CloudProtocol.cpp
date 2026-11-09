@@ -230,6 +230,15 @@ bool recordLocalUsageShare(bool on, uint32_t localGen, UsageShareStore& store) {
     return store.putLocalGen(localGen + 1) && store.putShare(on);
 }
 
+UsageShareResult settleUsageAfterCheckin(const CheckinReply& reply, uint32_t appliedRev,
+                                         uint32_t localGen, uint32_t seenGen,
+                                         uint32_t sentGen, UsageShareStore& store) {
+    const UsageShareResult result = applyUsageShare(reply, appliedRev, localGen, seenGen, store);
+    // A failed seen-count write only keeps "on" requests held back: safe.
+    if (result != UsageShareResult::RevFailed && sentGen != seenGen) store.putSeenGen(sentGen);
+    return result;
+}
+
 OfferError parseOffer(const char* body, const char* batchId, Offer& out) {
     out = Offer();
     cJSON* root = body ? cJSON_Parse(body) : nullptr;
