@@ -121,6 +121,15 @@ bool linkStatus(char account[40], bool& fingerprint);
 bool hadPreviousAccount();
 void resetLinkStatus();
 
+// The usage-sharing setting (upd.usage_share, the Settings > Updates "Share
+// battery data" toggle): "on", "off", or "unset" when it was never set.
+// Unset gates sharing exactly like off.
+const char* usageShare();
+// The one writer for a change made on the device (the Settings toggle and USB
+// serial `usage on|off`): counts it in upd.usage_lgen, then writes the
+// setting, holding the lock a site request also takes. False when it could not.
+bool setUsageShare(bool on);
+
 // ---- For the update session (lib/CloudSync/UpdateSession) ----------------
 // Routes mbedTLS allocations to PSRAM (internal RAM cannot hold a TLS
 // session beside the rest of the firmware); call before the first handshake

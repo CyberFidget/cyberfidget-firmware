@@ -180,7 +180,7 @@ const char* knownVerb(const char* line) {
         "gauge", "heapmap", "heapstat", "help", "info", "lapply", "launch", "lbuiltin",
         "lget", "link", "mark", "menutree", "mic", "net", "prompt", "rail", "reboot",
         "reset", "screencap", "screenstream", "sleep", "soak", "status", "syncinfo",
-        "tlsalloc", "tlsprobe", "upd", "uvlo", "version", "wasm", "wasmstat", "wifi",
+        "tlsalloc", "tlsprobe", "upd", "usage", "uvlo", "version", "wasm", "wasmstat", "wifi",
     };
     if (!line) return nullptr;
     while (*line == ' ' || *line == '\t') line++;

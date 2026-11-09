@@ -4,6 +4,7 @@
 #include <unity.h>
 #include <cJSON.h>
 #include <stdio.h>
+#include <string.h>
 #include <string>
 
 #include "CloudPlanner.h"
@@ -338,6 +339,352 @@ void test_checkin_tracks_server_time_presence_for_date_fallback() {
     TEST_ASSERT_TRUE(parseCheckin("{\"server_time\":\"bad\"}", 0, reply));
     TEST_ASSERT_TRUE(reply.hasServerTime);
     TEST_ASSERT_EQUAL_UINT32(0, reply.serverEpoch);
+}
+
+// ---------------------------------------------------------------------------
+// Usage sharing: the owner's change from the site, and what the device reports
+// ---------------------------------------------------------------------------
+
+void test_checkin_parses_usage_share_request() {
+    CheckinReply reply;
+    TEST_ASSERT_TRUE(parseCheckin(
+        "{\"batch_id\":null,\"usage_share_set\":{\"value\":\"on\",\"rev\":7}}", 0, reply));
+    TEST_ASSERT_TRUE(reply.hasUsageShareSet);
+    TEST_ASSERT_TRUE(reply.usageShareOn);
+    TEST_ASSERT_EQUAL_UINT32(7, reply.usageShareRev);
+    TEST_ASSERT_TRUE(parseCheckin("{\"usage_share_set\":{\"value\":\"off\",\"rev\":4294967295}}",
+                                  0, reply));
+    TEST_ASSERT_TRUE(reply.hasUsageShareSet);
+    TEST_ASSERT_FALSE(reply.usageShareOn);
+    TEST_ASSERT_EQUAL_UINT32(4294967295u, reply.usageShareRev);
+}
+
+void test_checkin_ignores_malformed_usage_share_request() {
+    // Each is ignored without failing the reply (the rest still applies).
+    const char* const bodies[] = {
+        "{\"usage_share_set\":{\"rev\":3}}",                          // no value
+        "{\"usage_share_set\":{\"value\":null,\"rev\":3}}",
+        "{\"usage_share_set\":{\"value\":true,\"rev\":3}}",
+        "{\"usage_share_set\":{\"value\":\"unset\",\"rev\":3}}",      // the site cannot unset
+        "{\"usage_share_set\":{\"value\":\"ON\",\"rev\":3}}",
+        "{\"usage_share_set\":{\"value\":\"yes\",\"rev\":3}}",
+        "{\"usage_share_set\":{\"value\":\"on\"}}",                   // no rev
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":\"3\"}}",     // rev not a number
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":-1}}",
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":2.5}}",
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":4294967296}}",
+        "{\"usage_share_set\":\"on\"}",                               // not an object
+        "{\"usage_share_set\":null}",
+        // Strict shape: exactly `value` and `rev`, and the key only once.
+        "{\"usage_share_set\":{\"value\":\"on\",\"value\":\"off\",\"rev\":3}}",  // duplicate value
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":3,\"rev\":4}}",          // duplicate rev
+        "{\"usage_share_set\":{\"value\":\"on\",\"rev\":3,\"why\":\"x\"}}",      // extra child
+        "{\"usage_share_set\":{\"value\":\"on\",\"value\":\"on\"}}",             // two children, no rev
+        "{\"usage_share_set\":{\"value\":\"off\",\"rev\":3},"
+        "\"usage_share_set\":{\"value\":\"on\",\"rev\":4}}",                     // key twice
+    };
+    for (const char* body : bodies) {
+        CheckinReply reply;
+        TEST_ASSERT_TRUE_MESSAGE(parseCheckin(body, 0, reply), body);
+        TEST_ASSERT_FALSE_MESSAGE(reply.hasUsageShareSet, body);
+        TEST_ASSERT_TRUE_MESSAGE(usageShareAction(reply, 0, 0, 0) == UsageShareAction::Ignore, body);
+    }
+    // The rest of a reply with a rejected request still applies.
+    CheckinReply rest;
+    TEST_ASSERT_TRUE(parseCheckin(
+        "{\"batch_id\":\"b2\",\"next_poll_ms\":7000,"
+        "\"usage_share_set\":{\"value\":\"on\",\"rev\":3,\"extra\":1}}", 0, rest));
+    TEST_ASSERT_TRUE(rest.hasBatch);
+    TEST_ASSERT_EQUAL_STRING("b2", rest.batchId.c_str());
+    TEST_ASSERT_EQUAL_UINT32(7000, rest.nextPollMs);
+    TEST_ASSERT_FALSE(rest.hasUsageShareSet);
+    // An old reply without the field parses exactly as before.
+    CheckinReply reply;
+    TEST_ASSERT_TRUE(parseCheckin("{\"batch_id\":\"b1\",\"next_poll_ms\":5000}", 0, reply));
+    TEST_ASSERT_TRUE(reply.hasBatch);
+    TEST_ASSERT_EQUAL_UINT32(5000, reply.nextPollMs);
+    TEST_ASSERT_FALSE(reply.hasUsageShareSet);
+    TEST_ASSERT_FALSE(reply.usageShareOn);
+    TEST_ASSERT_EQUAL_UINT32(0, reply.usageShareRev);
+    // A bad batch id still fails the reply with a good request beside it.
+    TEST_ASSERT_FALSE(parseCheckin(
+        "{\"batch_id\":7,\"usage_share_set\":{\"value\":\"on\",\"rev\":1}}", 0, reply));
+}
+
+namespace {
+CheckinReply usageRequest(bool on, uint32_t rev) {
+    CheckinReply reply;
+    reply.hasUsageShareSet = true;
+    reply.usageShareOn = on;
+    reply.usageShareRev = rev;
+    return reply;
+}
+
+// Records every write; `failRev` / `failShare` / `failGen` make one fail.
+struct FakeUsageStore : UsageShareStore {
+    bool failRev = false, failShare = false, failGen = false;
+    bool hasRev = false, hasShare = false, hasGen = false;
+    uint32_t rev = 0, gen = 0;
+    bool share = false;
+    std::string order;
+    bool putRev(uint32_t v) override {
+        order += "r";
+        if (failRev) return false;
+        hasRev = true; rev = v; return true;
+    }
+    bool putShare(bool on) override {
+        order += "s";
+        if (failShare) return false;
+        hasShare = true; share = on; return true;
+    }
+    bool putLocalGen(uint32_t v) override {
+        order += "g";
+        if (failGen) return false;
+        hasGen = true; gen = v; return true;
+    }
+    bool putSeenGen(uint32_t v) override {
+        order += "n";
+        hasSeen = true; seen = v; return true;
+    }
+    bool hasSeen = false;
+    uint32_t seen = 0;
+};
+
+// The stored keys across check-ins, for the post-check-in sequences.
+struct UsageKeys : UsageShareStore {
+    uint32_t rev = 0, lgen = 0, sgen = 0;
+    bool share = false;
+    bool failRev = false;
+    int sgenWrites = 0;
+    bool putRev(uint32_t v) override { if (failRev) return false; rev = v; return true; }
+    bool putShare(bool on) override { share = on; return true; }
+    bool putLocalGen(uint32_t v) override { lgen = v; return true; }
+    bool putSeenGen(uint32_t v) override { sgen = v; ++sgenWrites; return true; }
+    // One check-in: the body carries lgen now; the reply is settled after.
+    UsageShareResult checkin(const CheckinReply& reply, uint32_t sentGen) {
+        return settleUsageAfterCheckin(reply, rev, lgen, sgen, sentGen, *this);
+    }
+};
+} // namespace
+
+void test_usage_share_action_decision_table() {
+    const UsageShareAction Ignore = UsageShareAction::Ignore;
+    const UsageShareAction Apply = UsageShareAction::Apply;
+    const UsageShareAction Consume = UsageShareAction::Consume;
+    // No request (a 204, or an old reply): nothing.
+    CheckinReply none;
+    TEST_ASSERT_TRUE(usageShareAction(none, 0, 0, 0) == Ignore);
+    // Stale or already-applied revs are ignored, on or off; rev 0 never applies.
+    for (bool on : {false, true}) {
+        TEST_ASSERT_TRUE(usageShareAction(usageRequest(on, 5), 5, 0, 0) == Ignore);   // equal
+        TEST_ASSERT_TRUE(usageShareAction(usageRequest(on, 5), 6, 0, 0) == Ignore);   // stale
+        TEST_ASSERT_TRUE(usageShareAction(usageRequest(on, 0), 0, 0, 0) == Ignore);   // rev 0
+        TEST_ASSERT_TRUE(usageShareAction(usageRequest(on, 5), 5, 3, 1) == Ignore);
+    }
+    // Off always applies, even with a device change the site has not seen.
+    TEST_ASSERT_TRUE(usageShareAction(usageRequest(false, 5), 4, 0, 0) == Apply);
+    TEST_ASSERT_TRUE(usageShareAction(usageRequest(false, 5), 0, 3, 2) == Apply);
+    TEST_ASSERT_TRUE(usageShareAction(usageRequest(false, 5), 0, 2, 3) == Apply);
+    // On applies only when the site has seen every device change.
+    TEST_ASSERT_TRUE(usageShareAction(usageRequest(true, 5), 4, 0, 0) == Apply);
+    TEST_ASSERT_TRUE(usageShareAction(usageRequest(true, 5), 0, 7, 7) == Apply);
+    TEST_ASSERT_TRUE(usageShareAction(usageRequest(true, 5), 0, 8, 7) == Consume);  // unseen change
+    TEST_ASSERT_TRUE(usageShareAction(usageRequest(true, 5), 0, 0, 7) == Consume);  // any mismatch
+}
+
+void test_usage_share_apply_writes_rev_first() {
+    // Applied: rev, then the setting.
+    FakeUsageStore store;
+    TEST_ASSERT_TRUE(applyUsageShare(usageRequest(true, 5), 4, 2, 2, store) == UsageShareResult::Applied);
+    TEST_ASSERT_EQUAL_STRING("rs", store.order.c_str());
+    TEST_ASSERT_EQUAL_UINT32(5, store.rev);
+    TEST_ASSERT_TRUE(store.share);
+    // Consumed: the rev only; the setting is not touched.
+    store = FakeUsageStore();
+    TEST_ASSERT_TRUE(applyUsageShare(usageRequest(true, 6), 5, 3, 2, store) == UsageShareResult::Consumed);
+    TEST_ASSERT_EQUAL_STRING("r", store.order.c_str());
+    TEST_ASSERT_EQUAL_UINT32(6, store.rev);
+    TEST_ASSERT_FALSE(store.hasShare);
+    // Ignored: nothing written.
+    store = FakeUsageStore();
+    TEST_ASSERT_TRUE(applyUsageShare(usageRequest(false, 5), 5, 0, 0, store) == UsageShareResult::Ignored);
+    TEST_ASSERT_EQUAL_STRING("", store.order.c_str());
+    // The rev write fails: nothing changes (the setting is never written).
+    store = FakeUsageStore();
+    store.failRev = true;
+    TEST_ASSERT_TRUE(applyUsageShare(usageRequest(false, 9), 0, 0, 0, store) == UsageShareResult::RevFailed);
+    TEST_ASSERT_EQUAL_STRING("r", store.order.c_str());
+    TEST_ASSERT_FALSE(store.hasRev);
+    TEST_ASSERT_FALSE(store.hasShare);
+    // The setting write fails after the rev: consumed unapplied, never replayed.
+    store = FakeUsageStore();
+    store.failShare = true;
+    TEST_ASSERT_TRUE(applyUsageShare(usageRequest(true, 9), 0, 0, 0, store) == UsageShareResult::ShareFailed);
+    TEST_ASSERT_EQUAL_STRING("rs", store.order.c_str());
+    TEST_ASSERT_EQUAL_UINT32(9, store.rev);
+    TEST_ASSERT_FALSE(store.hasShare);
+    TEST_ASSERT_TRUE(usageShareAction(usageRequest(true, 9), store.rev, 0, 0) == UsageShareAction::Ignore);
+}
+
+void test_usage_share_local_change_bumps_generation_first() {
+    FakeUsageStore store;
+    TEST_ASSERT_TRUE(recordLocalUsageShare(false, 7, store));
+    TEST_ASSERT_EQUAL_STRING("gs", store.order.c_str());
+    TEST_ASSERT_EQUAL_UINT32(8, store.gen);
+    TEST_ASSERT_TRUE(store.hasShare);
+    TEST_ASSERT_FALSE(store.share);
+    // The generation write fails: the setting is not written.
+    store = FakeUsageStore();
+    store.failGen = true;
+    TEST_ASSERT_FALSE(recordLocalUsageShare(true, 7, store));
+    TEST_ASSERT_EQUAL_STRING("g", store.order.c_str());
+    TEST_ASSERT_FALSE(store.hasShare);
+    // The setting write fails after the bump: reported as a failure, and an
+    // "on" request is held back until the site has seen the real value.
+    store = FakeUsageStore();
+    store.failShare = true;
+    TEST_ASSERT_FALSE(recordLocalUsageShare(true, 7, store));
+    TEST_ASSERT_EQUAL_UINT32(8, store.gen);
+    TEST_ASSERT_TRUE(usageShareAction(usageRequest(true, 3), 0, store.gen, 7) == UsageShareAction::Consume);
+}
+
+// The reply to the check-in that FIRST carries a device change was built
+// before the site saw it, so an older "on" request in it must not apply.
+void test_usage_settle_decides_with_the_seen_count_from_before() {
+    // (a) The site queued "on" rev 2; the device then set off (gen 5, the
+    // site had seen 4, rev 1 applied). The next body carries gen 5 and the
+    // reply still holds "on" rev 2: consumed, sgen advances, value stays off.
+    UsageKeys keys;
+    keys.rev = 1; keys.sgen = 4;
+    TEST_ASSERT_TRUE(recordLocalUsageShare(false, 4, keys));
+    TEST_ASSERT_EQUAL_UINT32(5, keys.lgen);
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), keys.lgen) == UsageShareResult::Consumed);
+    TEST_ASSERT_FALSE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(2, keys.rev);
+    TEST_ASSERT_EQUAL_UINT32(5, keys.sgen);
+    // The same request again (stale now): ignored, value still off.
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), keys.lgen) == UsageShareResult::Ignored);
+    TEST_ASSERT_FALSE(keys.share);
+    // (b) The next reply holds "on" rev 3, made after the site saw gen 5: applies.
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 3), keys.lgen) == UsageShareResult::Applied);
+    TEST_ASSERT_TRUE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(3, keys.rev);
+}
+
+void test_usage_settle_rev_failure_keeps_the_seen_count() {
+    // (c) A consume whose rev write fails: sgen does not advance, so the
+    // same request on the next reply is consumed again, never applied.
+    UsageKeys keys;
+    keys.rev = 1; keys.sgen = 4;
+    TEST_ASSERT_TRUE(recordLocalUsageShare(false, 4, keys));   // lgen 5
+    keys.failRev = true;
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), keys.lgen) == UsageShareResult::RevFailed);
+    TEST_ASSERT_EQUAL_UINT32(4, keys.sgen);
+    TEST_ASSERT_EQUAL_UINT32(1, keys.rev);
+    TEST_ASSERT_FALSE(keys.share);
+    keys.failRev = false;
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), keys.lgen) == UsageShareResult::Consumed);
+    TEST_ASSERT_FALSE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(2, keys.rev);
+    TEST_ASSERT_EQUAL_UINT32(5, keys.sgen);
+    // An "off" whose rev write fails: nothing changes either.
+    keys.failRev = true;
+    keys.share = true;
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(false, 3), keys.lgen) == UsageShareResult::RevFailed);
+    TEST_ASSERT_TRUE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(2, keys.rev);
+}
+
+void test_usage_settle_off_always_applies() {
+    // (d) Off with a newer rev applies whatever the counts say.
+    const uint32_t gens[][3] = {{0, 0, 0}, {5, 4, 5}, {5, 4, 4}, {2, 9, 2}, {7, 7, 8}};
+    for (const auto& g : gens) {
+        UsageKeys keys;
+        keys.share = true; keys.rev = 1;
+        keys.lgen = g[0]; keys.sgen = g[1];
+        TEST_ASSERT_TRUE(keys.checkin(usageRequest(false, 2), g[2]) == UsageShareResult::Applied);
+        TEST_ASSERT_FALSE(keys.share);
+        TEST_ASSERT_EQUAL_UINT32(2, keys.rev);
+    }
+}
+
+void test_usage_settle_without_request_advances_the_seen_count() {
+    // (e) No request: sgen advances to the sent count, written only on a change.
+    UsageKeys keys;
+    keys.lgen = 5; keys.sgen = 4;
+    CheckinReply none;
+    TEST_ASSERT_TRUE(keys.checkin(none, 5) == UsageShareResult::Ignored);
+    TEST_ASSERT_EQUAL_UINT32(5, keys.sgen);
+    TEST_ASSERT_EQUAL_INT(1, keys.sgenWrites);
+    TEST_ASSERT_TRUE(keys.checkin(none, 5) == UsageShareResult::Ignored);
+    TEST_ASSERT_EQUAL_INT(1, keys.sgenWrites);   // unchanged: not written again
+    // A stale request is ignored the same way and still advances sgen.
+    keys.rev = 9; keys.lgen = 6;
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 3), 6) == UsageShareResult::Ignored);
+    TEST_ASSERT_EQUAL_UINT32(6, keys.sgen);
+    TEST_ASSERT_EQUAL_INT(2, keys.sgenWrites);
+    // Order: the request's writes come before the sgen write.
+    FakeUsageStore store;
+    TEST_ASSERT_TRUE(settleUsageAfterCheckin(usageRequest(true, 2), 1, 4, 4, 5, store) ==
+                     UsageShareResult::Applied);
+    TEST_ASSERT_EQUAL_STRING("rsn", store.order.c_str());
+    TEST_ASSERT_EQUAL_UINT32(5, store.seen);
+}
+
+// A device change made while a check-in is in flight: the body carried gen 4,
+// the change made it 5, so an "on" answer to that check-in is only consumed.
+void test_usage_share_change_during_checkin_wins() {
+    UsageKeys keys;
+    keys.rev = 1; keys.lgen = 4; keys.sgen = 4;   // the site has seen gen 4
+    const uint32_t sentGen = keys.lgen;           // the body carries gen 4
+    TEST_ASSERT_TRUE(recordLocalUsageShare(false, keys.lgen, keys));   // in flight: gen 5
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 2), sentGen) == UsageShareResult::Consumed);
+    TEST_ASSERT_FALSE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(4, keys.sgen);
+    // The next check-in carries gen 5: an "on" built before the site saw it
+    // is still consumed; one built after applies.
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 3), keys.lgen) == UsageShareResult::Consumed);
+    TEST_ASSERT_FALSE(keys.share);
+    TEST_ASSERT_EQUAL_UINT32(5, keys.sgen);
+    TEST_ASSERT_TRUE(keys.checkin(usageRequest(true, 4), keys.lgen) == UsageShareResult::Applied);
+    TEST_ASSERT_TRUE(keys.share);
+}
+
+void test_usage_share_text_has_three_states() {
+    TEST_ASSERT_EQUAL_STRING("unset", usageShareText(false, false));   // key missing
+    TEST_ASSERT_EQUAL_STRING("unset", usageShareText(false, true));
+    TEST_ASSERT_EQUAL_STRING("on", usageShareText(true, true));
+    TEST_ASSERT_EQUAL_STRING("off", usageShareText(true, false));
+}
+
+void test_checkin_body_carries_usage_share() {
+    CheckinFields f;
+    f.deviceId = "aabbccddeeff";
+    cJSON* root = cJSON_Parse(buildCheckinBody(f).c_str());   // defaults
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_EQUAL_STRING("unset", cJSON_GetObjectItem(root, "usage_share")->valuestring);
+    TEST_ASSERT_EQUAL_INT(0, (int)cJSON_GetObjectItem(root, "usage_rev")->valuedouble);
+    // The device-change counters stay on the device: the body shape is just
+    // these two fields.
+    int usageKeys = 0;
+    for (const cJSON* item = root->child; item; item = item->next)
+        if (strncmp(item->string, "usage", 5) == 0) ++usageKeys;
+    TEST_ASSERT_EQUAL_INT(2, usageKeys);
+    cJSON_Delete(root);
+    f.usageShare = usageShareText(true, true);
+    f.usageRev = 12;
+    root = cJSON_Parse(buildCheckinBody(f).c_str());
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_EQUAL_STRING("on", cJSON_GetObjectItem(root, "usage_share")->valuestring);
+    TEST_ASSERT_EQUAL_INT(12, (int)cJSON_GetObjectItem(root, "usage_rev")->valuedouble);
+    cJSON_Delete(root);
+    f.usageShare = usageShareText(true, false);
+    f.usageRev = 4294967295u;
+    root = cJSON_Parse(buildCheckinBody(f).c_str());
+    TEST_ASSERT_NOT_NULL(root);
+    TEST_ASSERT_EQUAL_STRING("off", cJSON_GetObjectItem(root, "usage_share")->valuestring);
+    TEST_ASSERT_TRUE(cJSON_GetObjectItem(root, "usage_rev")->valuedouble == 4294967295.0);
+    cJSON_Delete(root);
 }
 
 // ---------------------------------------------------------------------------
@@ -740,6 +1087,18 @@ int main(int, char**) {
     RUN_TEST(test_server_epoch_rejects_bad_text);
     RUN_TEST(test_http_date_epoch_strict_imf_fixdate);
     RUN_TEST(test_checkin_tracks_server_time_presence_for_date_fallback);
+    RUN_TEST(test_checkin_parses_usage_share_request);
+    RUN_TEST(test_checkin_ignores_malformed_usage_share_request);
+    RUN_TEST(test_usage_share_action_decision_table);
+    RUN_TEST(test_usage_share_apply_writes_rev_first);
+    RUN_TEST(test_usage_share_local_change_bumps_generation_first);
+    RUN_TEST(test_usage_share_change_during_checkin_wins);
+    RUN_TEST(test_usage_settle_decides_with_the_seen_count_from_before);
+    RUN_TEST(test_usage_settle_rev_failure_keeps_the_seen_count);
+    RUN_TEST(test_usage_settle_off_always_applies);
+    RUN_TEST(test_usage_settle_without_request_advances_the_seen_count);
+    RUN_TEST(test_usage_share_text_has_three_states);
+    RUN_TEST(test_checkin_body_carries_usage_share);
     RUN_TEST(test_offer_escaped_doc_hashes_verbatim);
     RUN_TEST(test_offer_doc_crc_mismatch_is_permanent);
     RUN_TEST(test_offer_batch_mismatch_is_rejected);

@@ -31,7 +31,7 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 
 | Always present | Requires `CF_TEST_CLI` |
 |---|---|
-| `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary` | `apps`, `app`, `launch`, `soak` |
+| `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary`, `usage` | `apps`, `app`, `launch`, `soak` |
 | `menutree`, `screencap`, `screenstream` | `net`, `heapstat`, `tlsprobe`, `tlsalloc`, `mic`, `wifi`, `wasmstat` |
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
 | `lget`, `lbuiltin`, `lapply`, `syncinfo` | `prompt`, `status`, `upd` |
@@ -154,12 +154,16 @@ syncinfo                      -> [cmd] syncinfo.fs_total=<n> fs_used=<n> fs_free
                                  [cmd] syncinfo.lapply=<capability>
                                  [cmd] syncinfo.setup=1
                                  [cmd] syncinfo.builtin=1
+                                 [cmd] syncinfo.player=<capability>
+                                 [cmd] syncinfo.usage=<on|off|unset>
                                  [cmd] syncinfo.fw=<firmware-version>
 ```
 
 `syncinfo.fw` is always the last line; new keys go before it.
 `syncinfo.setup=1` announces the WiFi setup verbs below (older firmware does
 not send it, and answers them with `[err] unknown command`).
+`syncinfo.usage` announces the `usage` verb (see "Usage sharing" below) and
+carries the setting's current value.
 `syncinfo.builtin=1` announces `lbuiltin`, which reports the firmware's
 built-in menu (every compiled menu app, nested category paths kept) in the
 same shape as the manifest `lget` returns. It answers the same whether or not
@@ -301,6 +305,24 @@ On lists, `id` identifies the selected device, scene or script, so scripts
 can select a speaker even when another row has the same name. Other rows
 use `-`. Opening a speaker reports `screen=speaker` and its volume in whole
 percent; `known=0` means the speaker has not reported a volume yet.
+
+### Usage sharing
+
+```text
+usage                        -> [cmd] usage.share=<on|off|unset>
+usage on|off                 -> [cmd] usage.share=<on|off>
+write failed                 -> [err] usage.write
+bad arguments                -> [err] usage.usage=usage [on|off]
+```
+
+`usage` reads the usage-sharing setting (`upd.usage_share`, the Settings >
+Updates "Share battery data" toggle): `unset` when the key does not exist
+(never set, or cleared by a factory reset), which gates sharing exactly like
+`off`. `usage on|off` writes the same key through the same path as the toggle
+(`CloudSync::setUsageShare`, which counts it as a device change in
+`upd.usage_lgen`; see `lib/CloudSync/README.md`) and replies with the value
+read back. In every build; announced by `syncinfo.usage`. See
+`lib/BatteryDiary/README.md` for what the setting shares.
 
 ### Installing updates
 

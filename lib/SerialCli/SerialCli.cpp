@@ -808,6 +808,27 @@ void SerialCli::dispatch(const char* line, bool retry) {
         // Test builds carry more `upd` verbs below.
     }
 
+    // The usage-sharing setting (every build; announced by `syncinfo.usage`):
+    // the Settings > Updates "Share battery data" toggle, read or set by the
+    // website over USB. "unset" means it was never set (treated as off).
+    if (ieq(line, "usage")) {
+        Serial.printf("[cmd] usage.share=%s\n", CloudSync::usageShare());
+        return;
+    }
+    if (verbWithArg(line, "usage", &arg)) {
+        const bool on = ieq(arg, "on");
+        if (!on && !ieq(arg, "off")) {
+            Serial.println("[err] usage.usage=usage [on|off]");
+            return;
+        }
+        if (!CloudSync::setUsageShare(on)) {
+            Serial.println("[err] usage.write");
+            return;
+        }
+        Serial.printf("[cmd] usage.share=%s\n", CloudSync::usageShare());
+        return;
+    }
+
     // WiFi setup over USB (every build; announced by `syncinfo.setup=1`).
     // Network names travel as hex; a password is never echoed or logged.
     // Test builds keep their older `wifi <ssid>|<pass>` / `wifi list` forms
@@ -1552,7 +1573,7 @@ void SerialCli::cmdInfo() {
 
 void SerialCli::cmdHelp() {
     Serial.println("[cmd] help=version,info,help,mark <id>,reboot,battery,menutree,"
-                   "screencap,screenstream <off|on [fps]>,diary [clear]");
+                   "screencap,screenstream <off|on [fps]>,diary [clear],usage [on|off]");
     Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"
                    "fstat,fread,lget,lbuiltin,lapply,syncinfo");
     Serial.println("[cmd] help.update=upd slot,upd allow-unsigned <on|off>");
@@ -1967,6 +1988,8 @@ void SerialCli::cmdSyncinfo() {
     Serial.println("[cmd] syncinfo.builtin=1");
     // The data-screensaver player (format "cfsprite" entries) is here.
     Serial.printf("[cmd] syncinfo.player=%s\n", SyncProtocol::kPlayerCapability);
+    // The `usage [on|off]` verb is here; the value is the usage-sharing setting.
+    Serial.printf("[cmd] syncinfo.usage=%s\n", CloudSync::usageShare());
     Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
 }
 

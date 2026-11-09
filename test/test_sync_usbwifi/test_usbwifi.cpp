@@ -998,6 +998,7 @@ void test_unknown_command_echoes_only_a_known_verb() {
     TEST_ASSERT_EQUAL_STRING("btn", knownVerb("BTN 5 tap"));       // echoed from the list, not the line
     TEST_ASSERT_EQUAL_STRING("launch", knownVerb("  launch\tHome Remote"));
     TEST_ASSERT_EQUAL_STRING("screencap", knownVerb("screencap"));
+    TEST_ASSERT_EQUAL_STRING("usage", knownVerb("usage on"));     // an older build's answer
     TEST_ASSERT_NULL(knownVerb("frobnicate"));
     TEST_ASSERT_NULL(knownVerb("shortKey123"));                    // a short pasted key
     TEST_ASSERT_NULL(knownVerb("  shortKey123"));                  // ... after leading spaces
@@ -1142,7 +1143,8 @@ void test_release_build_verb_allowlist() {
     const std::vector<SourceLine> lines = classify(readSource("lib/SerialCli/SerialCli.cpp"));
     // The setup verbs and their announcement are compiled into every build.
     const char* const release[] = {"\"wifi scan\"", "\"wifi try\"", "\"wifi saved\"", "\"wifi add\"",
-                                   "syncinfo.setup=1"};
+                                   "syncinfo.setup=1", "verbWithArg(line, \"usage\"",
+                                   "ieq(line, \"usage\")", "syncinfo.usage="};
     for (const char* v : release)
         TEST_ASSERT_TRUE_MESSAGE(countWhere(lines, v, false) >= 1, v);
     // Test-only, never in a release build: the OK press, the cloud verbs,
@@ -1174,6 +1176,10 @@ void test_syncinfo_setup_before_fw_terminator() {
     TEST_ASSERT_TRUE(setup != std::string::npos);
     TEST_ASSERT_TRUE(fw != std::string::npos);
     TEST_ASSERT_TRUE(setup < fw);
+    // The usage-sharing capability line, too, precedes the terminator.
+    const size_t usage = body.find("[cmd] syncinfo.usage=");
+    TEST_ASSERT_TRUE(usage != std::string::npos);
+    TEST_ASSERT_TRUE(usage < fw);
     // The fw line stays the last syncinfo line.
     TEST_ASSERT_EQUAL_size_t(fw, body.rfind("[cmd] syncinfo."));
 }

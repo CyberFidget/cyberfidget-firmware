@@ -180,8 +180,63 @@ bool parseCheckin(const char* body, uint32_t headerNextMs, CheckinReply& out) {
     num(root, "next_poll_ms", out.nextPollMs);
     out.hasServerTime = cJSON_GetObjectItemCaseSensitive(root, "server_time") != nullptr;
     out.serverEpoch = serverEpoch(str(root, "server_time"));
+    // usage_share_set: a malformed request is ignored, never a failed reply.
+    // Strict shape: the key once, an object of exactly `value` and `rev`
+    // (a duplicate or extra child rejects it). The reply comes from the site
+    // over authenticated TLS, encoded by its JSON encoder, so embedded NULs
+    // and unusual number syntax (e.g. 1e1) are an accepted risk here.
+    int usageKeys = 0;
+    for (const cJSON* item = root->child; item; item = item->next)
+        if (item->string && strcmp(item->string, "usage_share_set") == 0) ++usageKeys;
+    const cJSON* usage = cJSON_GetObjectItemCaseSensitive(root, "usage_share_set");
+    if (usageKeys == 1 && cJSON_IsObject(usage) && cJSON_GetArraySize(usage) == 2) {
+        const char* value = str(usage, "value");
+        const cJSON* rev = cJSON_GetObjectItemCaseSensitive(usage, "rev");
+        const bool on = value && strcmp(value, "on") == 0;
+        uint32_t revValue = 0;
+        if ((on || (value && strcmp(value, "off") == 0)) && num(usage, "rev", revValue) &&
+            rev->valuedouble == (double)revValue) {
+            out.hasUsageShareSet = true;
+            out.usageShareOn = on;
+            out.usageShareRev = revValue;
+        }
+    }
     cJSON_Delete(root);
     return ok;
+}
+
+const char* usageShareText(bool present, bool on) {
+    return !present ? "unset" : on ? "on" : "off";
+}
+
+UsageShareAction usageShareAction(const CheckinReply& reply, uint32_t appliedRev,
+                                  uint32_t localGen, uint32_t seenGen) {
+    if (!reply.hasUsageShareSet || reply.usageShareRev <= appliedRev) return UsageShareAction::Ignore;
+    if (!reply.usageShareOn) return UsageShareAction::Apply;
+    return localGen != seenGen ? UsageShareAction::Consume : UsageShareAction::Apply;
+}
+
+UsageShareResult applyUsageShare(const CheckinReply& reply, uint32_t appliedRev,
+                                 uint32_t localGen, uint32_t seenGen, UsageShareStore& store) {
+    const UsageShareAction action = usageShareAction(reply, appliedRev, localGen, seenGen);
+    if (action == UsageShareAction::Ignore) return UsageShareResult::Ignored;
+    if (!store.putRev(reply.usageShareRev)) return UsageShareResult::RevFailed;
+    if (action == UsageShareAction::Consume) return UsageShareResult::Consumed;
+    return store.putShare(reply.usageShareOn) ? UsageShareResult::Applied
+                                              : UsageShareResult::ShareFailed;
+}
+
+bool recordLocalUsageShare(bool on, uint32_t localGen, UsageShareStore& store) {
+    return store.putLocalGen(localGen + 1) && store.putShare(on);
+}
+
+UsageShareResult settleUsageAfterCheckin(const CheckinReply& reply, uint32_t appliedRev,
+                                         uint32_t localGen, uint32_t seenGen,
+                                         uint32_t sentGen, UsageShareStore& store) {
+    const UsageShareResult result = applyUsageShare(reply, appliedRev, localGen, seenGen, store);
+    // A failed seen-count write only keeps "on" requests held back: safe.
+    if (result != UsageShareResult::RevFailed && sentGen != seenGen) store.putSeenGen(sentGen);
+    return result;
 }
 
 OfferError parseOffer(const char* body, const char* batchId, Offer& out) {
@@ -268,6 +323,8 @@ std::string buildCheckinBody(const CheckinFields& f) {
     cJSON_AddStringToObject(root, "manifest_crc", crcText);
     cJSON_AddNumberToObject(root, "apply_apps", f.applyApps ? 1 : 0);
     if (f.mode && *f.mode) cJSON_AddStringToObject(root, "mode", f.mode);
+    cJSON_AddStringToObject(root, "usage_share", f.usageShare ? f.usageShare : "unset");
+    cJSON_AddNumberToObject(root, "usage_rev", f.usageRev);
     if (f.appliedBatch && f.result && validBatchId(f.appliedBatch) && validResult(f.result)) {
         cJSON_AddStringToObject(root, "applied_batch", f.appliedBatch);
         cJSON_AddStringToObject(root, "result", f.result);
