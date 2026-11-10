@@ -1259,12 +1259,11 @@ void MusicPlayerApp::handleEnter() {
             switch (menuCursorIndex) {
                 case 0: { // Now Playing — resume from saved position if available
                     // The saved song can only be found once the song list is read.
-                    bool scannedForResume = false;
                     if (currentTrackIndex < 0 && hasResumeState && !libraryScanned) {
                         startLibraryScan();   // ends in the Library (or "No SD card")
-                        scannedForResume = true;
+                        if (!libraryScanned) break;   // no card: stay on that screen
                     }
-                    if (currentTrackIndex < 0 && hasResumeState && libraryScanned) {
+                    if (currentTrackIndex < 0 && hasResumeState) {
                         // Find the saved track in the library
                         for (int i = 0; i < (int)trackLibrary.size(); i++) {
                             if (trackLibrary[i].path == resumeTrackPath) {
@@ -1282,15 +1281,13 @@ void MusicPlayerApp::handleEnter() {
                             }
                         }
                         if (currentTrackIndex < 0) {
-                            // Track not found in library, just go to player screen
-                            hasResumeState = false;
+                            // The saved song is gone: forget it and show the Library
+                            clearPlaybackState();
+                            setState(STATE_FILE_BROWSER);
+                            break;
                         }
                     }
-                    // If the list was just read but the saved song is gone,
-                    // stay in the Library the scan opened.
-                    if (!(scannedForResume && currentTrackIndex < 0)) {
-                        setState(STATE_PLAYER);
-                    }
+                    setState(STATE_PLAYER);
                     break;
                 }
                 case 1: // Browse Songs
