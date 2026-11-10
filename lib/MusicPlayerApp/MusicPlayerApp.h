@@ -192,6 +192,7 @@ private:
     // LED effects
     LEDEffectMode ledEffectMode = LED_OFF;
     uint8_t ledEnableMask = 0x0F;  // bitmask: bit0=Back, bit1=FrontTop, bit2=FrontMid, bit3=FrontBot
+    int ledSyncDelayMs = 150;      // Sync setting; applied to each new SpectrumAnalyzer
     unsigned long lastLEDUpdate = 0;
     float ledSmoothedAmplitude = 0.0f;
     void updateLEDs();
