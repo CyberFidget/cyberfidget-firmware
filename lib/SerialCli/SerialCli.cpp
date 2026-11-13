@@ -21,6 +21,7 @@
 #include "LoadoutStore.h"     // LittleFS mount + manifest read
 #include "MenuManager.h"      // menu-tree dump
 #include "SyncProtocol.h"     // pure crc / confinement / arg parsing
+#include "LoadoutReply.h"
 #include "FerrySession.h"     // pure write session (fwrite..fwabort, lapply)
 #include "LittleFsFerryStorage.h"
 #include "CloudSync.h"
@@ -1854,23 +1855,23 @@ void SerialCli::cmdFread(const char* args) {
 }
 
 void SerialCli::cmdLget() {
-    LoadoutStore::begin();
     std::string json;
-    LoadoutManifest::Loadout lo;
-    bool present = loadLoadoutManifest(lo, &json);
-    if (!present) {
-        Serial.println(SyncProtocol::kLgetAbsentReply);
+    const auto read = LoadoutStore::read(json);
+    if (read == LoadoutStoreIO::ReadResult::Unreadable) {
+        Serial.println("[err] lget.read present=1");
         return;
     }
-    // Parse only to report entry count + schema alongside the raw bytes; the
-    // browser gets the authoritative document either way.
-    int entries = 0, schema = 0;
-    entries = (int)lo.entries.size();
-    schema  = lo.schemaVersion;
-    uint32_t crc = SyncProtocol::crc32(json.data(), json.size());
-    Serial.printf("[cmd] lget.present=1 entries=%d schema=%d len=%u crc=%08x\n",
-                  entries, schema, (unsigned)json.size(), (unsigned)crc);
-    Serial.write((const uint8_t*)json.data(), json.size());
+    const bool present = read != LoadoutStoreIO::ReadResult::Missing;
+    bool corrupt = false;
+    char header[SyncProtocol::kReadReplyBytes];
+    const size_t headerLen = SyncProtocol::formatLoadoutHeader(
+        header, sizeof(header), present, json, corrupt);
+    if (!headerLen) {
+        Serial.println("[err] lget.reply");
+        return;
+    }
+    Serial.write((const uint8_t*)header, headerLen);
+    if (present && !corrupt) Serial.write((const uint8_t*)json.data(), json.size());
 }
 
 // The firmware's built-in menu (compiled rows, nested category paths), framed
