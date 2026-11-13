@@ -171,7 +171,7 @@ bool readLengthAllowed(uint32_t len);
 size_t formatReadHeader(char* out, size_t cap, const char* path,
                         uint32_t offset, uint32_t len, uint32_t crc);
 
-/// The whole `lget` reply when no readable manifest is stored (no line
+/// The whole `lget` reply when no manifest file is stored (no line
 /// terminator; the caller prints it as one line). Released readers stop on
 /// `present=0` and read no payload, so this line must never change.
 constexpr const char* kLgetAbsentReply =
