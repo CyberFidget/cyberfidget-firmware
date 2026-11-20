@@ -16,6 +16,7 @@
 
 #include "AppManager.h"       // applyLoadoutOps (manifest apply + persist)
 #include "BatteryDiary.h"
+#include "SelfTest.h"
 #include "AppDefs.h"          // load + builtin identity migration
 #include "LoadoutManifest.h"  // parse for the lget entry count
 #include "LoadoutStore.h"     // LittleFS mount + manifest read
@@ -766,6 +767,8 @@ void SerialCli::dispatch(const char* line, bool retry) {
     if (ieq(line, "version")) { cmdVersion(); return; }
     if (ieq(line, "info"))    { cmdInfo();    return; }
     if (ieq(line, "help"))    { cmdHelp();    return; }
+    if (ieq(line, "health")) { SelfTest::command(""); return; }
+    if (verbWithArg(line, "health", &arg)) { SelfTest::command(arg); return; }
     if (ieq(line, "mark"))    { Serial.println("[err] mark.usage=mark <id>"); return; }
     if (verbWithArg(line, "mark", &arg)) { cmdMark(arg); return; }
     if (ieq(line, "reboot"))  { cmdReboot();  return; }
@@ -1573,6 +1576,7 @@ void SerialCli::cmdInfo() {
 }
 
 void SerialCli::cmdHelp() {
+    Serial.println("[cmd] help.health=health start|status|answer pass|answer fail|report|abort");
     Serial.println("[cmd] help=version,info,help,mark <id>,reboot,battery,menutree,"
                    "screencap,screenstream <off|on [fps]>,diary [clear],usage [on|off]");
     Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"

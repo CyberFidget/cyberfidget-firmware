@@ -86,3 +86,4 @@ APP_ENTRY(APP_SPEAKER_EQ,            "Speaker EQ",          "Settings/Sound", Sp
 APP_ENTRY(APP_HOME_REMOTE,           "Home Remote",         "Tools",          HomeRemoteApp::begin,                            HomeRemoteApp::end,                            HomeRemoteApp::update                      )
 // Tools > Counter: two tallies, left buttons and right buttons.
 APP_ENTRY(APP_COUNTER,               "Counter",             "Tools",          counterBegin,                                    counterEnd,                                    counterUpdate                              )
+APP_ENTRY(APP_SELF_TEST,             "Self Test",           "Tools",          SelfTest::begin,                                 SelfTest::end,                                 SelfTest::update                           )
