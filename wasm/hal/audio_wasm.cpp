@@ -157,6 +157,7 @@ void AudioManager::setVolume(float volumeLevel) {
     if (vol > 1.0f) vol = 1.0f;
     const bool changed = cf_audio::volumeToMasterQ15(vol) != cf_audio::volumeToMasterQ15(s_volume);
     s_volume = vol;
+    volume = vol;   // what getVolume() reports, as on the device
     // Ramped over 10 ms by the engine, as on the device.
     // If the queue is full, the latest volume is kept and lands at the next
     // render (as the device's volumePending retry).
