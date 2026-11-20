@@ -176,7 +176,7 @@ void startStep() {
     case Slider: slider = SliderState{}; announce("Slide to both ends"); break;
     case Accel: accel = AccelState{}; announce("Start face up; turn face down, then face up. Tilt all axes"); break;
     case Audio:
-        announce("Keep quiet: measuring silence, then speaker tone");
+        announce("Keep quiet and leave the speaker uncovered: measuring silence, then speaker tone");
         silence = ToneMeter{}; tone = ToneMeter{}; audioPhase = 0; audioAt = stepAt;
         if (micOwned) MicCapture::instance().startStreaming(0);
         break;
@@ -302,6 +302,7 @@ void draw() {
         else { text(0,37,"Enter: all four correct"); text(0,49,"Back: problem"); }
     } else if (step == Audio) {
         text(0,14,"Keep quiet"); text(0,28,audioPhase < 2 ? "Measuring silence" : "Measuring speaker tone");
+        text(0,42,"Don't cover the speaker");
     } else text(0,16,step == Charger ? "Reading fuel gauge" : "No battery check yet");
     d.display();
 }
