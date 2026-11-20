@@ -336,7 +336,9 @@ void update() {
     uint32_t now = millis();
     // A run is use of the device: hold off the idle sleep until it ends. Every
     // step has its own deadline, so this cannot keep the device awake forever.
-    if (running) millis_APP_LASTINTERACTION = now;
+    // Use the loop's millis_NOW: the idle check subtracts from it, and a later
+    // millis() stamp would wrap that difference into an instant sleep.
+    if (running) millis_APP_LASTINTERACTION = millis_NOW;
     if (running && backDown && expired(now,backAt,kAbortHoldMs)) { abortedByHold = true; finish(true); }
     if (running && phase == Phase::Result && expired(now,phaseAt,kResultMs)) {
         if (++step == kSteps) finish(false); else startStep();

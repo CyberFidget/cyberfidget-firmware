@@ -31,6 +31,10 @@ static void buttons_order_wrong_press_and_deadline() {
 static void deadlines_wrap_safely() {
     TEST_ASSERT_FALSE(expired(998, UINT32_MAX-1000, 2000));
     TEST_ASSERT_TRUE(expired(999, UINT32_MAX-1000, 2000));
+    // A step that started later in the same tick than `now` was read has not timed out.
+    TEST_ASSERT_FALSE(expired(5000, 5003, 15000));
+    ButtonsState fresh; fresh.since = 5003;
+    TEST_ASSERT_FALSE(fresh.timedOut(5000));
     TEST_ASSERT_EQUAL(3000, kAbortHoldMs);
 }
 static void slider_requires_both_ends() {

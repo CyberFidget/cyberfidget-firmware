@@ -34,7 +34,10 @@ inline const char* id(unsigned s) {
 }
 inline const char* name(Result r) { return r == Result::Pass ? "pass" : r == Result::Skip ? "skip" : "fail"; }
 inline const char* name(Overall r) { return r == Overall::Pass ? "pass" : r == Overall::Aborted ? "aborted" : "fail"; }
-inline bool expired(uint32_t now, uint32_t start, uint32_t duration) { return uint32_t(now - start) >= duration; }
+// A start stamped after the caller read `now` (a step that began earlier in
+// the same tick) is not expired: compare as signed so the difference cannot
+// wrap to a huge elapsed time. Still correct across the 49-day millis() wrap.
+inline bool expired(uint32_t now, uint32_t start, uint32_t duration) { return int32_t(now - start) >= int32_t(duration); }
 inline Result charger(bool answered, uint32_t mv) { return answered && mv > 0 ? Result::Pass : Result::Fail; }
 struct StepResult { Result result = Result::Fail; char detail[kDetailSize] = "not run"; };
 struct Report {
