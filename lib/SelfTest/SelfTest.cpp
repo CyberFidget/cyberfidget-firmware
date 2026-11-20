@@ -38,6 +38,8 @@ bool active = false, running = false, backDown = false, micOwned = false;
 bool abortedByHold = false;  // the Back release that follows a hold-abort must not leave the result screen
 bool storageReady = false;
 OverlayMode savedOverlay = OverlayMode::OVERLAY_OFF;
+float savedVolume = 0.7f;
+constexpr float kTestVolume = 0.7f;  // the level the audio thresholds were calibrated at (the boot default)
 Preferences prefs;
 ButtonsState buttons;
 SliderState slider;
@@ -314,6 +316,10 @@ void begin() {
     savedOverlay = HAL::displayProxy().getOverlayMode();
     HAL::displayProxy().setOverlayMode(OverlayMode::OVERLAY_OFF);
     HAL::displayProxy().normalDisplay();
+    // Another app (e.g. Booper's volume slider) may have left the shared
+    // volume low or muted: measure at the calibrated level, restore on exit.
+    savedVolume = HAL::audioManager().getVolume();
+    HAL::audioManager().setVolume(kTestVolume);
     active = running = true; abortedByHold = false;
     backDown = HAL::buttonManager().isPressed(button_SelectIndex); backAt = millis();
     for (int i=0;i<6;++i) HAL::buttonManager().registerCallback(i,onButton);
@@ -406,6 +412,7 @@ void end() {
     for (int i=0;i<6;++i) HAL::buttonManager().unregisterCallback(i);
     quiet(); releaseMic(); prefs.end(); storageReady = false;
     HAL::displayProxy().setOverlayMode(savedOverlay);
+    HAL::audioManager().setVolume(savedVolume);
     setColorsOff(); HAL::showRgbLeds(); active = false;
 }
 void command(const char* args) {
