@@ -122,7 +122,7 @@ bool hadPreviousAccount();
 void resetLinkStatus();
 
 // The usage-sharing setting (upd.usage_share, the Settings > Updates "Share
-// battery data" toggle): "on", "off", or "unset" when it was never set.
+// usage data" toggle): "on", "off", or "unset" when it was never set.
 // Unset gates sharing exactly like off.
 const char* usageShare();
 // The one writer for a change made on the device (the Settings toggle and USB

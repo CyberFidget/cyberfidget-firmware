@@ -708,7 +708,7 @@ void settingsUpdate() {
         display.setFont(ArialMT_Plain_10);
         display.setColor(WHITE);
         display.setTextAlignment(TEXT_ALIGN_LEFT);
-        display.drawString(4, 0, "Share battery data");
+        display.drawString(4, 0, "Share usage data");
         display.drawString(4, 12, "Daily at update checks:");
         display.drawString(4, 22, "Battery readings and");
         // Each line fits 128 px in ArialMT_Plain_10 (the widest ends at x = 119).
