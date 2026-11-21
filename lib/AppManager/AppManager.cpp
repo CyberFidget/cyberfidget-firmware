@@ -50,6 +50,11 @@ static void showRadioNotice(const char* text) {
 }
 static PowerManager powerManager(buttonManager);
 
+// Music Player opens in a fresh start (see switchToApp) when less internal
+// RAM than this is free: Bluetooth audio needs about this much to start and
+// connect. Below what a fresh start has free, so the relaunch never repeats.
+constexpr size_t kMusicBtFreeInternal = 118 * 1024;
+
 // A delivered (WASM) app runs on its own task: a few KB of internal RAM plus
 // its interpreter stack in PSRAM (WasmFsApp::guestStackFits). Should either
 // not be available (the internal heap is split after the network has been
@@ -740,20 +745,29 @@ void AppManager::switchToApp(AppIndex newApp)
     }
     if (newApp == APP_MUSIC_PLAYER || newApp == APP_WEB_PORTAL || newApp == APP_HOME_REMOTE) {
         // Radio apps: a network check must be over (WiFi off) before they
-        // start. Bluetooth after any WiFi use this power cycle, or a check
-        // that would not stop in time, goes through a reboot that
-        // relaunches the app.
+        // start. Bluetooth after any WiFi use this power cycle, Bluetooth
+        // with less internal RAM free than it needs, or a check that would
+        // not stop in time, goes through a reboot that relaunches the app.
         const bool checking = CloudSync::busy();
         if (checking) showRadioNotice("Finishing check...");
         const bool stopped = CloudSync::cancelPending();
         bool btAfterWifi = newApp == APP_MUSIC_PLAYER &&
                            CloudSync::radioUsedThisPowerCycle();
+        // Bluetooth audio takes about 117 KB of internal RAM when it starts
+        // and more to connect. A fresh start has ~121-124 KB free; after the
+        // menu has run it can be ~103 KB, and connecting then runs out and
+        // aborts. The restart relaunches the app before the menu runs.
+        const size_t freeInternal = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+        bool btShortOfRam = newApp == APP_MUSIC_PLAYER && freeInternal < kMusicBtFreeInternal;
 #ifdef CF_TEST_CLI
-        if (btAfterWifi && testAllowBtAfterWifi) {
+        if ((btAfterWifi || btShortOfRam) && testAllowBtAfterWifi) {
             Serial.println("[checkin] bt-after-wifi=allowed-by-test");
             btAfterWifi = false;
+            btShortOfRam = false;
         }
 #endif
+        if (btShortOfRam) Serial.printf("[music] restart-for-bt free_int=%u\n", (unsigned)freeInternal);
+        btAfterWifi = btAfterWifi || btShortOfRam;
         if (checking) Serial.printf("[checkin] cancel-for-radio-app stopped=%d\n", stopped ? 1 : 0);
         if (!stopped || btAfterWifi) {
             Preferences boot;
@@ -763,7 +777,7 @@ void AppManager::switchToApp(AppIndex newApp)
                              : newApp == APP_HOME_REMOTE ? "boothome" : "bootapp", true);
                 boot.end();
             }
-            if (!checking) showRadioNotice("Restarting...");
+            if (!checking) showRadioNotice(newApp == APP_MUSIC_PLAYER ? "Restarting for Bluetooth..." : "Restarting...");
             ModalPrompt::instance().closeForTeardown();
             Serial.flush();
             delay(50);
