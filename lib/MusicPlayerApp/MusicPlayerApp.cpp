@@ -135,6 +135,20 @@ MusicPlayerApp::MusicPlayerApp(ButtonManager& btnMgr)
 // Lifecycle
 // =========================================================================
 void MusicPlayerApp::begin() {
+    // After a speaker -> Bluetooth restart (restartForBluetooth), connect to
+    // the device that was picked: it is first in the saved list. The key is
+    // consumed first, and only a successful removal acts on it, so a crash
+    // or failing connect never repeats on a later start.
+    bool connectPicked = false;
+    {
+        Preferences boot;
+        if (boot.begin("bootcfg", false)) {
+            if (boot.isKey(kBootConnectKey)) {
+                connectPicked = boot.getBool(kBootConnectKey, false) && boot.remove(kBootConnectKey);
+            }
+            boot.end();
+        }
+    }
     currentState = STATE_DEVICE_MENU;
     menuCursorIndex = 0;
     menuScrollOffset = 0;
@@ -186,17 +200,6 @@ void MusicPlayerApp::begin() {
     // target device wasn't in pairing mode.
     setState(STATE_DEVICE_MENU);
 
-    // Switching from the speaker to Bluetooth restarts the device (see
-    // restartForBluetooth); the device the person picked is first in the
-    // saved list. The key is removed before connecting, so a failing
-    // connect never repeats on the next start.
-    Preferences boot;
-    bool connectPicked = false;
-    if (boot.begin("bootcfg", false)) {
-        connectPicked = boot.getBool(kBootConnectKey, false);
-        if (boot.isKey(kBootConnectKey)) boot.remove(kBootConnectKey);
-        boot.end();
-    }
     if (connectPicked && !savedDevices.empty()) {
         MPLAYER_LOG("begin: connecting to the device picked before the restart");
         SavedDevice dev = savedDevices[0];
@@ -462,7 +465,7 @@ void MusicPlayerApp::startConnectingByAddress(const SavedDevice& dev) {
     // From the onboard speaker, Bluetooth goes through a fresh start: the
     // speaker session leaves too little internal RAM for Bluetooth, and
     // rebuilding the player around the old decoder crashed.
-    if (usingOnboardSpeaker) {
+    if (usingOnboardSpeaker || speakerUsedSinceStart) {
         restartForBluetooth();
         return;
     }
@@ -536,17 +539,25 @@ void MusicPlayerApp::startConnectingByAddress(const SavedDevice& dev) {
     setState(STATE_BT_CONNECTING);
 }
 
-[[noreturn]] void MusicPlayerApp::restartForBluetooth() {
+void MusicPlayerApp::restartForBluetooth() {
     MPLAYER_LOG("restartForBluetooth: speaker -> Bluetooth through a restart");
     if (pI2sVolume) pI2sVolume->setVolume(0.0f);
     saveSettings();
     savePlaybackState();
     Preferences boot;
-    if (boot.begin("bootcfg", false)) {
-        boot.putBool("skipanim", true);
-        boot.putBool("bootmusic", true);
-        boot.putBool(kBootConnectKey, true);
+    bool written = boot.begin("bootcfg", false);
+    if (written) {
+        // The connect request is written last: without the relaunch it
+        // would wait for a later visit.
+        written = boot.putBool("skipanim", true) && boot.putBool("bootmusic", true) &&
+                  boot.putBool(kBootConnectKey, true);
+        if (!written && boot.isKey(kBootConnectKey)) boot.remove(kBootConnectKey);
         boot.end();
+    }
+    if (!written) {
+        // Could not set up the relaunch: ask for a restart instead.
+        showBluetoothNeedsRestart();
+        return;
     }
     setColorsOff();
     display.clear();
@@ -559,7 +570,6 @@ void MusicPlayerApp::startConnectingByAddress(const SavedDevice& dev) {
     Serial.flush();
     delay(50);
     ESP.restart();
-    while (true) {}
 }
 
 void MusicPlayerApp::showBluetoothNeedsRestart() {
@@ -570,6 +580,10 @@ void MusicPlayerApp::showBluetoothNeedsRestart() {
 
 void MusicPlayerApp::startOnboardSpeaker() {
     MPLAYER_LOG("startOnboardSpeaker: enter");
+    // Bluetooth after this, in this power cycle, goes through a restart
+    // (startConnectingByAddress): the player's decoder outlives the speaker
+    // pipeline, and the memory the session used may not come back.
+    speakerUsedSinceStart = true;
 
     // If currently connected to BT, disconnect first
     if (pA2dpStream && pA2dpStream->isConnected()) {

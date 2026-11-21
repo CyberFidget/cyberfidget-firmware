@@ -142,11 +142,12 @@ private:
     void destroyAudioPipeline();
     static void stopSpeakerForSleep(bool hardShutdown);   // port-0 borrower stop (AudioManager::stopForSleep)
     void disconnectBT();
-    [[noreturn]] void restartForBluetooth();
+    void restartForBluetooth();   // restarts; returns only if the relaunch could not be set up
     void showBluetoothNeedsRestart();
 
     // Library / metadata
     std::vector<TrackInfo> trackLibrary;
+    bool speakerUsedSinceStart = false;  // never reset: only a restart clears it
     bool libraryScanned = false;
     int libraryScanCurrent = 0;
     int libraryScanTotal = 0;
