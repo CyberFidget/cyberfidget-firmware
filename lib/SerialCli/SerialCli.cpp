@@ -813,7 +813,7 @@ void SerialCli::dispatch(const char* line, bool retry) {
     }
 
     // The usage-sharing setting (every build; announced by `syncinfo.usage`):
-    // the Settings > Updates "Share battery data" toggle, read or set by the
+    // the Settings > Updates "Share usage data" toggle, read or set by the
     // website over USB. "unset" means it was never set (treated as off).
     if (ieq(line, "usage")) {
         Serial.printf("[cmd] usage.share=%s\n", CloudSync::usageShare());

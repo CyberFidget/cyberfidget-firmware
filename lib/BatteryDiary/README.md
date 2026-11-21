@@ -75,7 +75,7 @@ or reboot.
 
 ## Optional daily sharing
 
-Settings > Updates > Share battery data is off when its `upd.usage_share`
+Settings > Updates > Share usage data is off when its `upd.usage_share`
 key is missing. After a successful linked automatic check-in (the daily timer
 session or the start-up check-in), at most once every 21 hours, the cloud
 worker can flush pending RTC samples, read the whole ring (up to 3072 records,
