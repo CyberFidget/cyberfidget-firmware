@@ -106,7 +106,7 @@ void test_settings_rows_fresh_device(void) {
         "Check now",
         "Auto-check: On",
         "Check at start-up: On",
-        "Share battery data: Off",
+        "Share usage data: Off",
         "Apply app changes automatically: On",
         "Versions: Stable",
         "Source: cyberfidget.com",
@@ -134,7 +134,7 @@ void test_settings_rows_follow_state(void) {
     TEST_ASSERT_EQUAL_STRING("About this Fidget", l[10].c_str());
     // Preserve the existing positional checks after checking the inserted row.
     l.erase(l.begin() + 10);
-    TEST_ASSERT_EQUAL_STRING("Share battery data: On", l[3].c_str());
+    TEST_ASSERT_EQUAL_STRING("Share usage data: On", l[3].c_str());
     TEST_ASSERT_EQUAL_STRING("Apply app changes automatically: Off", l[4].c_str());
     TEST_ASSERT_EQUAL_STRING("Skip 1.4.0", l[7].c_str());
     TEST_ASSERT_EQUAL_STRING("Unlink this Fidget", l[8].c_str());

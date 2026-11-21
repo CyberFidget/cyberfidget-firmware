@@ -6,11 +6,10 @@
  *
  * Device-only companion to the pure LoadoutManifest core: mounts
  * LittleFS (on the `spiffs` data partition from default_8MB.csv) and
- * reads/writes /loadout.json. Saves are atomic-ish: the JSON is written
- * to a temp file first and renamed over the real one, so a torn write
- * leaves either the old manifest or none at all — never a half-written
- * file. A missing/unreadable manifest just means the menu falls back to
- * compiled-in order.
+ * reads/writes /loadout.json. Saves verify a closed temp file before an
+ * atomic rename over the real one. An interrupted replacement leaves
+ * either the old or the new manifest; a refused rename keeps the old one.
+ * Reads distinguish an absent file from an unreadable stored file.
  *
  * Not compiled for native tests (HOST_TEST) or the WASM emulator (which
  * builds the pure core only; see wasm/CMakeLists.txt).
@@ -22,6 +21,7 @@
 #ifndef HOST_TEST
 
 #include <string>
+#include "LoadoutStoreIO.h"
 
 namespace LoadoutStore {
 
@@ -34,6 +34,10 @@ bool formatForFactoryReset();
 
 /// Read /loadout.json into jsonOut. @return false if absent/unreadable.
 bool load(std::string& jsonOut);
+
+/// Read raw bytes without parsing, migrating, or writing the stored file.
+/// An empty stored file is Ok here; the manifest parser will reject it.
+LoadoutStoreIO::ReadResult read(std::string& jsonOut);
 
 /// Write /loadout.json via temp-file + rename. @return true on success.
 bool save(const std::string& json);

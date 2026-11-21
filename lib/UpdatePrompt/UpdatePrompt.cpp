@@ -429,11 +429,9 @@ void activate(Row row) {
         }
         case Row::ShareBattery: {
             const bool enable = !cache.shareBattery;
-            Preferences upd;
-            if (upd.begin(kNamespace, false)) {
-                upd.putBool("usage_share", enable);
-                upd.end();
-            }
+            // The one writer of the setting: it also records the change as a
+            // device change the site has not seen yet.
+            CloudSync::setUsageShare(enable);
             refresh();
             if (cache.shareBattery && enable) {
                 shareExplanation = true;
@@ -710,7 +708,7 @@ void settingsUpdate() {
         display.setFont(ArialMT_Plain_10);
         display.setColor(WHITE);
         display.setTextAlignment(TEXT_ALIGN_LEFT);
-        display.drawString(4, 0, "Share battery data");
+        display.drawString(4, 0, "Share usage data");
         display.drawString(4, 12, "Daily at update checks:");
         display.drawString(4, 22, "Battery readings and");
         // Each line fits 128 px in ArialMT_Plain_10 (the widest ends at x = 119).

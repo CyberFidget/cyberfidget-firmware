@@ -31,8 +31,8 @@ file/loadout synchronization, and a gated set of bench-only device controls.
 
 | Always present | Requires `CF_TEST_CLI` |
 |---|---|
-| `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary` | `apps`, `app`, `launch`, `soak` |
-| `menutree`, `screencap`, `screenstream` | `net`, `heapstat`, `tlsprobe`, `tlsalloc`, `mic`, `wifi`, `wasmstat` |
+| `version`, `info`, `help`, `mark`, `reboot`, `battery`, `diary`, `usage` | `apps`, `app`, `launch`, `soak` |
+| `menutree`, `screencap`, `screenstream`, `health` | `net`, `heapstat`, `tlsprobe`, `tlsalloc`, `mic`, `wifi`, `wasmstat` |
 | `fwrite`, `fwdata`, `fwcommit`, `fwabort`, `fdelete`, `flist`, `fstat`, `fread` | `btn`, `sleep`, `rail`, `gauge`, `uvlo` |
 | `lget`, `lbuiltin`, `lapply`, `syncinfo` | `prompt`, `status`, `upd` |
 | `wifi scan`, `wifi add`, `wifi try`, `wifi saved` | `wifi <ssid>\|<pass>`, `wifi list\|first\|forget\|hint-bad\|hint-clear`, `cloud ...`, `link ...` |
@@ -45,6 +45,53 @@ WiFi setup verbs and `syncinfo.setup=1` outside `CF_TEST_CLI`, and every
 `link`, `cloud` and older `wifi` form inside it.
 
 ## Always-present verbs
+
+### Built-in self test
+
+`health start` launches **Tools > Self Test** and acknowledges immediately;
+steps advance in the app update loop. Available in release and test builds.
+
+```text
+health start       -> [cmd] health.start=ok (or [err] health.start=busy)
+health status      -> [cmd] health.status=<step-id> state=<running|prompt|answer|result>
+                     [cmd] health.status=idle (also after completion)
+health answer pass -> [cmd] health.answer=ok
+health answer fail -> [cmd] health.answer=ok
+                     [err] health.answer=not_awaiting_answer
+health abort       -> [cmd] health.abort=ok (or [err] health.abort=idle)
+health report      -> last stored step lines, summary, health.done
+                     [err] health.report=none (or none_or_invalid)
+```
+
+Live events and stored report lines:
+
+```text
+[cmd] health.step=<id> prompt=<percent-encoded instruction>
+[cmd] health.<id>=<pass|fail|skip> detail=<percent-encoded detail>
+[cmd] health.stored=ok
+[cmd] health.summary id=<info.id> fw=<version> run=<counter> charger=<result> battery=<result> buttons=<result> slider=<result> accel=<result> audio=<result> display=<result> leds=<result>
+[cmd] health.done=<pass|fail|aborted>
+```
+
+Fixed ids, in order: `charger battery buttons slider accel audio display leds`.
+Spaces and punctuation outside `A-Z a-z 0-9 - _ . : /` are escaped as `%HH`;
+for example `detail=no%20battery%20check%20yet`. Decode values after splitting
+on spaces and the first `=`. The prompt is repeated for each requested button,
+display pattern and LED channel. Report replay omits prompts and `health.stored`.
+Storage failure prints `[err] health.store=failed`; counter reservation failure
+prints `[err] health.counter=unavailable`. The measurement result remains truthful
+even when storage fails; a station must require `health.stored=ok` for persistence.
+
+Only display and LEDs accept `answer`, while the pattern/channel is visible
+(after a 2.5 s instruction screen). Enter/Back release gives the same answer.
+Each unanswered pattern/channel fails after 30 s. A short Back press tests that
+button; holding it for 3 s aborts from any running step. Unfinished steps in an
+aborted report are `fail` with an abort reason, except battery (always `skip`).
+The previous completed/aborted report remains available during a new run. The
+NVS run counter is reserved on entry, so interrupted runs may leave gaps.
+Audio detail contains `silence`, `tone` (mean Goertzel bin power after fixed
+input scaling), `ratio_milli` (power ratio times 1000, silence floor 1), `hz`,
+and `min_ratio_milli`; both power values use identical capture gain and windows.
 
 ### Identification and help
 
@@ -154,12 +201,16 @@ syncinfo                      -> [cmd] syncinfo.fs_total=<n> fs_used=<n> fs_free
                                  [cmd] syncinfo.lapply=<capability>
                                  [cmd] syncinfo.setup=1
                                  [cmd] syncinfo.builtin=1
+                                 [cmd] syncinfo.player=<capability>
+                                 [cmd] syncinfo.usage=<on|off|unset>
                                  [cmd] syncinfo.fw=<firmware-version>
 ```
 
 `syncinfo.fw` is always the last line; new keys go before it.
 `syncinfo.setup=1` announces the WiFi setup verbs below (older firmware does
 not send it, and answers them with `[err] unknown command`).
+`syncinfo.usage` announces the `usage` verb (see "Usage sharing" below) and
+carries the setting's current value.
 `syncinfo.builtin=1` announces `lbuiltin`, which reports the firmware's
 built-in menu (every compiled menu app, nested category paths kept) in the
 same shape as the manifest `lget` returns. It answers the same whether or not
@@ -301,6 +352,24 @@ On lists, `id` identifies the selected device, scene or script, so scripts
 can select a speaker even when another row has the same name. Other rows
 use `-`. Opening a speaker reports `screen=speaker` and its volume in whole
 percent; `known=0` means the speaker has not reported a volume yet.
+
+### Usage sharing
+
+```text
+usage                        -> [cmd] usage.share=<on|off|unset>
+usage on|off                 -> [cmd] usage.share=<on|off>
+write failed                 -> [err] usage.write
+bad arguments                -> [err] usage.usage=usage [on|off]
+```
+
+`usage` reads the usage-sharing setting (`upd.usage_share`, the Settings >
+Updates "Share usage data" toggle): `unset` when the key does not exist
+(never set, or cleared by a factory reset), which gates sharing exactly like
+`off`. `usage on|off` writes the same key through the same path as the toggle
+(`CloudSync::setUsageShare`, which counts it as a device change in
+`upd.usage_lgen`; see `lib/CloudSync/README.md`) and replies with the value
+read back. In every build; announced by `syncinfo.usage`. See
+`lib/BatteryDiary/README.md` for what the setting shares.
 
 ### Installing updates
 

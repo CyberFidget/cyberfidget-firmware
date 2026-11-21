@@ -29,6 +29,9 @@ namespace ID3Scanner {
                       std::vector<TrackInfo>& out,
                       void (*progressCb)(int current, int total) = nullptr);
 
+    // List the files with this extension in a directory tree (the files scanAllFiles reads)
+    void listFiles(const char* rootDir, const char* ext, std::vector<String>& out);
+
     // Cache management
     bool loadCache(const char* cachePath, std::vector<TrackInfo>& out);
     bool saveCache(const char* cachePath, const std::vector<TrackInfo>& tracks);

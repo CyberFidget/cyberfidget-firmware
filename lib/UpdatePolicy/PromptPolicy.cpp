@@ -371,7 +371,7 @@ void settingsLabel(Row row, const SettingsState& s, char* out, size_t len) {
             snprintf(out, len, "Check at start-up: %s", s.bootCheck ? "On" : "Off");
             break;
         case Row::ShareBattery:
-            snprintf(out, len, "Share battery data: %s", s.shareBattery ? "On" : "Off");
+            snprintf(out, len, "Share usage data: %s", s.shareBattery ? "On" : "Off");
             break;
         case Row::AutoApply:
             snprintf(out, len, "Apply app changes automatically: %s", s.autoapply ? "On" : "Off");

@@ -8,6 +8,9 @@
 #include "WebPortalApp.h"
 #include "globals.h"        // millis_APP_LASTINTERACTION (sleep prevention)
 #include <SD.h>
+#include <Preferences.h>
+#include "ModalPrompt.h"
+#include <algorithm>
 #include <esp_a2dp_api.h>  // esp_a2d_source_disconnect() — the correct API for source mode
 #include <esp_avrc_api.h>  // ESP_AVRC_PT_CMD_* — AVRCP passthrough key codes
 
@@ -66,6 +69,10 @@ using namespace audio_tools;
 // Set to 1 to disconnect on exit — cleaner but may hang after ~5 cycles.
 // Explicit disconnect via BT submenu always works regardless of this flag.
 #define MUSIC_PLAYER_DISCONNECT_ON_EXIT 0
+
+// bootcfg key: after a speaker -> Bluetooth restart, connect to the first
+// saved device (the one picked) when the app opens.
+static constexpr const char* kBootConnectKey = "bootmusicbt";
 
 #if MUSIC_PLAYER_DEBUG
   #define MPLAYER_LOG(msg) ESP_LOGD(TAG_MAIN, "[MusicPlayer] " msg)
@@ -128,6 +135,20 @@ MusicPlayerApp::MusicPlayerApp(ButtonManager& btnMgr)
 // Lifecycle
 // =========================================================================
 void MusicPlayerApp::begin() {
+    // After a speaker -> Bluetooth restart (restartForBluetooth), connect to
+    // the device that was picked: it is first in the saved list. The key is
+    // consumed first, and only a successful removal acts on it, so a crash
+    // or failing connect never repeats on a later start.
+    bool connectPicked = false;
+    {
+        Preferences boot;
+        if (boot.begin("bootcfg", false)) {
+            if (boot.isKey(kBootConnectKey)) {
+                connectPicked = boot.getBool(kBootConnectKey, false) && boot.remove(kBootConnectKey);
+            }
+            boot.end();
+        }
+    }
     currentState = STATE_DEVICE_MENU;
     menuCursorIndex = 0;
     menuScrollOffset = 0;
@@ -178,6 +199,12 @@ void MusicPlayerApp::begin() {
     // Auto-reconnect on startup was causing BT stack crashes when the
     // target device wasn't in pairing mode.
     setState(STATE_DEVICE_MENU);
+
+    if (connectPicked && !savedDevices.empty()) {
+        MPLAYER_LOG("begin: connecting to the device picked before the restart");
+        SavedDevice dev = savedDevices[0];
+        startConnectingByAddress(dev);
+    }
 }
 
 void MusicPlayerApp::end() {
@@ -435,15 +462,12 @@ void MusicPlayerApp::startConnectingByAddress(const SavedDevice& dev) {
         scannerActive = false;
     }
 
-    // If switching from onboard speaker, tear down I2S pipeline first
-    if (usingOnboardSpeaker) {
-        MPLAYER_LOG("startConnectingByAddress: switching from onboard speaker");
-        stopPlayback();
-        // Clean up I2S pipeline objects so BT can rebuild fresh
-        if (pSpectrumAnalyzer) { delete pSpectrumAnalyzer; pSpectrumAnalyzer = nullptr; }
-        if (pPlayer) { delete pPlayer; pPlayer = nullptr; }
-        audioPipelineReady = false;
-        stopOnboardSpeaker();
+    // From the onboard speaker, Bluetooth goes through a fresh start: the
+    // speaker session leaves too little internal RAM for Bluetooth, and
+    // rebuilding the player around the old decoder crashed.
+    if (usingOnboardSpeaker || speakerUsedSinceStart) {
+        restartForBluetooth();
+        return;
     }
 
     connectingDeviceName = dev.name;
@@ -515,6 +539,39 @@ void MusicPlayerApp::startConnectingByAddress(const SavedDevice& dev) {
     setState(STATE_BT_CONNECTING);
 }
 
+void MusicPlayerApp::restartForBluetooth() {
+    MPLAYER_LOG("restartForBluetooth: speaker -> Bluetooth through a restart");
+    if (pI2sVolume) pI2sVolume->setVolume(0.0f);
+    saveSettings();
+    savePlaybackState();
+    Preferences boot;
+    bool written = boot.begin("bootcfg", false);
+    if (written) {
+        // The connect request is written last: without the relaunch it
+        // would wait for a later visit.
+        written = boot.putBool("skipanim", true) && boot.putBool("bootmusic", true) &&
+                  boot.putBool(kBootConnectKey, true);
+        if (!written && boot.isKey(kBootConnectKey)) boot.remove(kBootConnectKey);
+        boot.end();
+    }
+    if (!written) {
+        // Could not set up the relaunch: ask for a restart instead.
+        showBluetoothNeedsRestart();
+        return;
+    }
+    setColorsOff();
+    display.clear();
+    display.setFont(ArialMT_Plain_10);
+    display.setColor(WHITE);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(64, 27, "Restarting for Bluetooth...");
+    display.display();
+    ModalPrompt::instance().closeForTeardown();
+    Serial.flush();
+    delay(50);
+    ESP.restart();
+}
+
 void MusicPlayerApp::showBluetoothNeedsRestart() {
     MPLAYER_LOG("Bluetooth unavailable until restart");
     connectFailNeedsRestart = true;
@@ -523,6 +580,10 @@ void MusicPlayerApp::showBluetoothNeedsRestart() {
 
 void MusicPlayerApp::startOnboardSpeaker() {
     MPLAYER_LOG("startOnboardSpeaker: enter");
+    // Bluetooth after this, in this power cycle, goes through a restart
+    // (startConnectingByAddress): the player's decoder outlives the speaker
+    // pipeline, and the memory the session used may not come back.
+    speakerUsedSinceStart = true;
 
     // If currently connected to BT, disconnect first
     if (pA2dpStream && pA2dpStream->isConnected()) {
@@ -626,6 +687,7 @@ void MusicPlayerApp::createAudioPipeline() {
                 : static_cast<Print&>(*pA2dpStream);
             pSpectrumAnalyzer = new SpectrumAnalyzer(outputStream);
             pSpectrumAnalyzer->begin(44100, 2, 16);
+            pSpectrumAnalyzer->setDelayMs(ledSyncDelayMs);
         }
         pPlayer = new AudioPlayer(*pSourceSD, *pSpectrumAnalyzer, decoder);
         pPlayer->setVolume(1.0);
@@ -679,17 +741,21 @@ void MusicPlayerApp::destroyAudioPipeline() {
     // NOTE: Don't call pPlayer->stop() here — stopPlayback() handles it.
 
     if (usingOnboardSpeaker) {
-        // Clean up I2S output — safe to fully tear down unlike BT
-        stopOnboardSpeaker();
-        // SpectrumAnalyzer's output pointer is now invalid — must recreate next time
-        if (pSpectrumAnalyzer) {
-            delete pSpectrumAnalyzer;
-            pSpectrumAnalyzer = nullptr;
-        }
+        // Tear down in data-flow order: player, then analyzer, then the I2S
+        // output. Deleting the player ends its decoder, which flushes its
+        // last buffered frame into the analyzer and volume stream, so those
+        // must still exist. Mute first so the flushed frame is silent.
+        if (pI2sVolume) pI2sVolume->setVolume(0.0f);
         if (pPlayer) {
             delete pPlayer;
             pPlayer = nullptr;
         }
+        if (pSpectrumAnalyzer) {
+            delete pSpectrumAnalyzer;
+            pSpectrumAnalyzer = nullptr;
+        }
+        // Clean up I2S output — safe to fully tear down unlike BT
+        stopOnboardSpeaker();
         audioPipelineReady = false;
     } else {
 #if MUSIC_PLAYER_DISCONNECT_ON_EXIT
@@ -779,30 +845,25 @@ void MusicPlayerApp::startLibraryScan() {
         return;
     }
 
-    // Count MP3 files to check cache
-    File root = SD.open("/");
-    int fileCount = 0;
-    if (root) {
-        File entry;
-        while ((entry = root.openNextFile())) {
-            if (!entry.isDirectory()) {
-                String name = entry.name();
-                String lower = name;
-                lower.toLowerCase();
-                if (lower.endsWith(".mp3")) fileCount++;
-            }
-            entry.close();
-        }
-        root.close();
-    }
+    // List the MP3 files the scan would read (all of MEDIA_DIR), to check the cache
+    std::vector<String> cardPaths;
+    ID3Scanner::listFiles(MEDIA_DIR, "mp3", cardPaths);
+    int fileCount = (int)cardPaths.size();
 
-    // Try loading cache
-    if (fileCount > 0 && ID3Scanner::isCacheValid(CACHE_PATH, fileCount)) {
-        if (ID3Scanner::loadCache(CACHE_PATH, trackLibrary)) {
+    // Use the cache only if it lists exactly the files on the card
+    if (fileCount > 0 && ID3Scanner::isCacheValid(CACHE_PATH, fileCount)
+            && ID3Scanner::loadCache(CACHE_PATH, trackLibrary)) {
+        std::vector<String> cachedPaths;
+        cachedPaths.reserve(trackLibrary.size());
+        for (const auto& t : trackLibrary) cachedPaths.push_back(t.path);
+        std::sort(cardPaths.begin(), cardPaths.end());
+        std::sort(cachedPaths.begin(), cachedPaths.end());
+        if (cachedPaths == cardPaths) {
             libraryScanned = true;
             setState(STATE_FILE_BROWSER);
             return;
         }
+        MPLAYER_LOG("startLibraryScan: cache lists other files, rescanning");
     }
 
     // Need full scan
@@ -1101,8 +1162,7 @@ String MusicPlayerApp::getLedSubMenuItem(int index) const {
         case 3: return (ledEnableMask & 0x04) ? "Front Mid: On" : "Front Mid: Off";
         case 4: return (ledEnableMask & 0x08) ? "Front Bot: On" : "Front Bot: Off";
         case 5: {
-            int delayMs = pSpectrumAnalyzer ? pSpectrumAnalyzer->getDelayMs() : 150;
-            return "Sync: " + String(delayMs) + "ms";
+            return "Sync: " + String(ledSyncDelayMs) + "ms";
         }
         default: return "";
     }
@@ -1255,29 +1315,39 @@ void MusicPlayerApp::handleEnter() {
 
         case STATE_MAIN_MENU:
             switch (menuCursorIndex) {
-                case 0: // Now Playing — resume from saved position if available
-                    if (currentTrackIndex < 0 && hasResumeState && libraryScanned) {
+                case 0: { // Now Playing — resume from saved position if available
+                    // The saved song can only be found once the song list is read.
+                    if (currentTrackIndex < 0 && hasResumeState && !libraryScanned) {
+                        startLibraryScan();   // ends in the Library (or "No SD card")
+                        if (!libraryScanned) break;   // no card: stay on that screen
+                    }
+                    if (currentTrackIndex < 0 && hasResumeState) {
                         // Find the saved track in the library
                         for (int i = 0; i < (int)trackLibrary.size(); i++) {
                             if (trackLibrary[i].path == resumeTrackPath) {
+                                // playTrack() clears the saved state, so keep the position
+                                uint32_t resumePos = resumeBytePosition;
                                 MPLAYER_LOGF("resume: found track %d, seeking to %u",
-                                    i, (unsigned)resumeBytePosition);
+                                    i, (unsigned)resumePos);
                                 playTrack(i);
                                 // Seek to saved position after playTrack opens the file
-                                if (pPlayer && pPlayer->getStream() && resumeBytePosition > 0) {
-                                    ((File*)pPlayer->getStream())->seek(resumeBytePosition);
+                                if (pPlayer && pPlayer->getStream() && resumePos > 0) {
+                                    ((File*)pPlayer->getStream())->seek(resumePos);
                                 }
                                 hasResumeState = false;
                                 break;
                             }
                         }
                         if (currentTrackIndex < 0) {
-                            // Track not found in library, just go to player screen
-                            hasResumeState = false;
+                            // The saved song is gone: forget it and show the Library
+                            clearPlaybackState();
+                            setState(STATE_FILE_BROWSER);
+                            break;
                         }
                     }
                     setState(STATE_PLAYER);
                     break;
+                }
                 case 1: // Browse Songs
                     if (!libraryScanned) {
                         startLibraryScan();
@@ -1354,11 +1424,9 @@ void MusicPlayerApp::handleEnter() {
                     if (!(ledEnableMask & 0x08)) HAL::setRgbLed(pixel_Front_Bottom, 0, 0, 0, 0);
                     break;
                 case 5: // Sync Delay — cycle 0, 25, 50, ..., 300, back to 0
-                    if (pSpectrumAnalyzer) {
-                        int d = pSpectrumAnalyzer->getDelayMs() + 25;
-                        if (d > 300) d = 0;
-                        pSpectrumAnalyzer->setDelayMs(d);
-                    }
+                    ledSyncDelayMs += 25;
+                    if (ledSyncDelayMs > 300) ledSyncDelayMs = 0;
+                    if (pSpectrumAnalyzer) pSpectrumAnalyzer->setDelayMs(ledSyncDelayMs);
                     break;
             }
             break;
@@ -1483,11 +1551,10 @@ void MusicPlayerApp::saveSettings() {
     prefs.putUChar("ledmode", (uint8_t)ledEffectMode);
     prefs.putUChar("vizmode", (uint8_t)visualizerMode);
     prefs.putUChar("ledmask", ledEnableMask);
-    prefs.putUShort("leddelay", pSpectrumAnalyzer ? pSpectrumAnalyzer->getDelayMs() : 150);
+    prefs.putUShort("leddelay", ledSyncDelayMs);
     prefs.end();
     MPLAYER_LOGF("saveSettings: shuffle=%d led=%d vizmode=%d ledmask=0x%02X delay=%d",
-        shuffleEnabled, ledEffectMode, visualizerMode, ledEnableMask,
-        pSpectrumAnalyzer ? pSpectrumAnalyzer->getDelayMs() : 150);
+        shuffleEnabled, ledEffectMode, visualizerMode, ledEnableMask, ledSyncDelayMs);
 }
 
 void MusicPlayerApp::loadSettings() {
@@ -1497,11 +1564,14 @@ void MusicPlayerApp::loadSettings() {
     ledEffectMode = (LEDEffectMode)prefs.getUChar("ledmode", LED_OFF);
     visualizerMode = (VisualizerMode)prefs.getUChar("vizmode", VIZ_OFF);
     ledEnableMask = prefs.getUChar("ledmask", 0x0F);
-    int ledDelay = prefs.getUShort("leddelay", 150);
+    ledSyncDelayMs = prefs.getUShort("leddelay", 150);
     prefs.end();
-    if (pSpectrumAnalyzer) pSpectrumAnalyzer->setDelayMs(ledDelay);
+    if (ledSyncDelayMs > 300) ledSyncDelayMs = 150;
+    // The analyzer is usually created later (createAudioPipeline); a Bluetooth
+    // pipeline kept from a previous visit already has one.
+    if (pSpectrumAnalyzer) pSpectrumAnalyzer->setDelayMs(ledSyncDelayMs);
     MPLAYER_LOGF("loadSettings: shuffle=%d led=%d vizmode=%d ledmask=0x%02X delay=%d",
-        shuffleEnabled, ledEffectMode, visualizerMode, ledEnableMask, ledDelay);
+        shuffleEnabled, ledEffectMode, visualizerMode, ledEnableMask, ledSyncDelayMs);
 }
 
 // =========================================================================

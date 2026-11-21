@@ -35,6 +35,7 @@ public:
 
     // Tone control
     void setVolume(float volume);                       // 0.0..1.0
+    float getVolume() const { return volume; }          // last setVolume()
     void playTone(float frequency, int durationMs = 0); // 0 = indefinite
     void stopTone();
 

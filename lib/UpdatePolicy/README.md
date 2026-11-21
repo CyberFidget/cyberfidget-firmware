@@ -204,7 +204,7 @@ explains the choice), Check at start-up On/Off (`upd.boot_chk`; Off stops only
 the boot session - the daily sleep check-in, a Fidget kept awake past its
 interval, a manual check and dev mode are unaffected; changing it shows
 "Checks for updates when you wake your Fidget. Turning it off avoids a short
-restart when you open a new app."), Share battery data On/Off
+restart when you open a new app."), Share usage data On/Off
 (`upd.usage_share`, default off; turning it on explains what is sent and
 that it can be turned off), Apply app changes automatically On/Off
 (`upd.autoapply`, default on; it never installs firmware), Channel and Source

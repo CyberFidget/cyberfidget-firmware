@@ -16,11 +16,13 @@
 
 #include "AppManager.h"       // applyLoadoutOps (manifest apply + persist)
 #include "BatteryDiary.h"
+#include "SelfTest.h"
 #include "AppDefs.h"          // load + builtin identity migration
 #include "LoadoutManifest.h"  // parse for the lget entry count
 #include "LoadoutStore.h"     // LittleFS mount + manifest read
 #include "MenuManager.h"      // menu-tree dump
 #include "SyncProtocol.h"     // pure crc / confinement / arg parsing
+#include "LoadoutReply.h"
 #include "FerrySession.h"     // pure write session (fwrite..fwabort, lapply)
 #include "LittleFsFerryStorage.h"
 #include "CloudSync.h"
@@ -765,6 +767,8 @@ void SerialCli::dispatch(const char* line, bool retry) {
     if (ieq(line, "version")) { cmdVersion(); return; }
     if (ieq(line, "info"))    { cmdInfo();    return; }
     if (ieq(line, "help"))    { cmdHelp();    return; }
+    if (ieq(line, "health")) { SelfTest::command(""); return; }
+    if (verbWithArg(line, "health", &arg)) { SelfTest::command(arg); return; }
     if (ieq(line, "mark"))    { Serial.println("[err] mark.usage=mark <id>"); return; }
     if (verbWithArg(line, "mark", &arg)) { cmdMark(arg); return; }
     if (ieq(line, "reboot"))  { cmdReboot();  return; }
@@ -806,6 +810,27 @@ void SerialCli::dispatch(const char* line, bool retry) {
             return;
         }
         // Test builds carry more `upd` verbs below.
+    }
+
+    // The usage-sharing setting (every build; announced by `syncinfo.usage`):
+    // the Settings > Updates "Share usage data" toggle, read or set by the
+    // website over USB. "unset" means it was never set (treated as off).
+    if (ieq(line, "usage")) {
+        Serial.printf("[cmd] usage.share=%s\n", CloudSync::usageShare());
+        return;
+    }
+    if (verbWithArg(line, "usage", &arg)) {
+        const bool on = ieq(arg, "on");
+        if (!on && !ieq(arg, "off")) {
+            Serial.println("[err] usage.usage=usage [on|off]");
+            return;
+        }
+        if (!CloudSync::setUsageShare(on)) {
+            Serial.println("[err] usage.write");
+            return;
+        }
+        Serial.printf("[cmd] usage.share=%s\n", CloudSync::usageShare());
+        return;
     }
 
     // WiFi setup over USB (every build; announced by `syncinfo.setup=1`).
@@ -1551,8 +1576,9 @@ void SerialCli::cmdInfo() {
 }
 
 void SerialCli::cmdHelp() {
+    Serial.println("[cmd] help.health=health start|status|answer pass|answer fail|report|abort");
     Serial.println("[cmd] help=version,info,help,mark <id>,reboot,battery,menutree,"
-                   "screencap,screenstream <off|on [fps]>,diary [clear]");
+                   "screencap,screenstream <off|on [fps]>,diary [clear],usage [on|off]");
     Serial.println("[cmd] help.sync=fwrite,fwdata,fwcommit,fwabort,fdelete,flist,"
                    "fstat,fread,lget,lbuiltin,lapply,syncinfo");
     Serial.println("[cmd] help.update=upd slot,upd allow-unsigned <on|off>");
@@ -1833,23 +1859,23 @@ void SerialCli::cmdFread(const char* args) {
 }
 
 void SerialCli::cmdLget() {
-    LoadoutStore::begin();
     std::string json;
-    LoadoutManifest::Loadout lo;
-    bool present = loadLoadoutManifest(lo, &json);
-    if (!present) {
-        Serial.println(SyncProtocol::kLgetAbsentReply);
+    const auto read = LoadoutStore::read(json);
+    if (read == LoadoutStoreIO::ReadResult::Unreadable) {
+        Serial.println("[err] lget.read present=1");
         return;
     }
-    // Parse only to report entry count + schema alongside the raw bytes; the
-    // browser gets the authoritative document either way.
-    int entries = 0, schema = 0;
-    entries = (int)lo.entries.size();
-    schema  = lo.schemaVersion;
-    uint32_t crc = SyncProtocol::crc32(json.data(), json.size());
-    Serial.printf("[cmd] lget.present=1 entries=%d schema=%d len=%u crc=%08x\n",
-                  entries, schema, (unsigned)json.size(), (unsigned)crc);
-    Serial.write((const uint8_t*)json.data(), json.size());
+    const bool present = read != LoadoutStoreIO::ReadResult::Missing;
+    bool corrupt = false;
+    char header[SyncProtocol::kReadReplyBytes];
+    const size_t headerLen = SyncProtocol::formatLoadoutHeader(
+        header, sizeof(header), present, json, corrupt);
+    if (!headerLen) {
+        Serial.println("[err] lget.reply");
+        return;
+    }
+    Serial.write((const uint8_t*)header, headerLen);
+    if (present && !corrupt) Serial.write((const uint8_t*)json.data(), json.size());
 }
 
 // The firmware's built-in menu (compiled rows, nested category paths), framed
@@ -1967,6 +1993,8 @@ void SerialCli::cmdSyncinfo() {
     Serial.println("[cmd] syncinfo.builtin=1");
     // The data-screensaver player (format "cfsprite" entries) is here.
     Serial.printf("[cmd] syncinfo.player=%s\n", SyncProtocol::kPlayerCapability);
+    // The `usage [on|off]` verb is here; the value is the usage-sharing setting.
+    Serial.printf("[cmd] syncinfo.usage=%s\n", CloudSync::usageShare());
     Serial.printf("[cmd] syncinfo.fw=%s\n", getFirmwareVersionString());
 }
 

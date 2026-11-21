@@ -59,7 +59,10 @@ check-in and loadout answers, builds the check-in body, and picks waits.
    successful full report, after `send_report`, with an applied-batch answer,
    or after a full report failed. Other check-ins omit `installed`; the site
    keeps its stored list. The last successful full CRC lives only in worker
-   RAM, with no per-poll flash write.
+   RAM, with no per-poll flash write. Every check-in also carries
+   `usage_share` (`"on"`, `"off"` or `"unset"`, the usage-sharing setting;
+   see "Optional daily battery data") and `usage_rev` (the last site request
+   revision applied, 0 if none).
 2. With `apply_apps=0` and pending changes, the site leaves them unsealed and
    replies 200 with `waiting=true` and `batch_id=null`; with nothing pending,
    it replies 204. The device posts "App changes
@@ -83,6 +86,50 @@ check-in and loadout answers, builds the check-in body, and picks waits.
 6. `lapply` gets the unchanged document with the server's CRC, holding the
    `LoadoutStore` lock that the menu reorder also takes.
 7. A follow-up check-in carries `applied_batch` + `result`.
+
+A 200 check-in answer may also carry
+`usage_share_set: {"value": "on"|"off", "rev": <uint>}` - the owner changed
+the usage-sharing setting from their account. The rule is "when in doubt,
+off wins":
+
+| Request | Condition | Effect |
+|---|---|---|
+| none, or `rev` <= `upd.usage_rev` (equal = already applied, lower = stale; rev 0 never applies) | - | ignored |
+| `"off"` | rev newer | applied (off is always safe) |
+| `"on"` | rev newer, `upd.usage_lgen` == `upd.usage_sgen` | applied |
+| `"on"` | rev newer, `upd.usage_lgen` != `upd.usage_sgen` | consumed: rev stored, setting kept |
+
+`upd.usage_lgen` counts every change made on the device (the Settings toggle
+and the USB `usage on|off` verb, both through `CloudSync::setUsageShare`,
+which bumps the count before writing the setting). `upd.usage_sgen` is the
+count the site had seen before the current reply: the body captures
+`usage_lgen` with the setting, and after a successful (200/204) check-in or
+follow-up the worker first decides the reply's request with the
+`usage_sgen` it had BEFORE this check-in (the site built that reply before it
+saw the new count, so a request in it may predate a device change), and only
+once the request is handled (ignored, or its rev stored) stores the sent count
+as `usage_sgen` (written only when it changes). So an "on" request is consumed
+until the site has seen a device change, including one made while a check-in
+is in flight: an "on" in the reply to the first check-in that reports the
+change is still consumed; one in a later reply applies. If the rev write
+fails, `usage_sgen` does not advance, so the same request is decided the same
+way next time. Only successful replies are handled; an error or deferred reply
+never is.
+
+Applying writes `upd.usage_rev` first and checks it: if that write fails
+nothing changes; if the setting write then fails the request is consumed
+unapplied, and the next check-in reports the real value with the new rev.
+A request is never replayed. A device change and a site request hold one
+lock across the count check and their writes. The decision, the write order
+and the post-check-in bookkeeping are host-tested (`usageShareAction`,
+`applyUsageShare`, `recordLocalUsageShare`, `settleUsageAfterCheckin`).
+
+The request is parsed strictly: the key once at the top level, an object of
+exactly `value` and `rev`, `value` "on" or "off", `rev` a whole number up to
+4294967295. Anything else (another value; a missing, negative or fractional
+rev; a duplicate or extra child; the key twice) is ignored and never changes
+the setting; it does not fail the reply. The next check-in reports
+`usage_share` and `usage_rev`, which is the site's acknowledgement.
 
 Permanent defects are answered as `rejected:<reason>` so they never wedge the
 queue: `offer-crc`, `offer-batch`, `blob-offer`, `blob-prefix`, `blob-path`,
@@ -285,7 +332,9 @@ Test builds print one `[dev] poll=...` line per check-in (see
 Only the automatic sessions (the Daily timer session and the start-up Boot
 check-in) consider a usage upload - a Fidget used every day checks in at
 start-up and may never reach a Daily session. The device setting
-`upd.usage_share` defaults off. The scheduler supplies the voltage and charge
+`upd.usage_share` defaults off: a missing key (never set, or cleared by a
+factory reset) reads `unset` over USB and in the check-in, and gates the
+upload exactly like off. The scheduler supplies the voltage and charge
 percentage it measured for that session; both must pass the same 3.6 V and 20 percent
 floor as the automatic check-in. The worker waits until the check-in succeeds,
 then checks the 21-hour accepted-upload interval (under the 24 h daily

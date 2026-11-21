@@ -142,10 +142,12 @@ private:
     void destroyAudioPipeline();
     static void stopSpeakerForSleep(bool hardShutdown);   // port-0 borrower stop (AudioManager::stopForSleep)
     void disconnectBT();
+    void restartForBluetooth();   // restarts; returns only if the relaunch could not be set up
     void showBluetoothNeedsRestart();
 
     // Library / metadata
     std::vector<TrackInfo> trackLibrary;
+    bool speakerUsedSinceStart = false;  // never reset: only a restart clears it
     bool libraryScanned = false;
     int libraryScanCurrent = 0;
     int libraryScanTotal = 0;
@@ -192,6 +194,7 @@ private:
     // LED effects
     LEDEffectMode ledEffectMode = LED_OFF;
     uint8_t ledEnableMask = 0x0F;  // bitmask: bit0=Back, bit1=FrontTop, bit2=FrontMid, bit3=FrontBot
+    int ledSyncDelayMs = 150;      // Sync setting; applied to each new SpectrumAnalyzer
     unsigned long lastLEDUpdate = 0;
     float ledSmoothedAmplitude = 0.0f;
     void updateLEDs();

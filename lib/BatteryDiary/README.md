@@ -75,7 +75,7 @@ or reboot.
 
 ## Optional daily sharing
 
-Settings > Updates > Share battery data is off when its `upd.usage_share`
+Settings > Updates > Share usage data is off when its `upd.usage_share`
 key is missing. After a successful linked automatic check-in (the daily timer
 session or the start-up check-in), at most once every 21 hours, the cloud
 worker can flush pending RTC samples, read the whole ring (up to 3072 records,
@@ -90,6 +90,17 @@ accepted sequence and upload time are stored in `upd.usage_seq` and
 `upd.usage_at`. An upload the site answers but does not accept stores
 only `upd.usage_at` (the same records go at the next upload, a day later);
 an upload with no answer at all advances neither value.
+
+The same setting can also be changed from the website, over USB (`usage
+on|off`, read with `usage` or the `syncinfo.usage` line; see
+`lib/SerialCli/README.md`) or from the owner's account, delivered at the next
+WiFi check-in (`usage_share_set`; see `lib/CloudSync/README.md`). Outside the
+device it reads as one of three states: `on`, `off`, or `unset` when the key
+does not exist (never set, or cleared by a factory reset). `unset` is treated
+exactly as off: nothing is uploaded. A change made on the device (the
+Settings toggle or USB) wins over a request from the owner's account to turn
+sharing on that was made before a check-in reported the change; a request to turn it off always
+applies (`upd.usage_lgen` / `upd.usage_sgen`, see `lib/CloudSync/README.md`).
 
 ## Referenced outside the firmware
 

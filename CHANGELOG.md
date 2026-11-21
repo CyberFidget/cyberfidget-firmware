@@ -20,9 +20,44 @@ with the version and date automatically.
 
 ### Added
 
+- New app, Tools > Self Test: checks the charger, buttons, slider,
+  accelerometer, speaker and microphone by itself, and walks you through
+  the screen patterns and the LEDs (a color cycle, then all off) with
+  Enter for "looks right" and Back for "problem". The sound step always
+  runs at the same volume, whatever another app left it at. The last
+  result is kept on the Fidget, and each step can be followed and answered
+  over USB with the new `health` serial commands.
+- The website can now read and change the usage-sharing setting over USB,
+  and change it for a linked Fidget at its next check-in. A change made on
+  the Fidget wins over an older request from the website, and turning
+  sharing off from either side always applies.
+
 ### Changed
 
+- Settings > Updates > "Share battery data" is now called "Share usage
+  data", the same name the website uses. Your choice is kept.
+- Music Player restarts the Fidget into itself ("Restarting for
+  Bluetooth...") whenever Bluetooth would not have enough memory to
+  connect, not only after WiFi was used. It then opens straight back in
+  Music Player.
+
 ### Fixed
+
+- Connecting to Bluetooth headphones or speakers in Music Player no longer
+  restarts the Fidget to the menu, which happened most often on a Fidget
+  with many apps installed.
+- Switching Music Player's output from the speaker to Bluetooth no longer
+  restarts the Fidget to the menu: it restarts into Music Player and
+  connects to the device you picked.
+- Leaving Music Player after playing through the speaker no longer
+  restarts the Fidget.
+- Music Player finds every song in the `media` folder, including songs
+  copied onto the card with a card reader; resume picks up the right song
+  and position, and opens the Library if that song is gone; the LED Sync
+  setting is remembered.
+- A stored app list that can't be read is now reported as damaged instead
+  of as missing, so the website won't overwrite it with the built-in menu.
+  Saving the app list is safe against a power cut at any moment.
 
 ### Removed
 

@@ -126,6 +126,13 @@ Automated tests can't drive real hardware. Whenever a change touches LEDs, the O
 3. **Display.** No leftover pixels/tearing from the previous app on entry; screen clears appropriately on exit.
 4. **Audio.** `stopTone()` (or equivalent) fires on `end()` — no audio bleeding into the menu or the next app.
 5. **Sleep/power-cycle.** If the app's idle state drives LEDs, confirm they also go dark on deep-sleep entry, not just on app exit.
+6. **Tools > Self Test.** Run from the menu and with `health start` in release
+   firmware. Exercise all six prompted buttons, both slider ends, face down/up
+   and tilt on all axes; keep quiet during audio. Inspect white/checkerboard/off
+   display patterns and all four LEDs (including the back) in red/green/blue/white.
+   Verify `health answer pass|fail`, a short Back press and a 3 s abort, failure
+   timeouts, and `health report` after reboot. Battery is intentionally skipped.
+   Calibrate audio and acceleration thresholds on enclosed units before shipping.
 
 ## Developer gotchas
 

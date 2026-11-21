@@ -37,6 +37,11 @@ struct CheckinReply {
     uint32_t nextPollMs = 0;
     bool hasServerTime = false; ///< body contains server_time, even if unreadable
     uint32_t serverEpoch = 0;   ///< 0 when absent or unreadable
+    /// usage_share_set: the owner changed the usage-sharing setting on the
+    /// site. Set only for a well-formed request ("on"|"off" and a whole rev).
+    bool hasUsageShareSet = false;
+    bool usageShareOn = false;
+    uint32_t usageShareRev = 0;
 };
 
 /// Parses a check-in body. `headerNextMs` is X-Next-Poll-Ms (0 when absent)
@@ -102,10 +107,72 @@ struct CheckinFields {
     /// null or empty sends no mode.
     const char* mode = nullptr;
     bool applyApps = true;        ///< this session may apply app changes
+    /// The usage-sharing setting: "on", "off" or "unset" (usageShareText).
+    const char* usageShare = "unset";
+    uint32_t usageRev = 0;        ///< last usage_share_set rev applied; 0 if none
 };
 
 /// The check-in POST body. Empty on an allocation failure.
 std::string buildCheckinBody(const CheckinFields& fields);
+
+/// The usage-sharing setting (upd.usage_share) as reported: "unset" when the
+/// key does not exist, else "on" or "off". Unset is treated as off wherever
+/// the setting gates sharing.
+const char* usageShareText(bool present, bool on);
+
+/// What to do with a reply's usage_share_set request. When in doubt, off wins:
+/// - no request, or rev not greater than `appliedRev` (equal = already
+///   applied, lower = stale; rev 0 never applies): Ignore;
+/// - "off": Apply (turning sharing off is always safe);
+/// - "on" while a local change the site has not seen yet is pending
+///   (`localGen` != `seenGen`): Consume - store the rev, keep the setting;
+/// - "on" otherwise: Apply.
+/// `localGen` (upd.usage_lgen) counts every change made on the device;
+/// `seenGen` (upd.usage_sgen) is the count the last successful check-in sent.
+enum class UsageShareAction : uint8_t { Ignore, Apply, Consume };
+UsageShareAction usageShareAction(const CheckinReply& reply, uint32_t appliedRev,
+                                  uint32_t localGen, uint32_t seenGen);
+
+/// The usage-sharing keys, so the write order is host-tested.
+struct UsageShareStore {
+    virtual ~UsageShareStore() = default;
+    virtual bool putRev(uint32_t rev) = 0;           ///< upd.usage_rev
+    virtual bool putShare(bool on) = 0;              ///< upd.usage_share
+    virtual bool putLocalGen(uint32_t gen) = 0;      ///< upd.usage_lgen
+    virtual bool putSeenGen(uint32_t gen) = 0;       ///< upd.usage_sgen
+};
+
+enum class UsageShareResult : uint8_t {
+    Ignored,      ///< nothing written
+    Applied,      ///< rev stored, then the setting
+    Consumed,     ///< rev stored, setting left as it is
+    RevFailed,    ///< the rev could not be stored: nothing changed
+    ShareFailed,  ///< rev stored but the setting write failed: consumed unapplied
+};
+
+/// Applies a usage_share_set request. The rev is written (and checked) FIRST,
+/// so a request can never be replayed over a later local change; the next
+/// check-in reports the real setting with the new rev either way.
+UsageShareResult applyUsageShare(const CheckinReply& reply, uint32_t appliedRev,
+                                 uint32_t localGen, uint32_t seenGen, UsageShareStore& store);
+
+/// A change made on the device (Settings toggle or the USB `usage` verb):
+/// the local generation is bumped FIRST, then the setting is written. If the
+/// setting write fails after the bump, an "on" request is only consumed until
+/// the next check-in reports the real value. False when either write failed.
+bool recordLocalUsageShare(bool on, uint32_t localGen, UsageShareStore& store);
+
+/// After a successful check-in whose body carried `sentGen` (usage_lgen when
+/// the body was built). The reply's request is decided with `seenGen` from
+/// BEFORE this check-in: the site built the reply before it had seen
+/// `sentGen`, so a request in it may predate a device change. Only once the
+/// request is handled (ignored, or its rev stored) does usage_sgen advance to
+/// `sentGen`, and only when that changes it. A failed rev write
+/// (RevFailed) leaves usage_sgen where it was, so the same request is decided
+/// the same way next time.
+UsageShareResult settleUsageAfterCheckin(const CheckinReply& reply, uint32_t appliedRev,
+                                         uint32_t localGen, uint32_t seenGen,
+                                         uint32_t sentGen, UsageShareStore& store);
 
 /// RAM-only report history for one worker session. A fresh session starts
 /// without an acknowledged full report, even if a prior boot sent one.

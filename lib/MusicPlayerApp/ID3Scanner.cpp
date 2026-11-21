@@ -346,6 +346,11 @@ static void collectFilesRecursive(const char* dir, const char* ext, std::vector<
     root.close();
 }
 
+void ID3Scanner::listFiles(const char* rootDir, const char* ext, std::vector<String>& out) {
+    out.clear();
+    collectFilesRecursive(rootDir, ext, out);
+}
+
 // ---------------------------------------------------------------------------
 // Scan all MP3 files in a directory tree (recursive)
 // ---------------------------------------------------------------------------

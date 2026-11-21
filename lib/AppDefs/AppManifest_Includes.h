@@ -44,3 +44,4 @@
 #include "SpeakerEqScreen.h"
 #include "HomeRemoteApp.h"
 #include "Counter.h"
+#include "SelfTest.h"
