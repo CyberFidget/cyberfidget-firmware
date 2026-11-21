@@ -6,6 +6,8 @@
 #include <Preferences.h>
 #include <Wire.h>
 #include <math.h>
+#include <memory>
+#include <new>
 #include "HAL.h"
 #include "AudioManager.h"
 #include "AudioEngineTask.h"
@@ -54,8 +56,10 @@ char micError[32] = {};
 char prompt[128] = {};
 ConfirmState confirms;
 bool enterAnswerDown = false, backAnswerDown = false;
-char blob[kReportBytes];
-char line[kDetailSize * 3 + 96];
+// Report and serial-line buffers live only while in use (heap and stack),
+// so the app reserves no memory while it is not running.
+constexpr size_t kLineBytes = kDetailSize * 3 + 96;
+std::unique_ptr<char[]> reportBuffer() { return std::unique_ptr<char[]>(new (std::nothrow) char[kReportBytes]); }
 
 // Render the existing Arial font directly. DisplayProxy's text API takes
 // Arduino String, which would allocate on every 50 Hz repaint.
@@ -105,9 +109,11 @@ void releaseMic() {
     if (micOwned) { MicCapture::instance().stopStreaming(); MicCapture::instance().release(); micOwned = false; }
 }
 void emitStep(unsigned s) {
+    char line[kLineBytes];
     if (stepLine(s, report.steps[s], line, sizeof(line))) Serial.println(line);
 }
 void emitReport(const Report& value) {
+    char line[kLineBytes];
     for (unsigned s=0;s<kSteps;++s) {
         if (stepLine(s, value.steps[s], line, sizeof(line))) Serial.println(line);
     }
@@ -142,10 +148,13 @@ void finish(bool aborted) {
         }
     }
     report.judge(aborted);
-    size_t bytes = encode(report,blob,sizeof(blob));
-    bool saved = storageReady && bytes && prefs.putBytes("report",blob,bytes) == bytes;
+    std::unique_ptr<char[]> blob = reportBuffer();
+    size_t bytes = blob ? encode(report,blob.get(),kReportBytes) : 0;
+    bool saved = storageReady && bytes && prefs.putBytes("report",blob.get(),bytes) == bytes;
+    blob.reset();
     Serial.println(saved ? "[cmd] health.stored=ok" : "[err] health.store=failed");
     char unit[13]; SyncProtocol::formatDeviceId(ESP.getEfuseMac(),unit);
+    char line[kLineBytes];
     if (summaryLine(report,unit,line,sizeof(line))) Serial.println(line);
     Serial.printf("[cmd] health.done=%s\n",name(report.overall));
     running = false; phase = Phase::Done;
@@ -467,9 +476,12 @@ void command(const char* args) {
         Preferences stored;
         if (!stored.begin("selftest",true)) { Serial.println("[err] health.report=none"); return; }
         size_t bytes = stored.getBytesLength("report");
-        bool ok = bytes && bytes <= sizeof(blob) && stored.getBytes("report",blob,bytes) == bytes;
+        std::unique_ptr<char[]> blob = bytes && bytes <= kReportBytes ? reportBuffer() : nullptr;
+        bool ok = blob && stored.getBytes("report",blob.get(),bytes) == bytes;
         stored.end(); Report last;
-        if (ok && decode(blob,bytes,last)) emitReport(last);
+        ok = ok && decode(blob.get(),bytes,last);
+        blob.reset();
+        if (ok) emitReport(last);
         else Serial.println("[err] health.report=none_or_invalid");
     } else Serial.println("[err] health.usage=start|status|answer pass|answer fail|report|abort");
 }
