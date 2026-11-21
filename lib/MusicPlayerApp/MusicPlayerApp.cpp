@@ -8,6 +8,8 @@
 #include "WebPortalApp.h"
 #include "globals.h"        // millis_APP_LASTINTERACTION (sleep prevention)
 #include <SD.h>
+#include <Preferences.h>
+#include "ModalPrompt.h"
 #include <algorithm>
 #include <esp_a2dp_api.h>  // esp_a2d_source_disconnect() — the correct API for source mode
 #include <esp_avrc_api.h>  // ESP_AVRC_PT_CMD_* — AVRCP passthrough key codes
@@ -67,6 +69,10 @@ using namespace audio_tools;
 // Set to 1 to disconnect on exit — cleaner but may hang after ~5 cycles.
 // Explicit disconnect via BT submenu always works regardless of this flag.
 #define MUSIC_PLAYER_DISCONNECT_ON_EXIT 0
+
+// bootcfg key: after a speaker -> Bluetooth restart, connect to the first
+// saved device (the one picked) when the app opens.
+static constexpr const char* kBootConnectKey = "bootmusicbt";
 
 #if MUSIC_PLAYER_DEBUG
   #define MPLAYER_LOG(msg) ESP_LOGD(TAG_MAIN, "[MusicPlayer] " msg)
@@ -179,6 +185,23 @@ void MusicPlayerApp::begin() {
     // Auto-reconnect on startup was causing BT stack crashes when the
     // target device wasn't in pairing mode.
     setState(STATE_DEVICE_MENU);
+
+    // Switching from the speaker to Bluetooth restarts the device (see
+    // restartForBluetooth); the device the person picked is first in the
+    // saved list. The key is removed before connecting, so a failing
+    // connect never repeats on the next start.
+    Preferences boot;
+    bool connectPicked = false;
+    if (boot.begin("bootcfg", false)) {
+        connectPicked = boot.getBool(kBootConnectKey, false);
+        if (boot.isKey(kBootConnectKey)) boot.remove(kBootConnectKey);
+        boot.end();
+    }
+    if (connectPicked && !savedDevices.empty()) {
+        MPLAYER_LOG("begin: connecting to the device picked before the restart");
+        SavedDevice dev = savedDevices[0];
+        startConnectingByAddress(dev);
+    }
 }
 
 void MusicPlayerApp::end() {
@@ -436,17 +459,12 @@ void MusicPlayerApp::startConnectingByAddress(const SavedDevice& dev) {
         scannerActive = false;
     }
 
-    // If switching from onboard speaker, tear down I2S pipeline first
+    // From the onboard speaker, Bluetooth goes through a fresh start: the
+    // speaker session leaves too little internal RAM for Bluetooth, and
+    // rebuilding the player around the old decoder crashed.
     if (usingOnboardSpeaker) {
-        MPLAYER_LOG("startConnectingByAddress: switching from onboard speaker");
-        stopPlayback();
-        // Clean up I2S pipeline objects so BT can rebuild fresh, in data-flow
-        // order (see destroyAudioPipeline): the player's last flush needs them.
-        if (pI2sVolume) pI2sVolume->setVolume(0.0f);
-        if (pPlayer) { delete pPlayer; pPlayer = nullptr; }
-        if (pSpectrumAnalyzer) { delete pSpectrumAnalyzer; pSpectrumAnalyzer = nullptr; }
-        audioPipelineReady = false;
-        stopOnboardSpeaker();
+        restartForBluetooth();
+        return;
     }
 
     connectingDeviceName = dev.name;
@@ -516,6 +534,32 @@ void MusicPlayerApp::startConnectingByAddress(const SavedDevice& dev) {
 
     connectStartTime = millis();
     setState(STATE_BT_CONNECTING);
+}
+
+[[noreturn]] void MusicPlayerApp::restartForBluetooth() {
+    MPLAYER_LOG("restartForBluetooth: speaker -> Bluetooth through a restart");
+    if (pI2sVolume) pI2sVolume->setVolume(0.0f);
+    saveSettings();
+    savePlaybackState();
+    Preferences boot;
+    if (boot.begin("bootcfg", false)) {
+        boot.putBool("skipanim", true);
+        boot.putBool("bootmusic", true);
+        boot.putBool(kBootConnectKey, true);
+        boot.end();
+    }
+    setColorsOff();
+    display.clear();
+    display.setFont(ArialMT_Plain_10);
+    display.setColor(WHITE);
+    display.setTextAlignment(TEXT_ALIGN_CENTER);
+    display.drawString(64, 27, "Restarting for Bluetooth...");
+    display.display();
+    ModalPrompt::instance().closeForTeardown();
+    Serial.flush();
+    delay(50);
+    ESP.restart();
+    while (true) {}
 }
 
 void MusicPlayerApp::showBluetoothNeedsRestart() {

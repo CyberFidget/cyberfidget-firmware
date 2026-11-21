@@ -142,6 +142,7 @@ private:
     void destroyAudioPipeline();
     static void stopSpeakerForSleep(bool hardShutdown);   // port-0 borrower stop (AudioManager::stopForSleep)
     void disconnectBT();
+    [[noreturn]] void restartForBluetooth();
     void showBluetoothNeedsRestart();
 
     // Library / metadata
