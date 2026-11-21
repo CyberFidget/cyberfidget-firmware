@@ -27,11 +27,14 @@ constexpr uint32_t kAudioSettleMs = 200;
 constexpr uint8_t kGaugeAddress = 0x36;
 constexpr uint8_t kAccelAddress = 0x19;
 constexpr uint8_t kLedLevel = 96;
+constexpr uint8_t kRedLedPin = 13;         // the small red LED (through 5.1k)
+constexpr uint32_t kLedCycleFrameMs = 500; // color cycle: one die per frame
 const char* const kPatterns[] = {"Full white", "Checkerboard", "All off"};
-const char* const kChannels[] = {"red", "green", "blue", "white"};
+constexpr unsigned kLedScreens = 2;        // color cycle, then all off
 enum class Phase { Running, Result, PatternPrompt, Answer, Done };
 Report report;
 unsigned step = 0, item = 0;
+int ledFrame = -1;   // color-cycle frame on the LEDs now; -1 = none
 Phase phase = Phase::Done;
 uint32_t stepAt = 0, phaseAt = 0, backAt = 0;
 bool active = false, running = false, backDown = false, micOwned = false;
@@ -95,6 +98,7 @@ void quiet() {
     HAL::audioManager().stopTone();
     setColorsOff();
     HAL::showRgbLeds();
+    digitalWrite(kRedLedPin, LOW); ledFrame = -1;
     if (micOwned) MicCapture::instance().stopStreaming();
 }
 void releaseMic() {
@@ -123,6 +127,7 @@ void audioDetail(char* out, size_t cap, const char* reason) {
 }
 void finish(bool aborted) {
     quiet(); releaseMic();
+    pinMode(kRedLedPin, INPUT);   // done with the red LED: as before the run
     if (aborted) {
         unsigned first = step + (phase == Phase::Result ? 1 : 0);
         for (unsigned s=first; s<kSteps; ++s) {
@@ -155,17 +160,26 @@ void complete(Result result, const char* detail) {
 void buttonPrompt() {
     char p[96]; snprintf(p,sizeof(p),"Press %s",ButtonsState::label(buttons.target)); announce(p);
 }
-void showChannel() {
-    for (int led=0;led<4;++led) HAL::setRgbLed(led, item == 0 ? kLedLevel : 0, item == 1 ? kLedLevel : 0,
-                                                          item == 2 ? kLedLevel : 0, item == 3 ? kLedLevel : 0);
+// Color cycle: every LED steps red, green, blue, white (each its own die,
+// so a dead or weak one shows on its own frame); the small red LED blinks.
+// The all-off screen leaves everything dark (quiet()).
+void showLeds(uint32_t now) {
+    if (item != 0) return;
+    const int frame = int(((now - phaseAt) / kLedCycleFrameMs) % 4);
+    if (frame == ledFrame) return;
+    ledFrame = frame;
+    for (int led=0;led<4;++led) HAL::setRgbLed(led, frame == 0 ? kLedLevel : 0, frame == 1 ? kLedLevel : 0,
+                                                          frame == 2 ? kLedLevel : 0, frame == 3 ? kLedLevel : 0);
     HAL::showRgbLeds();
+    digitalWrite(kRedLedPin, frame % 2 == 0 ? HIGH : LOW);
 }
 void confirmPrompt() {
     quiet();
     enterAnswerDown = backAnswerDown = false;
     char p[128];
     if (step == Display) snprintf(p,sizeof(p),"%s next. Check pixels/traces. Enter: looks right; Back: problem",kPatterns[item]);
-    else snprintf(p,sizeof(p),"%s next. Check all 4 LEDs, including back, when lit. Enter: all correct; Back: problem",kChannels[item]);
+    else if (item == 0) snprintf(p,sizeof(p),"Color cycle next: all 4 LEDs (back too) show red, green, blue, white; small red LED blinks. Enter: all correct; Back: problem");
+    else snprintf(p,sizeof(p),"All off next: no LED may glow, even faintly (small red LED too). Enter: all dark; Back: something glows");
     announce(p);
     phase = Phase::PatternPrompt; phaseAt = millis();
 }
@@ -175,7 +189,7 @@ void startStep() {
     case Charger: announce("Reading powered fuel gauge"); break;
     case Battery: announce("No battery check yet"); break;
     case Buttons: buttons = ButtonsState{}; buttons.since = stepAt; buttonPrompt(); break;
-    case Slider: slider = SliderState{}; announce("Slide to both ends"); break;
+    case Slider: slider = SliderState{}; announce("Slide to each end and hold it there for a second"); break;
     case Accel: accel = AccelState{}; announce("Start face up; turn face down, then face up. Tilt all axes"); break;
     case Audio:
         announce("Keep quiet and leave the speaker uncovered: measuring silence, then speaker tone");
@@ -186,11 +200,17 @@ void startStep() {
     }
 }
 
+// The color cycle can only pass once every die has been shown at least once.
+bool cycleTooEarly(bool pass) {
+    return pass && step == Leds && item == 0 && phase == Phase::Answer &&
+           !expired(millis(),phaseAt,4*kLedCycleFrameMs);
+}
 bool answer(bool pass, bool timeout = false) {
     if (!running || (step != Display && step != Leds) || phase != Phase::Answer) return false;
+    if (!timeout && cycleTooEarly(pass)) return false;
     confirms.record(pass,timeout);
     quiet();
-    if (++item < (step == Display ? 3u : 4u)) confirmPrompt();
+    if (++item < (step == Display ? 3u : kLedScreens)) confirmPrompt();
     else {
         char detail[kDetailSize];
         confirms.detail(step == Leds,detail,sizeof(detail));
@@ -286,8 +306,8 @@ void draw() {
     } else if (step == Buttons) {
         text(0,14,"Press:"); text(0,27,ButtonsState::label(buttons.target)); text(0,41,"15 s per button");
     } else if (step == Slider) {
-        text(0,14,"Slide to both ends");
-        snprintf(buf,sizeof(buf),"low:%d%% high:%d%%",slider.lo,slider.hi); text(0,27,buf);
+        text(0,14,"Hold each end 1 s");
+        snprintf(buf,sizeof(buf),"low:%s high:%s",slider.lowHeld ? "ok" : "--",slider.highHeld ? "ok" : "--"); text(0,27,buf);
         d.drawRect(0,44,128,8); if (slider.seen) d.fillRect(1,45,sliderPercent()*126/100,6);
     } else if (step == Accel) {
         text(0,13,"Start face up. Turn"); text(0,25,"face down, then face up");
@@ -298,10 +318,18 @@ void draw() {
         snprintf(buf,sizeof(buf),"Next: %s",kPatterns[item]); text(0,13,buf);
         text(0,25,"Check pixels and traces"); text(0,37,"Enter: looks right"); text(0,49,"Back: problem");
     } else if (step == Leds) {
-        snprintf(buf,sizeof(buf),"%s %s",phase == Phase::PatternPrompt ? "Next, all 4:" : "All 4:",kChannels[item]); text(0,13,buf);
-        text(0,25,"Check back LED too");
-        if (phase == Phase::PatternPrompt) { text(0,37,"Answer when lit"); text(0,49,"Enter: OK  Back: problem"); }
-        else { text(0,37,"Enter: all four correct"); text(0,49,"Back: problem"); }
+        const bool next = phase == Phase::PatternPrompt;
+        if (item == 0) {
+            text(0,13,next ? "Next: color cycle" : "All 4: R, G, B, W");
+            text(0,25,"Back LED too; small");
+            text(0,37,"red LED blinks");
+            text(0,49,next ? "Answer when lit" : cycleTooEarly(true) ? "Watch a full cycle" : "Enter: OK  Back: no");
+        } else {
+            text(0,13,next ? "Next: all off" : "All LEDs off");
+            text(0,25,"Nothing may glow,");
+            text(0,37,"not even faintly");
+            text(0,49,next ? "Answer when dark" : "Enter: dark  Back: no");
+        }
     } else if (step == Audio) {
         text(0,14,"Keep quiet"); text(0,28,audioPhase < 2 ? "Measuring silence" : "Measuring speaker tone");
         text(0,42,"Don't cover the speaker");
@@ -312,6 +340,7 @@ void draw() {
 
 namespace SelfTest {
 void begin() {
+    pinMode(kRedLedPin, OUTPUT); digitalWrite(kRedLedPin, LOW);
     setColorsOff(); HAL::showRgbLeds(); HAL::audioManager().stopTone();
     savedOverlay = HAL::displayProxy().getOverlayMode();
     HAL::displayProxy().setOverlayMode(OverlayMode::OVERLAY_OFF);
@@ -351,8 +380,9 @@ void update() {
         if (++step == kSteps) finish(false); else startStep();
     }
     if (running && phase == Phase::PatternPrompt && expired(now,phaseAt,kPatternPromptMs)) {
-        phase = Phase::Answer; phaseAt = now; if (step == Leds) showChannel();
+        phase = Phase::Answer; phaseAt = now;
     }
+    if (running && phase == Phase::Answer && step == Leds) showLeds(now);
     if (running && phase == Phase::Answer && expired(now,phaseAt,kAnswerTimeoutMs)) answer(false,true);
     if (running && phase == Phase::Running) {
         char detail[kDetailSize];
@@ -374,7 +404,7 @@ void update() {
             // Floor the low end / ceil the high end so rounding cannot pass
             // a filtered 3.4% / 96.6% reading at the strict endpoint limits.
             if (isfinite(pct) && pct >= 0 && pct <= 100) {
-                int p = pct <= 50 ? int(ceilf(pct)) : int(floorf(pct)); slider.sample(p);
+                int p = pct <= 50 ? int(ceilf(pct)) : int(floorf(pct)); slider.sample(p, now);
             }
             if (slider.passed()) {
                 slider.detail(detail,sizeof(detail)); complete(slider.passed() ? Result::Pass : Result::Fail,detail);
@@ -414,6 +444,7 @@ void end() {
     HAL::displayProxy().setOverlayMode(savedOverlay);
     HAL::audioManager().setVolume(savedVolume);
     setColorsOff(); HAL::showRgbLeds(); active = false;
+    pinMode(kRedLedPin, INPUT);   // as before the test: nothing else drives it
 }
 void command(const char* args) {
     if (!strcmp(args,"start")) {
@@ -425,7 +456,9 @@ void command(const char* args) {
         if (!running) Serial.println("[cmd] health.status=idle");
         else Serial.printf("[cmd] health.status=%s state=%s\n",id(step),phase == Phase::Result ? "result" : phase == Phase::Answer ? "answer" : phase == Phase::PatternPrompt ? "prompt" : "running");
     } else if (!strcmp(args,"answer pass") || !strcmp(args,"answer fail")) {
-        if (answer(!strcmp(args,"answer pass"))) Serial.println("[cmd] health.answer=ok");
+        const bool pass = !strcmp(args,"answer pass");
+        if (running && cycleTooEarly(pass)) Serial.println("[err] health.answer=cycle_not_complete");
+        else if (answer(pass)) Serial.println("[cmd] health.answer=ok");
         else Serial.println("[err] health.answer=not_awaiting_answer");
     } else if (!strcmp(args,"abort")) {
         if (running) { finish(true); Serial.println("[cmd] health.abort=ok"); }

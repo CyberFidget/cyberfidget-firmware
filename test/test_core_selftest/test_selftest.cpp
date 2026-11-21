@@ -39,11 +39,18 @@ static void deadlines_wrap_safely() {
 }
 static void slider_requires_both_ends() {
     SliderState s; TEST_ASSERT_FALSE(s.passed());
-    s.sample(4); s.sample(96); TEST_ASSERT_FALSE(s.passed());
-    s.sample(3); TEST_ASSERT_FALSE(s.passed()); s.sample(97); TEST_ASSERT_TRUE(s.passed());
-    char detail[64]; s.detail(detail, sizeof(detail)); TEST_ASSERT_EQUAL_STRING("range 3-97%", detail);
-    s = SliderState{}; s.sample(100); s.sample(0); TEST_ASSERT_TRUE(s.passed());
-    s = SliderState{}; s.sample(-1); s.sample(101); TEST_ASSERT_FALSE(s.seen);
+    s.sample(4, 0); s.sample(96, 2000); TEST_ASSERT_FALSE(s.passed());
+    // Touching an end is not enough: it has to stay there for a second.
+    s.sample(3, 3000); s.sample(1, 3999); TEST_ASSERT_FALSE(s.lowHeld);
+    s.sample(0, 4000); TEST_ASSERT_TRUE(s.lowHeld); TEST_ASSERT_FALSE(s.passed());
+    s.sample(97, 5000); s.sample(99, 5500); TEST_ASSERT_FALSE(s.passed());
+    // Leaving the end band restarts the hold.
+    s.sample(96, 5600); s.sample(98, 5700); s.sample(100, 6600); TEST_ASSERT_FALSE(s.passed());
+    s.sample(100, 6700); TEST_ASSERT_TRUE(s.passed());
+    char detail[64]; s.detail(detail, sizeof(detail)); TEST_ASSERT_EQUAL_STRING("range 0-100%", detail);
+    // Holds survive a millis() wrap.
+    s = SliderState{}; s.sample(100, 0xFFFFFF00u); s.sample(100, 0x000002F0u); TEST_ASSERT_TRUE(s.highHeld);
+    s = SliderState{}; s.sample(-1, 0); s.sample(101, 5000); TEST_ASSERT_FALSE(s.seen);
 }
 static void accel_requires_two_sign_changes_and_all_axes() {
     AccelState a; a.sample(0,0,1000); a.sample(350,0,-1000); a.sample(0,0,1000);
@@ -70,13 +77,15 @@ static void accel_conversion_preserves_sensor_mode_and_range() {
 static void person_confirmation_requires_every_answer() {
     ConfirmState s; TEST_ASSERT_FALSE(s.passed(3));
     char partial[100]; s.record(false,false); s.detail(true,partial,sizeof(partial));
-    TEST_ASSERT_EQUAL_STRING("red=fail green=not_checked blue=not_checked white=not_checked",partial);
+    TEST_ASSERT_EQUAL_STRING("cycle=fail off=not_checked",partial);
     s = ConfirmState{};
     s.record(true,false); s.record(true,false); TEST_ASSERT_FALSE(s.passed(3));
     s.record(true,false); TEST_ASSERT_TRUE(s.passed(3));
-    s = ConfirmState{}; s.record(true,false); s.record(false,false); s.record(true,false); s.record(true,false);
-    TEST_ASSERT_FALSE(s.passed(4)); char detail[100]; s.detail(true,detail,sizeof(detail));
-    TEST_ASSERT_EQUAL_STRING("red=ok green=fail blue=ok white=ok",detail);
+    // LEDs: two screens, color cycle then all off.
+    s = ConfirmState{}; s.record(true,false); s.record(false,false);
+    TEST_ASSERT_FALSE(s.passed(2)); char detail[100]; s.detail(true,detail,sizeof(detail));
+    TEST_ASSERT_EQUAL_STRING("cycle=ok off=fail",detail);
+    s = ConfirmState{}; s.record(true,false); s.record(true,false); TEST_ASSERT_TRUE(s.passed(2));
     s = ConfirmState{}; s.record(true,false); s.record(false,true); s.record(true,false);
     TEST_ASSERT_FALSE(s.passed(3)); s.detail(false,detail,sizeof(detail));
     TEST_ASSERT_EQUAL_STRING("white=ok checker=timeout off=ok",detail);

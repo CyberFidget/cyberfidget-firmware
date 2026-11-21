@@ -73,11 +73,28 @@ struct ButtonsState {
                  wrong[0], wrong[1], wrong[2], wrong[3], wrong[5], wrong[4]);
     }
 };
+// Each end counts once the filtered reading has stayed within 3% of it for
+// kSliderHoldMs: the filter is still easing toward the end when it first
+// crosses, so lo/hi then show where it settled, not the first crossing.
+constexpr uint32_t kSliderHoldMs = 1000;
 struct SliderState {
     int lo = 100, hi = 0;
     bool seen = false;
-    void sample(int pct) { if (pct < 0 || pct > 100) return; seen = true; if (pct < lo) lo = pct; if (pct > hi) hi = pct; }
-    bool passed() const { return seen && lo <= 3 && hi >= 97; }
+    bool lowHeld = false, highHeld = false;
+    bool inLow = false, inHigh = false;
+    uint32_t lowSince = 0, highSince = 0;
+    void sample(int pct, uint32_t now) {
+        if (pct < 0 || pct > 100) return;
+        seen = true; if (pct < lo) lo = pct; if (pct > hi) hi = pct;
+        hold(pct <= 3, now, inLow, lowSince, lowHeld);
+        hold(pct >= 97, now, inHigh, highSince, highHeld);
+    }
+    static void hold(bool in, uint32_t now, bool& was, uint32_t& since, bool& held) {
+        if (!in) { was = false; return; }
+        if (!was) { was = true; since = now; }
+        if (now - since >= kSliderHoldMs) held = true;
+    }
+    bool passed() const { return lowHeld && highHeld; }
     void detail(char* out, size_t n) const { if (seen) snprintf(out, n, "range %d-%d%%", lo, hi); else snprintf(out, n, "no slider readings"); }
 };
 struct AccelState {
@@ -124,7 +141,7 @@ struct ConfirmState {
     }
     const char* value(unsigned i) const { return answers[i][0] ? answers[i] : "not_checked"; }
     void detail(bool leds, char* out, size_t cap) const {
-        if (leds) snprintf(out,cap,"red=%s green=%s blue=%s white=%s",value(0),value(1),value(2),value(3));
+        if (leds) snprintf(out,cap,"cycle=%s off=%s",value(0),value(1));
         else snprintf(out,cap,"white=%s checker=%s off=%s",value(0),value(1),value(2));
     }
 };
