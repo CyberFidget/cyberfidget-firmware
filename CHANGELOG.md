@@ -22,6 +22,8 @@ with the version and date automatically.
 
 ### Changed
 
+- Self Test runs its automatic checks first, then waits for a button press before starting hands-on checks.
+
 ### Fixed
 
 ### Removed

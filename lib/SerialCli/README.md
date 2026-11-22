@@ -54,6 +54,7 @@ steps advance in the app update loop. Available in release and test builds.
 ```text
 health start       -> [cmd] health.start=ok (or [err] health.start=busy)
 health status      -> [cmd] health.status=<step-id> state=<running|prompt|answer|result>
+                     [cmd] health.status=ready state=ready
                      [cmd] health.status=idle (also after completion)
 health answer pass -> [cmd] health.answer=ok
 health answer fail -> [cmd] health.answer=ok
@@ -67,13 +68,16 @@ Live events and stored report lines:
 
 ```text
 [cmd] health.step=<id> prompt=<percent-encoded instruction>
+[cmd] health.step=ready prompt=Press%20any%20button%20to%20start
 [cmd] health.<id>=<pass|fail|skip> detail=<percent-encoded detail>
 [cmd] health.stored=ok
 [cmd] health.summary id=<info.id> fw=<version> run=<counter> charger=<result> battery=<result> buttons=<result> slider=<result> accel=<result> audio=<result> display=<result> leds=<result>
 [cmd] health.done=<pass|fail|aborted>
 ```
 
-Fixed ids, in order: `charger battery buttons slider accel audio display leds`.
+Steps run in this order: `charger battery audio`, ready wait, then
+`buttons slider accel display leds`. Stored reports and summaries keep the
+fixed order: `charger battery buttons slider accel audio display leds`.
 Spaces and punctuation outside `A-Z a-z 0-9 - _ . : /` are escaped as `%HH`;
 for example `detail=no%20battery%20check%20yet`. Decode values after splitting
 on spaces and the first `=`. The prompt is repeated for each requested button,
@@ -81,6 +85,15 @@ display pattern and LED channel. Report replay omits prompts and `health.stored`
 Storage failure prints `[err] health.store=failed`; counter reservation failure
 prints `[err] health.counter=unavailable`. The measurement result remains truthful
 even when storage fails; a station must require `health.stored=ok` for persistence.
+
+After audio, the ready prompt is emitted once. The wait has no timeout and
+accepts only a physical press of any button on the device; serial commands
+cannot release it. `health status` reports `state=ready` through the release
+wait too, and `health abort` still aborts. The starting press is consumed.
+Buttons starts fresh after all buttons have been released for 150 ms, or
+15 s after the starting press if a button stays down. A stuck button then
+fails through the normal Buttons timeout. Runs started with `health start`
+stay awake while waiting; menu-started runs follow normal idle-sleep rules.
 
 Only display and LEDs accept `answer`, while the pattern/channel is visible
 (after a 2.5 s instruction screen). Enter/Back release gives the same answer.

@@ -8,6 +8,176 @@ using namespace SelfTestCore;
 void setUp() {}
 void tearDown() {}
 
+static void run_order_preserves_report_indexes_and_ids() {
+    const unsigned expected[] = {Charger, Battery, Audio, Buttons, Slider, Accel, Display, Leds};
+    const char* const storedIds[] = {"charger", "battery", "buttons", "slider", "accel", "audio", "display", "leds"};
+    const unsigned storedValues[] = {Charger, Battery, Buttons, Slider, Accel, Audio, Display, Leds};
+    for (unsigned i=0; i<kSteps; ++i) {
+        TEST_ASSERT_EQUAL_UINT(i, storedValues[i]);
+        TEST_ASSERT_EQUAL_STRING(storedIds[i], id(i));
+        TEST_ASSERT_EQUAL_UINT(expected[i], runStep(i));
+        TEST_ASSERT_EQUAL_UINT(i, runIndex(expected[i]));
+    }
+    TEST_ASSERT_EQUAL_UINT(kSteps, runStep(kSteps));
+    TEST_ASSERT_EQUAL_UINT(kSteps, runIndex(kSteps));
+}
+static void ready_wait_has_no_deadline_or_release_only_start() {
+    Phase phase = Phase::Ready;
+    uint32_t phaseAt = 0;
+    ButtonsState buttons;
+    // Simulate six hours, then the millis wrap, without a physical press.
+    const uint32_t times[] = {0, 15000, 360001, 21600000, UINT32_MAX, 0, 15000};
+    for (uint32_t now : times) {
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, -1, true, now, buttons));
+        TEST_ASSERT_TRUE(phase == Phase::Ready);
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, -1, false, now, buttons));
+        TEST_ASSERT_TRUE(phase == Phase::Ready);
+    }
+    TEST_ASSERT_FALSE(updateReady(phase, phaseAt, 6, false, 15000, buttons));
+    TEST_ASSERT_TRUE(phase == Phase::Ready);
+    phase = Phase::Done;
+    TEST_ASSERT_FALSE(updateReady(phase, phaseAt, 0, true, 15000, buttons));
+    TEST_ASSERT_TRUE(phase == Phase::Done);
+}
+static void every_button_starts_only_after_all_are_released() {
+    for (int button=0; button<6; ++button) {
+        Phase phase = Phase::Ready;
+        uint32_t phaseAt = 0;
+        ButtonsState buttons;
+        buttons.target = 4; buttons.wrong[button] = 7; buttons.since = 100;
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, button, false, 21600000, buttons));
+        TEST_ASSERT_TRUE(phase == Phase::ReadyRelease);
+        // Another button, or a held starting button, keeps the timer off
+        // until the bounded release wait expires.
+        for (unsigned tick=0; tick<100; ++tick) {
+            TEST_ASSERT_FALSE(updateReady(phase, phaseAt, (button+1)%6, false, 21600000+tick*100, buttons));
+            TEST_ASSERT_TRUE(phase == Phase::ReadyRelease);
+        }
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, -1, true, 21610000, buttons));
+        TEST_ASSERT_TRUE(phase == Phase::ReadySettle);
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, -1, true, 21610149, buttons));
+        TEST_ASSERT_TRUE(updateReady(phase, phaseAt, -1, true, 21610150, buttons));
+        TEST_ASSERT_TRUE(phase == Phase::Running);
+        TEST_ASSERT_EQUAL_UINT(0, buttons.target);
+        for (unsigned i=0; i<6; ++i) TEST_ASSERT_EQUAL_UINT(0, buttons.wrong[i]);
+        TEST_ASSERT_EQUAL_UINT32(21610150, buttons.since);
+        TEST_ASSERT_FALSE(buttons.timedOut(21610150));
+        TEST_ASSERT_FALSE(buttons.timedOut(21625149));
+        TEST_ASSERT_TRUE(buttons.timedOut(21625150));
+        TEST_ASSERT_TRUE(buttons.press(ButtonsState::index(0), 21610151));
+        TEST_ASSERT_EQUAL_UINT(1, buttons.target);
+    }
+}
+static void ready_idle_sleep_depends_on_launch_source() {
+    const Phase phases[] = {Phase::Running, Phase::Result, Phase::PatternPrompt, Phase::Answer,
+                            Phase::Ready, Phase::ReadyRelease, Phase::ReadySettle, Phase::Done};
+    for (Phase phase : phases) {
+        TEST_ASSERT_TRUE(holdsIdleSleep(true, phase, true));
+        TEST_ASSERT_EQUAL(!waiting(phase), holdsIdleSleep(true, phase, false));
+        TEST_ASSERT_FALSE(holdsIdleSleep(false, phase, true));
+        TEST_ASSERT_FALSE(holdsIdleSleep(false, phase, false));
+    }
+}
+static void ready_release_timeout_leaves_stuck_button_unchecked() {
+    const uint32_t starts[] = {100, UINT32_MAX-10000};
+    for (uint32_t start : starts) for (int stuck=0; stuck<6; ++stuck) {
+        Phase phase = Phase::Ready;
+        uint32_t phaseAt = 0;
+        ButtonsState buttons;
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, stuck, false, start, buttons));
+        TEST_ASSERT_EQUAL_UINT32(start, phaseAt);
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, -1, false, start+kButtonTimeoutMs-1, buttons));
+        TEST_ASSERT_TRUE(phase == Phase::ReadyRelease);
+        const uint32_t began = start+kButtonTimeoutMs;
+        TEST_ASSERT_TRUE(updateReady(phase, phaseAt, -1, false, began, buttons));
+        TEST_ASSERT_TRUE(phase == Phase::Running);
+        TEST_ASSERT_EQUAL_UINT(0, buttons.target);
+        TEST_ASSERT_EQUAL_UINT32(began, buttons.since);
+        for (unsigned i=0; i<6; ++i) TEST_ASSERT_EQUAL_UINT(0, buttons.wrong[i]);
+        // The stuck button produces no new Pressed edge. Other checks can
+        // pass, but its own check must reach the normal Buttons deadline.
+        while (ButtonsState::index(buttons.target) != stuck) {
+            TEST_ASSERT_TRUE(buttons.press(ButtonsState::index(buttons.target), began+1));
+        }
+        const unsigned missing = buttons.target;
+        TEST_ASSERT_FALSE(buttons.timedOut(buttons.since+kButtonTimeoutMs-1));
+        const uint32_t deadline = buttons.since+kButtonTimeoutMs;
+        TEST_ASSERT_TRUE(buttons.timedOut(deadline));
+        TEST_ASSERT_FALSE(buttons.press(stuck, deadline));
+        TEST_ASSERT_EQUAL_UINT(missing, buttons.target);
+        char detail[kDetailSize]; buttons.detail(detail, sizeof(detail));
+        TEST_ASSERT_NOT_NULL(strstr(detail, "missing "));
+        TEST_ASSERT_NOT_NULL(strstr(detail, ButtonsState::label(missing)));
+    }
+}
+static void ready_release_requires_continuous_settle() {
+    const uint32_t starts[] = {100, UINT32_MAX-100};
+    for (uint32_t start : starts) {
+        Phase phase = Phase::Ready;
+        uint32_t phaseAt = 0;
+        ButtonsState buttons;
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, 0, false, start, buttons));
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, -1, true, start+10, buttons));
+        TEST_ASSERT_TRUE(phase == Phase::ReadySettle);
+        // A release bounce is swallowed and restarts the settling interval.
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, 0, false, start+159, buttons));
+        TEST_ASSERT_TRUE(phase == Phase::ReadyRelease);
+        TEST_ASSERT_EQUAL_UINT(0, buttons.target);
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, -1, true, start+200, buttons));
+        TEST_ASSERT_FALSE(updateReady(phase, phaseAt, -1, true, start+349, buttons));
+        TEST_ASSERT_TRUE(updateReady(phase, phaseAt, -1, true, start+350, buttons));
+        TEST_ASSERT_EQUAL_UINT32(start+350, buttons.since);
+        TEST_ASSERT_EQUAL_UINT(0, buttons.target);
+        TEST_ASSERT_FALSE(buttons.timedOut(start+350+kButtonTimeoutMs-1));
+        TEST_ASSERT_TRUE(buttons.timedOut(start+350+kButtonTimeoutMs));
+    }
+    Phase phase = Phase::Ready;
+    uint32_t phaseAt = 0;
+    ButtonsState buttons;
+    TEST_ASSERT_FALSE(updateReady(phase, phaseAt, 0, false, 0, buttons));
+    TEST_ASSERT_FALSE(updateReady(phase, phaseAt, -1, true, kButtonTimeoutMs-1, buttons));
+    // Settling cannot extend the maximum wait from the starting press.
+    TEST_ASSERT_TRUE(updateReady(phase, phaseAt, -1, false, kButtonTimeoutMs, buttons));
+    TEST_ASSERT_EQUAL_UINT32(kButtonTimeoutMs, buttons.since);
+    TEST_ASSERT_EQUAL_UINT(0, buttons.target);
+}
+static void abort_uses_run_order_and_preserves_completed_audio() {
+    for (unsigned i=0; i<kSteps; ++i) {
+        TEST_ASSERT_EQUAL_UINT(i, firstUnfinished(runStep(i), Phase::Running));
+        TEST_ASSERT_EQUAL_UINT(i+1, firstUnfinished(runStep(i), Phase::Result));
+    }
+    const Phase waitingPhases[] = {Phase::Ready, Phase::ReadyRelease, Phase::ReadySettle};
+    for (Phase phase : waitingPhases) {
+        TEST_ASSERT_EQUAL_UINT(3, firstUnfinished(Audio, phase));
+        TEST_ASSERT_EQUAL_UINT(Buttons, runStep(firstUnfinished(Audio, phase)));
+    }
+    TEST_ASSERT_EQUAL_UINT(kSteps, firstUnfinished(Leds, Phase::Result));
+}
+static void ready_serial_lines_and_existing_status_formats() {
+    char line[512];
+    const Phase waitingPhases[] = {Phase::Ready, Phase::ReadyRelease, Phase::ReadySettle};
+    for (Phase phase : waitingPhases) {
+        TEST_ASSERT_TRUE(statusLine(Audio, phase, true, line, sizeof(line)));
+        TEST_ASSERT_EQUAL_STRING("[cmd] health.status=ready state=ready", line);
+        TEST_ASSERT_TRUE(promptLine(Audio, phase, kReadyPrompt, line, sizeof(line)));
+        TEST_ASSERT_EQUAL_STRING("[cmd] health.step=ready prompt=Press%20any%20button%20to%20start", line);
+    }
+    const Phase phases[] = {Phase::Running, Phase::Result, Phase::PatternPrompt, Phase::Answer};
+    const char* const expected[] = {
+        "[cmd] health.status=buttons state=running", "[cmd] health.status=buttons state=result",
+        "[cmd] health.status=buttons state=prompt", "[cmd] health.status=buttons state=answer"
+    };
+    for (unsigned i=0; i<4; ++i) {
+        TEST_ASSERT_TRUE(statusLine(Buttons, phases[i], true, line, sizeof(line)));
+        TEST_ASSERT_EQUAL_STRING(expected[i], line);
+    }
+    TEST_ASSERT_TRUE(statusLine(Audio, Phase::Ready, false, line, sizeof(line)));
+    TEST_ASSERT_EQUAL_STRING("[cmd] health.status=idle", line);
+    TEST_ASSERT_TRUE(promptLine(Buttons, Phase::Running, "Press Up (top left)", line, sizeof(line)));
+    TEST_ASSERT_EQUAL_STRING("[cmd] health.step=buttons prompt=Press%20Up%20%28top%20left%29", line);
+    TEST_ASSERT_FALSE(statusLine(Audio, Phase::Ready, true, line, 5));
+    TEST_ASSERT_FALSE(promptLine(Audio, Phase::Ready, kReadyPrompt, line, 5));
+}
 static void gauge_requires_response_and_positive_voltage() {
     TEST_ASSERT_TRUE(charger(true, 1) == Result::Pass);
     TEST_ASSERT_TRUE(charger(true, 0) == Result::Fail);
@@ -117,6 +287,16 @@ static Report example() {
     snprintf(r.steps[Battery].detail,kDetailSize,"no battery check yet");
     r.judge(false); return r;
 }
+static void stored_report_and_summary_keep_the_original_order() {
+    Report r = example(); char buf[kReportBytes];
+    for (unsigned s=0; s<kSteps; ++s) snprintf(r.steps[s].detail,kDetailSize,"%s",id(s));
+    TEST_ASSERT_GREATER_THAN(0, encode(r,buf,sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("CFHEALTH1|42|pass|1.2.3%2Babc\n"
+        "pass|charger\nskip|battery\npass|buttons\npass|slider\npass|accel\npass|audio\npass|display\npass|leds\n", buf);
+    r.steps[Buttons].result = Result::Fail;
+    TEST_ASSERT_TRUE(summaryLine(r,"0123456789ab",buf,sizeof(buf)));
+    TEST_ASSERT_EQUAL_STRING("[cmd] health.summary id=0123456789ab fw=1.2.3%2Babc run=42 charger=pass battery=skip buttons=fail slider=pass accel=pass audio=pass display=pass leds=pass", buf);
+}
 static void overall_never_passes_unmeasured() {
     Report r; r.judge(false); TEST_ASSERT_TRUE(r.overall == Overall::Fail);
     r = example(); TEST_ASSERT_TRUE(r.overall == Overall::Pass);
@@ -168,6 +348,15 @@ static void maximum_report_fits_and_roundtrips() {
 }
 int main() {
     UNITY_BEGIN();
+    RUN_TEST(run_order_preserves_report_indexes_and_ids);
+    RUN_TEST(ready_wait_has_no_deadline_or_release_only_start);
+    RUN_TEST(every_button_starts_only_after_all_are_released);
+    RUN_TEST(ready_idle_sleep_depends_on_launch_source);
+    RUN_TEST(ready_release_timeout_leaves_stuck_button_unchecked);
+    RUN_TEST(ready_release_requires_continuous_settle);
+    RUN_TEST(abort_uses_run_order_and_preserves_completed_audio);
+    RUN_TEST(ready_serial_lines_and_existing_status_formats);
+    RUN_TEST(stored_report_and_summary_keep_the_original_order);
     RUN_TEST(gauge_requires_response_and_positive_voltage);
     RUN_TEST(buttons_order_wrong_press_and_deadline);
     RUN_TEST(deadlines_wrap_safely);

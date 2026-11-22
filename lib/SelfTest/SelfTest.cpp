@@ -33,7 +33,6 @@ constexpr uint8_t kRedLedPin = 13;         // the small red LED (through 5.1k)
 constexpr uint32_t kLedCycleFrameMs = 500; // color cycle: one die per frame
 const char* const kPatterns[] = {"Full white", "Checkerboard", "All off"};
 constexpr unsigned kLedScreens = 2;        // color cycle, then all off
-enum class Phase { Running, Result, PatternPrompt, Answer, Done };
 Report report;
 unsigned step = 0, item = 0;
 int ledFrame = -1;   // color-cycle frame on the LEDs now; -1 = none
@@ -42,6 +41,7 @@ uint32_t stepAt = 0, phaseAt = 0, backAt = 0;
 bool active = false, running = false, backDown = false, micOwned = false;
 bool abortedByHold = false;  // the Back release that follows a hold-abort must not leave the result screen
 bool storageReady = false;
+bool serialStarted = false;
 OverlayMode savedOverlay = OverlayMode::OVERLAY_OFF;
 float savedVolume = 0.7f;
 constexpr float kTestVolume = 0.7f;  // the level the audio thresholds were calibrated at (the boot default)
@@ -123,8 +123,8 @@ void emitReport(const Report& value) {
 }
 void announce(const char* instruction) {
     snprintf(prompt, sizeof(prompt), "%s", instruction);
-    char encoded[sizeof(prompt)*3]; token(prompt, encoded, sizeof(encoded));
-    Serial.printf("[cmd] health.step=%s prompt=%s\n", id(step), encoded);
+    char line[sizeof(prompt)*3 + 64];
+    if (promptLine(step, phase, prompt, line, sizeof(line))) Serial.printf("%s\n", line);
 }
 void audioDetail(char* out, size_t cap, const char* reason) {
     uint32_t s = silence.level(), t = tone.level();
@@ -135,8 +135,9 @@ void finish(bool aborted) {
     quiet(); releaseMic();
     pinMode(kRedLedPin, INPUT);   // done with the red LED: as before the run
     if (aborted) {
-        unsigned first = step + (phase == Phase::Result ? 1 : 0);
-        for (unsigned s=first; s<kSteps; ++s) {
+        unsigned first = firstUnfinished(step, phase);
+        for (unsigned i=first; i<kSteps; ++i) {
+            unsigned s = runStep(i);
             report.steps[s].result = s == Battery ? Result::Skip : Result::Fail;
             snprintf(report.steps[s].detail,kDetailSize,"%s",s == Battery ? "no battery check yet" : s == step ? "aborted during step" : "aborted before start");
             if (s == Audio && s == step) audioDetail(report.steps[s].detail,kDetailSize,"aborted during step");
@@ -197,11 +198,11 @@ void startStep() {
     switch (step) {
     case Charger: announce("Reading powered fuel gauge"); break;
     case Battery: announce("No battery check yet"); break;
-    case Buttons: buttons = ButtonsState{}; buttons.since = stepAt; buttonPrompt(); break;
+    case Buttons: buttonPrompt(); break; // updateReady reset the checks and timer
     case Slider: slider = SliderState{}; announce("Slide to each end and hold it there for a second"); break;
     case Accel: accel = AccelState{}; announce("Start face up; turn face down, then face up. Tilt all axes"); break;
     case Audio:
-        announce("Keep quiet and leave the speaker uncovered: measuring silence, then speaker tone");
+        announce("Speaker check: keep the speaker uncovered");
         silence = ToneMeter{}; tone = ToneMeter{}; audioPhase = 0; audioAt = stepAt;
         if (micOwned) MicCapture::instance().startStreaming(0);
         break;
@@ -230,6 +231,7 @@ bool answer(bool pass, bool timeout = false) {
 void onButton(const ButtonEvent& ev) {
     if (!active) return;
     uint32_t now = millis();
+    if (running && waiting(phase)) return;
     if (ev.eventType == ButtonEvent_Pressed && phase == Phase::Answer) {
         if (ev.buttonIndex == button_EnterIndex) enterAnswerDown = true;
         if (ev.buttonIndex == button_SelectIndex) backAnswerDown = true;
@@ -304,7 +306,12 @@ void draw() {
         }
         text(0,52,"Back: menu"); d.display(); return;
     }
-    snprintf(buf,sizeof(buf),"%u/%u %s",step+1,kSteps,id(step)); text(0,0,buf);
+    if (waiting(phase)) {
+        text(0,0,"Self Test: ready"); text(0,16,"Ready for hands-on checks");
+        text(0,32,phase == Phase::Ready ? kReadyPrompt : "Release all buttons");
+        d.display(); return;
+    }
+    snprintf(buf,sizeof(buf),"%u/%u %s",runIndex(step)+1,kSteps,id(step)); text(0,0,buf);
     if (phase == Phase::Result) {
         text(0,16,name(report.steps[step].result));
         if (step == Battery) text(0,30,"No battery check yet");
@@ -340,8 +347,8 @@ void draw() {
             text(0,49,next ? "Answer when dark" : "Enter: dark  Back: no");
         }
     } else if (step == Audio) {
-        text(0,14,"Keep quiet"); text(0,28,audioPhase < 2 ? "Measuring silence" : "Measuring speaker tone");
-        text(0,42,"Don't cover the speaker");
+        text(0,14,"Speaker check"); text(0,28,audioPhase < 2 ? "Measuring silence" : "Measuring speaker tone");
+        text(0,42,"Keep speaker uncovered");
     } else text(0,16,step == Charger ? "Reading fuel gauge" : "No battery check yet");
     d.display();
 }
@@ -358,7 +365,7 @@ void begin() {
     // volume low or muted: measure at the calibrated level, restore on exit.
     savedVolume = HAL::audioManager().getVolume();
     HAL::audioManager().setVolume(kTestVolume);
-    active = running = true; abortedByHold = false;
+    active = running = true; abortedByHold = false; serialStarted = false;
     backDown = HAL::buttonManager().isPressed(button_SelectIndex); backAt = millis();
     for (int i=0;i<6;++i) HAL::buttonManager().registerCallback(i,onButton);
     report = Report{}; snprintf(report.firmware,sizeof(report.firmware),"%s",getFirmwareVersionString());
@@ -374,19 +381,42 @@ void begin() {
     const char* err = nullptr;
     micOwned = MicCapture::instance().acquire("selftest",kMicRate,&err,4);
     snprintf(micError,sizeof(micError),"%s",micOwned ? "" : err ? err : "mic unavailable");
-    step = Charger; startStep();
+    step = runStep(0); startStep();
 }
 void update() {
     if (!active) return;
     uint32_t now = millis();
-    // A run is use of the device: hold off the idle sleep until it ends. Every
-    // step has its own deadline, so this cannot keep the device awake forever.
+    // Only serial-started runs hold off idle sleep while waiting at ready.
     // Use the loop's millis_NOW: the idle check subtracts from it, and a later
     // millis() stamp would wrap that difference into an instant sleep.
-    if (running) millis_APP_LASTINTERACTION = millis_NOW;
+    if (holdsIdleSleep(running, phase, serialStarted)) millis_APP_LASTINTERACTION = millis_NOW;
     if (running && backDown && expired(now,backAt,kAbortHoldMs)) { abortedByHold = true; finish(true); }
     if (running && phase == Phase::Result && expired(now,phaseAt,kResultMs)) {
-        if (++step == kSteps) finish(false); else startStep();
+        if (step == Audio) {
+            quiet(); backDown = false;
+            enterAnswerDown = backAnswerDown = false;
+            phase = Phase::Ready; announce(kReadyPrompt);
+        } else {
+            step = runStep(runIndex(step)+1);
+            if (step == kSteps) finish(false); else startStep();
+        }
+    }
+    if (running && waiting(phase)) {
+        auto& manager = HAL::buttonManager();
+        // Check the latched edge at the app tick, after contact bounce.
+        // The physical pin also rejects test CLI injection on its own.
+        static constexpr int pins[] = {button_TopLeft, button_TopRight, button_MiddleLeft,
+                                       button_MiddleRight, button_BottomLeft, button_BottomRight};
+        int physicalPress = -1;
+        bool allReleased = true;
+        for (int i=0; i<6; ++i) {
+            if (manager.isPressed(i)) allReleased = false;
+            if (manager.wasPressed(i) && digitalRead(pins[i]) == LOW) physicalPress = i;
+        }
+        if (updateReady(phase, phaseAt, physicalPress, allReleased, now, buttons)) {
+            backDown = false;
+            step = runStep(runIndex(step)+1); startStep();
+        }
     }
     if (running && phase == Phase::PatternPrompt && expired(now,phaseAt,kPatternPromptMs)) {
         phase = Phase::Answer; phaseAt = now;
@@ -452,7 +482,7 @@ void end() {
     quiet(); releaseMic(); prefs.end(); storageReady = false;
     HAL::displayProxy().setOverlayMode(savedOverlay);
     HAL::audioManager().setVolume(savedVolume);
-    setColorsOff(); HAL::showRgbLeds(); active = false;
+    setColorsOff(); HAL::showRgbLeds(); active = false; serialStarted = false;
     pinMode(kRedLedPin, INPUT);   // as before the test: nothing else drives it
 }
 void command(const char* args) {
@@ -460,10 +490,13 @@ void command(const char* args) {
         if (running) { Serial.println("[err] health.start=busy"); return; }
         if (AppManager::instance().activeApp() == APP_SELF_TEST) { end(); begin(); }
         else AppManager::instance().switchToApp(APP_SELF_TEST);
+        serialStarted = true;
         Serial.println("[cmd] health.start=ok");
     } else if (!strcmp(args,"status")) {
-        if (!running) Serial.println("[cmd] health.status=idle");
-        else Serial.printf("[cmd] health.status=%s state=%s\n",id(step),phase == Phase::Result ? "result" : phase == Phase::Answer ? "answer" : phase == Phase::PatternPrompt ? "prompt" : "running");
+        char line[96];
+        if (statusLine(step, phase, running, line, sizeof(line))) {
+            if (running) Serial.printf("%s\n", line); else Serial.println(line);
+        }
     } else if (!strcmp(args,"answer pass") || !strcmp(args,"answer fail")) {
         const bool pass = !strcmp(args,"answer pass");
         if (running && cycleTooEarly(pass)) Serial.println("[err] health.answer=cycle_not_complete");

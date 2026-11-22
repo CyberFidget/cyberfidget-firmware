@@ -16,6 +16,7 @@ constexpr unsigned kSteps = 8;
 constexpr unsigned kDetailSize = 192;
 constexpr unsigned kReportBytes = 5120; // accommodates every detail at maximum escaping
 constexpr uint32_t kButtonTimeoutMs = 15000;
+constexpr uint32_t kReadyReleaseSettleMs = 150;
 constexpr uint32_t kMotionTimeoutMs = 20000;
 constexpr uint32_t kAbortHoldMs = 3000;
 constexpr int kAccelSpanMg = 350;
@@ -26,6 +27,26 @@ constexpr uint32_t kAudioRatioMilli = 4000; // power ratio, enclosure calibratio
 constexpr uint32_t kAudioMinPower = 4;     // rejects zero / near-zero captures
 constexpr unsigned kAudioWindows = 16;
 enum Step : uint8_t { Charger, Battery, Buttons, Slider, Accel, Audio, Display, Leds };
+// Execution order is independent of the report's stable step indexes.
+inline unsigned runStep(unsigned index) {
+    static constexpr Step order[] = {Charger, Battery, Audio, Buttons, Slider, Accel, Display, Leds};
+    return index < kSteps ? unsigned(order[index]) : kSteps;
+}
+inline unsigned runIndex(unsigned step) {
+    for (unsigned i=0; i<kSteps; ++i) if (runStep(i) == step) return i;
+    return kSteps;
+}
+enum class Phase { Running, Result, PatternPrompt, Answer, Ready, ReadyRelease, ReadySettle, Done };
+inline bool waiting(Phase phase) {
+    return phase == Phase::Ready || phase == Phase::ReadyRelease || phase == Phase::ReadySettle;
+}
+inline bool holdsIdleSleep(bool running, Phase phase, bool serialStarted) {
+    return running && (serialStarted || !waiting(phase));
+}
+inline unsigned firstUnfinished(unsigned step, Phase phase) {
+    return runIndex(step) + (phase == Phase::Result || waiting(phase) ? 1 : 0);
+}
+constexpr char kReadyPrompt[] = "Press any button to start";
 enum class Result : uint8_t { Pass, Fail, Skip };
 enum class Overall : uint8_t { Pass, Fail, Aborted };
 inline const char* id(unsigned s) {
@@ -73,6 +94,27 @@ struct ButtonsState {
                  wrong[0], wrong[1], wrong[2], wrong[3], wrong[5], wrong[4]);
     }
 };
+// Only a physical press may arm the gate. Swallow input through release
+// settling, bounded from that press so a stuck button reaches its check.
+inline bool updateReady(Phase& phase, uint32_t& phaseAt, int physicalPress, bool allReleased,
+                        uint32_t now, ButtonsState& buttons) {
+    if (phase == Phase::Ready && physicalPress >= 0 && physicalPress < 6) {
+        phase = Phase::ReadyRelease; phaseAt = now;
+    } else if (phase == Phase::ReadyRelease || phase == Phase::ReadySettle) {
+        if (expired(now, phaseAt, kButtonTimeoutMs) ||
+            (phase == Phase::ReadySettle && allReleased && expired(now, buttons.since, kReadyReleaseSettleMs))) {
+            buttons = ButtonsState{}; buttons.since = now;
+            phase = Phase::Running;
+            return true;
+        }
+        if (!allReleased) phase = Phase::ReadyRelease;
+        else if (phase == Phase::ReadyRelease) {
+            // Reuse the inactive Buttons timer for the continuous release interval.
+            phase = Phase::ReadySettle; buttons.since = now;
+        }
+    }
+    return false;
+}
 // Each end counts once the filtered reading has stayed within 3% of it for
 // kSliderHoldMs: the filter is still easing toward the end when it first
 // crosses, so lo/hi then show where it settled, not the first crossing.
@@ -203,6 +245,19 @@ inline bool untoken(const char* src, char* dst, size_t cap) {
     }
     if (n >= cap) return false;
     dst[n] = 0; return true;
+}
+inline bool promptLine(unsigned step, Phase phase, const char* prompt, char* out, size_t cap) {
+    char encoded[128 * 3];
+    if (!token(prompt, encoded, sizeof(encoded))) return false;
+    int n = snprintf(out, cap, "[cmd] health.step=%s prompt=%s", waiting(phase) ? "ready" : id(step), encoded);
+    return n >= 0 && size_t(n) < cap;
+}
+inline bool statusLine(unsigned step, Phase phase, bool running, char* out, size_t cap) {
+    const char* state = waiting(phase) ? "ready" : phase == Phase::Result ? "result" :
+                        phase == Phase::Answer ? "answer" : phase == Phase::PatternPrompt ? "prompt" : "running";
+    int n = running ? snprintf(out, cap, "[cmd] health.status=%s state=%s", waiting(phase) ? "ready" : id(step), state) :
+                      snprintf(out, cap, "[cmd] health.status=idle");
+    return n >= 0 && size_t(n) < cap;
 }
 inline bool stepLine(unsigned step, const StepResult& value, char* out, size_t cap) {
     char encoded[kDetailSize * 3];
