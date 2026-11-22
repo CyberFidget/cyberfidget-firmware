@@ -22,6 +22,16 @@ with the version and date automatically.
 
 ### Changed
 
+### Fixed
+
+### Removed
+
+## [1.7.2] - 2026-11-22
+
+### Added
+
+### Changed
+
 - Self Test runs the checks that need nobody first: the charger, the battery and the speaker. The speaker tone tells you it's ready for you. The screen then shows "Press any button to start" and waits with no time limit. Press any button and it starts the hands-on checks: the buttons, the slider, the accelerometer, the screen patterns and the LEDs. You no longer have to be there when it starts, and a step no longer times out because you were away.
 - If a button is stuck down when you start, the buttons check begins after 15 seconds anyway, and the stuck button is marked as a problem.
 - Self Test started from the menu still lets the Fidget fall asleep if you leave it waiting. Started from the USB serial console, it stays awake while it waits.
@@ -282,7 +292,8 @@ with the version and date automatically.
 
 - Dead header generation left over in the app module build.
 
-[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.7.1...HEAD
+[Unreleased]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.7.2...HEAD
+[1.7.2]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.7.1...v1.7.2
 [1.7.1]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.7.0...v1.7.1
 [1.7.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.6.0...v1.7.0
 [1.6.0]: https://github.com/CyberFidget/cyberfidget-firmware/compare/v1.5.0...v1.6.0
